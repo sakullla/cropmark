@@ -1,3 +1,8 @@
+import { listen } from "@tauri-apps/api/event";
+import { mountDelay } from "./overlay/delay";
+import { mountCaptureError } from "./overlay/error";
+import { mountOverlay } from "./overlay/index";
+import { mountPreview } from "./overlay/preview";
 import { mountSettings } from "./settings";
 
 const root = document.querySelector("#app");
@@ -5,5 +10,17 @@ if (root instanceof HTMLElement) {
   const view = new URLSearchParams(location.search).get("view") ?? "settings";
   if (view === "settings") {
     mountSettings(root);
+  } else if (view === "overlay") {
+    mountOverlay(root);
+  } else if (view === "preview") {
+    mountPreview(root);
+  } else if (view === "delay") {
+    mountDelay(root);
+  } else if (view === "error") {
+    mountCaptureError(root);
   }
 }
+
+void listen("capture-requested", () => {
+  // Rust owns hide-wait and capture; this keeps the resident-shell event consumed.
+});

@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Settings window permissions for Cropmark",
-  "windows": ["settings"],
+  "description": "Cropmark window permissions",
+  "windows": ["settings", "overlay", "preview", "capture-error", "capture-delay"],
   "permissions": [
     "core:default",
     "core:window:allow-close",

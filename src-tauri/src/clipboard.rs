@@ -1,0 +1,55 @@
+use arboard::{Clipboard, ImageData};
+
+use crate::capture::buffer::Frame;
+use crate::capture::error::CaptureError;
+
+pub fn copy_frame(frame: &Frame) -> Result<(), CaptureError> {
+    if frame.rgba.is_empty() || frame.width == 0 || frame.height == 0 {
+        return Err(CaptureError::invalid_buffer("空缓冲"));
+    }
+    let mut clipboard = Clipboard::new().map_err(|_| {
+        CaptureError::api("无法写入剪贴板。")
+    })?;
+    clipboard
+        .set_image(ImageData {
+            width: frame.width as usize,
+            height: frame.height as usize,
+            bytes: std::borrow::Cow::Borrowed(&frame.rgba),
+        })
+        .map_err(|_| CaptureError::api("无法把截图放入剪贴板。"))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ClipboardGuard {
+    pub written: bool,
+}
+
+impl ClipboardGuard {
+    pub fn commit_success(&mut self) {
+        self.written = true;
+    }
+
+    pub fn on_cancel(&self) -> bool {
+        !self.written
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancel_does_not_write_clipboard() {
+        let guard = ClipboardGuard::default();
+        assert!(guard.on_cancel());
+        assert!(!guard.written);
+    }
+
+    #[test]
+    fn success_marks_clipboard_written() {
+        let mut guard = ClipboardGuard::default();
+        guard.commit_success();
+        assert!(guard.written);
+        assert!(!guard.on_cancel());
+    }
+}

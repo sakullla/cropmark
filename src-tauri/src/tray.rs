@@ -10,12 +10,23 @@ pub fn install(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let region = MenuItem::with_id(app, "capture-region", "区域", true, None::<&str>)?;
     let window = MenuItem::with_id(app, "capture-window", "窗口", true, None::<&str>)?;
     let fullscreen = MenuItem::with_id(app, "capture-fullscreen", "全屏", true, None::<&str>)?;
+    let delay_region = MenuItem::with_id(app, "capture-region-delay-3", "区域", true, None::<&str>)?;
+    let delay_window = MenuItem::with_id(app, "capture-window-delay-3", "窗口", true, None::<&str>)?;
+    let delay_fullscreen =
+        MenuItem::with_id(app, "capture-fullscreen-delay-3", "全屏", true, None::<&str>)?;
+    let delay = Submenu::with_id_and_items(
+        app,
+        "capture-delay",
+        "延时 3 秒",
+        true,
+        &[&delay_region, &delay_window, &delay_fullscreen],
+    )?;
     let capture = Submenu::with_id_and_items(
         app,
         "capture",
         "截取",
         true,
-        &[&region, &window, &fullscreen],
+        &[&region, &window, &fullscreen, &delay],
     )?;
     let settings_item = MenuItem::with_id(app, "settings", "设置", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
@@ -41,6 +52,15 @@ pub fn install(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             "capture-region" => crate::dispatch_capture(app, CaptureMode::Region),
             "capture-window" => crate::dispatch_capture(app, CaptureMode::Window),
             "capture-fullscreen" => crate::dispatch_capture(app, CaptureMode::Fullscreen),
+            "capture-region-delay-3" => {
+                crate::dispatch_capture_with_delay(app, CaptureMode::Region, 3000)
+            }
+            "capture-window-delay-3" => {
+                crate::dispatch_capture_with_delay(app, CaptureMode::Window, 3000)
+            }
+            "capture-fullscreen-delay-3" => {
+                crate::dispatch_capture_with_delay(app, CaptureMode::Fullscreen, 3000)
+            }
             "settings" => {
                 let _ = settings::open_settings(app);
             }

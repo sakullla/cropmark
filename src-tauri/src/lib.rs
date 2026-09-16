@@ -1,4 +1,6 @@
 mod autostart;
+mod capture;
+mod clipboard;
 mod hotkeys;
 mod settings;
 mod tray;
@@ -7,7 +9,12 @@ use hotkeys::CaptureMode;
 use tauri::{Emitter, Manager};
 
 pub fn dispatch_capture(app: &tauri::AppHandle, mode: CaptureMode) {
+    dispatch_capture_with_delay(app, mode, 0);
+}
+
+pub fn dispatch_capture_with_delay(app: &tauri::AppHandle, mode: CaptureMode, delay_ms: u64) {
     let _ = app.emit("capture-requested", mode);
+    capture::begin(app, mode, delay_ms);
 }
 
 pub fn should_prevent_exit(code: Option<i32>) -> bool {
@@ -15,6 +22,7 @@ pub fn should_prevent_exit(code: Option<i32>) -> bool {
 }
 
 pub fn run() {
+    capture::platform::enable_per_monitor_v2();
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
@@ -23,6 +31,7 @@ pub fn run() {
 
             let stored = settings::load_from_app(app.handle());
             app.manage(settings::SessionState::from_hotkeys(stored.hotkeys.clone()));
+            app.manage(capture::session::CaptureRuntime::default());
             tray::install(app.handle())?;
             hotkeys::apply_to_app(app.handle(), &stored.hotkeys);
             Ok(())
@@ -31,6 +40,16 @@ pub fn run() {
             settings::get_ui_settings,
             settings::set_hotkey,
             settings::set_autostart_enabled,
+            capture::get_overlay_frame,
+            capture::get_preview_frame,
+            capture::confirm_region,
+            capture::confirm_logical_region,
+            capture::confirm_window,
+            capture::cancel_capture,
+            capture::close_preview,
+            capture::close_capture_error,
+            capture::get_delay_state,
+            capture::get_capture_error,
         ])
         .build(tauri::generate_context!())
         .expect("Cropmark failed to start")
