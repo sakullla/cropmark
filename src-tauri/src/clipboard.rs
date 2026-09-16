@@ -19,6 +19,13 @@ pub fn copy_frame(frame: &Frame) -> Result<(), CaptureError> {
         .map_err(|_| CaptureError::api("无法把截图放入剪贴板。"))
 }
 
+pub fn copy_text(text: &str) -> Result<(), CaptureError> {
+    let mut clipboard = Clipboard::new().map_err(|_| CaptureError::api("无法写入剪贴板。"))?;
+    clipboard
+        .set_text(text)
+        .map_err(|_| CaptureError::api("无法把文字放入剪贴板。截图仍保留。"))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ClipboardGuard {
     pub written: bool,

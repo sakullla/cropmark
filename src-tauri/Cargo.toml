@@ -25,6 +25,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = ["tray-icon", "image-png", "image-ico"] }
 tauri-plugin-global-shortcut = "2"
+paddle-ocr-rs = "0.6.1"
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["ndarray", "std", "download-binaries", "copy-dylibs"] }
+ndarray = "0.16"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"

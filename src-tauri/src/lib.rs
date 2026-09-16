@@ -4,6 +4,7 @@ mod capture;
 mod clipboard;
 mod export;
 mod hotkeys;
+mod ocr;
 mod settings;
 mod tray;
 
@@ -34,6 +35,7 @@ pub fn run() {
             let stored = settings::load_from_app(app.handle());
             app.manage(settings::SessionState::from_hotkeys(stored.hotkeys.clone()));
             app.manage(capture::session::CaptureRuntime::default());
+            app.manage(ocr::OcrRuntime::default());
             tray::install(app.handle())?;
             hotkeys::apply_to_app(app.handle(), &stored.hotkeys);
             Ok(())
@@ -54,6 +56,10 @@ pub fn run() {
             capture::get_capture_error,
             export::copy_preview_png,
             export::save_preview_png,
+            ocr::recognize_preview,
+            ocr::copy_ocr_point,
+            ocr::copy_ocr_rect,
+            ocr::copy_ocr_all,
         ])
         .build(tauri::generate_context!())
         .expect("Cropmark failed to start")

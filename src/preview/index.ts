@@ -19,6 +19,19 @@ type Annotation =
   | { type: "mosaic"; x: number; y: number; width: number; height: number; block: number }
   | { type: "text"; x: number; y: number; text: string; size: number };
 
+interface TextSpan {
+  text: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+interface OcrDocument {
+  spans: TextSpan[];
+  fullText: string;
+}
+
 const STROKE = "#E11D48";
 
 const ICONS: Record<Exclude<Tool, "ocr"> | "undo", string> = {
@@ -51,6 +64,7 @@ export function mountPreview(root: HTMLElement): void {
       </div>
       <div class="preview-actions">
         <button type="button" data-tool="ocr" title="取字">取字</button>
+        <button type="button" data-action="copy-ocr-all" hidden>复制全部</button>
         <button type="button" data-action="save">保存</button>
         <button type="button" class="primary" data-action="copy">复制</button>
       </div>
@@ -68,12 +82,14 @@ export function mountPreview(root: HTMLElement): void {
   const editor = root.querySelector(".preview-text");
   const undoBtn = root.querySelector("[data-action=undo]");
   const frameEl = root.querySelector(".preview-frame");
+  const copyAllBtn = root.querySelector("[data-action=copy-ocr-all]");
   if (
     !(canvas instanceof HTMLCanvasElement) ||
     !(note instanceof HTMLElement) ||
     !(editor instanceof HTMLTextAreaElement) ||
     !(undoBtn instanceof HTMLButtonElement) ||
-    !(frameEl instanceof HTMLElement)
+    !(frameEl instanceof HTMLElement) ||
+    !(copyAllBtn instanceof HTMLButtonElement)
   ) {
     return;
   }
@@ -92,6 +108,12 @@ export function mountPreview(root: HTMLElement): void {
   let editorOrigin: Point | null = null;
   let busy = false;
   let copied = "未标注图已复制";
+  let ocrDoc: OcrDocument | null = null;
+  let ocrSelected: number[] = [];
+  let ocrDragging = false;
+  let ocrStart: Point | null = null;
+  let ocrCurrent: Point | null = null;
+  let ocrGen = 0;
 
   const mosaicBlock = (): number => Math.max(8, Math.round(12 * Math.max(frame?.scale ?? 1, 1)));
   const textSize = (): number => Math.max(16, Math.round(14 * Math.max(frame?.scale ?? 1, 1)));
@@ -109,9 +131,21 @@ export function mountPreview(root: HTMLElement): void {
     root.querySelectorAll("[data-tool]").forEach((button) => {
       button.classList.toggle("active", button.getAttribute("data-tool") === next);
     });
-    if (next !== "ocr" && !note.classList.contains("is-error")) {
+    ocrSelected = [];
+    ocrCurrent = null;
+    ocrStart = null;
+    ocrDragging = false;
+    copyAllBtn.hidden = next !== "ocr" || !ocrDoc || ocrDoc.spans.length === 0;
+    if (next === "ocr") {
+      if (!ocrDoc) {
+        void runOcr();
+      } else if (!note.classList.contains("is-error")) {
+        setNote("点选或划选文字，也可复制全部。", false);
+      }
+    } else if (!note.classList.contains("is-error")) {
       setNote(copied, false);
     }
+    redraw();
   };
 
   const syncUndo = (): void => {
@@ -150,6 +184,11 @@ export function mountPreview(root: HTMLElement): void {
       if (op) {
         paint(ctx, op, strokeWidth());
       }
+    }
+    if (tool === "ocr" && ocrDoc) {
+      const rubber =
+        ocrDragging && ocrStart && ocrCurrent ? normalizeRect(ocrStart, ocrCurrent) : null;
+      paintOcr(ctx, ocrDoc.spans, ocrSelected, rubber);
     }
   };
 
@@ -207,6 +246,80 @@ export function mountPreview(root: HTMLElement): void {
 
   const exportList = (): Annotation[] => annotations.filter((op) => op.type !== "text" || op.text.trim().length > 0);
 
+  const syncCopyAll = (): void => {
+    copyAllBtn.hidden = tool !== "ocr" || !ocrDoc || ocrDoc.spans.length === 0;
+  };
+
+  const runOcr = async (): Promise<void> => {
+    if (busy) {
+      return;
+    }
+    const token = ++ocrGen;
+    busy = true;
+    ocrDoc = null;
+    ocrSelected = [];
+    syncCopyAll();
+    setNote("正在识别…", false);
+    redraw();
+    try {
+      const doc = await invoke<OcrDocument>("recognize_preview");
+      if (token !== ocrGen) {
+        return;
+      }
+      ocrDoc = doc;
+      syncCopyAll();
+      setNote("点选或划选文字，也可复制全部。", false);
+      redraw();
+    } catch (error) {
+      if (token !== ocrGen) {
+        return;
+      }
+      ocrDoc = null;
+      syncCopyAll();
+      setNote(invokeError(error, "无法识别图上的文字。"), true);
+      redraw();
+    } finally {
+      if (token === ocrGen) {
+        busy = false;
+      }
+    }
+  };
+
+  const copyOcrSelection = async (startPoint: Point, endPoint: Point): Promise<void> => {
+    if (busy || !ocrDoc) {
+      return;
+    }
+    busy = true;
+    try {
+      const drag = Math.hypot(endPoint.x - startPoint.x, endPoint.y - startPoint.y);
+      const copiedText =
+        drag < 4
+          ? await invoke<string>("copy_ocr_point", { x: endPoint.x, y: endPoint.y })
+          : await invoke<string>("copy_ocr_rect", normalizeRect(startPoint, endPoint));
+      const snippet = copiedText.length > 24 ? `${copiedText.slice(0, 24)}…` : copiedText;
+      setNote(`已复制「${snippet}」`, false);
+    } catch (error) {
+      setNote(invokeError(error, "没有选中文字。"), true);
+    } finally {
+      busy = false;
+    }
+  };
+
+  const copyOcrAll = async (): Promise<void> => {
+    if (busy) {
+      return;
+    }
+    busy = true;
+    try {
+      await invoke<string>("copy_ocr_all");
+      setNote("已复制全部识别文本。", false);
+    } catch (error) {
+      setNote(invokeError(error, "没有识别到文字。"), true);
+    } finally {
+      busy = false;
+    }
+  };
+
   const copy = async (): Promise<void> => {
     if (busy) {
       return;
@@ -248,10 +361,20 @@ export function mountPreview(root: HTMLElement): void {
     if (event.button !== 0 || !frame) {
       return;
     }
+    const point = physicalPoint(event);
     if (tool === "ocr") {
+      if (!ocrDoc) {
+        return;
+      }
+      event.preventDefault();
+      ocrDragging = true;
+      ocrStart = point;
+      ocrCurrent = point;
+      const hit = indexAtPoint(ocrDoc.spans, point.x, point.y);
+      ocrSelected = hit === -1 ? [] : [hit];
+      redraw();
       return;
     }
-    const point = physicalPoint(event);
     if (tool === "text") {
       placeEditor(point);
       return;
@@ -263,6 +386,18 @@ export function mountPreview(root: HTMLElement): void {
   });
 
   window.addEventListener("mousemove", (event) => {
+    if (ocrDragging && ocrStart && ocrDoc) {
+      ocrCurrent = physicalPoint(event);
+      const rubber = normalizeRect(ocrStart, ocrCurrent);
+      if (Math.hypot(ocrCurrent.x - ocrStart.x, ocrCurrent.y - ocrStart.y) < 4) {
+        const hit = indexAtPoint(ocrDoc.spans, ocrCurrent.x, ocrCurrent.y);
+        ocrSelected = hit === -1 ? [] : [hit];
+      } else {
+        ocrSelected = indicesInRect(ocrDoc.spans, rubber);
+      }
+      redraw();
+      return;
+    }
     if (!dragging || !start) {
       return;
     }
@@ -271,6 +406,16 @@ export function mountPreview(root: HTMLElement): void {
   });
 
   window.addEventListener("mouseup", () => {
+    if (ocrDragging && ocrStart && ocrCurrent) {
+      ocrDragging = false;
+      const from = ocrStart;
+      const to = ocrCurrent;
+      ocrStart = null;
+      ocrCurrent = null;
+      redraw();
+      void copyOcrSelection(from, to);
+      return;
+    }
     if (!dragging || !start || !current) {
       dragging = false;
       return;
@@ -331,6 +476,8 @@ export function mountPreview(root: HTMLElement): void {
       undo();
     } else if (button.dataset.action === "copy") {
       void copy();
+    } else if (button.dataset.action === "copy-ocr-all") {
+      void copyOcrAll();
     } else if (button.dataset.action === "save") {
       void save();
     } else if (button.dataset.action === "close") {
@@ -510,6 +657,72 @@ function paintMosaic(
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
+}
+
+function normalizeRect(a: Point, b: Point): { x: number; y: number; width: number; height: number } {
+  const x = Math.min(a.x, b.x);
+  const y = Math.min(a.y, b.y);
+  return { x, y, width: Math.abs(a.x - b.x), height: Math.abs(a.y - b.y) };
+}
+
+function indexAtPoint(spans: TextSpan[], x: number, y: number): number {
+  let best = -1;
+  let area = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < spans.length; i += 1) {
+    const span = spans[i];
+    if (x < span.x || x > span.x + span.width || y < span.y || y > span.y + span.height) {
+      continue;
+    }
+    const nextArea = span.width * span.height;
+    if (nextArea < area) {
+      area = nextArea;
+      best = i;
+    }
+  }
+  return best;
+}
+
+function indicesInRect(
+  spans: TextSpan[],
+  rect: { x: number; y: number; width: number; height: number },
+): number[] {
+  const x1 = rect.x + rect.width;
+  const y1 = rect.y + rect.height;
+  return spans
+    .map((span, index) => ({ span, index }))
+    .filter(
+      ({ span }) => span.x < x1 && span.x + span.width > rect.x && span.y < y1 && span.y + span.height > rect.y,
+    )
+    .map(({ index }) => index);
+}
+
+function paintOcr(
+  ctx: CanvasRenderingContext2D,
+  spans: TextSpan[],
+  selected: number[],
+  rubber: { x: number; y: number; width: number; height: number } | null,
+): void {
+  ctx.save();
+  const selectedSet = new Set(selected);
+  for (let i = 0; i < spans.length; i += 1) {
+    const span = spans[i];
+    const on = selectedSet.has(i);
+    ctx.fillStyle = on ? "rgba(14, 165, 233, 0.38)" : "rgba(14, 165, 233, 0.12)";
+    ctx.strokeStyle = on ? "rgba(3, 105, 161, 0.95)" : "rgba(14, 165, 233, 0.55)";
+    ctx.lineWidth = Math.max(1, ctx.canvas.width / 900);
+    ctx.beginPath();
+    ctx.rect(span.x, span.y, span.width, span.height);
+    ctx.fill();
+    ctx.stroke();
+  }
+  if (rubber && (rubber.width > 3 || rubber.height > 3)) {
+    ctx.fillStyle = "rgba(14, 165, 233, 0.08)";
+    ctx.strokeStyle = "rgba(3, 105, 161, 0.9)";
+    ctx.setLineDash([6, 4]);
+    ctx.fillRect(rubber.x, rubber.y, rubber.width, rubber.height);
+    ctx.strokeRect(rubber.x, rubber.y, rubber.width, rubber.height);
+  }
+  ctx.restore();
 }
 
 function invokeError(error: unknown, fallback: string): string {
