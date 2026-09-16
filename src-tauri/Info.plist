@@ -2,7 +2,12 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <key>CFBundleName</key>
+  <string>Cropmark</string>
+  <key>CFBundleDisplayName</key>
+  <string>Cropmark</string>
   <key>NSScreenCaptureUsageDescription</key>
   <string>Cropmark 需要屏幕录制权限才能截取屏幕。</string>
 </dict>
 </plist>
+
