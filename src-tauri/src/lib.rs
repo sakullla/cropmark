@@ -1,6 +1,8 @@
+mod annotate;
 mod autostart;
 mod capture;
 mod clipboard;
+mod export;
 mod hotkeys;
 mod settings;
 mod tray;
@@ -50,6 +52,8 @@ pub fn run() {
             capture::close_capture_error,
             capture::get_delay_state,
             capture::get_capture_error,
+            export::copy_preview_png,
+            export::save_preview_png,
         ])
         .build(tauri::generate_context!())
         .expect("Cropmark failed to start")

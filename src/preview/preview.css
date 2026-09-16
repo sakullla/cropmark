@@ -1,0 +1,157 @@
+.preview-root {
+  min-width: 0;
+}
+
+.preview-root header {
+  flex: 0 0 auto;
+}
+
+.preview-note {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview-note.is-error {
+  color: var(--danger);
+  white-space: normal;
+}
+
+.preview-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  flex: 0 0 auto;
+}
+
+.preview-tools,
+.preview-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.preview-actions {
+  margin-left: auto;
+  gap: 6px;
+}
+
+.preview-tools button,
+.preview-actions button {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+  border-radius: 10px;
+}
+
+.preview-tools button {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+}
+
+.preview-tools button svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
+.preview-tools button:hover,
+.preview-actions button:hover:not(.primary) {
+  background: var(--accent-soft);
+}
+
+.preview-tools button.active,
+.preview-actions button.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.preview-tools button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.preview-actions button {
+  height: 32px;
+  padding: 0 12px;
+  font-size: 13px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel) 80%, transparent);
+}
+
+.preview-actions .primary {
+  background: var(--accent);
+  border-color: transparent;
+  color: #f5fffd;
+  font-weight: 650;
+  padding: 0 16px;
+}
+
+@media (prefers-color-scheme: dark) {
+  .preview-actions .primary {
+    color: #161412;
+  }
+}
+
+.preview-actions .primary:hover {
+  filter: brightness(1.06);
+}
+
+.preview-stage {
+  padding: 8px 10px 10px;
+}
+
+.preview-frame {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.preview-frame canvas {
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  display: block;
+  border-radius: 8px;
+  cursor: crosshair;
+}
+
+.preview-root[data-tool="text"] .preview-frame canvas,
+.preview-root[data-tool="ocr"] .preview-frame canvas {
+  cursor: text;
+}
+
+.preview-text {
+  position: absolute;
+  min-width: 84px;
+  min-height: 1.4em;
+  margin: 0;
+  padding: 2px 6px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
+  color: var(--ink);
+  font: inherit;
+  line-height: 1.3;
+  resize: none;
+  outline: none;
+  z-index: 3;
+  overflow: hidden;
+  user-select: text;
+}

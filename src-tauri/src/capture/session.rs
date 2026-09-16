@@ -335,6 +335,23 @@ pub fn preview_frame(app: &AppHandle) -> Result<PreviewPayload, CaptureError> {
     })
 }
 
+pub fn current_preview_frame(app: &AppHandle) -> Result<Frame, CaptureError> {
+    with_session(app, |session| {
+        session
+            .as_ref()
+            .and_then(|item| item.freeze.clone())
+            .ok_or_else(|| CaptureError::api("没有可预览的截图。"))
+    })
+}
+
+pub fn mark_preview_file_written(app: &AppHandle) {
+    with_session_mut(app, |session| {
+        if let Some(current) = session.as_mut() {
+            current.file_written = true;
+        }
+    });
+}
+
 pub fn confirm_region(app: &AppHandle, selection: RegionSelection) -> Result<(), CaptureError> {
     let frame = with_session(app, |session| {
         let session = session.as_ref().ok_or_else(CaptureError::cancelled)?;

@@ -36,6 +36,7 @@ pub struct PreviewPayload {
     pub png_base64: String,
     pub width: u32,
     pub height: u32,
+    pub scale: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -108,6 +109,7 @@ pub fn preview_payload(frame: &Frame) -> Result<PreviewPayload, CaptureError> {
         png_base64: STANDARD.encode(encode_png(frame)?),
         width: frame.width,
         height: frame.height,
+        scale: frame.scale,
     })
 }
 
@@ -195,13 +197,13 @@ fn builder<'a>(app: &'a AppHandle, label: &str, view: &str) -> Result<WebviewWin
 }
 
 fn preview_size(frame: &Frame) -> (f64, f64) {
-    let max_w = 760.0;
-    let max_h = 560.0;
-    let chrome = 56.0;
+    let max_w = 800.0;
+    let max_h = 600.0;
+    let chrome = 108.0;
     let width = frame.width.max(1) as f64;
     let height = frame.height.max(1) as f64;
     let scale = (max_w / width).min((max_h - chrome) / height).min(1.0);
-    ((width * scale).max(320.0), (height * scale + chrome).max(220.0))
+    ((width * scale).max(480.0), (height * scale + chrome).max(280.0))
 }
 
 #[cfg(test)]
@@ -218,8 +220,8 @@ mod tests {
             scale: 2.0,
         };
         let (width, height) = preview_size(&frame);
-        assert!(width <= 760.0);
-        assert!(height <= 560.0);
-        assert!(width >= 320.0);
+        assert!(width <= 800.0);
+        assert!(height <= 600.0);
+        assert!(width >= 480.0);
     }
 }

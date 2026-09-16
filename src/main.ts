@@ -2,7 +2,7 @@ import { listen } from "@tauri-apps/api/event";
 import { mountDelay } from "./overlay/delay";
 import { mountCaptureError } from "./overlay/error";
 import { mountOverlay } from "./overlay/index";
-import { mountPreview } from "./overlay/preview";
+import { mountPreview } from "./preview";
 import { mountSettings } from "./settings";
 
 const root = document.querySelector("#app");
