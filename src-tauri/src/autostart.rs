@@ -36,6 +36,30 @@ pub fn set_enabled(enabled: bool) -> AutostartState {
     state
 }
 
+pub fn merge_autostart_ui(live: AutostartState, last_rejection: Option<String>) -> AutostartState {
+    if live.enabled {
+        return AutostartState {
+            enabled: true,
+            message: None,
+        };
+    }
+    if live.message.is_some() {
+        return live;
+    }
+    AutostartState {
+        enabled: false,
+        message: last_rejection,
+    }
+}
+
+pub fn remember_autostart_result(result: &AutostartState) -> Option<String> {
+    if result.enabled {
+        None
+    } else {
+        result.message.clone()
+    }
+}
+
 pub fn map_platform_status(status: PlatformStatus) -> AutostartState {
     match status {
         PlatformStatus::Enabled => AutostartState {
@@ -461,5 +485,30 @@ mod tests {
 
     fn windows_run_value_name() -> &'static str {
         "Cropmark"
+    }
+
+    #[test]
+    fn denied_write_message_survives_live_not_registered_query() {
+        let result = map_platform_status(PlatformStatus::Denied("access denied".into()));
+        let stored = remember_autostart_result(&result);
+        let live = map_platform_status(PlatformStatus::NotRegistered);
+        let ui = merge_autostart_ui(live, stored);
+        assert!(!ui.enabled);
+        assert!(ui.message.as_deref().unwrap().contains("拒绝"));
+    }
+
+    #[test]
+    fn successful_toggle_clears_stored_rejection() {
+        let enabled = map_platform_status(PlatformStatus::Enabled);
+        assert_eq!(remember_autostart_result(&enabled), None);
+        let ui = merge_autostart_ui(enabled, Some("系统拒绝了开机启动。".into()));
+        assert!(ui.enabled);
+        assert_eq!(ui.message, None);
+
+        let off = map_platform_status(PlatformStatus::NotRegistered);
+        assert_eq!(remember_autostart_result(&off), None);
+        let ui = merge_autostart_ui(off, None);
+        assert!(!ui.enabled);
+        assert_eq!(ui.message, None);
     }
 }

@@ -10,6 +10,10 @@ pub fn dispatch_capture(app: &tauri::AppHandle, mode: CaptureMode) {
     let _ = app.emit("capture-requested", mode);
 }
 
+pub fn should_prevent_exit(code: Option<i32>) -> bool {
+    code.is_none()
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -28,6 +32,28 @@ pub fn run() {
             settings::set_hotkey,
             settings::set_autostart_enabled,
         ])
-        .run(tauri::generate_context!())
-        .expect("Cropmark failed to start");
+        .build(tauri::generate_context!())
+        .expect("Cropmark failed to start")
+        .run(|_app, event| {
+            if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
+                if should_prevent_exit(code) {
+                    api.prevent_exit();
+                }
+            }
+        });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_prevent_exit;
+
+    #[test]
+    fn closing_last_settings_window_keeps_tray_alive() {
+        assert!(should_prevent_exit(None));
+    }
+
+    #[test]
+    fn tray_quit_still_exits_the_process() {
+        assert!(!should_prevent_exit(Some(0)));
+    }
 }

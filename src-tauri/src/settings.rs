@@ -30,6 +30,7 @@ pub struct SessionState {
     pub hotkeys: Mutex<Hotkeys>,
     pub hotkey_errors: Mutex<HotkeyErrors>,
     pub notice: Mutex<Option<String>>,
+    pub autostart_rejection: Mutex<Option<String>>,
 }
 
 impl SessionState {
@@ -38,6 +39,7 @@ impl SessionState {
             hotkeys: Mutex::new(hotkeys),
             hotkey_errors: Mutex::new(HotkeyErrors::default()),
             notice: Mutex::new(None),
+            autostart_rejection: Mutex::new(None),
         }
     }
 }
@@ -91,10 +93,11 @@ pub fn snapshot(app: &AppHandle) -> UiSettings {
     let hotkeys = lock(&state.hotkeys).clone();
     let hotkey_errors = lock(&state.hotkey_errors).clone();
     let notice = lock(&state.notice).clone();
+    let autostart_rejection = lock(&state.autostart_rejection).clone();
     UiSettings {
         hotkeys,
         hotkey_errors,
-        autostart: autostart::current_state(),
+        autostart: autostart::merge_autostart_ui(autostart::current_state(), autostart_rejection),
         notice,
     }
 }
@@ -115,8 +118,12 @@ pub fn set_hotkey(app: AppHandle, mode: CaptureMode, accelerator: String) -> UiS
 
 #[tauri::command]
 pub fn set_autostart_enabled(app: AppHandle, enabled: bool) -> UiSettings {
-    let _ = autostart::set_enabled(enabled);
-    snapshot(&app)
+    let result = autostart::set_enabled(enabled);
+    *lock(&app.state::<SessionState>().autostart_rejection) =
+        autostart::remember_autostart_result(&result);
+    let mut ui = snapshot(&app);
+    ui.autostart = result;
+    ui
 }
 
 fn persist_hotkeys(app: &AppHandle, hotkeys: &Hotkeys) {
@@ -174,5 +181,25 @@ mod tests {
         let loaded = load_from_path(&path);
         assert_eq!(loaded.hotkeys.region, "Ctrl+Alt+R");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn set_autostart_uses_set_enabled_result_not_blank_live_query() {
+        let result = autostart::map_platform_status(autostart::PlatformStatus::Denied(
+            "access denied".into(),
+        ));
+        let stored = autostart::remember_autostart_result(&result);
+        let live = autostart::map_platform_status(autostart::PlatformStatus::NotRegistered);
+        let merged = autostart::merge_autostart_ui(live, stored.clone());
+        let mut ui = UiSettings {
+            hotkeys: Hotkeys::default(),
+            hotkey_errors: HotkeyErrors::default(),
+            autostart: merged,
+            notice: None,
+        };
+        ui.autostart = result.clone();
+        assert!(!ui.autostart.enabled);
+        assert_eq!(ui.autostart.message, result.message);
+        assert!(ui.autostart.message.as_deref().unwrap().contains("拒绝"));
     }
 }
