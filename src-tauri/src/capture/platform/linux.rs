@@ -5,12 +5,19 @@ use x11rb::connection::Connection;
 use x11rb::protocol::randr::ConnectionExt as RandrExt;
 use x11rb::protocol::xproto::{self, ConnectionExt as XprotoExt, ImageFormat};
 
-use crate::capture::buffer::{accept_buffer, decode_png, Frame, RawBuffer};
+use crate::capture::buffer::{accept_buffer, crop_desktop_to_monitor, decode_png, Frame, RawBuffer};
 use crate::capture::error::{classify_platform_failure, CaptureError, PlatformFailure};
 use crate::capture::geometry::{monitor_at_physical, MonitorGeom};
 use crate::capture::windows_list::{selectable_windows, ListedWindow};
 
+use super::{linux_capture_backend, LinuxCaptureBackend};
+
 pub fn pointer_monitor() -> Result<MonitorGeom, CaptureError> {
+    if uses_portal() {
+        return Err(CaptureError::unavailable(
+            "当前 Wayland 会话无法从 X11 读取指针所在屏。",
+        ));
+    }
     if let Ok(monitor) = x11_pointer_monitor() {
         return Ok(monitor);
     }
@@ -20,46 +27,58 @@ pub fn pointer_monitor() -> Result<MonitorGeom, CaptureError> {
 }
 
 pub fn capture_monitor(monitor: &MonitorGeom) -> Result<Frame, CaptureError> {
-    match x11_capture_rect(
-        monitor.physical_x,
-        monitor.physical_y,
-        monitor.physical_width,
-        monitor.physical_height,
-        monitor.scale,
-    ) {
-        Ok(frame) => Ok(frame),
-        Err(x11_error) => match portal_fullscreen() {
-            Ok(mut frame) => {
-                frame.scale = monitor.scale;
-                Ok(frame)
-            }
-            Err(portal_error) => Err(prefer_unavailable(x11_error, portal_error)),
-        },
+    match linux_capture_backend(wayland_display().as_deref()) {
+        LinuxCaptureBackend::Portal => {
+            let frame = portal_fullscreen()?;
+            crop_desktop_to_monitor(
+                frame,
+                monitor,
+                monitor.physical_x.min(0),
+                monitor.physical_y.min(0),
+            )
+        }
+        LinuxCaptureBackend::X11 => x11_capture_rect(
+            monitor.physical_x,
+            monitor.physical_y,
+            monitor.physical_width,
+            monitor.physical_height,
+            monitor.scale,
+        ),
     }
 }
 
 pub fn list_windows(self_pid: u32) -> Result<Vec<ListedWindow>, CaptureError> {
+    if uses_portal() {
+        return Err(CaptureError::unavailable(
+            "当前桌面无法列出窗口。请改用区域或全屏截取，或在 X11 会话中使用窗口模式。",
+        ));
+    }
     x11_list_windows(self_pid)
 }
 
 pub fn capture_window(id: &str) -> Result<Frame, CaptureError> {
+    if uses_portal() {
+        return Err(CaptureError::unavailable(
+            "当前桌面无法截取窗口。请改用区域或全屏截取。",
+        ));
+    }
     x11_capture_window(id)
 }
 
 pub fn dismiss_tray_popup() {}
 
-fn prefer_unavailable(x11: CaptureError, portal: CaptureError) -> CaptureError {
-    if portal.kind == crate::capture::error::CaptureErrorKind::Permission {
-        portal
-    } else if x11.kind == crate::capture::error::CaptureErrorKind::Unavailable
-        || portal.kind == crate::capture::error::CaptureErrorKind::Unavailable
-    {
-        CaptureError::unavailable(
-            "当前桌面没有可用的截屏接口。请安装 xdg-desktop-portal，或在 X11 会话中使用 Cropmark。",
-        )
-    } else {
-        portal
-    }
+pub fn tray_popup_visible() -> bool {
+    false
+}
+
+fn wayland_display() -> Option<String> {
+    std::env::var("WAYLAND_DISPLAY")
+        .ok()
+        .filter(|value| !value.is_empty())
+}
+
+fn uses_portal() -> bool {
+    linux_capture_backend(wayland_display().as_deref()) == LinuxCaptureBackend::Portal
 }
 
 fn portal_fullscreen() -> Result<Frame, CaptureError> {
@@ -185,7 +204,7 @@ fn x11_list_windows(self_pid: u32) -> Result<Vec<ListedWindow>, CaptureError> {
     let ids: Vec<u32> = reply.value32().into_iter().flatten().collect();
     let mut listed = Vec::new();
     for id in ids {
-        if let Some(window) = x11_window_info(&conn, id, self_pid) {
+        if let Some(window) = x11_window_info(&conn, screen.root, id, self_pid) {
             listed.push(window);
         }
     }
@@ -194,6 +213,7 @@ fn x11_list_windows(self_pid: u32) -> Result<Vec<ListedWindow>, CaptureError> {
 
 fn x11_window_info(
     conn: &impl Connection,
+    root: xproto::Window,
     id: u32,
     self_pid: u32,
 ) -> Option<ListedWindow> {
@@ -202,19 +222,44 @@ fn x11_window_info(
     if attrs.map_state != xproto::MapState::VIEWABLE {
         return None;
     }
+    let translated = conn
+        .translate_coordinates(id, root, 0, 0)
+        .ok()?
+        .reply()
+        .ok()?;
+    let (left, right, top, bottom) = frame_extents(conn, id);
     let title = window_title(conn, id).unwrap_or_default();
     let pid = window_pid(conn, id).unwrap_or(0);
     Some(ListedWindow {
         id: id.to_string(),
         title,
         pid,
-        x: geom.x as i32,
-        y: geom.y as i32,
-        width: geom.width as u32,
-        height: geom.height as u32,
+        x: translated.dst_x as i32 - left,
+        y: translated.dst_y as i32 - top,
+        width: geom.width as u32 + (left + right) as u32,
+        height: geom.height as u32 + (top + bottom) as u32,
         visible: true,
         owner_is_self: pid == self_pid,
     })
+}
+
+fn frame_extents(conn: &impl Connection, id: u32) -> (i32, i32, i32, i32) {
+    let Ok(atom) = intern(conn, b"_NET_FRAME_EXTENTS") else {
+        return (0, 0, 0, 0);
+    };
+    let Ok(cookie) = conn.get_property(false, id, atom, xproto::AtomEnum::CARDINAL, 0, 4) else {
+        return (0, 0, 0, 0);
+    };
+    let Ok(reply) = cookie.reply() else {
+        return (0, 0, 0, 0);
+    };
+    let mut values = reply.value32().into_iter().flatten();
+    (
+        values.next().unwrap_or(0) as i32,
+        values.next().unwrap_or(0) as i32,
+        values.next().unwrap_or(0) as i32,
+        values.next().unwrap_or(0) as i32,
+    )
 }
 
 fn x11_capture_window(id: &str) -> Result<Frame, CaptureError> {

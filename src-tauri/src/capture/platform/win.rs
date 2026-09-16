@@ -12,8 +12,9 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EndMenu, EnumWindows, GetCursorPos, GetWindow, GetWindowLongW, GetWindowRect, GetWindowTextW,
-    GetWindowThreadProcessId, IsIconic, IsWindowVisible, GWL_EXSTYLE, GW_OWNER, WS_EX_TOOLWINDOW,
+    EndMenu, EnumWindows, GetClassNameW, GetCursorPos, GetWindow, GetWindowLongW, GetWindowRect,
+    GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible, GWL_EXSTYLE, GW_OWNER,
+    WS_EX_TOOLWINDOW,
 };
 
 use crate::capture::buffer::{accept_buffer, Frame, RawBuffer};
@@ -61,6 +62,15 @@ pub fn dismiss_tray_popup() {
     unsafe {
         let _ = EndMenu();
     }
+}
+
+pub fn tray_popup_visible() -> bool {
+    let mut found = false;
+    let param = LPARAM(&mut found as *mut bool as isize);
+    unsafe {
+        let _ = EnumWindows(Some(enum_menu_callback), param);
+    }
+    found
 }
 
 pub fn enable_per_monitor_v2() {
@@ -349,6 +359,28 @@ unsafe extern "system" fn enum_windows_callback(hwnd: HWND, lparam: LPARAM) -> B
         owner_is_self: pid == self_pid,
     });
     BOOL::from(true)
+}
+
+unsafe extern "system" fn enum_menu_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    if !IsWindowVisible(hwnd).as_bool() {
+        return BOOL::from(true);
+    }
+    let mut class = [0u16; 32];
+    let len = GetClassNameW(hwnd, &mut class);
+    if len <= 0 {
+        return BOOL::from(true);
+    }
+    let class = String::from_utf16_lossy(&class[..len as usize]);
+    if class != "#32768" {
+        return BOOL::from(true);
+    }
+    let mut pid = 0u32;
+    GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    if pid != GetCurrentProcessId() {
+        return BOOL::from(true);
+    }
+    *(lparam.0 as *mut bool) = true;
+    BOOL::from(false)
 }
 
 fn parse_hwnd(id: &str) -> Result<HWND, CaptureError> {

@@ -6,9 +6,10 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use super::buffer::{crop_rgba, Frame};
 use super::error::CaptureError;
-use super::geometry::{crop_from_logical, LogicalRect, MonitorGeom};
+use super::geometry::{crop_from_logical, monitor_at_physical, LogicalRect, MonitorGeom};
 use super::hide::{
-    plan_delay, wait_compositor_presented, wait_until_hidden, HideWait, RecordedSurface, SurfaceKind,
+    grab_allowed, hide_not_presented_error, plan_delay, wait_compositor_presented,
+    wait_until_hidden, HideWait, RecordedSurface, SurfaceKind,
 };
 use super::platform;
 use super::ui::{self, DelayPayload, OverlayPayload, PreviewPayload};
@@ -90,7 +91,7 @@ async fn run(app: AppHandle, mode: CaptureMode, delay_ms: u64) -> Result<(), Cap
     if plan.delay_ms > 0 && !plan.overlay_during_delay {
         show_delay(&app, plan.delay_ms, mode)?;
         if wait_delay(&app, plan.delay_ms).await? {
-            hide_session_surface(&app, ui::DELAY);
+            hide_session_surface(&app, ui::DELAY)?;
             hide_product_surfaces(&app)?;
         }
     }
@@ -139,11 +140,14 @@ fn hide_product_surfaces(app: &AppHandle) -> Result<(), CaptureError> {
             });
         }
     }
-    recorded.push(RecordedSurface {
-        label: "tray-popup".into(),
-        kind: SurfaceKind::TrayPopup,
-        was_visible: true,
-    });
+    let tray_open = platform::tray_popup_visible();
+    if tray_open {
+        recorded.push(RecordedSurface {
+            label: "tray-popup".into(),
+            kind: SurfaceKind::TrayPopup,
+            was_visible: true,
+        });
+    }
     platform::dismiss_tray_popup();
     for label in ui::session_window_labels() {
         if label != ui::DELAY && ui::is_visible(app, label) {
@@ -155,42 +159,47 @@ fn hide_product_surfaces(app: &AppHandle) -> Result<(), CaptureError> {
             .into_iter()
             .map(str::to_string)
             .collect();
-        labels.extend(ui::session_window_labels().into_iter().map(str::to_string));
+        labels.extend(
+            ui::session_window_labels()
+                .into_iter()
+                .filter(|label| *label != ui::DELAY)
+                .map(str::to_string),
+        );
         labels
     };
     let hidden = wait_until_hidden(
         || ui::any_visible(app, &labels.iter().map(String::as_str).collect::<Vec<_>>()),
         Duration::from_millis(400),
     );
+    let tray_gone = wait_until_hidden(platform::tray_popup_visible, Duration::from_millis(400));
+    if !hidden || !tray_gone {
+        return Err(hide_not_presented_error());
+    }
     wait_compositor_presented();
     with_session_mut(app, |session| {
         let Some(session) = session.as_mut() else {
-            return;
+            return Err(CaptureError::cancelled());
         };
         if session.hide.recorded.is_empty() {
             let mut hide = HideWait::record(recorded);
             hide.request_hide();
-            if hidden {
-                hide.mark_unmapped();
-                hide.mark_presented();
-            }
+            hide.commit_presented(hidden, tray_gone)?;
             session.hide = hide;
-        } else if hidden {
-            session.hide.mark_unmapped();
-            session.hide.mark_presented();
+        } else {
+            session.hide.commit_presented(hidden, tray_gone)?;
         }
-        if !session.hide.can_capture() {
-            session.hide.mark_unmapped();
-            session.hide.mark_presented();
-        }
-    });
-    Ok(())
+        Ok(())
+    })
 }
 
-fn hide_session_surface(app: &AppHandle, label: &str) {
+fn hide_session_surface(app: &AppHandle, label: &str) -> Result<(), CaptureError> {
     ui::hide_window(app, label);
-    let _ = wait_until_hidden(|| ui::is_visible(app, label), Duration::from_millis(400));
+    let hidden = wait_until_hidden(|| ui::is_visible(app, label), Duration::from_millis(400));
+    if !hidden {
+        return Err(hide_not_presented_error());
+    }
     wait_compositor_presented();
+    Ok(())
 }
 
 fn show_delay(app: &AppHandle, delay_ms: u64, mode: CaptureMode) -> Result<(), CaptureError> {
@@ -215,14 +224,14 @@ async fn wait_delay(app: &AppHandle, delay_ms: u64) -> Result<bool, CaptureError
 }
 
 async fn capture_region(app: &AppHandle) -> Result<(), CaptureError> {
-    let (frame, monitor) = grab_pointer_screen()?;
+    let (frame, monitor) = grab_pointer_screen(app)?;
     store_freeze(app, frame, monitor.clone(), Vec::new())?;
     ui::open_overlay(app, &monitor)?;
     Ok(())
 }
 
 async fn capture_window_mode(app: &AppHandle) -> Result<(), CaptureError> {
-    let (frame, monitor) = grab_pointer_screen()?;
+    let (frame, monitor) = grab_pointer_screen(app)?;
     let windows = platform::list_windows(platform::self_pid())?;
     if windows.is_empty() {
         return Err(CaptureError::unavailable(
@@ -235,14 +244,52 @@ async fn capture_window_mode(app: &AppHandle) -> Result<(), CaptureError> {
 }
 
 async fn capture_fullscreen(app: &AppHandle) -> Result<(), CaptureError> {
-    let (frame, _monitor) = grab_pointer_screen()?;
+    let (frame, _monitor) = grab_pointer_screen(app)?;
     complete_success(app, frame)
 }
 
-fn grab_pointer_screen() -> Result<(Frame, MonitorGeom), CaptureError> {
-    let monitor = platform::pointer_monitor()?;
+fn grab_pointer_screen(app: &AppHandle) -> Result<(Frame, MonitorGeom), CaptureError> {
+    require_capture_ready(app)?;
+    let monitor = tauri_pointer_monitor(app).unwrap_or(platform::pointer_monitor()?);
     let frame = platform::capture_monitor(&monitor)?;
     Ok((frame, monitor))
+}
+
+fn require_capture_ready(app: &AppHandle) -> Result<(), CaptureError> {
+    with_session(app, |session| {
+        let wait = session
+            .as_ref()
+            .map(|current| &current.hide)
+            .ok_or_else(hide_not_presented_error)?;
+        grab_allowed(wait)
+    })
+}
+
+fn tauri_pointer_monitor(app: &AppHandle) -> Option<MonitorGeom> {
+    let position = app.cursor_position().ok()?;
+    let monitors = app.available_monitors().ok()?;
+    let geoms: Vec<MonitorGeom> = monitors
+        .iter()
+        .enumerate()
+        .map(|(index, monitor)| {
+            let size = monitor.size();
+            let origin = monitor.position();
+            MonitorGeom::from_physical(
+                monitor
+                    .name()
+                    .cloned()
+                    .unwrap_or_else(|| format!("monitor-{index}")),
+                origin.x,
+                origin.y,
+                size.width,
+                size.height,
+                monitor.scale_factor(),
+            )
+        })
+        .collect();
+    monitor_at_physical(&geoms, position.x as i32, position.y as i32)
+        .cloned()
+        .or_else(|| geoms.into_iter().next())
 }
 
 fn store_freeze(
@@ -297,7 +344,8 @@ pub fn confirm_region(app: &AppHandle, selection: RegionSelection) -> Result<(),
             .ok_or_else(|| CaptureError::invalid_buffer("未初始化"))?;
         crop_rgba(freeze, selection.x, selection.y, selection.width, selection.height)
     })?;
-    hide_session_surface(app, ui::OVERLAY);
+    let _ = hide_session_surface(app, ui::OVERLAY);
+    ui::close_window(app, ui::OVERLAY);
     complete_success(app, frame)
 }
 
@@ -322,8 +370,8 @@ pub fn confirm_logical_region(app: &AppHandle, rect: LogicalRect) -> Result<(), 
 }
 
 pub fn confirm_window(app: &AppHandle, window_id: String) -> Result<(), CaptureError> {
-    hide_session_surface(app, ui::OVERLAY);
-    wait_compositor_presented();
+    hide_session_surface(app, ui::OVERLAY)?;
+    require_capture_ready(app)?;
     if is_cancelled(app) {
         return Err(CaptureError::cancelled());
     }
@@ -474,7 +522,9 @@ pub fn cancel_without_side_effects(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capture::hide::{session_steps, SessionStep};
+    use crate::capture::hide::{
+        grab_allowed, session_steps, HideWait, RecordedSurface, SessionStep, SurfaceKind,
+    };
 
     #[test]
     fn cancel_has_no_clipboard_file_or_preview() {
@@ -504,5 +554,18 @@ mod tests {
         let steps = session_steps(false, 0);
         assert_eq!(steps.last().copied(), Some(SessionStep::OpenPreview));
         assert!(!steps.contains(&SessionStep::ShowOverlayOnFreeze));
+    }
+
+    #[test]
+    fn grab_is_blocked_until_hide_wait_commits() {
+        let mut wait = HideWait::record(vec![RecordedSurface {
+            label: "preview".into(),
+            kind: SurfaceKind::Preview,
+            was_visible: true,
+        }]);
+        wait.request_hide();
+        assert!(grab_allowed(&wait).is_err());
+        wait.commit_presented(true, true).unwrap();
+        assert!(grab_allowed(&wait).is_ok());
     }
 }

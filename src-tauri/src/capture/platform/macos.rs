@@ -138,6 +138,10 @@ pub fn capture_window(id: &str) -> Result<Frame, CaptureError> {
 
 pub fn dismiss_tray_popup() {}
 
+pub fn tray_popup_visible() -> bool {
+    false
+}
+
 fn take_result(call: impl FnOnce(*mut CropmarkSckResult) -> i32, fallback_scale: f64) -> Result<Frame, CaptureError> {
     let mut raw = CropmarkSckResult {
         rgba: std::ptr::null_mut(),

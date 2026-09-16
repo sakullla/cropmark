@@ -1,5 +1,7 @@
 use std::time::{Duration, Instant};
 
+use super::error::CaptureError;
+
 #[allow(dead_code)]
 pub const PRODUCT_SURFACES: [&str; 3] = ["preview", "settings", "tray-popup"];
 #[allow(dead_code)]
@@ -97,6 +99,15 @@ impl HideWait {
         self.hide_requested && self.hide_presented && !self.still_visible
     }
 
+    pub fn commit_presented(&mut self, surfaces_hidden: bool, tray_gone: bool) -> Result<(), CaptureError> {
+        if !surfaces_hidden || !tray_gone {
+            return Err(hide_not_presented_error());
+        }
+        self.mark_unmapped();
+        self.mark_presented();
+        grab_allowed(self)
+    }
+
     pub fn restore_on_cancel(&self) -> Vec<RecordedSurface> {
         self.recorded
             .iter()
@@ -161,6 +172,18 @@ pub fn session_steps(region: bool, delay_ms: u64) -> Vec<SessionStep> {
         steps.push(SessionStep::OpenPreview);
     }
     steps
+}
+
+pub fn hide_not_presented_error() -> CaptureError {
+    CaptureError::api("界面尚未隐藏完成，未能截取。")
+}
+
+pub fn grab_allowed(wait: &HideWait) -> Result<(), CaptureError> {
+    if wait.can_capture() {
+        Ok(())
+    } else {
+        Err(hide_not_presented_error())
+    }
 }
 
 pub fn wait_until_hidden<F>(mut is_visible: F, timeout: Duration) -> bool
@@ -258,6 +281,40 @@ mod tests {
         let capture = steps.iter().position(|&s| s == SessionStep::CapturePixels).unwrap();
         let overlay = steps.iter().position(|&s| s == SessionStep::ShowOverlayOnFreeze).unwrap();
         assert!(capture < overlay);
+    }
+
+    #[test]
+    fn hide_timeout_does_not_mark_presented_or_allow_grab() {
+        let mut wait = HideWait::record(vec![visible("preview")]);
+        wait.request_hide();
+        let error = wait.commit_presented(false, true).unwrap_err();
+        assert!(error.message.contains("隐藏"));
+        assert!(!wait.can_capture());
+        assert!(grab_allowed(&wait).is_err());
+    }
+
+    #[test]
+    fn tray_still_open_does_not_allow_capture() {
+        let mut wait = HideWait::record(vec![visible("tray-popup")]);
+        wait.request_hide();
+        assert!(wait.commit_presented(true, false).is_err());
+        assert!(!wait.can_capture());
+    }
+
+    #[test]
+    fn grab_requires_hide_presented() {
+        let mut wait = HideWait::record(vec![visible("settings")]);
+        wait.request_hide();
+        assert!(grab_allowed(&wait).is_err());
+        wait.mark_unmapped();
+        wait.mark_presented();
+        assert!(grab_allowed(&wait).is_ok());
+    }
+
+    #[test]
+    fn wait_until_hidden_timeout_returns_false() {
+        let hidden = wait_until_hidden(|| true, Duration::from_millis(24));
+        assert!(!hidden);
     }
 
     #[test]

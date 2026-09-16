@@ -93,6 +93,33 @@ pub fn crop_rgba(frame: &Frame, x: u32, y: u32, width: u32, height: u32) -> Resu
     })
 }
 
+pub fn crop_desktop_to_monitor(
+    frame: Frame,
+    monitor: &super::geometry::MonitorGeom,
+    desktop_origin_x: i32,
+    desktop_origin_y: i32,
+) -> Result<Frame, CaptureError> {
+    if frame.width == monitor.physical_width && frame.height == monitor.physical_height {
+        let mut frame = frame;
+        frame.scale = monitor.scale;
+        return Ok(frame);
+    }
+    let x = monitor.physical_x - desktop_origin_x;
+    let y = monitor.physical_y - desktop_origin_y;
+    if x < 0 || y < 0 {
+        return Err(CaptureError::api("无法按指针所在屏裁剪截屏。"));
+    }
+    let mut cropped = crop_rgba(
+        &frame,
+        x as u32,
+        y as u32,
+        monitor.physical_width,
+        monitor.physical_height,
+    )?;
+    cropped.scale = monitor.scale;
+    Ok(cropped)
+}
+
 pub fn encode_png(frame: &Frame) -> Result<Vec<u8>, CaptureError> {
     let image = image::RgbaImage::from_raw(frame.width, frame.height, frame.rgba.clone())
         .ok_or_else(|| CaptureError::invalid_buffer("未初始化"))?;
@@ -173,5 +200,17 @@ mod tests {
         let frame = accept_buffer(RawBuffer::ready(4, 4, bytes)).unwrap();
         let cropped = crop_rgba(&frame, 1, 1, 1, 1).unwrap();
         assert_eq!(cropped.rgba, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn portal_desktop_crops_to_pointer_monitor() {
+        let mut bytes = vec![0u8; 4 * 2 * 4];
+        bytes[8..12].copy_from_slice(&[9, 8, 7, 6]);
+        let frame = accept_buffer(RawBuffer::ready(4, 2, bytes)).unwrap();
+        let monitor = super::super::geometry::MonitorGeom::from_physical("right", 2, 0, 2, 2, 1.0);
+        let cropped = crop_desktop_to_monitor(frame, &monitor, 0, 0).unwrap();
+        assert_eq!(cropped.width, 2);
+        assert_eq!(cropped.height, 2);
+        assert_eq!(&cropped.rgba[0..4], &[9, 8, 7, 6]);
     }
 }

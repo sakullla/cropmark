@@ -3,6 +3,19 @@ use super::error::CaptureError;
 use super::geometry::MonitorGeom;
 use super::windows_list::ListedWindow;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinuxCaptureBackend {
+    Portal,
+    X11,
+}
+
+pub fn linux_capture_backend(wayland_display: Option<&str>) -> LinuxCaptureBackend {
+    match wayland_display {
+        Some(value) if !value.is_empty() => LinuxCaptureBackend::Portal,
+        _ => LinuxCaptureBackend::X11,
+    }
+}
+
 #[cfg(windows)]
 mod win;
 #[cfg(target_os = "macos")]
@@ -38,6 +51,10 @@ mod backend {
     }
 
     pub fn dismiss_tray_popup() {}
+
+    pub fn tray_popup_visible() -> bool {
+        false
+    }
 }
 
 pub fn pointer_monitor() -> Result<MonitorGeom, CaptureError> {
@@ -60,6 +77,10 @@ pub fn dismiss_tray_popup() {
     backend::dismiss_tray_popup();
 }
 
+pub fn tray_popup_visible() -> bool {
+    backend::tray_popup_visible()
+}
+
 pub fn self_pid() -> u32 {
     std::process::id()
 }
@@ -67,4 +88,27 @@ pub fn self_pid() -> u32 {
 pub fn enable_per_monitor_v2() {
     #[cfg(windows)]
     win::enable_per_monitor_v2();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wayland_display_selects_portal_not_x11() {
+        assert_eq!(
+            linux_capture_backend(Some("wayland-0")),
+            LinuxCaptureBackend::Portal
+        );
+        assert_eq!(
+            linux_capture_backend(Some("wayland-1")),
+            LinuxCaptureBackend::Portal
+        );
+    }
+
+    #[test]
+    fn x11_only_without_wayland_display() {
+        assert_eq!(linux_capture_backend(None), LinuxCaptureBackend::X11);
+        assert_eq!(linux_capture_backend(Some("")), LinuxCaptureBackend::X11);
+    }
 }
