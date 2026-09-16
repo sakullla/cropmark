@@ -1,0 +1,264 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f6f1e8;
+  --panel: rgba(255, 252, 247, 0.96);
+  --ink: #1c1917;
+  --muted: #78716c;
+  --line: rgba(28, 25, 23, 0.1);
+  --accent: #0f766e;
+  --accent-soft: rgba(15, 118, 110, 0.12);
+  --danger: #b42318;
+  --danger-soft: rgba(180, 35, 24, 0.1);
+  --shadow: 0 18px 40px rgba(28, 25, 23, 0.16);
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161412;
+    --panel: rgba(28, 26, 23, 0.96);
+    --ink: #f5f0e8;
+    --muted: #a8a29e;
+    --line: rgba(245, 240, 232, 0.12);
+    --accent: #2dd4bf;
+    --accent-soft: rgba(45, 212, 191, 0.14);
+    --danger: #f97066;
+    --danger-soft: rgba(249, 112, 102, 0.14);
+    --shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  height: 100%;
+  background: transparent;
+  color: var(--ink);
+}
+
+.shell {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 10px 10px 16px;
+  border-bottom: 1px solid var(--line);
+  user-select: none;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mark {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--accent);
+  border-radius: 3px;
+  position: relative;
+}
+
+.mark::before,
+.mark::after {
+  content: "";
+  position: absolute;
+  border: 2px solid var(--accent);
+  width: 6px;
+  height: 6px;
+}
+
+.mark::before {
+  top: -5px;
+  left: -5px;
+  border-right: 0;
+  border-bottom: 0;
+}
+
+.mark::after {
+  right: -5px;
+  bottom: -5px;
+  border-left: 0;
+  border-top: 0;
+}
+
+.name {
+  font-weight: 650;
+  letter-spacing: 0.02em;
+}
+
+.icon-btn {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.icon-btn:hover {
+  background: var(--accent-soft);
+}
+
+.content {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: auto;
+}
+
+.card {
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px 16px 16px;
+}
+
+h1 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.notice,
+.error {
+  margin: 8px 0 0;
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.notice {
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--danger-soft);
+  border-radius: 10px;
+}
+
+.rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.hotkey-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-areas: "label btn" "error error";
+  gap: 6px 12px;
+  align-items: center;
+}
+
+.label {
+  grid-area: label;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.hotkey-btn {
+  grid-area: btn;
+  min-width: 148px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel) 80%, transparent);
+  color: var(--ink);
+  border-radius: 999px;
+  padding: 7px 12px;
+  font: inherit;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.hotkey-btn:hover,
+.hotkey-btn.recording {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.hotkey-row.has-error .hotkey-btn {
+  border-color: var(--danger);
+}
+
+.hotkey-row .error {
+  grid-area: error;
+  min-height: 0;
+}
+
+.autostart-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 8px;
+}
+
+.switch {
+  width: 44px;
+  height: 26px;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 35%, transparent);
+  position: relative;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.switch .knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: white;
+  transition: transform 120ms ease;
+}
+
+.switch.on {
+  background: var(--accent);
+}
+
+.switch.on .knob {
+  transform: translateX(18px);
+}
+
+.error-text {
+  color: var(--danger);
+}
+
+.about-name {
+  margin: 4px 0 6px;
+  font-size: 18px;
+  font-weight: 700;
+}

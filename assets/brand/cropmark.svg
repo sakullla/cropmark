@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Cropmark">
+  <rect width="128" height="128" rx="28" fill="#134E4A"/>
+  <g fill="none" stroke="#5EEAD4" stroke-width="10" stroke-linecap="square">
+    <path d="M28 48 V28 H48"/>
+    <path d="M80 28 H100 V48"/>
+    <path d="M28 80 V100 H48"/>
+    <path d="M80 100 H100 V80"/>
+  </g>
+  <rect x="40" y="40" width="48" height="48" rx="8" fill="none" stroke="#99F6E4" stroke-width="4"/>
+</svg>

@@ -2,3 +2,11 @@ docs/*
 docs/requirements/*
 /.idea/
 .claude/worktrees
+
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+*.log
+.DS_Store
+Thumbs.db
