@@ -1,5 +1,5 @@
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use tauri::{AppHandle, Emitter, Manager};
@@ -45,6 +45,7 @@ struct ActiveSession {
     preview_opened: bool,
     file_written: bool,
     cancelled: bool,
+    frame_deadline: Option<Instant>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,6 +73,29 @@ pub struct RegionSelection {
     pub width: u32,
     pub height: u32,
 }
+
+/// How a finished capture is presented: `Preview` keeps today's behavior
+/// (clipboard + preview window), `Quiet` stays silent and keeps the frame
+/// in an idle session for a short TTL (ADR-002).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FinishDisposition {
+    Preview,
+    Quiet,
+}
+
+/// Actions a platform shell can request on a finished selection without
+/// opening the preview window (R3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum QuietAction {
+    Copy,
+    Save,
+    Pin,
+    Ocr,
+}
+
+/// Retention window for the frame kept after a quiet finish.
+pub const DEFAULT_FRAME_TTL: Duration = Duration::from_secs(30);
 
 pub fn begin(app: &AppHandle, mode: CaptureMode, delay_ms: u64) {
     let app = app.clone();
@@ -110,6 +134,9 @@ fn try_begin_with_delay(app: &AppHandle, mode: CaptureMode, delay_ms: u64) -> bo
     if guard.as_ref().is_some_and(|session| session.busy) {
         return false;
     }
+    // A lingering toast must not leak into the next capture (hide-before-capture).
+    ui::close_window(app, ui::TOAST);
+    // Replacing the session drops any frame retained by a previous quiet finish.
     *guard = Some(ActiveSession {
         mode,
         busy: true,
@@ -124,6 +151,7 @@ fn try_begin_with_delay(app: &AppHandle, mode: CaptureMode, delay_ms: u64) -> bo
         preview_opened: false,
         file_written: false,
         cancelled: false,
+        frame_deadline: None,
     });
     *lock(&runtime.last_error) = None;
     true
@@ -273,7 +301,7 @@ async fn capture_fullscreen(app: &AppHandle) -> Result<(), CaptureError> {
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let (frame, _) = grab_pointer_screen(&handle)?;
-        complete_success(&handle, frame)
+        finish(&handle, frame, FinishDisposition::Preview)
     })
     .await
     .map_err(|_| CaptureError::api("截取线程失败。"))?
@@ -393,10 +421,20 @@ pub fn preview_frame(app: &AppHandle) -> Result<PreviewPayload, CaptureError> {
 }
 
 pub fn current_preview_frame(app: &AppHandle) -> Result<Frame, CaptureError> {
-    with_session(app, |session| {
-        session
-            .as_ref()
-            .and_then(|item| item.freeze.clone())
+    let now = Instant::now();
+    with_session_mut(app, |session| {
+        let Some(current) = session.as_mut() else {
+            return Err(CaptureError::api("没有可预览的截图。"));
+        };
+        // A quiet-finish frame past its TTL is treated as gone, even before
+        // the cleanup task runs.
+        if frame_expired(current, now) {
+            current.freeze = None;
+            current.frame_deadline = None;
+        }
+        current
+            .freeze
+            .clone()
             .ok_or_else(|| CaptureError::api("没有可预览的截图。"))
     })
 }
@@ -419,7 +457,7 @@ pub fn confirm_region(app: &AppHandle, selection: RegionSelection) -> Result<(),
         crop_rgba(freeze, selection.x, selection.y, selection.width, selection.height)
     })?;
     ui::hide_window(app, ui::OVERLAY);
-    complete_success(app, frame)
+    finish(app, frame, FinishDisposition::Preview)
 }
 
 pub fn confirm_logical_region(app: &AppHandle, rect: LogicalRect) -> Result<(), CaptureError> {
@@ -449,7 +487,27 @@ pub fn confirm_window(app: &AppHandle, window_id: String) -> Result<(), CaptureE
         return Err(CaptureError::cancelled());
     }
     let frame = platform::capture_window(&window_id)?;
-    complete_success(app, frame)
+    finish(app, frame, FinishDisposition::Preview)
+}
+
+/// Quiet completion of an explicit region: the cropped frame still reaches the
+/// clipboard, no preview opens, and the session goes idle-with-frame for the
+/// configured TTL so save/ocr/copy/pin can reuse the retained frame.
+pub fn finish_region_quiet(
+    app: &AppHandle,
+    selection: RegionSelection,
+    ttl: Duration,
+) -> Result<(), CaptureError> {
+    let frame = with_session(app, |session| {
+        let session = session.as_ref().ok_or_else(CaptureError::cancelled)?;
+        let freeze = session
+            .freeze
+            .as_ref()
+            .ok_or_else(|| CaptureError::invalid_buffer("未初始化"))?;
+        crop_rgba(freeze, selection.x, selection.y, selection.width, selection.height)
+    })?;
+    ui::hide_window(app, ui::OVERLAY);
+    finish_with_ttl(app, frame, FinishDisposition::Quiet, ttl)
 }
 
 pub fn cancel(app: &AppHandle) -> Result<CancelOutcome, CaptureError> {
@@ -476,8 +534,21 @@ fn cancel_internal(app: &AppHandle) -> Result<CancelOutcome, CaptureError> {
     Ok(CancelOutcome::clean())
 }
 
-fn complete_success(app: &AppHandle, frame: Frame) -> Result<(), CaptureError> {
-    let started = std::time::Instant::now();
+fn finish(
+    app: &AppHandle,
+    frame: Frame,
+    disposition: FinishDisposition,
+) -> Result<(), CaptureError> {
+    finish_with_ttl(app, frame, disposition, DEFAULT_FRAME_TTL)
+}
+
+fn finish_with_ttl(
+    app: &AppHandle,
+    frame: Frame,
+    disposition: FinishDisposition,
+    frame_ttl: Duration,
+) -> Result<(), CaptureError> {
+    let started = Instant::now();
     if is_cancelled(app) {
         return Err(CaptureError::cancelled());
     }
@@ -486,6 +557,7 @@ fn complete_success(app: &AppHandle, frame: Frame) -> Result<(), CaptureError> {
     if is_cancelled(app) {
         return Err(CaptureError::cancelled());
     }
+    // Both dispositions keep today's contract: the unannotated PNG enters the clipboard.
     let clipboard_error = clipboard::copy_frame_with_png(&frame, &png).err();
     let copied_at = started.elapsed();
     let preview = ui::preview_payload(&frame, &png, clipboard_error.is_none());
@@ -502,23 +574,87 @@ fn complete_success(app: &AppHandle, frame: Frame) -> Result<(), CaptureError> {
     ui::hide_window(app, ui::OVERLAY);
     ui::hide_window(app, ui::DELAY);
     ui::hide_window(app, ui::ERROR);
-    ui::open_preview(app, &frame)?;
+    let quiet_deadline = match disposition {
+        FinishDisposition::Preview => {
+            ui::open_preview(app, &frame)?;
+            with_session_mut(app, |session| {
+                if let Some(current) = session.as_mut() {
+                    finish_transition(current, FinishDisposition::Preview, Instant::now(), frame_ttl);
+                }
+            });
+            None
+        }
+        FinishDisposition::Quiet => {
+            let mut deadline = None;
+            with_session_mut(app, |session| {
+                if let Some(current) = session.as_mut() {
+                    finish_transition(current, FinishDisposition::Quiet, Instant::now(), frame_ttl);
+                    deadline = current.frame_deadline;
+                }
+            });
+            deadline
+        }
+    };
+    if let Some(deadline) = quiet_deadline {
+        spawn_frame_ttl_cleanup(app.clone(), deadline);
+    }
     if std::env::var_os("CROPMARK_CAPTURE_TIMING").is_some() {
         eprintln!("Cropmark capture {}x{}: PNG={:?}, clipboard={:?}, preview={:?}, total={:?}",
             frame.width, frame.height, encoded_at, copied_at - encoded_at,
             started.elapsed() - copied_at, started.elapsed());
     }
-    with_session_mut(app, |session| {
-        if let Some(current) = session.as_mut() {
-            current.preview_opened = true;
-            current.busy = false;
-        }
-    });
     if let Some(error) = clipboard_error {
         set_last_error(app, Some(error.clone()));
         let _ = ui::open_error(app, &error);
     }
     Ok(())
+}
+
+/// Session state transition at the end of a finish. Split out so the quiet
+/// lifecycle (idle-with-frame + TTL) is unit-testable without an app handle.
+fn finish_transition(
+    session: &mut ActiveSession,
+    disposition: FinishDisposition,
+    now: Instant,
+    frame_ttl: Duration,
+) {
+    session.busy = false;
+    session.file_written = false;
+    match disposition {
+        FinishDisposition::Preview => {
+            session.preview_opened = true;
+            session.frame_deadline = None;
+        }
+        FinishDisposition::Quiet => {
+            session.preview = None;
+            session.frame_deadline = Some(now + frame_ttl);
+        }
+    }
+}
+
+fn frame_expired(session: &ActiveSession, now: Instant) -> bool {
+    session.frame_deadline.is_some_and(|deadline| now >= deadline)
+}
+
+/// Only the exact idle quiet session whose deadline elapsed may be released,
+/// so a newer busy session is never dropped by a stale cleanup task.
+fn should_release_frame(session: &ActiveSession, deadline: Instant) -> bool {
+    !session.busy && session.frame_deadline == Some(deadline)
+}
+
+fn spawn_frame_ttl_cleanup(app: AppHandle, deadline: Instant) {
+    tauri::async_runtime::spawn(async move {
+        let wait = deadline.saturating_duration_since(Instant::now());
+        let _ = tauri::async_runtime::spawn_blocking(move || std::thread::sleep(wait)).await;
+        with_session_mut(&app, |session| {
+            if session
+                .as_ref()
+                .is_some_and(|current| should_release_frame(current, deadline))
+            {
+                *session = None;
+            }
+        });
+    });
 }
 
 pub fn delay_state(app: &AppHandle) -> DelayPayload {
@@ -653,5 +789,78 @@ mod tests {
         assert!(grab_allowed(&wait).is_err());
         wait.commit_presented(true, true).unwrap();
         assert!(grab_allowed(&wait).is_ok());
+    }
+
+    fn active_session() -> ActiveSession {
+        ActiveSession {
+            mode: CaptureMode::Region,
+            busy: true,
+            delay_ms: 0,
+            hide: HideWait::record(Vec::new()),
+            freeze: None,
+            overlay: None,
+            preview: None,
+            monitor: None,
+            windows: Vec::new(),
+            clipboard: ClipboardGuard::default(),
+            preview_opened: false,
+            file_written: false,
+            cancelled: false,
+            frame_deadline: None,
+        }
+    }
+
+    #[test]
+    fn quiet_finish_keeps_frame_with_ttl_and_goes_idle() {
+        let mut session = active_session();
+        session.freeze = Some(Frame {
+            width: 2,
+            height: 2,
+            rgba: vec![0; 16],
+            scale: 1.0,
+        });
+        let now = Instant::now();
+        finish_transition(&mut session, FinishDisposition::Quiet, now, DEFAULT_FRAME_TTL);
+        assert!(!session.busy);
+        assert!(session.preview.is_none());
+        assert!(session.freeze.is_some());
+        assert_eq!(session.frame_deadline, Some(now + DEFAULT_FRAME_TTL));
+        assert!(!frame_expired(&session, now + DEFAULT_FRAME_TTL - Duration::from_millis(1)));
+        assert!(frame_expired(&session, now + DEFAULT_FRAME_TTL));
+    }
+
+    #[test]
+    fn preview_finish_keeps_frame_without_deadline() {
+        let mut session = active_session();
+        let now = Instant::now();
+        finish_transition(
+            &mut session,
+            FinishDisposition::Preview,
+            now,
+            DEFAULT_FRAME_TTL,
+        );
+        assert!(!session.busy);
+        assert!(session.preview_opened);
+        assert_eq!(session.frame_deadline, None);
+        assert!(!frame_expired(
+            &session,
+            now + DEFAULT_FRAME_TTL + Duration::from_secs(1)
+        ));
+    }
+
+    #[test]
+    fn ttl_release_matches_only_idle_quiet_session_deadline() {
+        let mut session = active_session();
+        let now = Instant::now();
+        finish_transition(&mut session, FinishDisposition::Quiet, now, Duration::from_millis(50));
+        let deadline = session.frame_deadline.expect("quiet sets a deadline");
+        assert!(should_release_frame(&session, deadline));
+        // A new capture in flight must not be released by a stale cleanup task.
+        session.busy = true;
+        assert!(!should_release_frame(&session, deadline));
+        // A different deadline (a newer quiet finish) is not ours to release.
+        session.busy = false;
+        assert!(!should_release_frame(&session, deadline + Duration::from_secs(1)));
+        assert!(!should_release_frame(&session, deadline - Duration::from_secs(1)));
     }
 }

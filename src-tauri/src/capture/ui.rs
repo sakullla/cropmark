@@ -1,5 +1,8 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Serialize;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+use std::time::Duration;
 use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition, Position, Size, WebviewUrl,
     WebviewWindow, WebviewWindowBuilder,
@@ -16,6 +19,21 @@ pub const PREVIEW: &str = "preview";
 pub const DELAY: &str = "capture-delay";
 pub const ERROR: &str = "capture-error";
 pub const SETTINGS: &str = "settings";
+pub const TOAST: &str = "toast";
+
+const TOAST_WIDTH: f64 = 300.0;
+const TOAST_HEIGHT: f64 = 48.0;
+const TOAST_MARGIN: f64 = 24.0;
+const TOAST_DURATION: Duration = Duration::from_millis(1800);
+
+static LAST_TOAST: Mutex<Option<String>> = Mutex::new(None);
+static TOAST_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToastPayload {
+    pub message: String,
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -189,6 +207,67 @@ pub fn open_error(app: &AppHandle, error: &CaptureError) -> Result<(), CaptureEr
     Ok(())
 }
 
+/// Latest toast text, so a freshly created toast view can catch up even if it
+/// missed the live event (same pattern as delay/error views).
+pub fn toast_message() -> Option<String> {
+    LAST_TOAST
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+}
+
+/// Transient result feedback: one borderless topmost window, replaced on every
+/// call, auto-closed after ~2s. Never steals focus.
+pub fn show_toast(app: &AppHandle, message: &str) {
+    let message = message.trim().to_string();
+    if message.is_empty() {
+        return;
+    }
+    *LAST_TOAST
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(message.clone());
+    // Only the newest toast may close the window; older timers become no-ops.
+    let generation = TOAST_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    close_window(app, TOAST);
+    let window = builder(app, TOAST, "toast", true, true)
+        .and_then(|builder| {
+            builder
+                .inner_size(TOAST_WIDTH, TOAST_HEIGHT)
+                .always_on_top(true)
+                .focused(false)
+                .visible(false)
+                .build()
+                .map_err(|err| CaptureError::api(err.to_string()))
+        })
+        .inspect(|window| {
+            let (x, y) = toast_origin(target_work_area(app), TOAST_WIDTH, TOAST_HEIGHT);
+            let _ = window.set_position(Position::Logical(LogicalPosition { x, y }));
+            let _ = window.show();
+            let _ = window.emit("capture-toast", ToastPayload { message });
+        });
+    if window.is_err() {
+        // A failed toast window must not break the capture flow; no timer runs.
+        return;
+    }
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = tauri::async_runtime::spawn_blocking(move || std::thread::sleep(TOAST_DURATION)).await;
+        if TOAST_GENERATION.load(Ordering::SeqCst) == generation {
+            close_window(&handle, TOAST);
+        }
+    });
+}
+
+fn toast_origin(area: Option<(f64, f64, f64, f64)>, width: f64, height: f64) -> (f64, f64) {
+    match area {
+        Some((origin_x, origin_y, area_w, area_h)) => (
+            (origin_x + area_w - width - TOAST_MARGIN).max(origin_x + TOAST_MARGIN),
+            (origin_y + area_h - height - TOAST_MARGIN).max(origin_y + TOAST_MARGIN),
+        ),
+        None => (TOAST_MARGIN, TOAST_MARGIN),
+    }
+}
+
 fn ensure_window(
     app: &AppHandle,
     label: &str,
@@ -352,5 +431,20 @@ mod tests {
         let (width, height) = preview_size(&frame(640, 400), 1920.0, 1080.0);
         assert_eq!(width, 640.0);
         assert_eq!(height, 400.0 + 108.0);
+    }
+
+    #[test]
+    fn toast_hugs_work_area_bottom_right() {
+        let (x, y) = toast_origin(Some((100.0, 50.0, 1920.0, 1080.0)), TOAST_WIDTH, TOAST_HEIGHT);
+        assert_eq!(x, 100.0 + 1920.0 - TOAST_WIDTH - 24.0);
+        assert_eq!(y, 50.0 + 1080.0 - TOAST_HEIGHT - 24.0);
+    }
+
+    #[test]
+    fn toast_never_leaves_work_area_or_goes_negative() {
+        let (x, y) = toast_origin(Some((0.0, 0.0, 200.0, 40.0)), TOAST_WIDTH, TOAST_HEIGHT);
+        assert_eq!((x, y), (24.0, 24.0));
+        let (x, y) = toast_origin(None, TOAST_WIDTH, TOAST_HEIGHT);
+        assert_eq!((x, y), (24.0, 24.0));
     }
 }

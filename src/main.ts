@@ -4,6 +4,7 @@ import { mountCaptureError } from "./overlay/error";
 import { mountOverlay } from "./overlay/index";
 import { mountPreview } from "./preview";
 import { mountSettings } from "./settings";
+import { mountToast } from "./toast";
 
 const root = document.querySelector("#app");
 if (root instanceof HTMLElement) {
@@ -18,6 +19,8 @@ if (root instanceof HTMLElement) {
     mountDelay(root);
   } else if (view === "error") {
     mountCaptureError(root);
+  } else if (view === "toast") {
+    mountToast(root);
   }
 }
 

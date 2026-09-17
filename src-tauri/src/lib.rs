@@ -50,6 +50,8 @@ pub fn run() {
             capture::confirm_region,
             capture::confirm_logical_region,
             capture::confirm_window,
+            capture::finish_region_with,
+            capture::get_toast_message,
             capture::cancel_capture,
             capture::close_preview,
             capture::close_capture_error,
