@@ -156,6 +156,82 @@
   cursor: default;
 }
 
+.preview-style {
+  position: relative;
+  display: inline-flex;
+}
+
+.preview-style-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 216px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.style-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.style-label {
+  flex: 0 0 30px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.style-options {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.style-options button {
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel) 80%, transparent);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  height: 24px;
+  min-width: 40px;
+  padding: 0 8px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.style-options button:hover {
+  background: var(--accent-soft);
+}
+
+.style-options button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.style-options button[data-style-color] {
+  width: 22px;
+  min-width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--swatch);
+}
+
+.style-options button[data-style-color].active {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .preview-actions button {
   height: 32px;
   padding: 0 12px;

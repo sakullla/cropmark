@@ -14,10 +14,24 @@ type Tool = "arrow" | "rect" | "mosaic" | "text" | "ocr";
 type Point = { x: number; y: number };
 
 type Annotation =
-  | { type: "arrow"; from: Point; to: Point }
-  | { type: "rect"; x: number; y: number; width: number; height: number }
+  | {
+      type: "arrow";
+      from: Point;
+      to: Point;
+      color: string;
+      strokeWidth: number | null;
+    }
+  | {
+      type: "rect";
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      color: string;
+      strokeWidth: number | null;
+    }
   | { type: "mosaic"; x: number; y: number; width: number; height: number; block: number }
-  | { type: "text"; x: number; y: number; text: string; size: number };
+  | { type: "text"; x: number; y: number; text: string; size: number; color: string };
 
 interface TextSpan {
   text: string;
@@ -38,12 +52,26 @@ const FALLBACK_STROKE = "#e11d48";
 const FALLBACK_OCR_HL = "#0ea5e9";
 const FALLBACK_OCR_HL_STRONG = "#0369a1";
 
-const ICONS: Record<Exclude<Tool, "ocr"> | "undo", string> = {
+// 样式预设：颜色含现行玫红；线宽/字号档位为逻辑值，绘制时乘 scale 并 clamp 2..8（线宽）。
+const STYLE_COLORS = ["#e11d48", "#2563eb", "#f59e0b", "#10b981", "#111827"];
+const STYLE_WIDTHS: Array<{ value: number; label: string }> = [
+  { value: 2, label: "细" },
+  { value: 3, label: "标准" },
+  { value: 5, label: "粗" },
+];
+const STYLE_TEXT_SIZES: Array<{ value: number; label: string }> = [
+  { value: 12, label: "小" },
+  { value: 16, label: "中" },
+  { value: 22, label: "大" },
+];
+
+const ICONS: Record<Exclude<Tool, "ocr"> | "undo" | "style", string> = {
   arrow: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 12.5 12.5 3.5M7 3.5h5.5V9" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
   rect: `<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="4" width="10" height="8" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>`,
   mosaic: `<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2" width="5" height="5" fill="currentColor"/><rect x="9" y="2" width="5" height="5" fill="currentColor" opacity="0.45"/><rect x="2" y="9" width="5" height="5" fill="currentColor" opacity="0.65"/><rect x="9" y="9" width="5" height="5" fill="currentColor" opacity="0.28"/></svg>`,
   text: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4.2h8M8 4.2v8.2M5.5 12.4h5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>`,
   undo: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 7h6.2a3 3 0 1 1 0 6H9" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M4 7 6.4 4.6M4 7l2.4 2.4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>`,
+  style: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.8a6.2 6.2 0 0 0 0 12.4c.9 0 1.4-.6 1.4-1.3 0-1.1 1-1.4 2.2-1.4h1.1c.9 0 1.5-.7 1.5-1.9A6.2 6.2 0 0 0 8 1.8Z" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="5.2" cy="6.4" r="1" fill="currentColor"/><circle cx="8.6" cy="4.8" r="1" fill="currentColor"/><circle cx="11.4" cy="7.2" r="1" fill="currentColor"/></svg>`,
 };
 
 export function mountPreview(root: HTMLElement): void {
@@ -65,6 +93,38 @@ export function mountPreview(root: HTMLElement): void {
         <button type="button" data-tool="mosaic" title="马赛克 (M)" aria-label="马赛克">${ICONS.mosaic}</button>
         <button type="button" data-tool="text" title="文字框 (T)" aria-label="文字框" class="tool-text">${ICONS.text}<span>文字</span></button>
         <button type="button" data-action="undo" title="撤销 (Ctrl+Z)" aria-label="撤销">${ICONS.undo}</button>
+        <div class="preview-style" data-style-root>
+          <button type="button" data-action="style" title="标注样式" aria-label="标注样式" aria-haspopup="true">${ICONS.style}</button>
+          <div class="preview-style-panel" data-style-panel hidden>
+            <div class="style-group">
+              <span class="style-label">颜色</span>
+              <div class="style-options" role="group" aria-label="标注颜色">
+                ${STYLE_COLORS.map(
+                  (color) =>
+                    `<button type="button" data-style-color="${color}" style="--swatch:${color}" title="${color}" aria-label="颜色 ${color}"></button>`,
+                ).join("")}
+              </div>
+            </div>
+            <div class="style-group">
+              <span class="style-label">线宽</span>
+              <div class="style-options" role="group" aria-label="线宽">
+                ${STYLE_WIDTHS.map(
+                  ({ value, label }) =>
+                    `<button type="button" data-style-width="${value}" title="${label} (${value})">${label}</button>`,
+                ).join("")}
+              </div>
+            </div>
+            <div class="style-group">
+              <span class="style-label">字号</span>
+              <div class="style-options" role="group" aria-label="文字字号">
+                ${STYLE_TEXT_SIZES.map(
+                  ({ value, label }) =>
+                    `<button type="button" data-style-text-size="${value}" title="${label} (${value})">${label}</button>`,
+                ).join("")}
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
       <div class="preview-actions">
         <button type="button" data-tool="ocr" title="取字 (O)">取字</button>
@@ -87,13 +147,19 @@ export function mountPreview(root: HTMLElement): void {
   const undoBtn = root.querySelector("[data-action=undo]");
   const frameEl = root.querySelector(".preview-frame");
   const copyAllBtn = root.querySelector("[data-action=copy-ocr-all]");
+  const styleRoot = root.querySelector("[data-style-root]");
+  const stylePanel = root.querySelector("[data-style-panel]");
+  const styleBtn = root.querySelector("[data-action=style]");
   if (
     !(canvas instanceof HTMLCanvasElement) ||
     !(note instanceof HTMLElement) ||
     !(editor instanceof HTMLTextAreaElement) ||
     !(undoBtn instanceof HTMLButtonElement) ||
     !(frameEl instanceof HTMLElement) ||
-    !(copyAllBtn instanceof HTMLButtonElement)
+    !(copyAllBtn instanceof HTMLButtonElement) ||
+    !(styleRoot instanceof HTMLElement) ||
+    !(stylePanel instanceof HTMLElement) ||
+    !(styleBtn instanceof HTMLButtonElement)
   ) {
     return;
   }
@@ -134,15 +200,31 @@ export function mountPreview(root: HTMLElement): void {
   let ocrCurrent: Point | null = null;
   let ocrGen = 0;
   let composing = false;
+  let styleColor = FALLBACK_STROKE;
+  let styleWidth: number | null = null;
+  let styleTextBase: number | null = null;
   editor.classList.remove("is-open");
 
   const mosaicBlock = (): number => Math.max(8, Math.round(12 * Math.max(frame?.scale ?? 1, 1)));
   const textSize = (): number => {
     const dpi = Math.max(frame?.scale ?? 1, 1);
     const longestEdge = Math.max(frame?.width ?? 0, frame?.height ?? 0);
-    return Math.max(16, Math.round(16 * Math.max(dpi, longestEdge / 1920)));
+    return Math.max(10, Math.round((styleTextBase ?? 16) * Math.max(dpi, longestEdge / 1920)));
   };
-  const strokeWidth = (): number => Math.min(8, Math.max(2, 3 * Math.max(frame?.scale ?? 1, 1)));
+  // 与 Rust raster resolve_stroke 同一数值推导：逻辑档位 × scale 后 clamp 2..8。
+  const strokeFor = (opWidth: number | null): number =>
+    Math.min(8, Math.max(2, (opWidth ?? 3) * Math.max(frame?.scale ?? 1, 1)));
+  const colorFor = (opColor: string): string =>
+    /^#[0-9a-f]{3}(?:[0-9a-f]{3})?$/i.test(opColor) ? opColor : strokeColor;
+  const annotationStyle = (op: Annotation): { color: string; lineWidth: number } => {
+    if (op.type === "mosaic") {
+      return { color: strokeColor, lineWidth: strokeFor(null) };
+    }
+    if (op.type === "text") {
+      return { color: colorFor(op.color), lineWidth: strokeFor(null) };
+    }
+    return { color: colorFor(op.color), lineWidth: strokeFor(op.strokeWidth) };
+  };
 
   const setNote = (text: string, kind: NoteKind = "feedback"): void => {
     note.textContent = text;
@@ -181,6 +263,76 @@ export function mountPreview(root: HTMLElement): void {
     undoBtn.disabled = annotations.length === 0 && !editorOpen();
   };
 
+  const syncStylePanel = (): void => {
+    const activeColor = styleColor.toLowerCase();
+    stylePanel.querySelectorAll<HTMLButtonElement>("[data-style-color]").forEach((button) => {
+      button.classList.toggle("active", (button.dataset.styleColor ?? "").toLowerCase() === activeColor);
+    });
+    const activeWidth = String(styleWidth ?? 3);
+    stylePanel.querySelectorAll<HTMLButtonElement>("[data-style-width]").forEach((button) => {
+      button.classList.toggle("active", button.dataset.styleWidth === activeWidth);
+    });
+    const activeTextSize = String(styleTextBase ?? 16);
+    stylePanel.querySelectorAll<HTMLButtonElement>("[data-style-text-size]").forEach((button) => {
+      button.classList.toggle("active", button.dataset.styleTextSize === activeTextSize);
+    });
+  };
+
+  const persistStyle = (): void => {
+    void invoke<{ notice: string | null }>("set_annotation_defaults", {
+      defaults: { color: styleColor, width: styleWidth, textSize: styleTextBase },
+    })
+      .then((result) => {
+        if (result?.notice) {
+          setNote(result.notice, "error");
+        }
+      })
+      .catch(() => {
+        setNote("标注样式本次可用，但未能记住。", "error");
+      });
+  };
+
+  const toggleStylePanel = (open?: boolean): void => {
+    const next = open ?? stylePanel.hidden;
+    stylePanel.hidden = !next;
+    styleBtn.classList.toggle("active", next);
+    if (next) {
+      syncStylePanel();
+    }
+  };
+
+  stylePanel.addEventListener("click", (event) => {
+    const button = event.target instanceof Element ? event.target.closest("button") : null;
+    if (!(button instanceof HTMLButtonElement)) {
+      return;
+    }
+    const nextColor = button.dataset.styleColor;
+    const nextWidth = button.dataset.styleWidth;
+    const nextTextSize = button.dataset.styleTextSize;
+    if (nextColor) {
+      styleColor = nextColor;
+    } else if (nextWidth !== undefined) {
+      styleWidth = Number(nextWidth);
+    } else if (nextTextSize !== undefined) {
+      styleTextBase = Number(nextTextSize);
+    } else {
+      return;
+    }
+    syncStylePanel();
+    persistStyle();
+    redraw();
+  });
+
+  document.addEventListener("click", (event) => {
+    if (stylePanel.hidden) {
+      return;
+    }
+    if (event.target instanceof Node && styleRoot.contains(event.target)) {
+      return;
+    }
+    toggleStylePanel(false);
+  });
+
   const physicalPoint = (event: MouseEvent): Point => {
     const rect = canvas.getBoundingClientRect();
     const scaleX = canvas.width / Math.max(rect.width, 1);
@@ -206,12 +358,14 @@ export function mountPreview(root: HTMLElement): void {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(source, 0, 0);
     for (const op of annotations) {
-      paint(ctx, op, strokeWidth(), strokeColor);
+      const s = annotationStyle(op);
+      paint(ctx, op, s.color, s.lineWidth);
     }
     if (dragging && start && current && (tool === "arrow" || tool === "rect" || tool === "mosaic")) {
-      const op = draft(tool, start, current, mosaicBlock());
+      const op = draft(tool, start, current, mosaicBlock(), styleColor, styleWidth);
       if (op) {
-        paint(ctx, op, strokeWidth(), strokeColor);
+        const s = annotationStyle(op);
+        paint(ctx, op, s.color, s.lineWidth);
       }
     }
     if (tool === "ocr" && ocrDoc) {
@@ -262,7 +416,7 @@ export function mountPreview(root: HTMLElement): void {
     const origin = editorOrigin;
     hideEditor();
     if (text.trim().length > 0) {
-      annotations.push({ type: "text", x: origin.x, y: origin.y, text, size: textSize() });
+      annotations.push({ type: "text", x: origin.x, y: origin.y, text, size: textSize(), color: styleColor });
       redraw();
     }
     syncUndo();
@@ -462,7 +616,7 @@ export function mountPreview(root: HTMLElement): void {
     }
     dragging = false;
     if (tool === "arrow" || tool === "rect" || tool === "mosaic") {
-      const op = draft(tool, start, current, mosaicBlock());
+      const op = draft(tool, start, current, mosaicBlock(), styleColor, styleWidth);
       if (op) {
         annotations.push(op);
       }
@@ -528,6 +682,8 @@ export function mountPreview(root: HTMLElement): void {
         return;
       }
       undo();
+    } else if (button.dataset.action === "style") {
+      toggleStylePanel();
     } else if (button.dataset.action === "copy") {
       void copy();
     } else if (button.dataset.action === "copy-ocr-all") {
@@ -558,6 +714,11 @@ export function mountPreview(root: HTMLElement): void {
       return;
     }
     if (event.key === "Escape") {
+      if (!stylePanel.hidden) {
+        event.preventDefault();
+        toggleStylePanel(false);
+        return;
+      }
       if (editorOpen()) {
         event.preventDefault();
         cancelEditor();
@@ -608,6 +769,29 @@ export function mountPreview(root: HTMLElement): void {
 
   setTool("arrow");
   syncUndo();
+
+  // 跨会话记忆：加载时读后端保存的上次样式（读写失败均静默回退当前值）。
+  const loadStyleDefaults = (): void => {
+    void invoke<{
+      annotationDefaults?: { color?: string; width?: number | null; textSize?: number | null };
+    }>("get_ui_settings")
+      .then((settings) => {
+        const defaults = settings?.annotationDefaults;
+        if (!defaults) {
+          return;
+        }
+        if (typeof defaults.color === "string" && /^#[0-9a-f]{3}(?:[0-9a-f]{3})?$/i.test(defaults.color)) {
+          styleColor = defaults.color;
+        }
+        styleWidth = typeof defaults.width === "number" && Number.isFinite(defaults.width) ? defaults.width : null;
+        styleTextBase =
+          typeof defaults.textSize === "number" && Number.isFinite(defaults.textSize) ? defaults.textSize : null;
+        syncStylePanel();
+        redraw();
+      })
+      .catch(() => undefined);
+  };
+  loadStyleDefaults();
 
   let previewLoad = 0;
   const loadPreview = (): void => {
@@ -665,12 +849,19 @@ export function mountPreview(root: HTMLElement): void {
   loadPreview();
 }
 
-function draft(tool: "arrow" | "rect" | "mosaic", start: Point, end: Point, block: number): Annotation | null {
+function draft(
+  tool: "arrow" | "rect" | "mosaic",
+  start: Point,
+  end: Point,
+  block: number,
+  color: string,
+  strokeWidth: number | null,
+): Annotation | null {
   if (tool === "arrow") {
     if (Math.hypot(end.x - start.x, end.y - start.y) < 3) {
       return null;
     }
-    return { type: "arrow", from: start, to: end };
+    return { type: "arrow", from: start, to: end, color, strokeWidth };
   }
   const x = Math.min(start.x, end.x);
   const y = Math.min(start.y, end.y);
@@ -682,10 +873,10 @@ function draft(tool: "arrow" | "rect" | "mosaic", start: Point, end: Point, bloc
   if (tool === "mosaic") {
     return { type: "mosaic", x, y, width, height, block };
   }
-  return { type: "rect", x, y, width, height };
+  return { type: "rect", x, y, width, height, color, strokeWidth };
 }
 
-function paint(ctx: CanvasRenderingContext2D, op: Annotation, lineWidth: number, stroke: string): void {
+function paint(ctx: CanvasRenderingContext2D, op: Annotation, stroke: string, lineWidth: number): void {
   if (op.type === "mosaic") {
     paintMosaic(ctx, op);
     return;

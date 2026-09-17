@@ -33,11 +33,12 @@ pub fn run() {
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             let stored = settings::load_from_app(app.handle());
-            app.manage(settings::SessionState::from_hotkeys(stored.hotkeys.clone()));
+            let hotkeys = stored.hotkeys.clone();
+            app.manage(settings::SessionState::from_stored(stored));
             app.manage(capture::session::CaptureRuntime::default());
             app.manage(ocr::OcrRuntime::default());
             tray::install(app.handle())?;
-            hotkeys::apply_to_app(app.handle(), &stored.hotkeys);
+            hotkeys::apply_to_app(app.handle(), &hotkeys);
             capture::precreate_windows(app.handle());
             Ok(())
         })
@@ -45,6 +46,7 @@ pub fn run() {
             settings::get_ui_settings,
             settings::set_hotkey,
             settings::set_autostart_enabled,
+            settings::set_annotation_defaults,
             capture::get_overlay_frame,
             capture::get_preview_frame,
             capture::confirm_region,
