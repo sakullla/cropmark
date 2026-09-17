@@ -1,12 +1,22 @@
-//! Windows 区域选区壳入口。
+//! 平台区域选区壳的分发入口(ADR-008 三平台接线)。
 //!
-//! 自绘选区逻辑已迁移至 `capture/selection/shell/windows.rs`,由平台无关
-//! 选区引擎驱动(ADR-001/006);本文件保留原模块路径,把壳实现挂入编译,
-//! 避免 `selection/mod.rs`(引擎任务所有)在本任务中改动模块树。
-//! 壳职责仅限:Win32 全屏置顶窗、消息泵、事件转发(物理像素坐标)与
-//! StretchDIBits 呈现;副作用(剪贴板/toast)经 `ShellHooks` 由会话层注入。
+//! 各平台壳实现位于 `capture/selection/shell/`,`#[path]` 挂入本模块参与
+//! 编译,`selection/mod.rs`(引擎所有)不感知平台模块树。三份壳实现保持
+//! 同一导出契约:`pick_region(frame, monitor, flags, hooks)` 返回
+//! `RegionOutcome`,副作用(色值复制)经 `ShellHooks` 由会话层注入。
+//! 壳职责:置顶全屏窗、事件泵、事件转发(物理像素坐标)与合成位图呈现
+//! (Windows: Win32+StretchDIBits;macOS: NSWindow+CG;Linux: X11
+//! override-redirect + MIT-SHM/XPutImage)。Wayland 会话的区域路径不经
+//! 本模块,由 session 层回退 Web 覆盖层(ADR-008)。
 
+#[cfg(windows)]
 #[path = "selection/shell/windows.rs"]
+mod imp;
+#[cfg(target_os = "macos")]
+#[path = "selection/shell/macos.rs"]
+mod imp;
+#[cfg(target_os = "linux")]
+#[path = "selection/shell/linux.rs"]
 mod imp;
 
 pub use imp::{pick_region, RegionOutcome, ShellHooks};

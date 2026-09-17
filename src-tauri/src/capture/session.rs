@@ -250,14 +250,14 @@ async fn wait_delay(app: &AppHandle, delay_ms: u64) -> Result<bool, CaptureError
 
 // 选区壳回调线程:壳与窗口消息泵在同一阻塞线程内同步运行,回调经此
 // thread-local 取回 AppHandle(壳保持平台/运行时无关)。
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 thread_local! {
     static SHELL_APP: std::cell::RefCell<Option<AppHandle>> =
         const { std::cell::RefCell::new(None) };
 }
 
 /// C 键取色回调:复制 HEX+RGB 文本并 toast 反馈;剪贴板失败提示失败。
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 fn copy_color_feedback(text: &str, hex: &str) {
     if std::env::var_os("CROPMARK_CAPTURE_TIMING").is_some() {
         eprintln!("Cropmark color copy: hook ran, hex={hex}");
@@ -277,8 +277,10 @@ fn copy_color_feedback(text: &str, hex: &str) {
     }
 }
 
-#[cfg(windows)]
-async fn capture_region(app: &AppHandle) -> Result<(), CaptureError> {
+/// 原生壳区域路径(Windows/macOS/Linux X11):冻结指针所在屏像素并交给
+/// 平台壳,按壳结果走 Preview/Quiet/取消分发(三平台同构,ADR-008)。
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+async fn capture_region_native(app: &AppHandle) -> Result<(), CaptureError> {
     use super::native_overlay::RegionOutcome;
 
     let handle = app.clone();
@@ -341,7 +343,37 @@ async fn capture_region(app: &AppHandle) -> Result<(), CaptureError> {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(any(windows, target_os = "macos"))]
+async fn capture_region(app: &AppHandle) -> Result<(), CaptureError> {
+    capture_region_native(app).await
+}
+
+/// Linux 区域路径按会话类型分派:判定复用 `platform::linux_capture_backend`
+/// (WAYLAND_DISPLAY 非空 → portal/Wayland),并额外要求 `$DISPLAY` 可用
+/// (含 XWayland);其余情况与既有行为一致走 Web 覆盖层(portal 抓屏不变)。
+#[cfg(target_os = "linux")]
+async fn capture_region(app: &AppHandle) -> Result<(), CaptureError> {
+    if linux_uses_native_selection() {
+        return capture_region_native(app).await;
+    }
+    let monitor = freeze_screen(app, Vec::new()).await?;
+    ui::open_overlay(app, &monitor)?;
+    Ok(())
+}
+
+/// 与 `platform/linux.rs` 的 backend 判定保持同源:Wayland 会话一律走
+/// Web 覆盖层,非 Wayland 且 `$DISPLAY` 可用才启用 X11 原生壳。
+#[cfg(target_os = "linux")]
+fn linux_uses_native_selection() -> bool {
+    let wayland = std::env::var("WAYLAND_DISPLAY")
+        .ok()
+        .filter(|value| !value.is_empty());
+    let display = std::env::var("DISPLAY").unwrap_or_default();
+    !display.is_empty()
+        && platform::linux_capture_backend(wayland.as_deref()) == platform::LinuxCaptureBackend::X11
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 async fn capture_region(app: &AppHandle) -> Result<(), CaptureError> {
     let monitor = freeze_screen(app, Vec::new()).await?;
     ui::open_overlay(app, &monitor)?;

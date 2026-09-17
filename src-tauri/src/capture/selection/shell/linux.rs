@@ -15,17 +15,14 @@
 //! 键位),方向键/Enter/Esc/C 与布局无关;Shift 状态取事件 state 的
 //! KeyButMask::SHIFT 位,与 windows.rs 的 VK_SHIFT 跟踪同义。
 //!
-//! 接线说明:本文件尚未被模块树引用(接线行不在本任务 scope)。
-//! 参照 Windows 壳的挂接方式,需要 `capture/native_overlay.rs` 或
-//! session.rs 为 `#[cfg(target_os = "linux")]` 增加
-//! `#[path = "selection/shell/linux.rs"] mod imp;` 分发;`capture_region` 的
-//! Linux 分支需区分会话类型:X11 切 `pick_region`(Windows 实现为同文件
-//! 同构范本),Wayland 维持现有 Web 覆盖层路径(portal 抓屏不变)。
+//! 接线说明:经 `capture/native_overlay.rs` 的 `#[path]` 分发挂入编译
+//! (ADR-008);session.rs 的 Linux `capture_region` 按会话类型分派——
+//! 非 Wayland 且 `$DISPLAY` 可用(含 XWayland)时调 `pick_region`,
+//! Wayland 维持 Web 覆盖层路径(portal 抓屏不变)。
 //!
-//! Wayland 处置:纯 Rust 无工具链建原生窗成本高,本任务按 ADR-001 的
-//! "普通全屏原生窗"仅完成 X11;Wayland 会话沿用 Web 覆盖层做区域选择
-//! (见任务结果申报),原生窗列为后续工作。XWayland 会话下 $DISPLAY 可用,
-//! 本壳同样适用。注意:本模块只能在 Linux 编译;Windows/macOS 主机上的
+//! Wayland 处置:纯 Rust 无工具链建原生窗成本高,按 ADR-008 的执行期
+//! 修订定为文档化平台行为,Wayland 区域选择沿用 Web 覆盖层,原生窗列为
+//! 后续独立工作。注意:本模块只能在 Linux 编译;Windows/macOS 主机上的
 //! 离线核对以 windows.rs 逐块对照 + probe crate 交叉 cargo check 为准。
 
 use std::time::{Duration, Instant};
@@ -56,6 +53,12 @@ const XK_LEFT: u32 = 0xff51;
 const XK_UP: u32 = 0xff52;
 const XK_RIGHT: u32 = 0xff53;
 const XK_DOWN: u32 = 0xff54;
+// 数字小键盘(Keypad)变体:主键盘区与 Keypad 的 Enter/方向键同一语义。
+const XK_KP_ENTER: u32 = 0xff8b;
+const XK_KP_LEFT: u32 = 0xff96;
+const XK_KP_UP: u32 = 0xff97;
+const XK_KP_RIGHT: u32 = 0xff98;
+const XK_KP_DOWN: u32 = 0xff99;
 const XK_C_LOWER: u32 = 0x63;
 const XK_C_UPPER: u32 = 0x43;
 
@@ -249,12 +252,12 @@ impl KeyboardMap {
 
     fn logical_key(&self, keycode: u8) -> Option<LogicalKey> {
         match self.plain_keysym(keycode)? {
-            XK_RETURN => Some(LogicalKey::Enter),
+            XK_RETURN | XK_KP_ENTER => Some(LogicalKey::Enter),
             XK_ESCAPE => Some(LogicalKey::Escape),
-            XK_LEFT => Some(LogicalKey::ArrowLeft),
-            XK_UP => Some(LogicalKey::ArrowUp),
-            XK_RIGHT => Some(LogicalKey::ArrowRight),
-            XK_DOWN => Some(LogicalKey::ArrowDown),
+            XK_LEFT | XK_KP_LEFT => Some(LogicalKey::ArrowLeft),
+            XK_UP | XK_KP_UP => Some(LogicalKey::ArrowUp),
+            XK_RIGHT | XK_KP_RIGHT => Some(LogicalKey::ArrowRight),
+            XK_DOWN | XK_KP_DOWN => Some(LogicalKey::ArrowDown),
             XK_C_LOWER | XK_C_UPPER => Some(LogicalKey::CopyColor),
             _ => None,
         }
@@ -491,11 +494,20 @@ fn create_shm_segment(conn: &RustConnection, len: usize) -> Option<ShmSegment> {
         }
         // 标记删除:两侧 detach 后自动回收,进程崩溃也不残留。
         let _ = libc::shmctl(shmid, libc::IPC_RMID, std::ptr::null_mut());
-        let seg = conn.generate_id().ok()?;
-        conn.shm_attach(seg, shmid as u32, false)
-            .ok()?
-            .check()
-            .ok()?;
+        // shmat 之后的任何失败都必须解除本进程映射,否则段标记了 IPC_RMID
+        // 也要等到进程退出才回收(本函数可能每帧重试,泄漏会累积)。
+        let Ok(seg) = conn.generate_id() else {
+            let _ = libc::shmdt(addr.cast());
+            return None;
+        };
+        let attach_failed = match conn.shm_attach(seg, shmid as u32, false) {
+            Ok(cookie) => cookie.check().is_err(),
+            Err(_) => true,
+        };
+        if attach_failed {
+            let _ = libc::shmdt(addr.cast());
+            return None;
+        }
         Some(ShmSegment { seg, addr, len })
     }
 }
@@ -770,7 +782,8 @@ mod tests {
     use crate::capture::buffer::{accept_buffer, RawBuffer};
 
     /// min_keycode=8、每键 2 列的小键盘表:8=Return,9=Esc,10/11/12/13=方向,
-    /// 14=c;shift 列(奇数索引)填 NoSymbol 验证回退,15 的两列都无效。
+    /// 14=c,17-21=Keypad Enter/方向,22='B';shift 列(奇数索引)填 NoSymbol
+    /// 验证回退,15 的第 0 列无效、16/22 不在引擎语义内。
     fn test_keyboard_map() -> KeyboardMap {
         KeyboardMap {
             min_keycode: 8,
@@ -778,7 +791,9 @@ mod tests {
             keysyms: vec![
                 XK_RETURN, NO_SYMBOL, XK_ESCAPE, NO_SYMBOL, XK_LEFT, NO_SYMBOL, XK_UP, NO_SYMBOL,
                 XK_RIGHT, NO_SYMBOL, XK_DOWN, NO_SYMBOL, XK_C_LOWER, NO_SYMBOL, NO_SYMBOL,
-                XK_C_UPPER, NO_SYMBOL, 0x0041,
+                XK_C_UPPER, NO_SYMBOL, 0x0041, XK_KP_ENTER, NO_SYMBOL, XK_KP_LEFT, NO_SYMBOL,
+                XK_KP_UP, NO_SYMBOL, XK_KP_RIGHT, NO_SYMBOL, XK_KP_DOWN, NO_SYMBOL, 0x0042,
+                NO_SYMBOL,
             ],
         }
     }
@@ -795,9 +810,16 @@ mod tests {
         assert_eq!(map.logical_key(14), Some(LogicalKey::CopyColor));
         // 15:第 0 列 NoSymbol 回退到第 1 列(大写 C 同样是取字键)。
         assert_eq!(map.logical_key(15), Some(LogicalKey::CopyColor));
-        // 16:第 0 列 NoSymbol 回退到第 1 列的 'A'(不在引擎语义内);17:超出表尾。
+        // 16:'A' 不在引擎语义内;17-21:数字小键盘的 Enter/方向键与主键盘同义。
         assert_eq!(map.logical_key(16), None);
-        assert_eq!(map.logical_key(17), None);
+        assert_eq!(map.logical_key(17), Some(LogicalKey::Enter));
+        assert_eq!(map.logical_key(18), Some(LogicalKey::ArrowLeft));
+        assert_eq!(map.logical_key(19), Some(LogicalKey::ArrowUp));
+        assert_eq!(map.logical_key(20), Some(LogicalKey::ArrowRight));
+        assert_eq!(map.logical_key(21), Some(LogicalKey::ArrowDown));
+        // 22:'B' 不在引擎语义内;23:超出表尾。
+        assert_eq!(map.logical_key(22), None);
+        assert_eq!(map.logical_key(23), None);
         // 超出键盘表范围。
         assert_eq!(map.logical_key(7), None);
         assert_eq!(map.logical_key(100), None);

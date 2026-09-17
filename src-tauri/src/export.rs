@@ -56,9 +56,8 @@ pub async fn save_preview_png(
     if path.extension().is_none() {
         path.set_extension("png");
     }
-    std::fs::write(&path, png).map_err(|_| {
-        "无法写入 PNG 文件。预览仍保留，可继续标注、复制或再次保存。".to_string()
-    })?;
+    std::fs::write(&path, png)
+        .map_err(|_| "无法写入 PNG 文件。预览仍保留，可继续标注、复制或再次保存。".to_string())?;
     session::mark_preview_file_written(&app);
     Ok(SaveResult { saved: true })
 }
@@ -67,7 +66,7 @@ pub async fn save_preview_png(
 mod tests {
     use super::*;
     use crate::annotate::{exportable, rasterize, Annotation, Point};
-    use crate::capture::buffer::{accept_buffer, decode_png, RawBuffer, Frame};
+    use crate::capture::buffer::{accept_buffer, decode_png, Frame, RawBuffer};
 
     fn solid(width: u32, height: u32, color: [u8; 4]) -> Frame {
         let mut bytes = Vec::with_capacity((width * height * 4) as usize);
@@ -100,6 +99,8 @@ mod tests {
             y: 4.0,
             width: 20.0,
             height: 12.0,
+            color: crate::annotate::DEFAULT_COLOR.into(),
+            stroke_width: None,
         }];
         let rendered = rasterize(&frame, &ops).unwrap();
         let png = encode_png(&rendered).unwrap();
@@ -138,6 +139,7 @@ mod tests {
             y: 3.0,
             text: "   ".into(),
             size: 18.0,
+            color: crate::annotate::DEFAULT_COLOR.into(),
         }];
         assert!(exportable(&empty).is_empty());
         let rendered = rasterize(&frame, &empty).unwrap();
@@ -155,6 +157,7 @@ mod tests {
             y: 4.0,
             text: "Hi".into(),
             size: 22.0,
+            color: crate::annotate::DEFAULT_COLOR.into(),
         }];
         if crate::annotate::raster::ui_font().is_none() {
             return;
@@ -169,6 +172,8 @@ mod tests {
         let ops = vec![Annotation::Arrow {
             from: Point { x: 4.0, y: 20.0 },
             to: Point { x: 32.0, y: 8.0 },
+            color: crate::annotate::DEFAULT_COLOR.into(),
+            stroke_width: None,
         }];
         let rendered = rasterize(&frame, &ops).unwrap();
         let hit = rendered

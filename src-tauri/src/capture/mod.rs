@@ -2,7 +2,7 @@ pub mod buffer;
 pub mod error;
 pub mod geometry;
 pub mod hide;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 pub mod native_overlay;
 pub mod platform;
 pub mod selection;
@@ -15,7 +15,7 @@ use tauri::AppHandle;
 use crate::hotkeys::CaptureMode;
 use error::CaptureError;
 use geometry::LogicalRect;
-use session::{QuietAction, RegionSelection, DEFAULT_FRAME_TTL};
+use session::{QuietAction, RegionSelection};
 
 pub fn begin(app: &AppHandle, mode: CaptureMode, delay_ms: u64) {
     session::begin(app, mode, delay_ms);
@@ -66,6 +66,9 @@ pub async fn confirm_window(app: AppHandle, window_id: String) -> Result<(), Cap
 /// Quiet completion with an immediate action on the cropped region (R3):
 /// the unannotated PNG reaches the clipboard, no preview window opens, and
 /// the session keeps the frame for a short TTL while the action runs.
+/// 命令层只做参数解包,守卫与动作分发全部委托会话层:只有活动
+/// overlay 会话允许静默裁剪,idle-with-frame(TTL 保留帧)期间的
+/// 重复 invoke 在 `session::finish_region_with` 内被拒绝。
 #[tauri::command]
 pub async fn finish_region_with(
     app: AppHandle,
@@ -75,18 +78,12 @@ pub async fn finish_region_with(
     height: u32,
     action: QuietAction,
 ) -> Result<(), CaptureError> {
-    let handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        session::finish_region_quiet(
-            &handle,
-            RegionSelection { x, y, width, height },
-            DEFAULT_FRAME_TTL,
-        )
-    })
+    session::finish_region_with(
+        &app,
+        RegionSelection { x, y, width, height },
+        action,
+    )
     .await
-    .map_err(|_| CaptureError::api("截取线程失败。"))??;
-    run_quiet_action(&app, action).await;
-    Ok(())
 }
 
 async fn run_quiet_action(app: &AppHandle, action: QuietAction) {

@@ -1,0 +1,6 @@
+# 钉 macOS 部署目标(ADR-008 接线任务):objc2/AppKit 壳与 ScreenCaptureKit
+# 构建按 macOS 14 API 面编译,交叉与本机构建一致,避免宿主 SDK 版本漂移。
+# 注意:cargo 只从工作目录向上发现本文件;`tauri` CLI 在 src-tauri 内启动
+# cargo 时生效,仓库根用 `--manifest-path` 调 cargo 时需在该目录下运行。
+[env]
+MACOSX_DEPLOYMENT_TARGET = "14.0"

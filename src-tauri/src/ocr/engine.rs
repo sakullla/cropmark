@@ -6,7 +6,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::capture::buffer::Frame;
 
-use super::hit::{aabb, expand_for_selection, join_spans, all_indices, TextSpan};
+use super::hit::{aabb, all_indices, expand_for_selection, join_spans, TextSpan};
 use super::{OcrDocument, OcrError};
 
 pub const DET_MODEL: &str = "ch_PP-OCRv3_det_infer.onnx";
@@ -181,6 +181,7 @@ mod tests {
             y: 18.0,
             text: "Hello 中文".into(),
             size: 28.0,
+            color: crate::annotate::DEFAULT_COLOR.into(),
         }];
         rasterize(&frame, &ops).unwrap_or(frame)
     }
