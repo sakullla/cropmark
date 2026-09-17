@@ -322,7 +322,7 @@ fn window_pid(conn: &impl Connection, id: u32) -> Option<u32> {
         .ok()?
         .reply()
         .ok()?;
-    let values = reply.value32()?;
+    let mut values = reply.value32()?;
     values.next()
 }
 
