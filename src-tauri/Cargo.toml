@@ -30,6 +30,7 @@ ort = { version = "=2.0.0-rc.10", default-features = false, features = ["ndarray
 ndarray = "0.16"
 
 [target.'cfg(windows)'.dependencies]
+clipboard-win = "5.4"
 winreg = "0.55"
 windows = { version = "0.61", features = [
   "Win32_Foundation",
@@ -49,3 +50,31 @@ ashpd = { version = "0.11", default-features = false, features = ["tokio"] }
 pollster = "0.4"
 url = "2"
 x11rb = { version = "0.13", features = ["randr"] }
+
+# Keep the app debuggable without running full-resolution image codecs unoptimized.
+[profile.dev.package.cropmark]
+opt-level = 3
+
+[profile.dev.package.image]
+opt-level = 3
+
+[profile.dev.package.png]
+opt-level = 3
+
+[profile.dev.package.fdeflate]
+opt-level = 3
+
+[profile.dev.package.flate2]
+opt-level = 3
+
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+
+[profile.dev.package.crc32fast]
+opt-level = 3
+
+[profile.dev.package.simd-adler32]
+opt-level = 3
+
+[profile.dev.package.adler2]
+opt-level = 3

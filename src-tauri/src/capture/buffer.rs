@@ -121,7 +121,23 @@ pub fn crop_desktop_to_monitor(
 }
 
 pub fn encode_png(frame: &Frame) -> Result<Vec<u8>, CaptureError> {
-    encode_image(frame, image::ImageFormat::Png)
+    use image::ImageEncoder;
+    validate_frame(frame)?;
+    let mut bytes = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut bytes)
+        .write_image(&frame.rgba, frame.width, frame.height, image::ExtendedColorType::Rgba8)
+        .map_err(|_| CaptureError::api("无法编码 PNG。"))?;
+    Ok(bytes)
+}
+
+pub fn validate_frame(frame: &Frame) -> Result<(), CaptureError> {
+    let expected = (frame.width as usize)
+        .checked_mul(frame.height as usize)
+        .and_then(|pixels| pixels.checked_mul(4));
+    if frame.width == 0 || frame.height == 0 || expected != Some(frame.rgba.len()) {
+        return Err(CaptureError::invalid_buffer("尺寸或像素长度不匹配"));
+    }
+    Ok(())
 }
 
 pub fn encode_jpeg(frame: &Frame, quality: u8) -> Result<Vec<u8>, CaptureError> {
@@ -186,18 +202,6 @@ fn rgba_image(frame: &Frame) -> Result<image::RgbaImage, CaptureError> {
         .ok_or_else(|| CaptureError::invalid_buffer("未初始化"))
 }
 
-fn encode_image(frame: &Frame, format: image::ImageFormat) -> Result<Vec<u8>, CaptureError> {
-    let image = rgba_image(frame)?;
-    let mut bytes = Vec::new();
-    image
-        .write_to(&mut std::io::Cursor::new(&mut bytes), format)
-        .map_err(|_| CaptureError::api("无法编码 PNG。"))?;
-    if bytes.is_empty() {
-        return Err(CaptureError::invalid_buffer("空缓冲"));
-    }
-    Ok(bytes)
-}
-
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn decode_png(bytes: &[u8]) -> Result<Frame, CaptureError> {
     if bytes.is_empty() {
@@ -214,6 +218,42 @@ pub fn decode_png(bytes: &[u8]) -> Result<Frame, CaptureError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn png_roundtrip_keeps_native_dimensions_and_every_rgba_pixel() {
+        let mut frame = accept_buffer(solid(37, 19, [4, 50, 240, 255])).unwrap();
+        frame.scale = 1.5;
+        frame.rgba[0..4].copy_from_slice(&[255, 10, 20, 128]);
+        let decoded = decode_png(&encode_png(&frame).unwrap()).unwrap();
+        assert_eq!((decoded.width, decoded.height), (37, 19));
+        assert_eq!(decoded.rgba, frame.rgba);
+    }
+
+    #[test]
+    fn png_rejects_invalid_pixel_lengths_without_panicking() {
+        let frame = Frame { width: 2, height: 2, rgba: vec![0; 4], scale: 1.0 };
+        assert!(encode_png(&frame).is_err());
+    }
+
+    #[test]
+    #[ignore = "manual capture encoding benchmark; run with --ignored --nocapture"]
+    fn benchmark_capture_encoding() {
+        use std::time::Instant;
+        for (width, height) in [(1920, 1080), (3840, 2160)] {
+            let mut frame = accept_buffer(solid(width, height, [245, 245, 245, 255])).unwrap();
+            for (i, pixel) in frame.rgba.chunks_exact_mut(4).enumerate() {
+                let x = i as u32 % width;
+                let y = i as u32 / width;
+                pixel[0] = (x / 8 + y / 16) as u8;
+                pixel[1] = (x / 16 + y / 8) as u8;
+                pixel[2] = if y % 24 < 3 { 30 } else { 235 };
+            }
+            let started = Instant::now();
+            let png = encode_png(&frame).unwrap();
+            eprintln!("{width}x{height} current PNG: {:?}, {} bytes", started.elapsed(), png.len());
+            assert_eq!(decode_png(&png).unwrap().rgba, frame.rgba);
+        }
+    }
 
     fn solid(width: u32, height: u32, rgba: [u8; 4]) -> RawBuffer {
         let mut bytes = Vec::with_capacity((width * height * 4) as usize);

@@ -26,13 +26,15 @@ pub fn get_overlay_frame(app: AppHandle) -> Result<ui::OverlayPayload, CaptureEr
 }
 
 #[tauri::command]
-pub fn get_preview_frame(app: AppHandle) -> Result<ui::PreviewPayload, CaptureError> {
-    session::preview_frame(&app)
+pub fn get_preview_frame(app: AppHandle) -> Result<tauri::ipc::Response, CaptureError> {
+    session::preview_frame(&app).map(|payload| tauri::ipc::Response::new(payload.bytes))
 }
 
 #[tauri::command]
 pub async fn confirm_region(app: AppHandle, x: u32, y: u32, width: u32, height: u32) -> Result<(), CaptureError> {
-    session::confirm_region(&app, RegionSelection { x, y, width, height })
+    tauri::async_runtime::spawn_blocking(move || {
+        session::confirm_region(&app, RegionSelection { x, y, width, height })
+    }).await.map_err(|_| CaptureError::api("截取线程失败。"))?
 }
 
 #[tauri::command]
@@ -43,7 +45,7 @@ pub async fn confirm_logical_region(
     width: f64,
     height: f64,
 ) -> Result<(), CaptureError> {
-    session::confirm_logical_region(
+    tauri::async_runtime::spawn_blocking(move || session::confirm_logical_region(
         &app,
         LogicalRect {
             x,
@@ -51,12 +53,13 @@ pub async fn confirm_logical_region(
             width,
             height,
         },
-    )
+    )).await.map_err(|_| CaptureError::api("截取线程失败。"))?
 }
 
 #[tauri::command]
 pub async fn confirm_window(app: AppHandle, window_id: String) -> Result<(), CaptureError> {
-    session::confirm_window(&app, window_id)
+    tauri::async_runtime::spawn_blocking(move || session::confirm_window(&app, window_id))
+        .await.map_err(|_| CaptureError::api("截取线程失败。"))?
 }
 
 pub fn precreate_windows(app: &AppHandle) {

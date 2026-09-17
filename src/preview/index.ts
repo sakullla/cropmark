@@ -4,7 +4,6 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import "./preview.css";
 
 interface PreviewFrame {
-  pngBase64: string;
   width: number;
   height: number;
   scale: number;
@@ -602,14 +601,28 @@ export function mountPreview(root: HTMLElement): void {
   setTool("arrow");
   syncUndo();
 
+  let previewLoad = 0;
   const loadPreview = (): void => {
-    void invoke<PreviewFrame>("get_preview_frame")
-      .then((payload) => {
+    const generation = ++previewLoad;
+    void invoke<ArrayBuffer>("get_preview_frame")
+      .then((bytes) => {
+        if (generation !== previewLoad) return;
+        if (bytes.byteLength <= 20) throw new Error("预览图像数据不完整。");
+        const header = new DataView(bytes);
+        const clipboardWritten = header.getUint32(16, true) === 1;
+        const payload: PreviewFrame = {
+          width: header.getUint32(0, true),
+          height: header.getUint32(4, true),
+          scale: header.getFloat64(8, true),
+        };
         frame = payload;
         canvas.width = payload.width;
         canvas.height = payload.height;
         const image = new Image();
+        const imageUrl = URL.createObjectURL(new Blob([bytes.slice(20)], { type: "image/png" }));
         image.onload = () => {
+          URL.revokeObjectURL(imageUrl);
+          if (generation !== previewLoad) return;
           source = document.createElement("canvas");
           source.width = payload.width;
           source.height = payload.height;
@@ -619,11 +632,18 @@ export function mountPreview(root: HTMLElement): void {
             return;
           }
           sourceCtx.drawImage(image, 0, 0, payload.width, payload.height);
+          copied = clipboardWritten ? "未标注图已复制" : "自动复制失败，可点击复制重试。";
+          setNote(copied, clipboardWritten ? "success" : "error");
           redraw();
         };
-        image.src = `data:image/png;base64,${payload.pngBase64}`;
+        image.onerror = () => {
+          URL.revokeObjectURL(imageUrl);
+          if (generation === previewLoad) setNote("无法显示预览图像。", "error");
+        };
+        image.src = imageUrl;
       })
       .catch((error) => {
+        if (generation !== previewLoad) return;
         setNote(invokeError(error, "没有可预览的截图。"), "error");
       });
   };

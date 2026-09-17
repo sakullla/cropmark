@@ -72,5 +72,9 @@ pub fn install(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn tray_icon() -> Result<Image<'static>, Box<dyn std::error::Error>> {
-    Ok(Image::from_bytes(include_bytes!("../icons/32x32.png"))?)
+    #[cfg(target_os = "macos")]
+    let bytes = include_bytes!("../icons/v2/tray-template.png").as_slice();
+    #[cfg(not(target_os = "macos"))]
+    let bytes = include_bytes!("../icons/v2/32x32.png").as_slice();
+    Ok(Image::from_bytes(bytes)?)
 }

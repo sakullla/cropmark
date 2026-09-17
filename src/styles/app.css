@@ -95,34 +95,10 @@ html[data-view="preview"] #app {
 }
 
 .mark {
-  width: 16px;
-  height: 16px;
-  border: 2px solid var(--accent);
-  border-radius: 3px;
-  position: relative;
-}
-
-.mark::before,
-.mark::after {
-  content: "";
-  position: absolute;
-  border: 2px solid var(--accent);
-  width: 6px;
-  height: 6px;
-}
-
-.mark::before {
-  top: -5px;
-  left: -5px;
-  border-right: 0;
-  border-bottom: 0;
-}
-
-.mark::after {
-  right: -5px;
-  bottom: -5px;
-  border-left: 0;
-  border-top: 0;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  background: url("../../src-tauri/icons/v2/128x128.png") center / contain no-repeat;
 }
 
 .name {

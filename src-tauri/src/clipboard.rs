@@ -1,9 +1,37 @@
-use arboard::{Clipboard, ImageData};
+use arboard::Clipboard;
+#[cfg(not(windows))]
+use arboard::ImageData;
+
+#[cfg(windows)]
+mod windows;
 
 use crate::capture::buffer::Frame;
 use crate::capture::error::CaptureError;
 
 pub fn copy_frame(frame: &Frame) -> Result<(), CaptureError> {
+    #[cfg(windows)]
+    {
+        let png = crate::capture::buffer::encode_png(frame)?;
+        windows::copy_frame_with_png(frame, &png)
+    }
+    #[cfg(not(windows))]
+    copy_frame_native(frame)
+}
+
+pub fn copy_frame_with_png(frame: &Frame, png: &[u8]) -> Result<(), CaptureError> {
+    #[cfg(windows)]
+    {
+        windows::copy_frame_with_png(frame, png)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = png;
+        copy_frame_native(frame)
+    }
+}
+
+#[cfg(not(windows))]
+fn copy_frame_native(frame: &Frame) -> Result<(), CaptureError> {
     if frame.rgba.is_empty() || frame.width == 0 || frame.height == 0 {
         return Err(CaptureError::invalid_buffer("空缓冲"));
     }

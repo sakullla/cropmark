@@ -7,6 +7,7 @@
       "infoPlist": "Info.plist",
       "entitlements": "entitlements.plist",
       "hardenedRuntime": true,
+      "signingIdentity": "-",
       "bundleName": "Cropmark"
     }
   }

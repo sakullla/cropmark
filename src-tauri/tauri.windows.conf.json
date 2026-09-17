@@ -8,8 +8,8 @@
         "silent": true
       },
       "nsis": {
-        "installerIcon": "icons/icon.ico",
-        "uninstallerIcon": "icons/icon.ico",
+        "installerIcon": "icons/v2/icon.ico",
+        "uninstallerIcon": "icons/v2/icon.ico",
         "installMode": "currentUser",
         "languages": ["SimpChinese", "English"]
       }

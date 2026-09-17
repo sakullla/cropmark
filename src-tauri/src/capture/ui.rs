@@ -5,7 +5,7 @@ use tauri::{
     WebviewWindow, WebviewWindowBuilder,
 };
 
-use super::buffer::{encode_png, fit_display, Frame};
+use super::buffer::{fit_display, Frame};
 use super::error::CaptureError;
 use super::geometry::MonitorGeom;
 use super::windows_list::ListedWindow;
@@ -30,13 +30,9 @@ pub struct OverlayPayload {
     pub windows: Vec<ListedWindow>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone)]
 pub struct PreviewPayload {
-    pub png_base64: String,
-    pub width: u32,
-    pub height: u32,
-    pub scale: f64,
+    pub bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -107,13 +103,16 @@ pub fn overlay_payload(mode: CaptureMode, frame: &Frame, monitor: &MonitorGeom, 
     })
 }
 
-pub fn preview_payload(frame: &Frame) -> Result<PreviewPayload, CaptureError> {
-    Ok(PreviewPayload {
-        png_base64: STANDARD.encode(encode_png(frame)?),
-        width: frame.width,
-        height: frame.height,
-        scale: frame.scale,
-    })
+pub fn preview_payload(frame: &Frame, png: &[u8], clipboard_written: bool) -> PreviewPayload {
+    // One binary response keeps metadata and pixels bound to the same capture.
+    // Header: width/height (u32), scale (f64), copied (u32), little-endian, then PNG.
+    let mut bytes = Vec::with_capacity(20 + png.len());
+    bytes.extend_from_slice(&frame.width.to_le_bytes());
+    bytes.extend_from_slice(&frame.height.to_le_bytes());
+    bytes.extend_from_slice(&frame.scale.to_le_bytes());
+    bytes.extend_from_slice(&u32::from(clipboard_written).to_le_bytes());
+    bytes.extend_from_slice(png);
+    PreviewPayload { bytes }
 }
 
 pub fn precreate(app: &AppHandle) {
@@ -275,6 +274,20 @@ fn preview_size(frame: &Frame, work_w: f64, work_h: f64) -> (f64, f64) {
 mod tests {
     use super::*;
     use crate::capture::buffer::Frame;
+
+    #[test]
+    fn binary_preview_preserves_native_size_scale_and_original_png() {
+        let frame = Frame { width: 2, height: 1, rgba: vec![1, 2, 3, 255, 4, 5, 6, 128], scale: 1.5 };
+        let png = crate::capture::buffer::encode_png(&frame).unwrap();
+        let payload = preview_payload(&frame, &png, true);
+        assert_eq!(u32::from_le_bytes(payload.bytes[0..4].try_into().unwrap()), 2);
+        assert_eq!(u32::from_le_bytes(payload.bytes[4..8].try_into().unwrap()), 1);
+        assert_eq!(f64::from_le_bytes(payload.bytes[8..16].try_into().unwrap()), 1.5);
+        assert_eq!(u32::from_le_bytes(payload.bytes[16..20].try_into().unwrap()), 1);
+        assert_eq!(&payload.bytes[20..], png.as_slice());
+        assert_eq!(crate::capture::buffer::decode_png(&payload.bytes[20..]).unwrap().rgba, frame.rgba);
+        assert_eq!(&preview_payload(&frame, &png, false).bytes[16..20], &[0; 4]);
+    }
 
     fn frame(width: u32, height: u32) -> Frame {
         Frame {

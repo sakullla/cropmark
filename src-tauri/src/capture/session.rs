@@ -4,7 +4,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use tauri::{AppHandle, Emitter, Manager};
 
-use super::buffer::{crop_rgba, Frame};
+use super::buffer::{crop_rgba, encode_png, Frame};
 use super::error::CaptureError;
 use super::geometry::{crop_from_logical, monitor_at_physical, LogicalRect, MonitorGeom};
 use super::hide::{
@@ -231,9 +231,10 @@ async fn capture_region(app: &AppHandle) -> Result<(), CaptureError> {
         })
         .await
         .map_err(|_| CaptureError::api("截取线程失败。"))??;
-        return match picked {
+        let handle = app.clone();
+        return tauri::async_runtime::spawn_blocking(move || match picked {
             Some(rect) => confirm_region(
-                app,
+                &handle,
                 RegionSelection {
                     x: rect.x,
                     y: rect.y,
@@ -241,8 +242,8 @@ async fn capture_region(app: &AppHandle) -> Result<(), CaptureError> {
                     height: rect.height,
                 },
             ),
-            None => cancel(app).map(|_| ()),
-        };
+            None => cancel(&handle).map(|_| ()),
+        }).await.map_err(|_| CaptureError::api("截取线程失败。"))?;
     }
     #[cfg(not(windows))]
     {
@@ -268,12 +269,12 @@ async fn capture_window_mode(app: &AppHandle) -> Result<(), CaptureError> {
 
 async fn capture_fullscreen(app: &AppHandle) -> Result<(), CaptureError> {
     let handle = app.clone();
-    let frame = tauri::async_runtime::spawn_blocking(move || {
-        grab_pointer_screen(&handle).map(|(frame, _)| frame)
+    tauri::async_runtime::spawn_blocking(move || {
+        let (frame, _) = grab_pointer_screen(&handle)?;
+        complete_success(&handle, frame)
     })
     .await
-    .map_err(|_| CaptureError::api("截取线程失败。"))??;
-    complete_success(app, frame)
+    .map_err(|_| CaptureError::api("截取线程失败。"))?
 }
 
 async fn freeze_screen(app: &AppHandle, windows: Vec<ListedWindow>) -> Result<MonitorGeom, CaptureError> {
@@ -476,11 +477,18 @@ fn cancel_internal(app: &AppHandle) -> Result<CancelOutcome, CaptureError> {
 }
 
 fn complete_success(app: &AppHandle, frame: Frame) -> Result<(), CaptureError> {
+    let started = std::time::Instant::now();
     if is_cancelled(app) {
         return Err(CaptureError::cancelled());
     }
-    let clipboard_error = clipboard::copy_frame(&frame).err();
-    let preview = ui::preview_payload(&frame)?;
+    let png = encode_png(&frame)?;
+    let encoded_at = started.elapsed();
+    if is_cancelled(app) {
+        return Err(CaptureError::cancelled());
+    }
+    let clipboard_error = clipboard::copy_frame_with_png(&frame, &png).err();
+    let copied_at = started.elapsed();
+    let preview = ui::preview_payload(&frame, &png, clipboard_error.is_none());
     with_session_mut(app, |session| {
         if let Some(current) = session.as_mut() {
             if clipboard_error.is_none() {
@@ -495,6 +503,11 @@ fn complete_success(app: &AppHandle, frame: Frame) -> Result<(), CaptureError> {
     ui::hide_window(app, ui::DELAY);
     ui::hide_window(app, ui::ERROR);
     ui::open_preview(app, &frame)?;
+    if std::env::var_os("CROPMARK_CAPTURE_TIMING").is_some() {
+        eprintln!("Cropmark capture {}x{}: PNG={:?}, clipboard={:?}, preview={:?}, total={:?}",
+            frame.width, frame.height, encoded_at, copied_at - encoded_at,
+            started.elapsed() - copied_at, started.elapsed());
+    }
     with_session_mut(app, |session| {
         if let Some(current) = session.as_mut() {
             current.preview_opened = true;

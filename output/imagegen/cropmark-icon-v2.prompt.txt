@@ -1,0 +1,10 @@
+Use case: logo-brand
+Asset type: production desktop application icon for Cropmark, a screenshot, annotation and offline OCR utility.
+Primary request: create a distinctive, beautifully finished app icon built around four bold crop-frame corners enclosing a small captured screen. Preserve the existing brand's deep teal and mint identity.
+Scene/backdrop: perfectly uniform solid white outside a rounded-square app tile; no cast shadow outside the tile, for clean local background removal.
+Subject: a deep teal rounded-square tile with a crisp mint crop-frame symbol. Four substantial L-shaped brackets form an open capture frame. A single small, slightly offset filled mint rounded rectangle in the middle suggests a captured screen or selection. Keep the silhouette striking and immediately legible.
+Style/medium: premium minimal desktop icon, precise geometric construction, restrained dimensional polish on the tile, near-flat bright symbol, clean edges.
+Composition/framing: one front-facing icon only, centered, no perspective; tile occupies about 88 percent of the square canvas; comfortable interior padding. Strong readable shapes at 16, 24 and 32 pixels.
+Color palette: deep teal #134E4A, dark teal #0B3432, luminous mint #5EEAD4; white only outside the tile.
+Text: none.
+Constraints: no letters, words, typography, watermark, camera lens, scissors, cursor, sparkles, decorative tiny details, hairline strokes, extra objects, mockup, surrounding UI, or multiple alternatives. No glow around the frame. Do not join the four brackets into a continuous square outline.

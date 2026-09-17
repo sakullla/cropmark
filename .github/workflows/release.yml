@@ -1,0 +1,161 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    uses: ./.github/workflows/ci.yml
+
+  prepare:
+    name: Prepare draft release
+    needs: validate
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      release-id: ${{ steps.draft.outputs.release-id }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Validate tag and generate changelog
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node .github/scripts/release.mjs check "$RELEASE_TAG"
+          node .github/scripts/release.mjs notes "$RELEASE_TAG" > release-notes.md
+      - name: Create or resume draft
+        id: draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          PRERELEASE: ${{ contains(github.ref_name, '-') }}
+        run: |
+          set -euo pipefail
+          release=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --slurp \
+            | jq --arg tag "$RELEASE_TAG" '[.[][] | select(.tag_name == $tag)] | first')
+          endpoint="repos/$GITHUB_REPOSITORY/releases"
+          method=POST
+          if [[ "$release" != null ]]; then
+            if [[ $(jq -r '.draft' <<< "$release") != true ]]; then
+              echo "::error::Release is already published; use a new version tag."
+              exit 1
+            fi
+            endpoint="$endpoint/$(jq -r '.id' <<< "$release")"
+            method=PATCH
+          fi
+          release_id=$(gh api --method "$method" "$endpoint" \
+            -f tag_name="$RELEASE_TAG" -f target_commitish="$GITHUB_SHA" \
+            -f name="Cropmark $RELEASE_TAG" -F body=@release-notes.md \
+            -F draft=true -F prerelease="$PRERELEASE" --jq '.id')
+          echo "release-id=$release_id" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: Windows x64
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+          - os: macos-latest
+            platform: macOS ARM64
+            target: aarch64-apple-darwin
+            bundles: app,dmg
+          - os: ubuntu-22.04
+            platform: Linux x64
+            target: x86_64-unknown-linux-gnu
+            bundles: appimage,deb
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        timeout-minutes: 10
+        run: bash .github/scripts/install-linux-deps.sh
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          cache-workspace-crates: true
+          cache-bin: false
+          cache-on-failure: true
+      - run: npm ci --prefer-offline --no-audit --no-fund
+      - name: Build and upload to draft release
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          releaseId: ${{ needs.prepare.outputs.release-id }}
+          tagName: ${{ github.ref_name }}
+          releaseDraft: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          retryAttempts: 2
+          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --verbose -- --locked
+      - name: Verify macOS ad-hoc signature
+        if: runner.os == 'macOS'
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          app="src-tauri/target/$TARGET/release/bundle/macos/Cropmark.app"
+          test -d "$app"
+          signature=$(codesign --display --verbose=4 "$app" 2>&1)
+          echo "$signature"
+          grep -q '^Signature=adhoc$' <<< "$signature"
+          codesign --verify --deep --strict --verbose=2 "$app"
+
+  verify-release:
+    name: Verify release assets and publish
+    needs: [prepare, build]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Require all platform installers
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.prepare.outputs.release-id }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > release.json
+          node .github/scripts/release.mjs verify release.json "$RELEASE_TAG"
+      - name: Publish verified release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.prepare.outputs.release-id }}
+        run: |
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+            -F draft=false --jq '.html_url'
