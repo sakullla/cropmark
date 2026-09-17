@@ -32,6 +32,7 @@ impl RawBuffer {
         }
     }
 
+    #[cfg(test)]
     pub fn uninitialized() -> Self {
         Self {
             width: 0,
@@ -41,6 +42,7 @@ impl RawBuffer {
         }
     }
 
+    #[cfg(test)]
     pub fn is_all_black(&self) -> bool {
         if self.bytes.len() < 4 {
             return false;
@@ -93,6 +95,7 @@ pub fn crop_rgba(frame: &Frame, x: u32, y: u32, width: u32, height: u32) -> Resu
     })
 }
 
+#[cfg(any(target_os = "linux", test))]
 pub fn crop_desktop_to_monitor(
     frame: Frame,
     monitor: &super::geometry::MonitorGeom,

@@ -73,10 +73,12 @@ impl CaptureError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlatformFailure {
+    #[cfg_attr(windows, allow(dead_code))]
     PermissionDenied,
     Api(String),
     #[allow(dead_code)]
     NoInterface(String),
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     BufferEmpty,
     BufferZeroSize,
     BufferUninitialized,
@@ -104,21 +106,14 @@ pub fn classify_platform_failure(failure: PlatformFailure) -> CaptureError {
 
 pub fn permission_hint() -> String {
     #[cfg(target_os = "macos")]
-    {
-        return "请在系统设置 › 隐私与安全性 › 屏幕录制中打开 Cropmark，然后重新截取。".to_string();
-    }
+    let hint = "请在系统设置 › 隐私与安全性 › 屏幕录制中打开 Cropmark，然后重新截取。";
     #[cfg(windows)]
-    {
-        return "请在 Windows 设置 › 隐私和安全性 › 屏幕截图和屏幕录制中允许 Cropmark，然后重新截取。".to_string();
-    }
+    let hint = "请在 Windows 设置 › 隐私和安全性 › 屏幕截图和屏幕录制中允许 Cropmark，然后重新截取。";
     #[cfg(target_os = "linux")]
-    {
-        return "请在系统门户提示中允许截屏，并确认已安装 xdg-desktop-portal。".to_string();
-    }
+    let hint = "请在系统门户提示中允许截屏，并确认已安装 xdg-desktop-portal。";
     #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
-    {
-        "当前系统没有可用的截屏接口。".to_string()
-    }
+    let hint = "当前系统没有可用的截屏接口。";
+    hint.to_string()
 }
 
 #[cfg(test)]

@@ -64,6 +64,7 @@ impl ClipboardGuard {
         self.written = true;
     }
 
+    #[cfg(test)]
     pub fn on_cancel(&self) -> bool {
         !self.written
     }

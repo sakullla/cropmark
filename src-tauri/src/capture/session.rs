@@ -220,37 +220,39 @@ async fn wait_delay(app: &AppHandle, delay_ms: u64) -> Result<bool, CaptureError
     Ok(true)
 }
 
+#[cfg(windows)]
 async fn capture_region(app: &AppHandle) -> Result<(), CaptureError> {
-    #[cfg(windows)]
-    {
-        let handle = app.clone();
-        let picked = tauri::async_runtime::spawn_blocking(move || {
-            let (frame, monitor) = grab_pointer_screen(&handle)?;
-            store_pixels(&handle, frame.clone(), monitor.clone())?;
-            super::native_overlay::pick_region(&frame, &monitor)
-        })
-        .await
-        .map_err(|_| CaptureError::api("截取线程失败。"))??;
-        let handle = app.clone();
-        return tauri::async_runtime::spawn_blocking(move || match picked {
-            Some(rect) => confirm_region(
-                &handle,
-                RegionSelection {
-                    x: rect.x,
-                    y: rect.y,
-                    width: rect.width,
-                    height: rect.height,
-                },
-            ),
-            None => cancel(&handle).map(|_| ()),
-        }).await.map_err(|_| CaptureError::api("截取线程失败。"))?;
-    }
-    #[cfg(not(windows))]
-    {
-        let monitor = freeze_screen(app, Vec::new()).await?;
-        ui::open_overlay(app, &monitor)?;
-        Ok(())
-    }
+    let handle = app.clone();
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        let (frame, monitor) = grab_pointer_screen(&handle)?;
+        store_pixels(&handle, frame.clone(), monitor.clone())?;
+        super::native_overlay::pick_region(&frame, &monitor)
+    })
+    .await
+    .map_err(|_| CaptureError::api("截取线程失败。"))??;
+    let handle = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || match picked {
+        Some(rect) => confirm_region(
+            &handle,
+            RegionSelection {
+                x: rect.x,
+                y: rect.y,
+                width: rect.width,
+                height: rect.height,
+            },
+        ),
+        None => cancel(&handle).map(|_| ()),
+    })
+    .await
+    .map_err(|_| CaptureError::api("截取线程失败。"))?;
+    result
+}
+
+#[cfg(not(windows))]
+async fn capture_region(app: &AppHandle) -> Result<(), CaptureError> {
+    let monitor = freeze_screen(app, Vec::new()).await?;
+    ui::open_overlay(app, &monitor)?;
+    Ok(())
 }
 
 async fn capture_window_mode(app: &AppHandle) -> Result<(), CaptureError> {
@@ -456,9 +458,7 @@ pub fn cancel(app: &AppHandle) -> Result<CancelOutcome, CaptureError> {
 
 fn cancel_internal(app: &AppHandle) -> Result<CancelOutcome, CaptureError> {
     let restore = with_session_mut(app, |session| {
-        let Some(current) = session.as_mut() else {
-            return None;
-        };
+        let current = session.as_mut()?;
         current.cancelled = true;
         Some(current.hide.restore_on_cancel())
     });
@@ -595,6 +595,7 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+#[cfg(test)]
 pub fn cancel_without_side_effects(
     clipboard_written: bool,
     file_written: bool,

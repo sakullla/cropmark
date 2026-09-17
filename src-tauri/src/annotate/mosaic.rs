@@ -1,3 +1,4 @@
+#[allow(clippy::too_many_arguments)]
 pub fn pixelate(
     rgba: &mut [u8],
     width: u32,
@@ -40,9 +41,9 @@ pub fn pixelate(
             }
             if count > 0 {
                 let avg = [
-                    (sum[0] / count) as u8,
-                    (sum[1] / count) as u8,
-                    (sum[2] / count) as u8,
+                    sum[0].checked_div(count).unwrap_or_default() as u8,
+                    sum[1].checked_div(count).unwrap_or_default() as u8,
+                    sum[2].checked_div(count).unwrap_or_default() as u8,
                 ];
                 for py in by..by + bh {
                     for px in bx..bx + bw {

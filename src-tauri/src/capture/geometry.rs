@@ -29,6 +29,7 @@ pub struct PhysicalRect {
 }
 
 impl MonitorGeom {
+    #[cfg(test)]
     pub fn from_logical(
         id: impl Into<String>,
         logical_x: i32,
@@ -82,6 +83,7 @@ impl MonitorGeom {
             && y < self.physical_y + self.physical_height as i32
     }
 
+    #[cfg(test)]
     pub fn contains_logical(&self, x: i32, y: i32) -> bool {
         x >= self.logical_x
             && y >= self.logical_y
@@ -90,14 +92,15 @@ impl MonitorGeom {
     }
 }
 
-pub fn monitor_at_physical<'a>(
-    monitors: &'a [MonitorGeom],
+pub fn monitor_at_physical(
+    monitors: &[MonitorGeom],
     x: i32,
     y: i32,
-) -> Option<&'a MonitorGeom> {
+) -> Option<&MonitorGeom> {
     monitors.iter().find(|monitor| monitor.contains_physical(x, y))
 }
 
+#[cfg(test)]
 pub fn normalize_logical_rect(x0: f64, y0: f64, x1: f64, y1: f64) -> LogicalRect {
     let x = x0.min(x1);
     let y = y0.min(y1);
@@ -123,10 +126,12 @@ pub fn crop_from_logical(scale: f64, rect: LogicalRect, frame_w: u32, frame_h: u
     }
 }
 
+#[cfg(test)]
 fn scale_i32(value: i32, scale: f64) -> i32 {
     (value as f64 * scale).round() as i32
 }
 
+#[cfg(test)]
 fn scale_u32(value: u32, scale: f64) -> u32 {
     (value as f64 * scale).round() as u32
 }

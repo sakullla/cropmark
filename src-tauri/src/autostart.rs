@@ -6,7 +6,9 @@ use serde::Serialize;
 pub enum PlatformStatus {
     Enabled,
     NotRegistered,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     RequiresApproval,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     NotFound,
     Denied(String),
 }
@@ -355,6 +357,7 @@ mod linux {
     }
 }
 
+#[cfg(test)]
 pub fn linux_desktop_entry(exe: &Path) -> String {
     format!(
         "[Desktop Entry]\n\
@@ -372,6 +375,7 @@ pub fn linux_desktop_entry(exe: &Path) -> String {
     )
 }
 
+#[cfg(test)]
 pub fn linux_desktop_enabled(body: &str, exe: &Path) -> bool {
     let hidden = body.lines().any(|line| {
         let line = line.trim();
@@ -392,23 +396,28 @@ pub fn linux_desktop_enabled(body: &str, exe: &Path) -> bool {
     })
 }
 
+#[cfg(test)]
 pub fn run_command_for_exe(exe: &Path) -> String {
     format!("\"{}\"", exe.display())
 }
 
+#[cfg(test)]
 pub fn run_command_matches(stored: &str, exe: &Path) -> bool {
     normalize_command(stored) == normalize_command(&run_command_for_exe(exe))
         || normalize_command(stored) == normalize_path(exe)
 }
 
+#[cfg(test)]
 fn normalize_command(value: &str) -> String {
     normalize_path_str(value.trim().trim_matches('"'))
 }
 
+#[cfg(test)]
 fn normalize_path(path: &Path) -> String {
     normalize_path_str(&path.display().to_string())
 }
 
+#[cfg(test)]
 fn normalize_path_str(value: &str) -> String {
     value.replace('/', "\\").to_ascii_lowercase()
 }

@@ -242,7 +242,7 @@ unsafe fn paint(hwnd: HWND) {
                 biHeight: -state.height,
                 biPlanes: 1,
                 biBitCount: 32,
-                biCompression: BI_RGB.0 as u32,
+                biCompression: BI_RGB.0,
                 ..Default::default()
             },
             bmiColors: [RGBQUAD::default(); 1],

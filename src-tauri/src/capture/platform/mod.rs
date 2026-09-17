@@ -3,12 +3,14 @@ use super::error::CaptureError;
 use super::geometry::MonitorGeom;
 use super::windows_list::ListedWindow;
 
+#[cfg(any(target_os = "linux", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinuxCaptureBackend {
     Portal,
     X11,
 }
 
+#[cfg(any(target_os = "linux", test))]
 pub fn linux_capture_backend(wayland_display: Option<&str>) -> LinuxCaptureBackend {
     match wayland_display {
         Some(value) if !value.is_empty() => LinuxCaptureBackend::Portal,

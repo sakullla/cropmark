@@ -21,6 +21,7 @@ pub struct Rect {
 }
 
 impl Rect {
+    #[cfg(test)]
     pub fn from_points(a: (f64, f64), b: (f64, f64)) -> Self {
         let x = a.0.min(b.0);
         let y = a.1.min(b.1);
@@ -235,7 +236,7 @@ fn needs_space(prev: &TextSpan, next: &TextSpan, gap: f64) -> bool {
 
 fn is_ascii_token(text: &str) -> bool {
     let trimmed = text.trim();
-    !trimmed.is_empty() && trimmed.chars().all(|ch| ch.is_ascii())
+    !trimmed.is_empty() && trimmed.is_ascii()
 }
 
 fn same_line(a: &TextSpan, b: &TextSpan) -> bool {

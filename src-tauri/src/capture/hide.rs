@@ -88,6 +88,7 @@ impl HideWait {
         }
     }
 
+    #[cfg(test)]
     pub fn set_still_visible(&mut self, visible: bool) {
         self.still_visible = visible;
         if visible {
@@ -144,6 +145,7 @@ pub fn plan_delay(delay_ms: u64) -> DelayPlan {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionStep {
     RecordSurfaces,
@@ -155,6 +157,7 @@ pub enum SessionStep {
     OpenPreview,
 }
 
+#[cfg(test)]
 pub fn session_steps(region: bool, delay_ms: u64) -> Vec<SessionStep> {
     let mut steps = vec![
         SessionStep::RecordSurfaces,
