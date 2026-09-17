@@ -488,9 +488,11 @@ export function mountPreview(root: HTMLElement): void {
     }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
+      event.stopPropagation();
       commitEditor();
     } else if (event.key === "Escape") {
       event.preventDefault();
+      event.stopPropagation();
       cancelEditor();
     }
   });
@@ -861,11 +863,16 @@ function resolveCanvasColor(raw: string, fallback: string): string {
 }
 
 function withAlpha(color: string, alpha: number): string {
-  const rgb = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/.exec(color.trim());
+  let value = color.trim();
+  if (!/^rgba?\(/.test(value) && !/^#[0-9a-f]{3,8}$/i.test(value)) {
+    // 非 hex/rgb 形式(如 color-mix() 计算结果)先规范化为 rgb()
+    value = resolveCanvasColor(value, "");
+  }
+  const rgb = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/.exec(value);
   if (rgb) {
     return `rgba(${rgb[1]}, ${rgb[2]}, ${rgb[3]}, ${alpha})`;
   }
-  const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})(?:[0-9a-f]{2})?$/i.exec(color.trim());
+  const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})(?:[0-9a-f]{2})?$/i.exec(value);
   if (hex) {
     let body = hex[1];
     if (body.length === 3) {
@@ -879,10 +886,12 @@ function withAlpha(color: string, alpha: number): string {
     const b = parseInt(body.slice(4, 6), 16);
     return `rgba(${r}, ${g}, ${b}, ${alpha})`;
   }
-  return color;
+  // 解析失败回退固定 OCR 高亮蓝,保证高亮始终半透明
+  return `rgba(14, 165, 233, ${alpha})`;
 }
 
-function invokeError(error: unknown, fallback: string): string {  if (typeof error === "string" && error.trim()) {
+function invokeError(error: unknown, fallback: string): string {
+  if (typeof error === "string" && error.trim()) {
     return error;
   }
   if (error && typeof error === "object" && "message" in error) {

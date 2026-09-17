@@ -119,7 +119,6 @@ export function mountSettings(root: HTMLElement): void {
       button.className = "hotkey-btn";
       button.dataset.mode = mode;
       button.title = "点击后按下新组合，Esc 取消";
-      button.setAttribute("aria-live", "polite");
       button.setAttribute(
         "aria-label",
         recording === mode
@@ -130,9 +129,6 @@ export function mountSettings(root: HTMLElement): void {
         recording === mode ? "按下新热键…" : displayAccelerator(settings.hotkeys[mode]);
       if (recording === mode) {
         button.classList.add("recording");
-      }
-      if (errorText) {
-        button.setAttribute("aria-invalid", "true");
       }
 
       const error = document.createElement("p");

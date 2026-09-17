@@ -1,7 +1,7 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Serialize;
 use tauri::{
-    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, Position, Size, WebviewUrl,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition, Position, Size, WebviewUrl,
     WebviewWindow, WebviewWindowBuilder,
 };
 
@@ -140,11 +140,19 @@ pub fn open_overlay(app: &AppHandle, monitor: &MonitorGeom) -> Result<WebviewWin
 
 pub fn open_preview(app: &AppHandle, frame: &Frame) -> Result<WebviewWindow, CaptureError> {
     hide_window(app, OVERLAY);
-    let (work_w, work_h) = target_work_area(app).unwrap_or((1920.0, 1080.0));
+    let area = target_work_area(app);
+    let (work_w, work_h) = area.map(|(.., w, h)| (w, h)).unwrap_or((1920.0, 1080.0));
     let (width, height) = preview_size(frame, work_w, work_h);
     let window = ensure_window(app, PREVIEW, "preview", width, height, false, false)?;
     let _ = window.set_size(Size::Logical(LogicalSize { width, height }));
-    let _ = window.center();
+    if let Some((x, y, ..)) = area {
+        let _ = window.set_position(Position::Logical(LogicalPosition {
+            x: centered_offset(x, work_w, width),
+            y: centered_offset(y, work_h, height),
+        }));
+    } else {
+        let _ = window.center();
+    }
     let _ = window.set_skip_taskbar(false);
     let _ = window.set_always_on_top(true);
     let _ = window.show();
@@ -226,7 +234,7 @@ fn builder<'a>(
     .closable(true))
 }
 
-fn target_work_area(app: &AppHandle) -> Option<(f64, f64)> {
+fn target_work_area(app: &AppHandle) -> Option<(f64, f64, f64, f64)> {
     let monitor = app
         .cursor_position()
         .ok()
@@ -235,9 +243,15 @@ fn target_work_area(app: &AppHandle) -> Option<(f64, f64)> {
     let area = monitor.work_area();
     let scale = monitor.scale_factor().max(f64::EPSILON);
     Some((
+        area.position.x as f64 / scale,
+        area.position.y as f64 / scale,
         area.size.width as f64 / scale,
         area.size.height as f64 / scale,
     ))
+}
+
+fn centered_offset(origin: f64, area: f64, window: f64) -> f64 {
+    origin + (area - window).max(0.0) / 2.0
 }
 
 fn preview_size(frame: &Frame, work_w: f64, work_h: f64) -> (f64, f64) {
@@ -307,8 +321,15 @@ mod tests {
     }
 
     #[test]
-    fn preview_minimum_yields_to_tiny_work_area() {
-        let (width, height) = preview_size(&frame(100, 100), 500.0, 400.0);
+    fn centered_offset_centers_inside_target_work_area() {
+        assert_eq!(centered_offset(100.0, 1920.0, 800.0), 100.0 + 560.0);
+        assert_eq!(centered_offset(0.0, 500.0, 480.0), 10.0);
+        // 窗口大于工作区时贴齐原点,不产生负偏移
+        assert_eq!(centered_offset(50.0, 400.0, 600.0), 50.0);
+    }
+
+    #[test]
+    fn preview_minimum_yields_to_tiny_work_area() {        let (width, height) = preview_size(&frame(100, 100), 500.0, 400.0);
         assert!(width <= 500.0 * 0.9);
         assert!(height <= 400.0 * 0.9);
     }
