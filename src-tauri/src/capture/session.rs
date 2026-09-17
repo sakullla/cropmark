@@ -248,32 +248,97 @@ async fn wait_delay(app: &AppHandle, delay_ms: u64) -> Result<bool, CaptureError
     Ok(true)
 }
 
+// 选区壳回调线程:壳与窗口消息泵在同一阻塞线程内同步运行,回调经此
+// thread-local 取回 AppHandle(壳保持平台/运行时无关)。
+#[cfg(windows)]
+thread_local! {
+    static SHELL_APP: std::cell::RefCell<Option<AppHandle>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// C 键取色回调:复制 HEX+RGB 文本并 toast 反馈;剪贴板失败提示失败。
+#[cfg(windows)]
+fn copy_color_feedback(text: &str, hex: &str) {
+    if std::env::var_os("CROPMARK_CAPTURE_TIMING").is_some() {
+        eprintln!("Cropmark color copy: hook ran, hex={hex}");
+    }
+    let toast = |message: String| {
+        SHELL_APP.with(|slot| {
+            if let Some(app) = slot.borrow().as_ref() {
+                ui::show_toast(app, &message);
+            } else if std::env::var_os("CROPMARK_CAPTURE_TIMING").is_some() {
+                eprintln!("Cropmark color copy: no app in thread-local");
+            }
+        });
+    };
+    match clipboard::copy_text(text) {
+        Ok(()) => toast(format!("已复制色值 {hex}。")),
+        Err(_) => toast("复制色值失败，请重试。".to_string()),
+    }
+}
+
 #[cfg(windows)]
 async fn capture_region(app: &AppHandle) -> Result<(), CaptureError> {
+    use super::native_overlay::RegionOutcome;
+
     let handle = app.clone();
     let picked = tauri::async_runtime::spawn_blocking(move || {
         let (frame, monitor) = grab_pointer_screen(&handle)?;
         store_pixels(&handle, frame.clone(), monitor.clone())?;
-        super::native_overlay::pick_region(&frame, &monitor)
+        // 壳回调在同一线程内同步执行,经 thread-local 取回 AppHandle。
+        SHELL_APP.with(|slot| *slot.borrow_mut() = Some(handle.clone()));
+        let picked = super::native_overlay::pick_region(
+            &frame,
+            &monitor,
+            super::selection::FeatureFlags::default(),
+            super::native_overlay::ShellHooks {
+                copy_color: copy_color_feedback,
+            },
+        );
+        SHELL_APP.with(|slot| *slot.borrow_mut() = None);
+        picked
     })
     .await
     .map_err(|_| CaptureError::api("截取线程失败。"))??;
-    let handle = app.clone();
-    let result = tauri::async_runtime::spawn_blocking(move || match picked {
-        Some(rect) => confirm_region(
-            &handle,
-            RegionSelection {
-                x: rect.x,
-                y: rect.y,
-                width: rect.width,
-                height: rect.height,
-            },
-        ),
-        None => cancel(&handle).map(|_| ()),
-    })
-    .await
-    .map_err(|_| CaptureError::api("截取线程失败。"))?;
-    result
+    match picked {
+        // Enter/标注:沿用 Preview 完成路径(裁剪+剪贴板+预览)。
+        RegionOutcome::Preview(rect) => {
+            let handle = app.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                confirm_region(
+                    &handle,
+                    RegionSelection {
+                        x: rect.x,
+                        y: rect.y,
+                        width: rect.width,
+                        height: rect.height,
+                    },
+                )
+            })
+            .await
+            .map_err(|_| CaptureError::api("截取线程失败。"))?
+        }
+        // 操作条/菜单动作:静默完成并执行动作(不开预览)。
+        RegionOutcome::Quiet(rect, action) => {
+            finish_region_with(
+                app,
+                RegionSelection {
+                    x: rect.x,
+                    y: rect.y,
+                    width: rect.width,
+                    height: rect.height,
+                },
+                action,
+            )
+            .await
+        }
+        RegionOutcome::Cancelled => {
+            let handle = app.clone();
+            tauri::async_runtime::spawn_blocking(move || cancel(&handle).map(|_| ()))
+                .await
+                .map_err(|_| CaptureError::api("截取线程失败。"))?
+        }
+    }
 }
 
 #[cfg(not(windows))]
@@ -284,9 +349,10 @@ async fn capture_region(app: &AppHandle) -> Result<(), CaptureError> {
 }
 
 async fn capture_window_mode(app: &AppHandle) -> Result<(), CaptureError> {
-    let windows = tauri::async_runtime::spawn_blocking(move || platform::list_windows(platform::self_pid()))
-        .await
-        .map_err(|_| CaptureError::api("无法列出窗口。"))??;
+    let windows =
+        tauri::async_runtime::spawn_blocking(move || platform::list_windows(platform::self_pid()))
+            .await
+            .map_err(|_| CaptureError::api("无法列出窗口。"))??;
     if windows.is_empty() {
         return Err(CaptureError::unavailable(
             "没有可截取的窗口，或当前桌面无法列出窗口。请改用区域或全屏截取。",
@@ -301,13 +367,16 @@ async fn capture_fullscreen(app: &AppHandle) -> Result<(), CaptureError> {
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let (frame, _) = grab_pointer_screen(&handle)?;
-        finish(&handle, frame, FinishDisposition::Preview)
+        finish(&handle, frame, FinishDisposition::Preview).map(|_| ())
     })
     .await
     .map_err(|_| CaptureError::api("截取线程失败。"))?
 }
 
-async fn freeze_screen(app: &AppHandle, windows: Vec<ListedWindow>) -> Result<MonitorGeom, CaptureError> {
+async fn freeze_screen(
+    app: &AppHandle,
+    windows: Vec<ListedWindow>,
+) -> Result<MonitorGeom, CaptureError> {
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let (frame, monitor) = grab_pointer_screen(&handle)?;
@@ -454,10 +523,16 @@ pub fn confirm_region(app: &AppHandle, selection: RegionSelection) -> Result<(),
             .freeze
             .as_ref()
             .ok_or_else(|| CaptureError::invalid_buffer("未初始化"))?;
-        crop_rgba(freeze, selection.x, selection.y, selection.width, selection.height)
+        crop_rgba(
+            freeze,
+            selection.x,
+            selection.y,
+            selection.width,
+            selection.height,
+        )
     })?;
     ui::hide_window(app, ui::OVERLAY);
-    finish(app, frame, FinishDisposition::Preview)
+    finish(app, frame, FinishDisposition::Preview).map(|_| ())
 }
 
 pub fn confirm_logical_region(app: &AppHandle, rect: LogicalRect) -> Result<(), CaptureError> {
@@ -467,7 +542,12 @@ pub fn confirm_logical_region(app: &AppHandle, rect: LogicalRect) -> Result<(), 
             .freeze
             .as_ref()
             .ok_or_else(|| CaptureError::invalid_buffer("未初始化"))?;
-        Ok(crop_from_logical(frame.scale, rect, frame.width, frame.height))
+        Ok(crop_from_logical(
+            frame.scale,
+            rect,
+            frame.width,
+            frame.height,
+        ))
     })?;
     confirm_region(
         app,
@@ -487,7 +567,56 @@ pub fn confirm_window(app: &AppHandle, window_id: String) -> Result<(), CaptureE
         return Err(CaptureError::cancelled());
     }
     let frame = platform::capture_window(&window_id)?;
-    finish(app, frame, FinishDisposition::Preview)
+    finish(app, frame, FinishDisposition::Preview).map(|_| ())
+}
+
+/// 完成路径的结果摘要(供动作反馈区分剪贴板成败)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FinishSummary {
+    pub clipboard_written: bool,
+}
+
+/// 守卫:仅活动 overlay 会话(busy 且已持冻结帧、未取消)允许静默裁剪;
+/// idle-with-frame(TTL 保留帧)期间重复 invoke 直接拒绝,防止误裁旧帧。
+fn allows_quiet_finish(session: &ActiveSession) -> bool {
+    session.busy && !session.cancelled && session.freeze.is_some()
+}
+
+fn quiet_finish_allowed(app: &AppHandle) -> bool {
+    with_session(app, |session| {
+        session.as_ref().is_some_and(allows_quiet_finish)
+    })
+}
+
+/// 带守卫的静默完成入口:命令层 `finish_region_with` 与 Windows 选区壳的
+/// 操作条/菜单动作共用。完成后按动作给出反馈;复制在剪贴板写入失败时
+/// 提示失败而非「已复制」。
+pub async fn finish_region_with(
+    app: &AppHandle,
+    selection: RegionSelection,
+    action: QuietAction,
+) -> Result<(), CaptureError> {
+    let handle = app.clone();
+    let finish = tauri::async_runtime::spawn_blocking(move || {
+        if !quiet_finish_allowed(&handle) {
+            return Err(CaptureError::api("当前没有进行中的区域截取。"));
+        }
+        finish_region_quiet(&handle, selection, DEFAULT_FRAME_TTL)
+    })
+    .await
+    .map_err(|_| CaptureError::api("截取线程失败。"))??;
+    match action {
+        QuietAction::Copy => {
+            if finish.clipboard_written {
+                ui::show_toast(app, "已复制到剪贴板。");
+            } else {
+                ui::show_toast(app, "复制失败，请重试。");
+            }
+        }
+        // 保存/取字/贴图沿用命令层的统一动作分发(保存对话框、离线 OCR、toast)。
+        other => super::run_quiet_action(app, other).await,
+    }
+    Ok(())
 }
 
 /// Quiet completion of an explicit region: the cropped frame still reaches the
@@ -497,14 +626,20 @@ pub fn finish_region_quiet(
     app: &AppHandle,
     selection: RegionSelection,
     ttl: Duration,
-) -> Result<(), CaptureError> {
+) -> Result<FinishSummary, CaptureError> {
     let frame = with_session(app, |session| {
         let session = session.as_ref().ok_or_else(CaptureError::cancelled)?;
         let freeze = session
             .freeze
             .as_ref()
             .ok_or_else(|| CaptureError::invalid_buffer("未初始化"))?;
-        crop_rgba(freeze, selection.x, selection.y, selection.width, selection.height)
+        crop_rgba(
+            freeze,
+            selection.x,
+            selection.y,
+            selection.width,
+            selection.height,
+        )
     })?;
     ui::hide_window(app, ui::OVERLAY);
     finish_with_ttl(app, frame, FinishDisposition::Quiet, ttl)
@@ -538,7 +673,7 @@ fn finish(
     app: &AppHandle,
     frame: Frame,
     disposition: FinishDisposition,
-) -> Result<(), CaptureError> {
+) -> Result<FinishSummary, CaptureError> {
     finish_with_ttl(app, frame, disposition, DEFAULT_FRAME_TTL)
 }
 
@@ -547,7 +682,7 @@ fn finish_with_ttl(
     frame: Frame,
     disposition: FinishDisposition,
     frame_ttl: Duration,
-) -> Result<(), CaptureError> {
+) -> Result<FinishSummary, CaptureError> {
     let started = Instant::now();
     if is_cancelled(app) {
         return Err(CaptureError::cancelled());
@@ -579,7 +714,12 @@ fn finish_with_ttl(
             ui::open_preview(app, &frame)?;
             with_session_mut(app, |session| {
                 if let Some(current) = session.as_mut() {
-                    finish_transition(current, FinishDisposition::Preview, Instant::now(), frame_ttl);
+                    finish_transition(
+                        current,
+                        FinishDisposition::Preview,
+                        Instant::now(),
+                        frame_ttl,
+                    );
                 }
             });
             None
@@ -599,15 +739,23 @@ fn finish_with_ttl(
         spawn_frame_ttl_cleanup(app.clone(), deadline);
     }
     if std::env::var_os("CROPMARK_CAPTURE_TIMING").is_some() {
-        eprintln!("Cropmark capture {}x{}: PNG={:?}, clipboard={:?}, preview={:?}, total={:?}",
-            frame.width, frame.height, encoded_at, copied_at - encoded_at,
-            started.elapsed() - copied_at, started.elapsed());
+        eprintln!(
+            "Cropmark capture {}x{}: PNG={:?}, clipboard={:?}, preview={:?}, total={:?}",
+            frame.width,
+            frame.height,
+            encoded_at,
+            copied_at - encoded_at,
+            started.elapsed() - copied_at,
+            started.elapsed()
+        );
     }
-    if let Some(error) = clipboard_error {
+    if let Some(ref error) = clipboard_error {
         set_last_error(app, Some(error.clone()));
-        let _ = ui::open_error(app, &error);
+        let _ = ui::open_error(app, error);
     }
-    Ok(())
+    Ok(FinishSummary {
+        clipboard_written: clipboard_error.is_none(),
+    })
 }
 
 /// Session state transition at the end of a finish. Split out so the quiet
@@ -633,7 +781,9 @@ fn finish_transition(
 }
 
 fn frame_expired(session: &ActiveSession, now: Instant) -> bool {
-    session.frame_deadline.is_some_and(|deadline| now >= deadline)
+    session
+        .frame_deadline
+        .is_some_and(|deadline| now >= deadline)
 }
 
 /// Only the exact idle quiet session whose deadline elapsed may be released,
@@ -697,7 +847,10 @@ fn finish_error(app: &AppHandle, error: CaptureError) -> Result<(), CaptureError
 
 fn is_cancelled(app: &AppHandle) -> bool {
     with_session(app, |session| {
-        session.as_ref().map(|current| current.cancelled).unwrap_or(true)
+        session
+            .as_ref()
+            .map(|current| current.cancelled)
+            .unwrap_or(true)
     })
 }
 
@@ -728,7 +881,9 @@ fn set_last_error(app: &AppHandle, error: Option<CaptureError>) {
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[cfg(test)]
@@ -820,12 +975,20 @@ mod tests {
             scale: 1.0,
         });
         let now = Instant::now();
-        finish_transition(&mut session, FinishDisposition::Quiet, now, DEFAULT_FRAME_TTL);
+        finish_transition(
+            &mut session,
+            FinishDisposition::Quiet,
+            now,
+            DEFAULT_FRAME_TTL,
+        );
         assert!(!session.busy);
         assert!(session.preview.is_none());
         assert!(session.freeze.is_some());
         assert_eq!(session.frame_deadline, Some(now + DEFAULT_FRAME_TTL));
-        assert!(!frame_expired(&session, now + DEFAULT_FRAME_TTL - Duration::from_millis(1)));
+        assert!(!frame_expired(
+            &session,
+            now + DEFAULT_FRAME_TTL - Duration::from_millis(1)
+        ));
         assert!(frame_expired(&session, now + DEFAULT_FRAME_TTL));
     }
 
@@ -849,10 +1012,40 @@ mod tests {
     }
 
     #[test]
+    fn quiet_finish_guard_allows_only_active_overlay_session() {
+        let mut session = active_session();
+        session.freeze = Some(Frame {
+            width: 2,
+            height: 2,
+            rgba: vec![0; 16],
+            scale: 1.0,
+        });
+        // 活动 overlay 会话:允许静默裁剪。
+        assert!(allows_quiet_finish(&session));
+        // idle-with-frame(静默完成后的 TTL 保留帧):拒绝,防误裁旧帧。
+        session.busy = false;
+        session.frame_deadline = Some(Instant::now() + DEFAULT_FRAME_TTL);
+        assert!(!allows_quiet_finish(&session));
+        // 取消中的会话同样拒绝。
+        session.busy = true;
+        session.cancelled = true;
+        assert!(!allows_quiet_finish(&session));
+        // 尚未持冻结帧:拒绝。
+        session.cancelled = false;
+        session.freeze = None;
+        assert!(!allows_quiet_finish(&session));
+    }
+
+    #[test]
     fn ttl_release_matches_only_idle_quiet_session_deadline() {
         let mut session = active_session();
         let now = Instant::now();
-        finish_transition(&mut session, FinishDisposition::Quiet, now, Duration::from_millis(50));
+        finish_transition(
+            &mut session,
+            FinishDisposition::Quiet,
+            now,
+            Duration::from_millis(50),
+        );
         let deadline = session.frame_deadline.expect("quiet sets a deadline");
         assert!(should_release_frame(&session, deadline));
         // A new capture in flight must not be released by a stale cleanup task.
@@ -860,7 +1053,13 @@ mod tests {
         assert!(!should_release_frame(&session, deadline));
         // A different deadline (a newer quiet finish) is not ours to release.
         session.busy = false;
-        assert!(!should_release_frame(&session, deadline + Duration::from_secs(1)));
-        assert!(!should_release_frame(&session, deadline - Duration::from_secs(1)));
+        assert!(!should_release_frame(
+            &session,
+            deadline + Duration::from_secs(1)
+        ));
+        assert!(!should_release_frame(
+            &session,
+            deadline - Duration::from_secs(1)
+        ));
     }
 }
