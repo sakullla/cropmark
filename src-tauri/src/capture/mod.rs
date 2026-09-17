@@ -5,6 +5,7 @@ pub mod hide;
 #[cfg(windows)]
 pub mod native_overlay;
 pub mod platform;
+pub mod selection;
 pub mod session;
 pub mod ui;
 pub mod windows_list;
