@@ -1,7 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import "../overlay/overlay.css";
 import "./preview.css";
 
 interface PreviewFrame {
@@ -34,7 +33,11 @@ interface OcrDocument {
   fullText: string;
 }
 
-const STROKE = "#E11D48";
+type NoteKind = "success" | "feedback" | "error";
+
+const FALLBACK_STROKE = "#e11d48";
+const FALLBACK_OCR_HL = "#0ea5e9";
+const FALLBACK_OCR_HL_STRONG = "#0369a1";
 
 const ICONS: Record<Exclude<Tool, "ocr"> | "undo", string> = {
   arrow: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 12.5 12.5 3.5M7 3.5h5.5V9" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
@@ -58,17 +61,17 @@ export function mountPreview(root: HTMLElement): void {
     </header>
     <div class="preview-toolbar">
       <div class="preview-tools" role="toolbar" aria-label="标注">
-        <button type="button" data-tool="arrow" title="箭头" aria-label="箭头">${ICONS.arrow}</button>
-        <button type="button" data-tool="rect" title="框" aria-label="框">${ICONS.rect}</button>
-        <button type="button" data-tool="mosaic" title="马赛克" aria-label="马赛克">${ICONS.mosaic}</button>
-        <button type="button" data-tool="text" title="文字框" aria-label="文字框" class="tool-text">${ICONS.text}<span>文字</span></button>
-        <button type="button" data-action="undo" title="撤销" aria-label="撤销">${ICONS.undo}</button>
+        <button type="button" data-tool="arrow" title="箭头 (A)" aria-label="箭头">${ICONS.arrow}</button>
+        <button type="button" data-tool="rect" title="框 (R)" aria-label="框">${ICONS.rect}</button>
+        <button type="button" data-tool="mosaic" title="马赛克 (M)" aria-label="马赛克">${ICONS.mosaic}</button>
+        <button type="button" data-tool="text" title="文字框 (T)" aria-label="文字框" class="tool-text">${ICONS.text}<span>文字</span></button>
+        <button type="button" data-action="undo" title="撤销 (Ctrl+Z)" aria-label="撤销">${ICONS.undo}</button>
       </div>
       <div class="preview-actions">
-        <button type="button" data-tool="ocr" title="取字">取字</button>
+        <button type="button" data-tool="ocr" title="取字 (O)">取字</button>
         <button type="button" data-action="copy-ocr-all" hidden>复制全部</button>
-        <button type="button" data-action="save">保存</button>
-        <button type="button" class="primary" data-action="copy">复制</button>
+        <button type="button" data-action="save" title="保存 (Ctrl+S)">保存</button>
+        <button type="button" class="primary" data-action="copy" title="复制 (Ctrl+C)">复制</button>
       </div>
     </div>
     <div class="preview-stage">
@@ -100,6 +103,21 @@ export function mountPreview(root: HTMLElement): void {
     return;
   }
 
+  const rootStyle = getComputedStyle(root);
+  const strokeColor = resolveCanvasColor(rootStyle.getPropertyValue("--stroke"), FALLBACK_STROKE);
+  const ocrHl = resolveCanvasColor(rootStyle.getPropertyValue("--ocr-hl"), FALLBACK_OCR_HL);
+  const ocrHlStrong = resolveCanvasColor(rootStyle.getPropertyValue("--ocr-hl-strong"), FALLBACK_OCR_HL_STRONG);
+  const ocrColors = {
+    hl: ocrHl,
+    hlStrong: ocrHlStrong,
+    fillWeak: withAlpha(ocrHl, 0.12),
+    fillStrong: withAlpha(ocrHl, 0.38),
+    fillRubber: withAlpha(ocrHl, 0.08),
+    strokeWeak: withAlpha(ocrHl, 0.55),
+    strokeStrong: withAlpha(ocrHlStrong, 0.95),
+    strokeRubber: withAlpha(ocrHlStrong, 0.9),
+  };
+
   let frame: PreviewFrame | null = null;
   let source: HTMLCanvasElement | null = null;
   let tool: Tool = "arrow";
@@ -123,9 +141,11 @@ export function mountPreview(root: HTMLElement): void {
   const textSize = (): number => Math.max(16, Math.round(14 * Math.max(frame?.scale ?? 1, 1)));
   const strokeWidth = (): number => Math.min(8, Math.max(2, 3 * Math.max(frame?.scale ?? 1, 1)));
 
-  const setNote = (text: string, isError = false): void => {
+  const setNote = (text: string, kind: NoteKind = "feedback"): void => {
     note.textContent = text;
-    note.classList.toggle("is-error", isError);
+    note.classList.toggle("is-success", kind === "success");
+    note.classList.toggle("is-feedback", kind === "feedback");
+    note.classList.toggle("is-error", kind === "error");
   };
 
   const setTool = (next: Tool): void => {
@@ -144,12 +164,12 @@ export function mountPreview(root: HTMLElement): void {
       if (!ocrDoc) {
         void runOcr();
       } else if (!note.classList.contains("is-error")) {
-        setNote("点选或划选文字，也可复制全部。", false);
+        setNote("点选或划选文字，也可复制全部。");
       }
     } else if (next === "text") {
-      setNote("点在图上放置文字框，然后输入汉字。Enter 确认，Esc 取消。", false);
+      setNote("点在图上放置文字框，然后输入汉字。Enter 确认，Esc 取消。");
     } else if (!note.classList.contains("is-error")) {
-      setNote(copied, false);
+      setNote(copied, "success");
     }
     redraw();
   };
@@ -183,18 +203,18 @@ export function mountPreview(root: HTMLElement): void {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(source, 0, 0);
     for (const op of annotations) {
-      paint(ctx, op, strokeWidth());
+      paint(ctx, op, strokeWidth(), strokeColor);
     }
     if (dragging && start && current && (tool === "arrow" || tool === "rect" || tool === "mosaic")) {
       const op = draft(tool, start, current, mosaicBlock());
       if (op) {
-        paint(ctx, op, strokeWidth());
+        paint(ctx, op, strokeWidth(), strokeColor);
       }
     }
     if (tool === "ocr" && ocrDoc) {
       const rubber =
         ocrDragging && ocrStart && ocrCurrent ? normalizeRect(ocrStart, ocrCurrent) : null;
-      paintOcr(ctx, ocrDoc.spans, ocrSelected, rubber);
+      paintOcr(ctx, ocrDoc.spans, ocrSelected, rubber, ocrColors);
     }
   };
 
@@ -272,7 +292,7 @@ export function mountPreview(root: HTMLElement): void {
     ocrDoc = null;
     ocrSelected = [];
     syncCopyAll();
-    setNote("正在识别…", false);
+    setNote("正在识别…");
     redraw();
     try {
       const doc = await invoke<OcrDocument>("recognize_preview");
@@ -281,7 +301,7 @@ export function mountPreview(root: HTMLElement): void {
       }
       ocrDoc = doc;
       syncCopyAll();
-      setNote("点选或划选文字，也可复制全部。", false);
+      setNote("点选或划选文字，也可复制全部。");
       redraw();
     } catch (error) {
       if (token !== ocrGen) {
@@ -289,7 +309,7 @@ export function mountPreview(root: HTMLElement): void {
       }
       ocrDoc = null;
       syncCopyAll();
-      setNote(invokeError(error, "无法识别图上的文字。"), true);
+      setNote(invokeError(error, "无法识别图上的文字。"), "error");
       redraw();
     } finally {
       if (token === ocrGen) {
@@ -310,9 +330,9 @@ export function mountPreview(root: HTMLElement): void {
           ? await invoke<string>("copy_ocr_point", { x: endPoint.x, y: endPoint.y })
           : await invoke<string>("copy_ocr_rect", normalizeRect(startPoint, endPoint));
       const snippet = copiedText.length > 24 ? `${copiedText.slice(0, 24)}…` : copiedText;
-      setNote(`已复制「${snippet}」`, false);
+      setNote(`已复制「${snippet}」`, "success");
     } catch (error) {
-      setNote(invokeError(error, "没有选中文字。"), true);
+      setNote(invokeError(error, "没有选中文字。"), "error");
     } finally {
       busy = false;
     }
@@ -325,9 +345,9 @@ export function mountPreview(root: HTMLElement): void {
     busy = true;
     try {
       await invoke<string>("copy_ocr_all");
-      setNote("已复制全部识别文本。", false);
+      setNote("已复制全部识别文本。", "success");
     } catch (error) {
-      setNote(invokeError(error, "没有识别到文字。"), true);
+      setNote(invokeError(error, "没有识别到文字。"), "error");
     } finally {
       busy = false;
     }
@@ -342,9 +362,9 @@ export function mountPreview(root: HTMLElement): void {
     try {
       await invoke("copy_preview_png", { annotations: exportList() });
       copied = annotations.length > 0 ? "已复制当前标注图" : "未标注图已复制";
-      setNote(copied, false);
+      setNote(copied, "success");
     } catch (error) {
-      setNote(invokeError(error, "无法把截图放入剪贴板。预览仍保留。"), true);
+      setNote(invokeError(error, "无法把截图放入剪贴板。预览仍保留。"), "error");
     } finally {
       busy = false;
     }
@@ -361,10 +381,10 @@ export function mountPreview(root: HTMLElement): void {
         annotations: exportList(),
       });
       if (result.saved) {
-        setNote("已保存 PNG。", false);
+        setNote("已保存 PNG。", "success");
       }
     } catch (error) {
-      setNote(invokeError(error, "无法保存 PNG。预览仍保留，可继续标注或复制。"), true);
+      setNote(invokeError(error, "无法保存 PNG。预览仍保留，可继续标注或复制。"), "error");
     } finally {
       busy = false;
     }
@@ -525,7 +545,7 @@ export function mountPreview(root: HTMLElement): void {
   }
 
   window.addEventListener("keydown", (event) => {
-    if (event.isComposing || composing) {
+    if (event.isComposing || composing || event.keyCode === 229) {
       return;
     }
     if (event.key === "Escape") {
@@ -537,9 +557,43 @@ export function mountPreview(root: HTMLElement): void {
       void invoke("close_preview");
       return;
     }
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z" && !editorOpen()) {
+    const mod = event.ctrlKey || event.metaKey;
+    if (mod) {
+      const key = event.key.toLowerCase();
+      if (key === "z" && !editorOpen()) {
+        event.preventDefault();
+        undo();
+        return;
+      }
+      if (key === "s") {
+        event.preventDefault();
+        void save();
+        return;
+      }
+      if (key === "c" && document.activeElement !== editor) {
+        const selection = window.getSelection();
+        if (selection && !selection.isCollapsed) {
+          return;
+        }
+        event.preventDefault();
+        void copy();
+      }
+      return;
+    }
+    if (event.altKey || event.shiftKey || document.activeElement === editor || editorOpen()) {
+      return;
+    }
+    const toolKeys: Record<string, Tool> = {
+      a: "arrow",
+      r: "rect",
+      m: "mosaic",
+      t: "text",
+      o: "ocr",
+    };
+    const nextTool = toolKeys[event.key.toLowerCase()];
+    if (nextTool) {
       event.preventDefault();
-      undo();
+      setTool(nextTool);
     }
   });
 
@@ -559,7 +613,7 @@ export function mountPreview(root: HTMLElement): void {
           source.height = payload.height;
           const sourceCtx = source.getContext("2d");
           if (!sourceCtx) {
-            setNote("无法显示预览图像。", true);
+            setNote("无法显示预览图像。", "error");
             return;
           }
           sourceCtx.drawImage(image, 0, 0, payload.width, payload.height);
@@ -568,7 +622,7 @@ export function mountPreview(root: HTMLElement): void {
         image.src = `data:image/png;base64,${payload.pngBase64}`;
       })
       .catch((error) => {
-        setNote(invokeError(error, "没有可预览的截图。"), true);
+        setNote(invokeError(error, "没有可预览的截图。"), "error");
       });
   };
 
@@ -601,14 +655,14 @@ function draft(tool: "arrow" | "rect" | "mosaic", start: Point, end: Point, bloc
   return { type: "rect", x, y, width, height };
 }
 
-function paint(ctx: CanvasRenderingContext2D, op: Annotation, lineWidth: number): void {
+function paint(ctx: CanvasRenderingContext2D, op: Annotation, lineWidth: number, stroke: string): void {
   if (op.type === "mosaic") {
     paintMosaic(ctx, op);
     return;
   }
   ctx.save();
-  ctx.strokeStyle = STROKE;
-  ctx.fillStyle = STROKE;
+  ctx.strokeStyle = stroke;
+  ctx.fillStyle = stroke;
   ctx.lineWidth = lineWidth;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
@@ -748,19 +802,31 @@ function indicesInRect(
     .map(({ index }) => index);
 }
 
+interface OcrColors {
+  hl: string;
+  hlStrong: string;
+  fillWeak: string;
+  fillStrong: string;
+  fillRubber: string;
+  strokeWeak: string;
+  strokeStrong: string;
+  strokeRubber: string;
+}
+
 function paintOcr(
   ctx: CanvasRenderingContext2D,
   spans: TextSpan[],
   selected: number[],
   rubber: { x: number; y: number; width: number; height: number } | null,
+  colors: OcrColors,
 ): void {
   ctx.save();
   const selectedSet = new Set(selected);
   for (let i = 0; i < spans.length; i += 1) {
     const span = spans[i];
     const on = selectedSet.has(i);
-    ctx.fillStyle = on ? "rgba(14, 165, 233, 0.38)" : "rgba(14, 165, 233, 0.12)";
-    ctx.strokeStyle = on ? "rgba(3, 105, 161, 0.95)" : "rgba(14, 165, 233, 0.55)";
+    ctx.fillStyle = on ? colors.fillStrong : colors.fillWeak;
+    ctx.strokeStyle = on ? colors.strokeStrong : colors.strokeWeak;
     ctx.lineWidth = Math.max(1, ctx.canvas.width / 900);
     ctx.beginPath();
     ctx.rect(span.x, span.y, span.width, span.height);
@@ -768,8 +834,8 @@ function paintOcr(
     ctx.stroke();
   }
   if (rubber && (rubber.width > 3 || rubber.height > 3)) {
-    ctx.fillStyle = "rgba(14, 165, 233, 0.08)";
-    ctx.strokeStyle = "rgba(3, 105, 161, 0.9)";
+    ctx.fillStyle = colors.fillRubber;
+    ctx.strokeStyle = colors.strokeRubber;
     ctx.setLineDash([6, 4]);
     ctx.fillRect(rubber.x, rubber.y, rubber.width, rubber.height);
     ctx.strokeRect(rubber.x, rubber.y, rubber.width, rubber.height);
@@ -777,8 +843,46 @@ function paintOcr(
   ctx.restore();
 }
 
-function invokeError(error: unknown, fallback: string): string {
-  if (typeof error === "string" && error.trim()) {
+function resolveCanvasColor(raw: string, fallback: string): string {
+  const value = raw.trim();
+  if (!value) {
+    return fallback;
+  }
+  if (/^#([0-9a-f]{3,8})$/i.test(value) || /^rgba?\(/.test(value)) {
+    return value;
+  }
+  const probe = document.createElement("span");
+  probe.style.color = value;
+  probe.style.display = "none";
+  document.body.appendChild(probe);
+  const resolved = getComputedStyle(probe).color;
+  probe.remove();
+  return resolved || fallback;
+}
+
+function withAlpha(color: string, alpha: number): string {
+  const rgb = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/.exec(color.trim());
+  if (rgb) {
+    return `rgba(${rgb[1]}, ${rgb[2]}, ${rgb[3]}, ${alpha})`;
+  }
+  const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})(?:[0-9a-f]{2})?$/i.exec(color.trim());
+  if (hex) {
+    let body = hex[1];
+    if (body.length === 3) {
+      body = body
+        .split("")
+        .map((ch) => ch + ch)
+        .join("");
+    }
+    const r = parseInt(body.slice(0, 2), 16);
+    const g = parseInt(body.slice(2, 4), 16);
+    const b = parseInt(body.slice(4, 6), 16);
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+  return color;
+}
+
+function invokeError(error: unknown, fallback: string): string {  if (typeof error === "string" && error.trim()) {
     return error;
   }
   if (error && typeof error === "object" && "message" in error) {
