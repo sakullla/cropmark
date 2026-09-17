@@ -7,8 +7,16 @@
   --line: rgba(28, 25, 23, 0.1);
   --accent: #0f766e;
   --accent-soft: rgba(15, 118, 110, 0.12);
+  --on-accent: #f5fffd;
   --danger: #b42318;
   --danger-soft: rgba(180, 35, 24, 0.1);
+  --on-danger: #ffffff;
+  --ok: #15803d;
+  --ok-soft: rgba(21, 128, 61, 0.12);
+  --knob: #ffffff;
+  --stroke: #e11d48;
+  --ocr-hl: #0ea5e9;
+  --ocr-hl-strong: #0369a1;
   --shadow: 0 18px 40px rgba(28, 25, 23, 0.16);
   font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
 }
@@ -22,14 +30,27 @@
     --line: rgba(245, 240, 232, 0.12);
     --accent: #2dd4bf;
     --accent-soft: rgba(45, 212, 191, 0.14);
+    --on-accent: #161412;
     --danger: #f97066;
     --danger-soft: rgba(249, 112, 102, 0.14);
+    --on-danger: #2b0603;
+    --ok: #4ade80;
+    --ok-soft: rgba(74, 222, 128, 0.16);
+    --knob: #f5f0e8;
+    --stroke: #fb7185;
+    --ocr-hl: #38bdf8;
+    --ocr-hl-strong: #7dd3fc;
     --shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
   }
 }
 
 * {
   box-sizing: border-box;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 html,
@@ -43,8 +64,7 @@ body,
 html[data-view="preview"],
 html[data-view="preview"] body,
 html[data-view="preview"] #app {
-  background: #f6f1e8;
-}
+  background: var(--bg);
   color: var(--ink);
 }
 
@@ -213,6 +233,10 @@ h1 {
   background: var(--accent-soft);
 }
 
+.hotkey-btn:focus-visible {
+  outline-offset: 1px;
+}
+
 .hotkey-row.has-error .hotkey-btn {
   border-color: var(--danger);
 }
@@ -248,7 +272,8 @@ h1 {
   width: 20px;
   height: 20px;
   border-radius: 50%;
-  background: white;
+  background: var(--knob);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--ink) 28%, transparent);
   transition: transform 120ms ease;
 }
 
