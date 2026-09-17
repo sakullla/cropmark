@@ -33,10 +33,10 @@ use objc2_app_kit::{
     NSEventType, NSGraphicsContext, NSResponder, NSScreen, NSView, NSWindow,
     NSWindowCollectionBehavior, NSWindowStyleMask,
 };
-use objc2_core_foundation::{CFRetained, CGPoint, CGRect, CGSize};
+use objc2_core_foundation::{CFRetained, CGPoint, CGRect, CGSize, CGFloat};
 use objc2_core_graphics::{
     kCGScreenSaverWindowLevel, CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGContext,
-    CGDataProvider, CGFloat, CGImage, CGImageAlphaInfo, CGImageByteOrderInfo,
+    CGDataProvider, CGImage, CGImageAlphaInfo, CGImageByteOrderInfo,
 };
 use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSPoint, NSRect, NSSize};
 
@@ -108,7 +108,7 @@ thread_local! {
     static STATE: RefCell<Option<ShellState>> = const { RefCell::new(None) };
 }
 
-/// 自定义内容视图:接收鼠标/键盘并转发引擎;drawRect 绘制缓存位图。
+// 自定义内容视图:接收鼠标/键盘并转发引擎;drawRect 绘制缓存位图。
 define_class!(
     // SAFETY: superclass 是 NSView;仅覆盖事件转发与绘制,无额外契约。
     #[unsafe(super(NSView))]
@@ -162,8 +162,8 @@ define_class!(
     }
 );
 
-/// 自定义窗口:borderless NSWindow 默认不能成为 key window,
-/// 覆盖 canBecomeKeyWindow/main 才能把键盘路由给内容视图。
+// 自定义窗口:borderless NSWindow 默认不能成为 key window,
+// 覆盖 canBecomeKeyWindow/main 才能把键盘路由给内容视图。
 define_class!(
     // SAFETY: superclass 是 NSWindow;只放行 key/main 资格,无额外契约。
     #[unsafe(super(NSWindow))]
@@ -273,7 +273,7 @@ fn run_on_main_thread(
     };
     unsafe {
         dispatch_sync_f(
-            std::ptr::addr_of_mut!(_dispatch_main_q),
+            std::ptr::addr_of!(_dispatch_main_q) as *mut DispatchQueueOpaque,
             std::ptr::addr_of_mut!(job).cast::<c_void>(),
             main_thread_entry,
         );
@@ -300,7 +300,8 @@ fn run_shell(
         });
     });
     let app = NSApplication::sharedApplication(mtm);
-    app.activateIgnoringOtherApps(true);
+    // AppKit 推荐 API(macOS 14+ 取代 deprecated 的 activateIgnoringOtherApps:)。
+    app.activate();
     let frame = screen_frame_for(mtm, &geometry);
     let view = unsafe { create_selection_view(mtm, frame.size) };
     let window = unsafe { create_key_window(mtm, frame)? };
@@ -376,9 +377,9 @@ unsafe fn create_key_window(
 ) -> Result<Retained<KeyWindow>, CaptureError> {
     let allocated = mtm.alloc::<KeyWindow>().set_ivars(());
     let window: Retained<KeyWindow> = msg_send![super(allocated),
-        initWithContentRect: content_rect
-        styleMask: NSWindowStyleMask::Borderless
-        backing: NSBackingStoreType::Buffered
+        initWithContentRect: content_rect,
+        styleMask: NSWindowStyleMask::Borderless,
+        backing: NSBackingStoreType::Buffered,
         defer: false];
     Ok(window)
 }
@@ -398,7 +399,8 @@ fn pump_until_done(app: &NSApplication) {
         let event = app.nextEventMatchingMask_untilDate_inMode_dequeue(
             NSEventMask::Any,
             Some(&NSDate::distantFuture()),
-            NSDefaultRunLoopMode,
+            // NSDefaultRunLoopMode 是 extern block static,读取需 unsafe。
+            unsafe { NSDefaultRunLoopMode },
             true,
         );
         if let Some(event) = event {
@@ -595,7 +597,12 @@ fn rebuild_image(state: &mut ShellState) {
     let h = state.canvas.height as usize;
     let buffer = &state.canvas.present_buf;
     let Some(provider) = (unsafe {
-        CGDataProvider::with_data(std::ptr::null_mut(), buffer.as_ptr(), buffer.len(), None)
+        CGDataProvider::with_data(
+            std::ptr::null_mut(),
+            buffer.as_ptr().cast::<c_void>(),
+            buffer.len(),
+            None,
+        )
     }) else {
         return;
     };
