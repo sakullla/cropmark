@@ -222,9 +222,16 @@ int32_t cropmark_sck_capture_at_point(int32_t px, int32_t py, CropmarkSckResult 
     cropmark_set_error(out, 4, "没有可用的显示器。");
     return -1;
   }
-  NSRunningApplication *selfApp = [NSRunningApplication currentApplication];
+  pid_t selfPid = [[NSRunningApplication currentApplication] processIdentifier];
+  NSMutableArray<SCRunningApplication *> *excluded = [NSMutableArray array];
+  for (SCRunningApplication *application in content.applications) {
+    if (application.processID == selfPid) {
+      [excluded addObject:application];
+      break;
+    }
+  }
   SCContentFilter *filter = [[SCContentFilter alloc] initWithDisplay:chosen
-                                               excludingApplications:@[ selfApp ]
+                                               excludingApplications:excluded
                                                     exceptingWindows:@[]];
   SCStreamConfiguration *config = [SCStreamConfiguration new];
   config.width = (size_t)chosen.width;

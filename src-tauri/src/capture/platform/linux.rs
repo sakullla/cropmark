@@ -322,7 +322,8 @@ fn window_pid(conn: &impl Connection, id: u32) -> Option<u32> {
         .ok()?
         .reply()
         .ok()?;
-    reply.value32()?.next()
+    let values = reply.value32()?;
+    values.next()
 }
 
 fn zpixmap_to_rgba(data: &[u8], depth: u8, width: u32, height: u32) -> Result<Vec<u8>, CaptureError> {
