@@ -137,7 +137,11 @@ export function mountPreview(root: HTMLElement): void {
   editor.classList.remove("is-open");
 
   const mosaicBlock = (): number => Math.max(8, Math.round(12 * Math.max(frame?.scale ?? 1, 1)));
-  const textSize = (): number => Math.max(16, Math.round(14 * Math.max(frame?.scale ?? 1, 1)));
+  const textSize = (): number => {
+    const dpi = Math.max(frame?.scale ?? 1, 1);
+    const longestEdge = Math.max(frame?.width ?? 0, frame?.height ?? 0);
+    return Math.max(16, Math.round(16 * Math.max(dpi, longestEdge / 1920)));
+  };
   const strokeWidth = (): number => Math.min(8, Math.max(2, 3 * Math.max(frame?.scale ?? 1, 1)));
 
   const setNote = (text: string, kind: NoteKind = "feedback"): void => {
@@ -226,11 +230,15 @@ export function mountPreview(root: HTMLElement): void {
     const scale = cssScale();
     const canvasRect = canvas.getBoundingClientRect();
     const frameRect = frameEl.getBoundingClientRect();
+    const editorStyle = window.getComputedStyle(editor);
+    const insetX = parseFloat(editorStyle.paddingLeft) + parseFloat(editorStyle.borderLeftWidth);
+    const insetY = parseFloat(editorStyle.paddingTop) + parseFloat(editorStyle.borderTopWidth);
+    const fontSize = textSize() * scale.y;
     editor.value = "";
-    editor.style.left = `${canvasRect.left - frameRect.left + point.x * scale.x}px`;
-    editor.style.top = `${canvasRect.top - frameRect.top + point.y * scale.y}px`;
-    editor.style.fontSize = `${Math.max(16, textSize() * scale.y)}px`;
-    editor.style.width = `${Math.max(160, 220 * scale.x)}px`;
+    editor.style.left = `${canvasRect.left - frameRect.left + point.x * scale.x - insetX}px`;
+    editor.style.top = `${canvasRect.top - frameRect.top + point.y * scale.y - insetY}px`;
+    editor.style.fontSize = `${fontSize}px`;
+    editor.style.width = `${Math.max(160, fontSize * 12)}px`;
     editor.classList.add("is-open");
     syncUndo();
     window.setTimeout(() => {

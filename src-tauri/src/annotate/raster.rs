@@ -9,6 +9,8 @@ use crate::capture::error::CaptureError;
 
 pub const STROKE: [u8; 4] = [225, 29, 72, 255];
 
+const LINE_HEIGHT: f32 = 1.25;
+
 pub fn rasterize(frame: &Frame, annotations: &[Annotation]) -> Result<Frame, CaptureError> {
     if frame.rgba.is_empty() || frame.width == 0 || frame.height == 0 {
         return Err(CaptureError::invalid_buffer("空缓冲"));
@@ -125,6 +127,7 @@ fn clamped_rect(x: f64, y: f64, width: f64, height: f64, iw: u32, ih: u32) -> (u
     (x0, y0, x1.saturating_sub(x0), y1.saturating_sub(y0))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_rect(
     rgba: &mut [u8],
     width: u32,
@@ -145,6 +148,7 @@ fn draw_rect(
     draw_line(rgba, width, height, x, y + h, x, y, thickness, color);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_arrow(
     rgba: &mut [u8],
     width: u32,
@@ -192,6 +196,7 @@ fn draw_arrow(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_line(
     rgba: &mut [u8],
     width: u32,
@@ -333,7 +338,7 @@ fn draw_text(
         }
         if ch == '\n' {
             caret_x = x;
-            caret_y += scaled.height();
+            caret_y += size * LINE_HEIGHT;
             prev = None;
             continue;
         }
