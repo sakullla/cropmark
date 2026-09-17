@@ -1,11 +1,11 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Serialize;
 use tauri::{
-    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, Position, Size, WebviewUrl,
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, Position, Size, WebviewUrl,
     WebviewWindow, WebviewWindowBuilder,
 };
 
-use super::buffer::{encode_png, Frame};
+use super::buffer::{encode_png, fit_display, Frame};
 use super::error::CaptureError;
 use super::geometry::MonitorGeom;
 use super::windows_list::ListedWindow;
@@ -56,6 +56,7 @@ pub fn session_window_labels() -> [&'static str; 3] {
 
 pub fn hide_window(app: &AppHandle, label: &str) {
     if let Some(window) = app.get_webview_window(label) {
+        let _ = window.set_always_on_top(false);
         let _ = window.hide();
     }
 }
@@ -92,9 +93,11 @@ pub fn overlay_payload(mode: CaptureMode, frame: &Frame, monitor: &MonitorGeom, 
             window
         })
         .collect();
+    let (width, height) = fit_display(monitor.logical_width, monitor.logical_height, 1280);
+    let overlay = super::buffer::resize_rgba(frame, width, height)?;
     Ok(OverlayPayload {
         mode,
-        png_base64: STANDARD.encode(encode_png(frame)?),
+        png_base64: STANDARD.encode(super::buffer::encode_jpeg(&overlay, 70)?),
         width: frame.width,
         height: frame.height,
         scale: frame.scale,
@@ -113,47 +116,46 @@ pub fn preview_payload(frame: &Frame) -> Result<PreviewPayload, CaptureError> {
     })
 }
 
+pub fn precreate(app: &AppHandle) {
+    let _ = ensure_window(app, OVERLAY, "overlay", 320.0, 240.0, false, true);
+    let _ = ensure_window(app, PREVIEW, "preview", 520.0, 360.0, false, false);
+}
+
 pub fn open_overlay(app: &AppHandle, monitor: &MonitorGeom) -> Result<WebviewWindow, CaptureError> {
-    close_window(app, OVERLAY);
-    let window = builder(app, OVERLAY, "overlay")?
-        .inner_size(monitor.logical_width as f64, monitor.logical_height as f64)
-        .position(monitor.logical_x as f64, monitor.logical_y as f64)
-        .always_on_top(true)
-        .visible_on_all_workspaces(true)
-        .focused(true)
-        .visible(true)
-        .build()
-        .map_err(|error| CaptureError::api(error.to_string()))?;
+    let window = ensure_window(app, OVERLAY, "overlay", 320.0, 240.0, false, true)?;
     let _ = window.set_position(Position::Physical(PhysicalPosition {
         x: monitor.physical_x,
         y: monitor.physical_y,
     }));
-    let _ = window.set_size(Size::Physical(PhysicalSize {
-        width: monitor.physical_width,
-        height: monitor.physical_height,
+    let _ = window.set_size(Size::Logical(LogicalSize {
+        width: monitor.logical_width.max(1) as f64,
+        height: monitor.logical_height.max(1) as f64,
     }));
+    let _ = window.set_always_on_top(true);
+    let _ = window.show();
     let _ = window.set_focus();
+    let _ = window.emit("overlay-reload", ());
     Ok(window)
 }
 
 pub fn open_preview(app: &AppHandle, frame: &Frame) -> Result<WebviewWindow, CaptureError> {
-    close_window(app, PREVIEW);
+    hide_window(app, OVERLAY);
     let (width, height) = preview_size(frame);
-    let window = builder(app, PREVIEW, "preview")?
-        .inner_size(width, height)
-        .center()
-        .always_on_top(true)
-        .focused(true)
-        .visible(true)
-        .build()
-        .map_err(|error| CaptureError::api(error.to_string()))?;
+    let window = ensure_window(app, PREVIEW, "preview", width, height, false, false)?;
+    let _ = window.set_size(Size::Logical(LogicalSize { width, height }));
+    let _ = window.center();
+    let _ = window.set_skip_taskbar(false);
+    let _ = window.set_always_on_top(true);
+    let _ = window.show();
     let _ = window.set_focus();
+    let _ = window.set_always_on_top(true);
+    let _ = window.emit("preview-reload", ());
     Ok(window)
 }
 
 pub fn open_delay(app: &AppHandle, delay_ms: u64) -> Result<WebviewWindow, CaptureError> {
     close_window(app, DELAY);
-    let window = builder(app, DELAY, "delay")?
+    let window = builder(app, DELAY, "delay", true, true)?
         .inner_size(280.0, 88.0)
         .always_on_top(true)
         .focused(false)
@@ -167,7 +169,7 @@ pub fn open_delay(app: &AppHandle, delay_ms: u64) -> Result<WebviewWindow, Captu
 
 pub fn open_error(app: &AppHandle, error: &CaptureError) -> Result<(), CaptureError> {
     close_window(app, ERROR);
-    let window = builder(app, ERROR, "error")?
+    let window = builder(app, ERROR, "error", true, true)?
         .inner_size(420.0, 220.0)
         .center()
         .always_on_top(true)
@@ -179,7 +181,34 @@ pub fn open_error(app: &AppHandle, error: &CaptureError) -> Result<(), CaptureEr
     Ok(())
 }
 
-fn builder<'a>(app: &'a AppHandle, label: &str, view: &str) -> Result<WebviewWindowBuilder<'a, tauri::Wry, AppHandle>, CaptureError> {
+fn ensure_window(
+    app: &AppHandle,
+    label: &str,
+    view: &str,
+    width: f64,
+    height: f64,
+    transparent: bool,
+    skip_taskbar: bool,
+) -> Result<WebviewWindow, CaptureError> {
+    if let Some(window) = app.get_webview_window(label) {
+        return Ok(window);
+    }
+    builder(app, label, view, transparent, skip_taskbar)?
+        .inner_size(width, height)
+        .visible(false)
+        .always_on_top(true)
+        .visible_on_all_workspaces(label == OVERLAY)
+        .build()
+        .map_err(|error| CaptureError::api(error.to_string()))
+}
+
+fn builder<'a>(
+    app: &'a AppHandle,
+    label: &str,
+    view: &str,
+    transparent: bool,
+    skip_taskbar: bool,
+) -> Result<WebviewWindowBuilder<'a, tauri::Wry, AppHandle>, CaptureError> {
     Ok(WebviewWindowBuilder::new(
         app,
         label,
@@ -187,10 +216,10 @@ fn builder<'a>(app: &'a AppHandle, label: &str, view: &str) -> Result<WebviewWin
     )
     .title("Cropmark")
     .decorations(false)
-    .transparent(true)
-    .shadow(false)
-    .skip_taskbar(true)
-    .resizable(false)
+    .transparent(transparent)
+    .shadow(!transparent)
+    .skip_taskbar(skip_taskbar)
+    .resizable(label == PREVIEW)
     .maximizable(false)
     .minimizable(false)
     .closable(true))

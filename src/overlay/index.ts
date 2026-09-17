@@ -1,4 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import "./overlay.css";
 
 type CaptureMode = "region" | "window" | "fullscreen";
@@ -37,7 +39,10 @@ export function mountOverlay(root: HTMLElement): void {
   root.className = "overlay-root";
   root.innerHTML = `
     <canvas></canvas>
-    <div class="overlay-hint"></div>
+    <div class="overlay-chrome">
+      <div class="overlay-hint"></div>
+      <button type="button" class="overlay-cancel">取消 Esc</button>
+    </div>
     <div class="size-badge" hidden></div>
     <div class="window-list" hidden></div>
   `;
@@ -45,16 +50,18 @@ export function mountOverlay(root: HTMLElement): void {
   const hint = root.querySelector(".overlay-hint");
   const badge = root.querySelector(".size-badge");
   const list = root.querySelector(".window-list");
+  const cancelBtn = root.querySelector(".overlay-cancel");
   if (
     !(canvas instanceof HTMLCanvasElement) ||
     !(hint instanceof HTMLElement) ||
     !(badge instanceof HTMLElement) ||
-    !(list instanceof HTMLElement)
+    !(list instanceof HTMLElement) ||
+    !(cancelBtn instanceof HTMLButtonElement)
   ) {
     return;
   }
 
-  const ctx = canvas.getContext("2d");
+  const ctx = canvas.getContext("2d", { alpha: false });
   if (!ctx) {
     return;
   }
@@ -67,14 +74,39 @@ export function mountOverlay(root: HTMLElement): void {
   let selection: Selection | null = null;
   let hoverId: string | null = null;
   let finishing = false;
+  let raf = 0;
+
+  const fitCanvas = (): void => {
+    const rect = canvas.getBoundingClientRect();
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+    const width = Math.max(1, Math.round(rect.width * dpr));
+    const height = Math.max(1, Math.round(rect.height * dpr));
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
+    }
+  };
 
   const physicalPoint = (event: MouseEvent): { x: number; y: number } => {
+    if (!frame) {
+      return { x: 0, y: 0 };
+    }
     const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / Math.max(rect.width, 1);
-    const scaleY = canvas.height / Math.max(rect.height, 1);
     return {
-      x: clamp((event.clientX - rect.left) * scaleX, 0, canvas.width),
-      y: clamp((event.clientY - rect.top) * scaleY, 0, canvas.height),
+      x: clamp(((event.clientX - rect.left) / Math.max(rect.width, 1)) * frame.width, 0, frame.width),
+      y: clamp(((event.clientY - rect.top) / Math.max(rect.height, 1)) * frame.height, 0, frame.height),
+    };
+  };
+
+  const toCanvas = (x: number, y: number, width = 0, height = 0): Selection => {
+    if (!frame) {
+      return { x, y, width, height };
+    }
+    return {
+      x: (x / frame.width) * canvas.width,
+      y: (y / frame.height) * canvas.height,
+      width: (width / frame.width) * canvas.width,
+      height: (height / frame.height) * canvas.height,
     };
   };
 
@@ -82,65 +114,80 @@ export function mountOverlay(root: HTMLElement): void {
     if (!image || !frame) {
       return;
     }
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    fitCanvas();
     ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
     ctx.fillStyle = "rgba(12, 10, 9, 0.48)";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     if (frame.mode === "window") {
-      for (const window of frame.windows) {
-        const rect = windowRectOnFrame(window, frame);
+      for (const listed of frame.windows) {
+        const rect = windowRectOnFrame(listed, frame);
         if (!rect) {
           continue;
         }
-        const active = hoverId === window.id;
+        const mapped = toCanvas(rect.x, rect.y, rect.width, rect.height);
+        const active = hoverId === listed.id;
         ctx.save();
         ctx.globalCompositeOperation = "destination-out";
         ctx.fillStyle = active ? "rgba(0,0,0,0.85)" : "rgba(0,0,0,0.35)";
-        ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+        ctx.fillRect(mapped.x, mapped.y, mapped.width, mapped.height);
         ctx.restore();
         ctx.strokeStyle = active ? "#2dd4bf" : "rgba(245, 240, 232, 0.55)";
         ctx.lineWidth = active ? 3 : 1.5;
-        ctx.strokeRect(rect.x + 0.5, rect.y + 0.5, rect.width - 1, rect.height - 1);
+        ctx.strokeRect(mapped.x + 0.5, mapped.y + 0.5, mapped.width - 1, mapped.height - 1);
       }
       return;
     }
     if (!selection || selection.width < 1 || selection.height < 1) {
+      badge.hidden = true;
       return;
     }
+    const mapped = toCanvas(selection.x, selection.y, selection.width, selection.height);
     ctx.save();
     ctx.globalCompositeOperation = "destination-out";
-    ctx.fillRect(selection.x, selection.y, selection.width, selection.height);
+    ctx.fillRect(mapped.x, mapped.y, mapped.width, mapped.height);
     ctx.restore();
     ctx.drawImage(
       image,
-      selection.x,
-      selection.y,
-      selection.width,
-      selection.height,
-      selection.x,
-      selection.y,
-      selection.width,
-      selection.height,
+      (selection.x / frame.width) * image.width,
+      (selection.y / frame.height) * image.height,
+      (selection.width / frame.width) * image.width,
+      (selection.height / frame.height) * image.height,
+      mapped.x,
+      mapped.y,
+      mapped.width,
+      mapped.height,
     );
     ctx.strokeStyle = "#2dd4bf";
     ctx.lineWidth = 2;
-    ctx.strokeRect(selection.x + 1, selection.y + 1, selection.width - 2, selection.height - 2);
+    ctx.strokeRect(mapped.x + 1, mapped.y + 1, mapped.width - 2, mapped.height - 2);
     badge.hidden = false;
     badge.textContent = `${Math.round(selection.width)} × ${Math.round(selection.height)}`;
     const rect = canvas.getBoundingClientRect();
-    const cssX = (selection.x / canvas.width) * rect.width;
-    const cssY = (selection.y / canvas.height) * rect.height;
+    const cssX = (selection.x / frame.width) * rect.width;
+    const cssY = (selection.y / frame.height) * rect.height;
     badge.style.left = `${Math.min(cssX + 8, rect.width - 88)}px`;
     badge.style.top = `${Math.max(cssY - 28, 12)}px`;
+  };
+
+  const scheduleDraw = (): void => {
+    if (raf) {
+      return;
+    }
+    raf = requestAnimationFrame(() => {
+      raf = 0;
+      draw();
+    });
   };
 
   const load = async (): Promise<void> => {
     try {
       frame = await invoke<OverlayFrame>("get_overlay_frame");
-      canvas.width = frame.width;
-      canvas.height = frame.height;
+      fitCanvas();
       hint.textContent =
-        frame.mode === "window" ? "点击窗口 · Esc 取消" : "拖选区域 · Esc 取消";
+        frame.mode === "window" ? "点击要截取的窗口" : "拖出矩形截取区域";
+      void getCurrentWindow().setFocus();
+      document.body.tabIndex = -1;
+      document.body.focus();
       list.hidden = frame.mode !== "window";
       if (frame.mode === "window") {
         renderWindowList(list, frame.windows, hoverId, (id) => {
@@ -148,10 +195,14 @@ export function mountOverlay(root: HTMLElement): void {
         });
       }
       image = new Image();
-      image.onload = () => draw();
-      image.src = `data:image/png;base64,${frame.pngBase64}`;
+      image.onload = () => scheduleDraw();
+      image.src = `data:image/jpeg;base64,${frame.pngBase64}`;
     } catch (error) {
-      hint.textContent = invokeError(error);
+      const message = invokeError(error);
+      if (message.includes("没有正在进行")) {
+        return;
+      }
+      hint.textContent = message;
     }
   };
 
@@ -195,7 +246,7 @@ export function mountOverlay(root: HTMLElement): void {
     startX = point.x;
     startY = point.y;
     selection = { x: point.x, y: point.y, width: 0, height: 0 };
-    draw();
+    scheduleDraw();
   });
 
   window.addEventListener("mousemove", (event) => {
@@ -204,11 +255,12 @@ export function mountOverlay(root: HTMLElement): void {
     }
     const point = physicalPoint(event);
     if (frame.mode === "window") {
-      hoverId = hitWindow(frame, point.x, point.y);
-      renderWindowList(list, frame.windows, hoverId, (id) => {
-        void finishWindow(id);
-      });
-      draw();
+      const nextHover = hitWindow(frame, point.x, point.y);
+      if (nextHover !== hoverId) {
+        hoverId = nextHover;
+        markActiveWindow(list, hoverId);
+        scheduleDraw();
+      }
       return;
     }
     if (!dragging) {
@@ -222,7 +274,7 @@ export function mountOverlay(root: HTMLElement): void {
       width: Math.abs(point.x - startX),
       height: Math.abs(point.y - startY),
     };
-    draw();
+    scheduleDraw();
   });
 
   window.addEventListener("mouseup", () => {
@@ -244,18 +296,44 @@ export function mountOverlay(root: HTMLElement): void {
     }
   });
 
-  window.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      void invoke("cancel_capture");
-    }
-    if (event.key === "Enter") {
-      event.preventDefault();
-      void finishRegion();
-    }
+  const cancel = (): void => {
+    dragging = false;
+    void invoke("cancel_capture");
+  };
+
+  cancelBtn.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    cancel();
   });
 
+  document.addEventListener(
+    "keydown",
+    (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        cancel();
+      }
+      if (event.key === "Enter") {
+        event.preventDefault();
+        void finishRegion();
+      }
+    },
+    true,
+  );
+
+  void listen("overlay-reload", () => {
+    void load();
+  });
   void load();
+}
+
+function markActiveWindow(root: HTMLElement, activeId: string | null): void {
+  root.querySelectorAll(".window-item").forEach((item) => {
+    const button = item as HTMLElement;
+    button.classList.toggle("active", button.dataset.windowId === activeId);
+  });
 }
 
 function renderWindowList(
@@ -269,6 +347,7 @@ function renderWindowList(
     const button = document.createElement("button");
     button.type = "button";
     button.className = "window-item";
+    button.dataset.windowId = item.id;
     if (item.id === activeId) {
       button.classList.add("active");
     }

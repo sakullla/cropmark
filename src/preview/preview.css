@@ -1,9 +1,38 @@
 .preview-root {
   min-width: 0;
+  user-select: none;
+  background: #f6f1e8;
+  color: #1c1917;
 }
 
-.preview-root header {
+.preview-titlebar {
   flex: 0 0 auto;
+  cursor: move;
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+.preview-close,
+.preview-titlebar button {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.preview-close {
+  flex: 0 0 auto;
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: #e11d48;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.preview-close:hover {
+  filter: brightness(1.08);
 }
 
 .preview-note {
@@ -52,11 +81,18 @@
 }
 
 .preview-tools button {
-  width: 32px;
+  min-width: 32px;
   height: 32px;
-  display: grid;
-  place-items: center;
-  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 8px;
+}
+
+.preview-tools button.tool-text {
+  min-width: 64px;
+  font-size: 12px;
 }
 
 .preview-tools button svg {
@@ -139,19 +175,29 @@
 
 .preview-text {
   position: absolute;
-  min-width: 84px;
-  min-height: 1.4em;
+  left: 12px;
+  top: 12px;
+  z-index: 5;
+  min-width: 180px;
+  min-height: 2em;
   margin: 0;
-  padding: 2px 6px;
-  border: 1px solid var(--accent);
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--panel) 90%, transparent);
-  color: var(--ink);
+  padding: 8px 10px;
+  border: 2px solid #0f766e;
+  border-radius: 8px;
+  background: #fff;
+  color: #1c1917;
   font: inherit;
-  line-height: 1.3;
+  font-size: 18px;
+  line-height: 1.4;
   resize: none;
   outline: none;
-  z-index: 3;
-  overflow: hidden;
+  overflow: auto;
   user-select: text;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.preview-text.is-open {
+  visibility: visible;
+  pointer-events: auto;
 }

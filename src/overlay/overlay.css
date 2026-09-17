@@ -22,26 +22,50 @@
   display: block;
 }
 
+.overlay-chrome {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  pointer-events: auto;
+}
+
 .overlay-hint,
 .size-badge {
-  position: absolute;
-  z-index: 2;
   pointer-events: none;
   font-variant-numeric: tabular-nums;
 }
 
 .overlay-hint {
-  top: 18px;
-  left: 50%;
-  transform: translateX(-50%);
   padding: 8px 14px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
   border: 1px solid var(--line);
   box-shadow: var(--shadow);
   color: var(--ink);
-  font-size: 12px;
-  letter-spacing: 0.02em;
+  font-size: 13px;
+}
+
+.overlay-cancel {
+  pointer-events: auto;
+  cursor: pointer;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 8px 14px;
+  background: #fff;
+  color: #1c1917;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  box-shadow: var(--shadow);
+}
+
+.overlay-cancel:hover {
+  background: #f5f0e8;
 }
 
 .size-badge {

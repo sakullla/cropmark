@@ -37,6 +37,8 @@ struct ActiveSession {
     delay_ms: u64,
     hide: HideWait,
     freeze: Option<Frame>,
+    overlay: Option<OverlayPayload>,
+    preview: Option<PreviewPayload>,
     monitor: Option<MonitorGeom>,
     windows: Vec<ListedWindow>,
     clipboard: ClipboardGuard,
@@ -114,6 +116,8 @@ fn try_begin_with_delay(app: &AppHandle, mode: CaptureMode, delay_ms: u64) -> bo
         delay_ms,
         hide: HideWait::record(Vec::new()),
         freeze: None,
+        overlay: None,
+        preview: None,
         monitor: None,
         windows: Vec::new(),
         clipboard: ClipboardGuard::default(),
@@ -154,26 +158,19 @@ fn hide_product_surfaces(app: &AppHandle) -> Result<(), CaptureError> {
             ui::hide_window(app, label);
         }
     }
-    let labels = {
-        let mut labels: Vec<String> = ui::product_window_labels()
-            .into_iter()
-            .map(str::to_string)
-            .collect();
-        labels.extend(
-            ui::session_window_labels()
-                .into_iter()
-                .filter(|label| *label != ui::DELAY)
-                .map(str::to_string),
+    let visible_labels: Vec<&str> = recorded
+        .iter()
+        .filter(|surface| surface.was_visible && surface.label != "tray-popup")
+        .map(|surface| surface.label.as_str())
+        .collect();
+    if !visible_labels.is_empty() {
+        let hidden = wait_until_hidden(
+            || ui::any_visible(app, &visible_labels),
+            Duration::from_millis(160),
         );
-        labels
-    };
-    let hidden = wait_until_hidden(
-        || ui::any_visible(app, &labels.iter().map(String::as_str).collect::<Vec<_>>()),
-        Duration::from_millis(400),
-    );
-    let tray_gone = wait_until_hidden(platform::tray_popup_visible, Duration::from_millis(400));
-    if !hidden || !tray_gone {
-        return Err(hide_not_presented_error());
+        if !hidden {
+            return Err(hide_not_presented_error());
+        }
     }
     wait_compositor_presented();
     with_session_mut(app, |session| {
@@ -183,10 +180,10 @@ fn hide_product_surfaces(app: &AppHandle) -> Result<(), CaptureError> {
         if session.hide.recorded.is_empty() {
             let mut hide = HideWait::record(recorded);
             hide.request_hide();
-            hide.commit_presented(hidden, tray_gone)?;
+            hide.commit_presented(true, true)?;
             session.hide = hide;
         } else {
-            session.hide.commit_presented(hidden, tray_gone)?;
+            session.hide.commit_presented(true, true)?;
         }
         Ok(())
     })
@@ -224,28 +221,70 @@ async fn wait_delay(app: &AppHandle, delay_ms: u64) -> Result<bool, CaptureError
 }
 
 async fn capture_region(app: &AppHandle) -> Result<(), CaptureError> {
-    let (frame, monitor) = grab_pointer_screen(app)?;
-    store_freeze(app, frame, monitor.clone(), Vec::new())?;
-    ui::open_overlay(app, &monitor)?;
-    Ok(())
+    #[cfg(windows)]
+    {
+        let handle = app.clone();
+        let picked = tauri::async_runtime::spawn_blocking(move || {
+            let (frame, monitor) = grab_pointer_screen(&handle)?;
+            store_pixels(&handle, frame.clone(), monitor.clone())?;
+            super::native_overlay::pick_region(&frame, &monitor)
+        })
+        .await
+        .map_err(|_| CaptureError::api("截取线程失败。"))??;
+        return match picked {
+            Some(rect) => confirm_region(
+                app,
+                RegionSelection {
+                    x: rect.x,
+                    y: rect.y,
+                    width: rect.width,
+                    height: rect.height,
+                },
+            ),
+            None => cancel(app).map(|_| ()),
+        };
+    }
+    #[cfg(not(windows))]
+    {
+        let monitor = freeze_screen(app, Vec::new()).await?;
+        ui::open_overlay(app, &monitor)?;
+        Ok(())
+    }
 }
 
 async fn capture_window_mode(app: &AppHandle) -> Result<(), CaptureError> {
-    let (frame, monitor) = grab_pointer_screen(app)?;
-    let windows = platform::list_windows(platform::self_pid())?;
+    let windows = tauri::async_runtime::spawn_blocking(move || platform::list_windows(platform::self_pid()))
+        .await
+        .map_err(|_| CaptureError::api("无法列出窗口。"))??;
     if windows.is_empty() {
         return Err(CaptureError::unavailable(
             "没有可截取的窗口，或当前桌面无法列出窗口。请改用区域或全屏截取。",
         ));
     }
-    store_freeze(app, frame, monitor.clone(), windows)?;
+    let monitor = freeze_screen(app, windows).await?;
     ui::open_overlay(app, &monitor)?;
     Ok(())
 }
 
 async fn capture_fullscreen(app: &AppHandle) -> Result<(), CaptureError> {
-    let (frame, _monitor) = grab_pointer_screen(app)?;
+    let handle = app.clone();
+    let frame = tauri::async_runtime::spawn_blocking(move || {
+        grab_pointer_screen(&handle).map(|(frame, _)| frame)
+    })
+    .await
+    .map_err(|_| CaptureError::api("截取线程失败。"))??;
     complete_success(app, frame)
+}
+
+async fn freeze_screen(app: &AppHandle, windows: Vec<ListedWindow>) -> Result<MonitorGeom, CaptureError> {
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (frame, monitor) = grab_pointer_screen(&handle)?;
+        store_freeze(&handle, frame, monitor.clone(), windows)?;
+        Ok(monitor)
+    })
+    .await
+    .map_err(|_| CaptureError::api("截取线程失败。"))?
 }
 
 fn grab_pointer_screen(app: &AppHandle) -> Result<(Frame, MonitorGeom), CaptureError> {
@@ -292,18 +331,40 @@ fn tauri_pointer_monitor(app: &AppHandle) -> Option<MonitorGeom> {
         .or_else(|| geoms.into_iter().next())
 }
 
-fn store_freeze(
-    app: &AppHandle,
-    frame: Frame,
-    monitor: MonitorGeom,
-    windows: Vec<ListedWindow>,
-) -> Result<(), CaptureError> {
+fn store_pixels(app: &AppHandle, frame: Frame, monitor: MonitorGeom) -> Result<(), CaptureError> {
     with_session_mut(app, |session| {
         let session = session.as_mut().ok_or_else(CaptureError::cancelled)?;
         if session.cancelled {
             return Err(CaptureError::cancelled());
         }
         session.freeze = Some(frame);
+        session.overlay = None;
+        session.monitor = Some(monitor);
+        session.windows.clear();
+        Ok(())
+    })
+}
+
+fn store_freeze(
+    app: &AppHandle,
+    frame: Frame,
+    monitor: MonitorGeom,
+    windows: Vec<ListedWindow>,
+) -> Result<(), CaptureError> {
+    let mode = with_session(app, |session| {
+        session
+            .as_ref()
+            .map(|current| current.mode)
+            .ok_or_else(CaptureError::cancelled)
+    })?;
+    let overlay = ui::overlay_payload(mode, &frame, &monitor, windows.clone())?;
+    with_session_mut(app, |session| {
+        let session = session.as_mut().ok_or_else(CaptureError::cancelled)?;
+        if session.cancelled {
+            return Err(CaptureError::cancelled());
+        }
+        session.freeze = Some(frame);
+        session.overlay = Some(overlay);
         session.monitor = Some(monitor);
         session.windows = windows;
         Ok(())
@@ -312,26 +373,19 @@ fn store_freeze(
 
 pub fn overlay_frame(app: &AppHandle) -> Result<OverlayPayload, CaptureError> {
     with_session(app, |session| {
-        let session = session.as_ref().ok_or_else(|| CaptureError::api("没有正在进行的截取。"))?;
-        let frame = session
-            .freeze
+        session
             .as_ref()
-            .ok_or_else(|| CaptureError::invalid_buffer("未初始化"))?;
-        let monitor = session
-            .monitor
-            .as_ref()
-            .ok_or_else(|| CaptureError::api("没有显示器信息。"))?;
-        ui::overlay_payload(session.mode, frame, monitor, session.windows.clone())
+            .and_then(|current| current.overlay.clone())
+            .ok_or_else(|| CaptureError::api("没有正在进行的截取。"))
     })
 }
 
 pub fn preview_frame(app: &AppHandle) -> Result<PreviewPayload, CaptureError> {
     with_session(app, |session| {
-        let frame = session
+        session
             .as_ref()
-            .and_then(|item| item.freeze.as_ref())
-            .ok_or_else(|| CaptureError::api("没有可预览的截图。"))?;
-        ui::preview_payload(frame)
+            .and_then(|item| item.preview.clone())
+            .ok_or_else(|| CaptureError::api("没有可预览的截图。"))
     })
 }
 
@@ -361,8 +415,7 @@ pub fn confirm_region(app: &AppHandle, selection: RegionSelection) -> Result<(),
             .ok_or_else(|| CaptureError::invalid_buffer("未初始化"))?;
         crop_rgba(freeze, selection.x, selection.y, selection.width, selection.height)
     })?;
-    let _ = hide_session_surface(app, ui::OVERLAY);
-    ui::close_window(app, ui::OVERLAY);
+    ui::hide_window(app, ui::OVERLAY);
     complete_success(app, frame)
 }
 
@@ -387,7 +440,7 @@ pub fn confirm_logical_region(app: &AppHandle, rect: LogicalRect) -> Result<(), 
 }
 
 pub fn confirm_window(app: &AppHandle, window_id: String) -> Result<(), CaptureError> {
-    hide_session_surface(app, ui::OVERLAY)?;
+    ui::hide_window(app, ui::OVERLAY);
     require_capture_ready(app)?;
     if is_cancelled(app) {
         return Err(CaptureError::cancelled());
@@ -412,7 +465,7 @@ fn cancel_internal(app: &AppHandle) -> Result<CancelOutcome, CaptureError> {
         return Ok(CancelOutcome::clean());
     };
     for label in ui::session_window_labels() {
-        ui::close_window(app, label);
+        ui::hide_window(app, label);
     }
     for surface in restore {
         ui::show_window(app, &surface.label);
@@ -427,18 +480,20 @@ fn complete_success(app: &AppHandle, frame: Frame) -> Result<(), CaptureError> {
         return Err(CaptureError::cancelled());
     }
     let clipboard_error = clipboard::copy_frame(&frame).err();
+    let preview = ui::preview_payload(&frame)?;
     with_session_mut(app, |session| {
         if let Some(current) = session.as_mut() {
             if clipboard_error.is_none() {
                 current.clipboard.commit_success();
             }
             current.freeze = Some(frame.clone());
+            current.preview = Some(preview);
             current.file_written = false;
         }
     });
-    for label in [ui::OVERLAY, ui::DELAY, ui::ERROR] {
-        ui::close_window(app, label);
-    }
+    ui::hide_window(app, ui::OVERLAY);
+    ui::hide_window(app, ui::DELAY);
+    ui::hide_window(app, ui::ERROR);
     ui::open_preview(app, &frame)?;
     with_session_mut(app, |session| {
         if let Some(current) = session.as_mut() {
@@ -480,7 +535,7 @@ fn finish_error(app: &AppHandle, error: CaptureError) -> Result<(), CaptureError
             .unwrap_or_default()
     });
     for label in ui::session_window_labels() {
-        ui::close_window(app, label);
+        ui::hide_window(app, label);
     }
     for surface in restore {
         ui::show_window(app, &surface.label);
@@ -498,7 +553,7 @@ fn is_cancelled(app: &AppHandle) -> bool {
 }
 
 pub fn close_preview(app: &AppHandle) {
-    ui::close_window(app, ui::PREVIEW);
+    ui::hide_window(app, ui::PREVIEW);
     with_session_mut(app, |session| *session = None);
 }
 

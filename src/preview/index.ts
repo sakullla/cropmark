@@ -1,4 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import "../overlay/overlay.css";
 import "./preview.css";
 
@@ -46,20 +48,20 @@ export function mountPreview(root: HTMLElement): void {
   root.className = "preview-root";
   root.dataset.tool = "arrow";
   root.innerHTML = `
-    <header data-tauri-drag-region>
+    <header class="preview-titlebar" data-tauri-drag-region>
       <div class="brand" data-tauri-drag-region>
         <span class="mark" aria-hidden="true"></span>
         <span class="name">Cropmark</span>
       </div>
       <p class="preview-note">未标注图已复制</p>
-      <button type="button" class="icon-btn" data-action="close" aria-label="关闭">×</button>
+      <button type="button" class="preview-close" data-action="close" aria-label="关闭" data-tauri-drag-region="false">关闭</button>
     </header>
     <div class="preview-toolbar">
       <div class="preview-tools" role="toolbar" aria-label="标注">
         <button type="button" data-tool="arrow" title="箭头" aria-label="箭头">${ICONS.arrow}</button>
         <button type="button" data-tool="rect" title="框" aria-label="框">${ICONS.rect}</button>
         <button type="button" data-tool="mosaic" title="马赛克" aria-label="马赛克">${ICONS.mosaic}</button>
-        <button type="button" data-tool="text" title="文字框" aria-label="文字框">${ICONS.text}</button>
+        <button type="button" data-tool="text" title="文字框" aria-label="文字框" class="tool-text">${ICONS.text}<span>文字</span></button>
         <button type="button" data-action="undo" title="撤销" aria-label="撤销">${ICONS.undo}</button>
       </div>
       <div class="preview-actions">
@@ -72,7 +74,7 @@ export function mountPreview(root: HTMLElement): void {
     <div class="preview-stage">
       <div class="preview-frame">
         <canvas></canvas>
-        <textarea class="preview-text" hidden rows="1" spellcheck="false"></textarea>
+        <textarea class="preview-text" rows="2" spellcheck="false" placeholder="在此输入汉字"></textarea>
       </div>
     </div>
   `;
@@ -114,6 +116,8 @@ export function mountPreview(root: HTMLElement): void {
   let ocrStart: Point | null = null;
   let ocrCurrent: Point | null = null;
   let ocrGen = 0;
+  let composing = false;
+  editor.classList.remove("is-open");
 
   const mosaicBlock = (): number => Math.max(8, Math.round(12 * Math.max(frame?.scale ?? 1, 1)));
   const textSize = (): number => Math.max(16, Math.round(14 * Math.max(frame?.scale ?? 1, 1)));
@@ -142,6 +146,8 @@ export function mountPreview(root: HTMLElement): void {
       } else if (!note.classList.contains("is-error")) {
         setNote("点选或划选文字，也可复制全部。", false);
       }
+    } else if (next === "text") {
+      setNote("点在图上放置文字框，然后输入汉字。Enter 确认，Esc 取消。", false);
     } else if (!note.classList.contains("is-error")) {
       setNote(copied, false);
     }
@@ -149,7 +155,7 @@ export function mountPreview(root: HTMLElement): void {
   };
 
   const syncUndo = (): void => {
-    undoBtn.disabled = annotations.length === 0 && editor.hidden;
+    undoBtn.disabled = annotations.length === 0 && !editorOpen();
   };
 
   const physicalPoint = (event: MouseEvent): Point => {
@@ -193,29 +199,36 @@ export function mountPreview(root: HTMLElement): void {
   };
 
   const placeEditor = (point: Point): void => {
+    if (composing) {
+      return;
+    }
     commitEditor();
     editorOrigin = point;
     const scale = cssScale();
     const canvasRect = canvas.getBoundingClientRect();
     const frameRect = frameEl.getBoundingClientRect();
-    editor.hidden = false;
     editor.value = "";
     editor.style.left = `${canvasRect.left - frameRect.left + point.x * scale.x}px`;
     editor.style.top = `${canvasRect.top - frameRect.top + point.y * scale.y}px`;
-    editor.style.fontSize = `${textSize() * scale.y}px`;
-    editor.style.width = `${Math.max(96, 160 * scale.x)}px`;
-    editor.focus();
+    editor.style.fontSize = `${Math.max(16, textSize() * scale.y)}px`;
+    editor.style.width = `${Math.max(160, 220 * scale.x)}px`;
+    editor.classList.add("is-open");
     syncUndo();
+    window.setTimeout(() => {
+      editor.focus();
+    }, 0);
   };
 
   const hideEditor = (): void => {
-    editor.hidden = true;
+    editor.classList.remove("is-open");
     editor.value = "";
     editorOrigin = null;
   };
 
+  const editorOpen = (): boolean => editor.classList.contains("is-open");
+
   const commitEditor = (): void => {
-    if (editor.hidden || !editorOrigin) {
+    if (!editorOpen() || !editorOrigin || composing) {
       return;
     }
     const text = editor.value;
@@ -235,7 +248,7 @@ export function mountPreview(root: HTMLElement): void {
   };
 
   const undo = (): void => {
-    if (!editor.hidden) {
+    if (editorOpen()) {
       cancelEditor();
       return;
     }
@@ -435,15 +448,22 @@ export function mountPreview(root: HTMLElement): void {
 
   let skipUndoClick = false;
   undoBtn.addEventListener("pointerdown", (event) => {
-    if (!editor.hidden) {
+    if (editorOpen()) {
       event.preventDefault();
       cancelEditor();
       skipUndoClick = true;
     }
   });
   editor.addEventListener("mousedown", (event) => event.stopPropagation());
+  editor.addEventListener("pointerdown", (event) => event.stopPropagation());
+  editor.addEventListener("compositionstart", () => {
+    composing = true;
+  });
+  editor.addEventListener("compositionend", () => {
+    composing = false;
+  });
   editor.addEventListener("keydown", (event) => {
-    if (event.isComposing || event.key === "Process" || event.keyCode === 229) {
+    if (event.isComposing || composing || event.key === "Process" || event.keyCode === 229) {
       return;
     }
     if (event.key === "Enter" && !event.shiftKey) {
@@ -455,7 +475,12 @@ export function mountPreview(root: HTMLElement): void {
     }
   });
   editor.addEventListener("blur", () => {
-    commitEditor();
+    window.setTimeout(() => {
+      if (composing || document.activeElement === editor) {
+        return;
+      }
+      commitEditor();
+    }, 200);
   });
 
   root.addEventListener("click", (event) => {
@@ -485,9 +510,26 @@ export function mountPreview(root: HTMLElement): void {
     }
   });
 
+  const titlebar = root.querySelector(".preview-titlebar");
+  if (titlebar instanceof HTMLElement) {
+    titlebar.addEventListener("mousedown", (event) => {
+      if (event.button !== 0) {
+        return;
+      }
+      if (event.target instanceof Element && event.target.closest("button")) {
+        return;
+      }
+      event.preventDefault();
+      void getCurrentWindow().startDragging();
+    });
+  }
+
   window.addEventListener("keydown", (event) => {
+    if (event.isComposing || composing) {
+      return;
+    }
     if (event.key === "Escape") {
-      if (!editor.hidden) {
+      if (editorOpen()) {
         event.preventDefault();
         cancelEditor();
         return;
@@ -495,7 +537,7 @@ export function mountPreview(root: HTMLElement): void {
       void invoke("close_preview");
       return;
     }
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z" && editor.hidden) {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z" && !editorOpen()) {
       event.preventDefault();
       undo();
     }
@@ -504,29 +546,39 @@ export function mountPreview(root: HTMLElement): void {
   setTool("arrow");
   syncUndo();
 
-  void invoke<PreviewFrame>("get_preview_frame")
-    .then((payload) => {
-      frame = payload;
-      canvas.width = payload.width;
-      canvas.height = payload.height;
-      const image = new Image();
-      image.onload = () => {
-        source = document.createElement("canvas");
-        source.width = payload.width;
-        source.height = payload.height;
-        const sourceCtx = source.getContext("2d");
-        if (!sourceCtx) {
-          setNote("无法显示预览图像。", true);
-          return;
-        }
-        sourceCtx.drawImage(image, 0, 0);
-        redraw();
-      };
-      image.src = `data:image/png;base64,${payload.pngBase64}`;
-    })
-    .catch((error) => {
-      setNote(invokeError(error, "没有可预览的截图。"), true);
-    });
+  const loadPreview = (): void => {
+    void invoke<PreviewFrame>("get_preview_frame")
+      .then((payload) => {
+        frame = payload;
+        canvas.width = payload.width;
+        canvas.height = payload.height;
+        const image = new Image();
+        image.onload = () => {
+          source = document.createElement("canvas");
+          source.width = payload.width;
+          source.height = payload.height;
+          const sourceCtx = source.getContext("2d");
+          if (!sourceCtx) {
+            setNote("无法显示预览图像。", true);
+            return;
+          }
+          sourceCtx.drawImage(image, 0, 0, payload.width, payload.height);
+          redraw();
+        };
+        image.src = `data:image/png;base64,${payload.pngBase64}`;
+      })
+      .catch((error) => {
+        setNote(invokeError(error, "没有可预览的截图。"), true);
+      });
+  };
+
+  void listen("preview-reload", () => {
+    annotations = [];
+    ocrDoc = null;
+    ocrSelected = [];
+    loadPreview();
+  });
+  loadPreview();
 }
 
 function draft(tool: "arrow" | "rect" | "mosaic", start: Point, end: Point, block: number): Annotation | null {

@@ -207,7 +207,7 @@ pub fn wait_compositor_presented() {
     unsafe {
         let _ = windows::Win32::Graphics::Dwm::DwmFlush();
     }
-    std::thread::sleep(Duration::from_millis(32));
+    std::thread::sleep(Duration::from_millis(8));
 }
 
 #[cfg(test)]

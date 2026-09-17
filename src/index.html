@@ -4,6 +4,24 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Cropmark</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: transparent;
+      }
+      html[data-view="overlay"],
+      html[data-view="overlay"] body {
+        background: #111110;
+      }
+    </style>
+    <script>
+      const view = new URLSearchParams(location.search).get("view");
+      if (view) {
+        document.documentElement.dataset.view = view;
+      }
+    </script>
     <link rel="stylesheet" href="./styles/app.css" />
   </head>
   <body>

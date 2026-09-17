@@ -38,6 +38,7 @@ pub fn run() {
             app.manage(ocr::OcrRuntime::default());
             tray::install(app.handle())?;
             hotkeys::apply_to_app(app.handle(), &stored.hotkeys);
+            capture::precreate_windows(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

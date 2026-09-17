@@ -2,6 +2,8 @@ pub mod buffer;
 pub mod error;
 pub mod geometry;
 pub mod hide;
+#[cfg(windows)]
+pub mod native_overlay;
 pub mod platform;
 pub mod session;
 pub mod ui;
@@ -29,12 +31,12 @@ pub fn get_preview_frame(app: AppHandle) -> Result<ui::PreviewPayload, CaptureEr
 }
 
 #[tauri::command]
-pub fn confirm_region(app: AppHandle, x: u32, y: u32, width: u32, height: u32) -> Result<(), CaptureError> {
+pub async fn confirm_region(app: AppHandle, x: u32, y: u32, width: u32, height: u32) -> Result<(), CaptureError> {
     session::confirm_region(&app, RegionSelection { x, y, width, height })
 }
 
 #[tauri::command]
-pub fn confirm_logical_region(
+pub async fn confirm_logical_region(
     app: AppHandle,
     x: f64,
     y: f64,
@@ -53,8 +55,12 @@ pub fn confirm_logical_region(
 }
 
 #[tauri::command]
-pub fn confirm_window(app: AppHandle, window_id: String) -> Result<(), CaptureError> {
+pub async fn confirm_window(app: AppHandle, window_id: String) -> Result<(), CaptureError> {
     session::confirm_window(&app, window_id)
+}
+
+pub fn precreate_windows(app: &AppHandle) {
+    ui::precreate(app);
 }
 
 #[tauri::command]

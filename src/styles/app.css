@@ -38,6 +38,13 @@ body,
   margin: 0;
   height: 100%;
   background: transparent;
+}
+
+html[data-view="preview"],
+html[data-view="preview"] body,
+html[data-view="preview"] #app {
+  background: #f6f1e8;
+}
   color: var(--ink);
 }
 

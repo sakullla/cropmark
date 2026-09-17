@@ -121,16 +121,81 @@ pub fn crop_desktop_to_monitor(
 }
 
 pub fn encode_png(frame: &Frame) -> Result<Vec<u8>, CaptureError> {
-    let image = image::RgbaImage::from_raw(frame.width, frame.height, frame.rgba.clone())
-        .ok_or_else(|| CaptureError::invalid_buffer("未初始化"))?;
-    let mut png = Vec::new();
-    image
-        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-        .map_err(|_| CaptureError::api("无法编码 PNG。"))?;
-    if png.is_empty() {
+    encode_image(frame, image::ImageFormat::Png)
+}
+
+pub fn encode_jpeg(frame: &Frame, quality: u8) -> Result<Vec<u8>, CaptureError> {
+    let rgba = rgba_image(frame)?;
+    let mut rgb = Vec::with_capacity((rgba.width() * rgba.height() * 3) as usize);
+    for pixel in rgba.pixels() {
+        rgb.extend_from_slice(&[pixel[0], pixel[1], pixel[2]]);
+    }
+    let mut jpeg = Vec::new();
+    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, quality);
+    encoder
+        .encode(
+            &rgb,
+            rgba.width(),
+            rgba.height(),
+            image::ExtendedColorType::Rgb8,
+        )
+        .map_err(|_| CaptureError::api("无法编码预览图。"))?;
+    if jpeg.is_empty() {
         return Err(CaptureError::invalid_buffer("空缓冲"));
     }
-    Ok(png)
+    Ok(jpeg)
+}
+
+pub fn fit_display(width: u32, height: u32, max_edge: u32) -> (u32, u32) {
+    let width = width.max(1);
+    let height = height.max(1);
+    let long = width.max(height);
+    if long <= max_edge {
+        return (width, height);
+    }
+    let scale = max_edge as f64 / long as f64;
+    (
+        (width as f64 * scale).round().max(1.0) as u32,
+        (height as f64 * scale).round().max(1.0) as u32,
+    )
+}
+
+pub fn resize_rgba(frame: &Frame, width: u32, height: u32) -> Result<Frame, CaptureError> {
+    if width == 0 || height == 0 {
+        return Err(CaptureError::invalid_buffer("尺寸为 0"));
+    }
+    if frame.width == width && frame.height == height {
+        return Ok(frame.clone());
+    }
+    let resized = image::imageops::resize(
+        &rgba_image(frame)?,
+        width,
+        height,
+        image::imageops::FilterType::Triangle,
+    );
+    Ok(Frame {
+        width,
+        height,
+        rgba: resized.into_raw(),
+        scale: frame.scale,
+    })
+}
+
+fn rgba_image(frame: &Frame) -> Result<image::RgbaImage, CaptureError> {
+    image::RgbaImage::from_raw(frame.width, frame.height, frame.rgba.clone())
+        .ok_or_else(|| CaptureError::invalid_buffer("未初始化"))
+}
+
+fn encode_image(frame: &Frame, format: image::ImageFormat) -> Result<Vec<u8>, CaptureError> {
+    let image = rgba_image(frame)?;
+    let mut bytes = Vec::new();
+    image
+        .write_to(&mut std::io::Cursor::new(&mut bytes), format)
+        .map_err(|_| CaptureError::api("无法编码 PNG。"))?;
+    if bytes.is_empty() {
+        return Err(CaptureError::invalid_buffer("空缓冲"));
+    }
+    Ok(bytes)
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -200,6 +265,21 @@ mod tests {
         let frame = accept_buffer(RawBuffer::ready(4, 4, bytes)).unwrap();
         let cropped = crop_rgba(&frame, 1, 1, 1, 1).unwrap();
         assert_eq!(cropped.rgba, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn fit_display_caps_long_edge() {
+        assert_eq!(fit_display(3840, 2160, 1280), (1280, 720));
+        assert_eq!(fit_display(800, 600, 1280), (800, 600));
+    }
+
+    #[test]
+    fn resize_rgba_keeps_requested_display_size() {
+        let frame = accept_buffer(solid(8, 4, [10, 20, 30, 255])).unwrap();
+        let resized = resize_rgba(&frame, 4, 2).unwrap();
+        assert_eq!(resized.width, 4);
+        assert_eq!(resized.height, 2);
+        assert_eq!(resized.rgba.len(), 4 * 2 * 4);
     }
 
     #[test]
