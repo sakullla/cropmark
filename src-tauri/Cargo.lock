@@ -665,6 +665,7 @@ dependencies = [
  "cc",
  "clipboard-win",
  "image",
+ "libc",
  "ndarray",
  "objc2",
  "objc2-app-kit",

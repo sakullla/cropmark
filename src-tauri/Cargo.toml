@@ -77,7 +77,10 @@ objc2-foundation = { version = "0.3.2", features = [
 ashpd = { version = "0.11", default-features = false, features = ["tokio"] }
 pollster = "0.4"
 url = "2"
-x11rb = { version = "0.13", features = ["randr"] }
+# 区域选区壳(selection/shell/linux.rs):X11 override-redirect 窗 +
+# MIT-SHM/XPutImage 呈现;libc 用于共享内存段(shmget/shmat)。
+x11rb = { version = "0.13", features = ["randr", "shm"] }
+libc = "0.2"
 
 # Keep the app debuggable without running full-resolution image codecs unoptimized.
 [profile.dev.package.cropmark]
