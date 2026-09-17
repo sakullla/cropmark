@@ -140,7 +140,8 @@ pub fn open_overlay(app: &AppHandle, monitor: &MonitorGeom) -> Result<WebviewWin
 
 pub fn open_preview(app: &AppHandle, frame: &Frame) -> Result<WebviewWindow, CaptureError> {
     hide_window(app, OVERLAY);
-    let (width, height) = preview_size(frame);
+    let (work_w, work_h) = target_work_area(app).unwrap_or((1920.0, 1080.0));
+    let (width, height) = preview_size(frame, work_w, work_h);
     let window = ensure_window(app, PREVIEW, "preview", width, height, false, false)?;
     let _ = window.set_size(Size::Logical(LogicalSize { width, height }));
     let _ = window.center();
@@ -225,14 +226,35 @@ fn builder<'a>(
     .closable(true))
 }
 
-fn preview_size(frame: &Frame) -> (f64, f64) {
-    let max_w = 800.0;
-    let max_h = 600.0;
+fn target_work_area(app: &AppHandle) -> Option<(f64, f64)> {
+    let monitor = app
+        .cursor_position()
+        .ok()
+        .and_then(|position| app.monitor_from_point(position.x, position.y).ok().flatten())
+        .or_else(|| app.primary_monitor().ok().flatten())?;
+    let area = monitor.work_area();
+    let scale = monitor.scale_factor().max(f64::EPSILON);
+    Some((
+        area.size.width as f64 / scale,
+        area.size.height as f64 / scale,
+    ))
+}
+
+fn preview_size(frame: &Frame, work_w: f64, work_h: f64) -> (f64, f64) {
+    let max_w = (work_w * 0.9).max(1.0);
+    let max_h = (work_h * 0.9).max(1.0);
     let chrome = 108.0;
+    let min_w = 480.0_f64.min(max_w);
+    let min_h = 280.0_f64.min(max_h);
     let width = frame.width.max(1) as f64;
     let height = frame.height.max(1) as f64;
-    let scale = (max_w / width).min((max_h - chrome) / height).min(1.0);
-    ((width * scale).max(480.0), (height * scale + chrome).max(280.0))
+    let scale = (max_w / width)
+        .min(((max_h - chrome).max(1.0)) / height)
+        .min(1.0);
+    (
+        (width * scale).max(min_w).min(max_w),
+        (height * scale + chrome).max(min_h).min(max_h),
+    )
 }
 
 #[cfg(test)]
@@ -240,17 +262,61 @@ mod tests {
     use super::*;
     use crate::capture::buffer::Frame;
 
-    #[test]
-    fn preview_keeps_compact_panel() {
-        let frame = Frame {
-            width: 3840,
-            height: 2160,
+    fn frame(width: u32, height: u32) -> Frame {
+        Frame {
+            width,
+            height,
             rgba: vec![0; 4],
             scale: 2.0,
-        };
-        let (width, height) = preview_size(&frame);
-        assert!(width <= 800.0);
-        assert!(height <= 600.0);
-        assert!(width >= 480.0);
+        }
+    }
+
+    #[test]
+    fn preview_fits_1080p_work_area() {
+        let (width, height) = preview_size(&frame(3840, 2160), 1920.0, 1080.0);
+        assert!(width <= 1920.0 * 0.9);
+        assert!(height <= 1080.0 * 0.9);
+        let ratio = 3840.0 / 2160.0;
+        assert!((width / (height - 108.0) - ratio).abs() < 0.01);
+    }
+
+    #[test]
+    fn preview_fits_1366_work_area() {
+        let (width, height) = preview_size(&frame(3840, 2160), 1366.0, 720.0);
+        assert!(width <= 1366.0 * 0.9);
+        assert!(height <= 720.0 * 0.9);
+        let ratio = 3840.0 / 2160.0;
+        assert!((width / (height - 108.0) - ratio).abs() < 0.01);
+    }
+
+    #[test]
+    fn preview_scales_up_to_4k_work_area() {
+        let (width, height) = preview_size(&frame(3840, 2160), 3840.0, 2160.0);
+        assert!(width <= 3840.0 * 0.9);
+        assert!(height <= 2160.0 * 0.9);
+        assert!(width > 800.0);
+        let ratio = 3840.0 / 2160.0;
+        assert!((width / (height - 108.0) - ratio).abs() < 0.01);
+    }
+
+    #[test]
+    fn preview_enforces_minimum_panel() {
+        let (width, height) = preview_size(&frame(100, 100), 1920.0, 1080.0);
+        assert_eq!(width, 480.0);
+        assert_eq!(height, 280.0);
+    }
+
+    #[test]
+    fn preview_minimum_yields_to_tiny_work_area() {
+        let (width, height) = preview_size(&frame(100, 100), 500.0, 400.0);
+        assert!(width <= 500.0 * 0.9);
+        assert!(height <= 400.0 * 0.9);
+    }
+
+    #[test]
+    fn preview_small_frame_keeps_native_size() {
+        let (width, height) = preview_size(&frame(640, 400), 1920.0, 1080.0);
+        assert_eq!(width, 640.0);
+        assert_eq!(height, 400.0 + 108.0);
     }
 }
