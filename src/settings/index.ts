@@ -47,28 +47,28 @@ export function mountSettings(root: HTMLElement): void {
         <button type="button" class="icon-btn" data-action="close" aria-label="关闭">×</button>
       </header>
       <main class="content">
-        <p class="notice" hidden></p>
-        <section class="card">
-          <h1>热键</h1>
-          <p class="hint">进程运行时生效。点击后按下新组合，Esc 取消。</p>
+        <p class="notice" role="alert" hidden></p>
+        <section class="card" aria-labelledby="hotkeys-title">
+          <h1 id="hotkeys-title">热键</h1>
+          <p class="hint">点击热键按钮后按下新组合，Esc 取消；改动立即生效。</p>
           <div class="rows" data-hotkeys></div>
         </section>
-        <section class="card">
-          <h1>开机启动</h1>
+        <section class="card" aria-labelledby="autostart-title">
+          <h1 id="autostart-title">开机启动</h1>
           <div class="autostart-row">
             <div>
-              <div class="label">登录时运行</div>
+              <div class="label" id="autostart-label">登录时运行</div>
               <p class="hint autostart-help"></p>
             </div>
-            <button type="button" class="switch" data-action="autostart" role="switch" aria-checked="false">
+            <button type="button" class="switch" data-action="autostart" role="switch" aria-checked="false" aria-labelledby="autostart-label">
               <span class="knob"></span>
             </button>
           </div>
         </section>
-        <section class="card about">
-          <h1>关于</h1>
+        <section class="card about" aria-labelledby="about-title">
+          <h1 id="about-title">关于</h1>
           <p class="about-name">Cropmark</p>
-          <p class="hint">独立系统截图工具。界面与托盘只使用 Cropmark 名称与图标。</p>
+          <p class="hint">独立系统截图工具，界面与托盘只使用 Cropmark 名称与图标。</p>
         </section>
       </main>
     </div>
@@ -105,7 +105,8 @@ export function mountSettings(root: HTMLElement): void {
     for (const mode of MODES) {
       const row = document.createElement("div");
       row.className = "hotkey-row";
-      if (hotkeyErrorText(settings.hotkeyErrors[mode])) {
+      const errorText = hotkeyErrorText(settings.hotkeyErrors[mode]);
+      if (errorText) {
         row.classList.add("has-error");
       }
 
@@ -117,15 +118,32 @@ export function mountSettings(root: HTMLElement): void {
       button.type = "button";
       button.className = "hotkey-btn";
       button.dataset.mode = mode;
+      button.title = "点击后按下新组合，Esc 取消";
+      button.setAttribute("aria-live", "polite");
+      button.setAttribute(
+        "aria-label",
+        recording === mode
+          ? `${MODE_LABEL[mode]}热键：正在录制，请按下新组合，Esc 取消`
+          : `${MODE_LABEL[mode]}热键：当前为 ${displayAccelerator(settings.hotkeys[mode])}，点击修改`,
+      );
       button.textContent =
         recording === mode ? "按下新热键…" : displayAccelerator(settings.hotkeys[mode]);
       if (recording === mode) {
         button.classList.add("recording");
       }
+      if (errorText) {
+        button.setAttribute("aria-invalid", "true");
+      }
 
       const error = document.createElement("p");
       error.className = "error";
-      error.textContent = hotkeyErrorText(settings.hotkeyErrors[mode]);
+      error.id = `hotkey-error-${mode}`;
+      error.setAttribute("role", "alert");
+      error.textContent = errorText;
+      error.hidden = !errorText;
+      if (errorText) {
+        button.setAttribute("aria-describedby", error.id);
+      }
 
       row.append(label, button, error);
       hotkeyRoot.append(row);
