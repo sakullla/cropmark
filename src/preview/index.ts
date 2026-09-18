@@ -13,6 +13,21 @@ type Tool = "arrow" | "rect" | "mosaic" | "text" | "ocr";
 
 type Point = { x: number; y: number };
 
+type Bounds = { minX: number; minY: number; maxX: number; maxY: number };
+
+// add/remove/replace(move、retext)三类动作构成 undo/redo 栈;replace 存前后值快照。
+type EditAction =
+  | { kind: "add"; index: number; op: Annotation }
+  | { kind: "remove"; index: number; op: Annotation }
+  | { kind: "replace"; index: number; before: Annotation; after: Annotation };
+
+interface MoveState {
+  index: number;
+  before: Annotation;
+  grab: Point;
+  moved: boolean;
+}
+
 type Annotation =
   | {
       type: "arrow";
@@ -51,6 +66,8 @@ type NoteKind = "success" | "feedback" | "error";
 const FALLBACK_STROKE = "#e11d48";
 const FALLBACK_OCR_HL = "#0ea5e9";
 const FALLBACK_OCR_HL_STRONG = "#0369a1";
+const FALLBACK_SELECT = "#2563eb";
+const TEXT_FONT_STACK = '"Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif';
 
 // 与 Rust parse_hex_color 对齐：接受 #rgb / #rrggbb / #rrggbbaa，其余形式回退默认色。
 const HEX_COLOR_RE = /^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
@@ -142,6 +159,9 @@ export function mountPreview(root: HTMLElement): void {
         <textarea class="preview-text" rows="2" spellcheck="false" placeholder="在此输入汉字"></textarea>
       </div>
     </div>
+    <div class="preview-context" data-context-menu hidden>
+      <button type="button" data-action="delete-annotation">删除标注</button>
+    </div>
   `;
 
   const canvas = root.querySelector("canvas");
@@ -153,6 +173,7 @@ export function mountPreview(root: HTMLElement): void {
   const styleRoot = root.querySelector("[data-style-root]");
   const stylePanel = root.querySelector("[data-style-panel]");
   const styleBtn = root.querySelector("[data-action=style]");
+  const contextMenu = root.querySelector("[data-context-menu]");
   if (
     !(canvas instanceof HTMLCanvasElement) ||
     !(note instanceof HTMLElement) ||
@@ -162,7 +183,8 @@ export function mountPreview(root: HTMLElement): void {
     !(copyAllBtn instanceof HTMLButtonElement) ||
     !(styleRoot instanceof HTMLElement) ||
     !(stylePanel instanceof HTMLElement) ||
-    !(styleBtn instanceof HTMLButtonElement)
+    !(styleBtn instanceof HTMLButtonElement) ||
+    !(contextMenu instanceof HTMLElement)
   ) {
     return;
   }
@@ -173,6 +195,7 @@ export function mountPreview(root: HTMLElement): void {
 
   const rootStyle = getComputedStyle(root);
   const strokeColor = resolveCanvasColor(rootStyle.getPropertyValue("--stroke"), FALLBACK_STROKE);
+  const selectColor = resolveCanvasColor(rootStyle.getPropertyValue("--accent"), FALLBACK_SELECT);
   const ocrHl = resolveCanvasColor(rootStyle.getPropertyValue("--ocr-hl"), FALLBACK_OCR_HL);
   const ocrHlStrong = resolveCanvasColor(rootStyle.getPropertyValue("--ocr-hl-strong"), FALLBACK_OCR_HL_STRONG);
   const ocrColors = {
@@ -190,6 +213,12 @@ export function mountPreview(root: HTMLElement): void {
   let source: HTMLCanvasElement | null = null;
   let tool: Tool = "arrow";
   let annotations: Annotation[] = [];
+  const undoStack: EditAction[] = [];
+  const redoStack: EditAction[] = [];
+  let selected: number | null = null;
+  let moving = false;
+  let moveState: MoveState | null = null;
+  let editTarget: number | null = null;
   let dragging = false;
   let start: Point | null = null;
   let current: Point | null = null;
@@ -243,6 +272,9 @@ export function mountPreview(root: HTMLElement): void {
     root.querySelectorAll("[data-tool]").forEach((button) => {
       button.classList.toggle("active", button.getAttribute("data-tool") === next);
     });
+    selected = null;
+    moving = false;
+    moveState = null;
     ocrSelected = [];
     ocrCurrent = null;
     ocrStart = null;
@@ -263,7 +295,7 @@ export function mountPreview(root: HTMLElement): void {
   };
 
   const syncUndo = (): void => {
-    undoBtn.disabled = annotations.length === 0 && !editorOpen();
+    undoBtn.disabled = undoStack.length === 0 && !editorOpen();
   };
 
   const syncStylePanel = (): void => {
@@ -297,6 +329,14 @@ export function mountPreview(root: HTMLElement): void {
 
   const toggleStylePanel = (open?: boolean): void => {
     const next = open ?? stylePanel.hidden;
+    if (next) {
+      // 开样式面板前先提交编辑器并取消编辑选中,避免两套编辑态互相干扰。
+      commitEditor();
+      selected = null;
+      moving = false;
+      moveState = null;
+      redraw();
+    }
     stylePanel.hidden = !next;
     styleBtn.classList.toggle("active", next);
     if (next) {
@@ -327,6 +367,9 @@ export function mountPreview(root: HTMLElement): void {
   });
 
   document.addEventListener("click", (event) => {
+    if (!contextMenu.hidden && !(event.target instanceof Node && contextMenu.contains(event.target))) {
+      hideContextMenu();
+    }
     if (stylePanel.hidden) {
       return;
     }
@@ -354,6 +397,66 @@ export function mountPreview(root: HTMLElement): void {
     };
   };
 
+  // 几何命中:从最上层(数组末尾)往下找,箭头按线段距离+箭头端容差,其余按包围盒。
+  const hitAnnotation = (point: Point): number => {
+    const tol = Math.max(6, Math.round((frame?.scale ?? 1) * 6));
+    for (let i = annotations.length - 1; i >= 0; i -= 1) {
+      const op = annotations[i];
+      if (op.type === "arrow") {
+        const lineWidth = annotationStyle(op).lineWidth;
+        if (
+          distToSegment(point, op.from, op.to) <= tol + lineWidth / 2 ||
+          Math.hypot(point.x - op.to.x, point.y - op.to.y) <= tol + 8
+        ) {
+          return i;
+        }
+      } else {
+        const b = annotationBounds(ctx, op);
+        if (
+          point.x >= b.minX - tol &&
+          point.x <= b.maxX + tol &&
+          point.y >= b.minY - tol &&
+          point.y <= b.maxY + tol
+        ) {
+          return i;
+        }
+      }
+    }
+    return -1;
+  };
+
+  const hideContextMenu = (): void => {
+    contextMenu.hidden = true;
+  };
+
+  const showContextMenu = (clientX: number, clientY: number): void => {
+    const rootRect = root.getBoundingClientRect();
+    contextMenu.hidden = false;
+    const menuRect = contextMenu.getBoundingClientRect();
+    const left = clamp(clientX - rootRect.left, 4, Math.max(4, rootRect.width - menuRect.width - 4));
+    const top = clamp(clientY - rootRect.top, 4, Math.max(4, rootRect.height - menuRect.height - 4));
+    contextMenu.style.left = `${left}px`;
+    contextMenu.style.top = `${top}px`;
+  };
+
+  const deleteSelected = (): void => {
+    if (editorOpen() || selected === null) {
+      return;
+    }
+    const index = selected;
+    const op = annotations[index];
+    selected = null;
+    moving = false;
+    moveState = null;
+    if (!op) {
+      redraw();
+      return;
+    }
+    pushAction({ kind: "remove", index, op });
+    redraw();
+    syncUndo();
+  };
+
   const redraw = (): void => {
     if (!source) {
       return;
@@ -363,6 +466,9 @@ export function mountPreview(root: HTMLElement): void {
     for (const op of annotations) {
       const s = annotationStyle(op);
       paint(ctx, op, s.color, s.lineWidth);
+    }
+    if (selected !== null && annotations[selected]) {
+      paintSelectionBox(ctx, annotations[selected], selectColor, Math.max(frame?.scale ?? 1, 1));
     }
     if (dragging && start && current && (tool === "arrow" || tool === "rect" || tool === "mosaic")) {
       const op = draft(tool, start, current, mosaicBlock(), styleColor, styleWidth);
@@ -378,22 +484,18 @@ export function mountPreview(root: HTMLElement): void {
     }
   };
 
-  const placeEditor = (point: Point): void => {
-    if (composing) {
-      return;
-    }
-    commitEditor();
-    editorOrigin = point;
+  const showEditor = (origin: Point, text: string, baseFontSize: number): void => {
+    editorOrigin = origin;
     const scale = cssScale();
     const canvasRect = canvas.getBoundingClientRect();
     const frameRect = frameEl.getBoundingClientRect();
     const editorStyle = window.getComputedStyle(editor);
     const insetX = parseFloat(editorStyle.paddingLeft) + parseFloat(editorStyle.borderLeftWidth);
     const insetY = parseFloat(editorStyle.paddingTop) + parseFloat(editorStyle.borderTopWidth);
-    const fontSize = textSize() * scale.y;
-    editor.value = "";
-    editor.style.left = `${canvasRect.left - frameRect.left + point.x * scale.x - insetX}px`;
-    editor.style.top = `${canvasRect.top - frameRect.top + point.y * scale.y - insetY}px`;
+    const fontSize = baseFontSize * scale.y;
+    editor.value = text;
+    editor.style.left = `${canvasRect.left - frameRect.left + origin.x * scale.x - insetX}px`;
+    editor.style.top = `${canvasRect.top - frameRect.top + origin.y * scale.y - insetY}px`;
     editor.style.fontSize = `${fontSize}px`;
     editor.style.width = `${Math.max(160, fontSize * 12)}px`;
     editor.classList.add("is-open");
@@ -403,13 +505,65 @@ export function mountPreview(root: HTMLElement): void {
     }, 0);
   };
 
+  const placeEditor = (point: Point): void => {
+    if (composing) {
+      return;
+    }
+    commitEditor();
+    editTarget = null;
+    selected = null;
+    showEditor(point, "", textSize());
+  };
+
+  // 双击文字原位重编辑:载入原文本与原字号,提交时走 retext 动作。
+  const openTextEditor = (index: number): void => {
+    if (composing) {
+      return;
+    }
+    const op = annotations[index];
+    if (!op || op.type !== "text") {
+      return;
+    }
+    commitEditor();
+    editTarget = index;
+    selected = null;
+    moving = false;
+    moveState = null;
+    showEditor({ x: op.x, y: op.y }, op.text, op.size);
+  };
+
   const hideEditor = (): void => {
     editor.classList.remove("is-open");
     editor.value = "";
     editorOrigin = null;
+    editTarget = null;
   };
 
   const editorOpen = (): boolean => editor.classList.contains("is-open");
+
+  const runAction = (action: EditAction, undoIt: boolean): void => {
+    if (action.kind === "add") {
+      if (undoIt) {
+        annotations.splice(action.index, 1);
+      } else {
+        annotations.splice(action.index, 0, action.op);
+      }
+    } else if (action.kind === "remove") {
+      if (undoIt) {
+        annotations.splice(action.index, 0, action.op);
+      } else {
+        annotations.splice(action.index, 1);
+      }
+    } else {
+      annotations[action.index] = undoIt ? action.before : action.after;
+    }
+  };
+
+  const pushAction = (action: EditAction): void => {
+    runAction(action, false);
+    undoStack.push(action);
+    redoStack.length = 0;
+  };
 
   const commitEditor = (): void => {
     if (!editorOpen() || !editorOrigin || composing) {
@@ -417,11 +571,23 @@ export function mountPreview(root: HTMLElement): void {
     }
     const text = editor.value;
     const origin = editorOrigin;
+    const target = editTarget;
     hideEditor();
-    if (text.trim().length > 0) {
-      annotations.push({ type: "text", x: origin.x, y: origin.y, text, size: textSize(), color: styleColor });
-      redraw();
+    if (target !== null && annotations[target]?.type === "text") {
+      const before = annotations[target];
+      if (text.trim().length === 0) {
+        pushAction({ kind: "remove", index: target, op: before });
+      } else if (text !== before.text) {
+        pushAction({ kind: "replace", index: target, before, after: { ...before, text } });
+      }
+    } else if (text.trim().length > 0) {
+      pushAction({
+        kind: "add",
+        index: annotations.length,
+        op: { type: "text", x: origin.x, y: origin.y, text, size: textSize(), color: styleColor },
+      });
     }
+    redraw();
     syncUndo();
   };
 
@@ -436,7 +602,32 @@ export function mountPreview(root: HTMLElement): void {
       cancelEditor();
       return;
     }
-    annotations.pop();
+    const action = undoStack.pop();
+    if (!action) {
+      return;
+    }
+    runAction(action, true);
+    selected = null;
+    moving = false;
+    moveState = null;
+    redoStack.push(action);
+    redraw();
+    syncUndo();
+  };
+
+  const redo = (): void => {
+    if (editorOpen()) {
+      return;
+    }
+    const action = redoStack.pop();
+    if (!action) {
+      return;
+    }
+    runAction(action, false);
+    selected = null;
+    moving = false;
+    moveState = null;
+    undoStack.push(action);
     redraw();
     syncUndo();
   };
@@ -558,6 +749,7 @@ export function mountPreview(root: HTMLElement): void {
     if (event.button !== 0 || !frame) {
       return;
     }
+    hideContextMenu();
     const point = physicalPoint(event);
     if (tool === "ocr") {
       if (!ocrDoc) {
@@ -577,12 +769,71 @@ export function mountPreview(root: HTMLElement): void {
       return;
     }
     commitEditor();
+    // 绘制工具下先做命中:命中已放标注则进入选中+拖移,否则清空选中并回到绘制起笔。
+    const hit = hitAnnotation(point);
+    if (hit !== -1) {
+      event.preventDefault();
+      selected = hit;
+      moving = true;
+      moveState = { index: hit, before: annotations[hit], grab: point, moved: false };
+      redraw();
+      return;
+    }
+    selected = null;
     dragging = true;
     start = point;
     current = point;
   });
 
+  canvas.addEventListener("dblclick", (event) => {
+    if (event.button !== 0 || !frame || tool === "ocr") {
+      return;
+    }
+    const point = physicalPoint(event);
+    const hit = hitAnnotation(point);
+    if (hit !== -1 && annotations[hit]?.type === "text") {
+      event.preventDefault();
+      openTextEditor(hit);
+    }
+  });
+
+  canvas.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    hideContextMenu();
+    if (!stylePanel.hidden) {
+      toggleStylePanel(false);
+    }
+    if (!frame) {
+      return;
+    }
+    const point = physicalPoint(event);
+    const hit = hitAnnotation(point);
+    if (hit === -1) {
+      return;
+    }
+    commitEditor();
+    selected = hit;
+    moving = false;
+    moveState = null;
+    redraw();
+    showContextMenu(event.clientX, event.clientY);
+  });
+
   window.addEventListener("mousemove", (event) => {
+    if (moving && moveState) {
+      const point = physicalPoint(event);
+      let dx = point.x - moveState.grab.x;
+      let dy = point.y - moveState.grab.y;
+      const b = annotationBounds(ctx, moveState.before);
+      dx = clamp(dx, -b.minX, canvas.width - b.maxX);
+      dy = clamp(dy, -b.minY, canvas.height - b.maxY);
+      if (dx !== 0 || dy !== 0) {
+        moveState.moved = true;
+      }
+      annotations[moveState.index] = translateOp(moveState.before, dx, dy);
+      redraw();
+      return;
+    }
     if (ocrDragging && ocrStart && ocrDoc) {
       ocrCurrent = physicalPoint(event);
       const rubber = normalizeRect(ocrStart, ocrCurrent);
@@ -603,6 +854,18 @@ export function mountPreview(root: HTMLElement): void {
   });
 
   window.addEventListener("mouseup", () => {
+    if (moving && moveState) {
+      moving = false;
+      const { index, before, moved } = moveState;
+      moveState = null;
+      if (moved) {
+        const after = annotations[index];
+        pushAction({ kind: "replace", index, before, after });
+        syncUndo();
+      }
+      redraw();
+      return;
+    }
     if (ocrDragging && ocrStart && ocrCurrent) {
       ocrDragging = false;
       const from = ocrStart;
@@ -621,7 +884,7 @@ export function mountPreview(root: HTMLElement): void {
     if (tool === "arrow" || tool === "rect" || tool === "mosaic") {
       const op = draft(tool, start, current, mosaicBlock(), styleColor, styleWidth);
       if (op) {
-        annotations.push(op);
+        pushAction({ kind: "add", index: annotations.length, op });
       }
     }
     start = null;
@@ -687,6 +950,9 @@ export function mountPreview(root: HTMLElement): void {
       undo();
     } else if (button.dataset.action === "style") {
       toggleStylePanel();
+    } else if (button.dataset.action === "delete-annotation") {
+      hideContextMenu();
+      deleteSelected();
     } else if (button.dataset.action === "copy") {
       void copy();
     } else if (button.dataset.action === "copy-ocr-all") {
@@ -717,6 +983,11 @@ export function mountPreview(root: HTMLElement): void {
       return;
     }
     if (event.key === "Escape") {
+      if (!contextMenu.hidden) {
+        event.preventDefault();
+        hideContextMenu();
+        return;
+      }
       if (!stylePanel.hidden) {
         event.preventDefault();
         toggleStylePanel(false);
@@ -727,6 +998,12 @@ export function mountPreview(root: HTMLElement): void {
         cancelEditor();
         return;
       }
+      if (selected !== null) {
+        event.preventDefault();
+        selected = null;
+        redraw();
+        return;
+      }
       void invoke("close_preview");
       return;
     }
@@ -735,7 +1012,16 @@ export function mountPreview(root: HTMLElement): void {
       const key = event.key.toLowerCase();
       if (key === "z" && !editorOpen()) {
         event.preventDefault();
-        undo();
+        if (event.shiftKey) {
+          redo();
+        } else {
+          undo();
+        }
+        return;
+      }
+      if (key === "y" && !editorOpen()) {
+        event.preventDefault();
+        redo();
         return;
       }
       if (key === "s") {
@@ -754,6 +1040,13 @@ export function mountPreview(root: HTMLElement): void {
       return;
     }
     if (event.altKey || event.shiftKey || document.activeElement === editor || editorOpen()) {
+      return;
+    }
+    if (event.key === "Delete" || event.key === "Backspace") {
+      if (selected !== null) {
+        event.preventDefault();
+        deleteSelected();
+      }
       return;
     }
     const toolKeys: Record<string, Tool> = {
@@ -845,6 +1138,13 @@ export function mountPreview(root: HTMLElement): void {
 
   void listen("preview-reload", () => {
     annotations = [];
+    undoStack.length = 0;
+    redoStack.length = 0;
+    selected = null;
+    moving = false;
+    moveState = null;
+    editTarget = null;
+    hideContextMenu();
     ocrDoc = null;
     ocrSelected = [];
     loadPreview();
@@ -895,7 +1195,7 @@ function paint(ctx: CanvasRenderingContext2D, op: Annotation, stroke: string, li
   } else if (op.type === "arrow") {
     paintArrow(ctx, op.from, op.to, lineWidth);
   } else if (op.type === "text") {
-    ctx.font = `${op.size}px "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif`;
+    ctx.font = `${op.size}px ${TEXT_FONT_STACK}`;
     ctx.textBaseline = "top";
     const lines = op.text.split("\n");
     lines.forEach((line, index) => {
@@ -987,6 +1287,74 @@ function paintMosaic(
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
+}
+
+function distToSegment(p: Point, a: Point, b: Point): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const lengthSq = dx * dx + dy * dy;
+  if (lengthSq === 0) {
+    return Math.hypot(p.x - a.x, p.y - a.y);
+  }
+  let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / lengthSq;
+  t = clamp(t, 0, 1);
+  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+}
+
+// 与 paint 的文字绘制同字体度量出的包围盒,供命中与选中高亮共用。
+function annotationBounds(ctx: CanvasRenderingContext2D, op: Annotation): Bounds {
+  if (op.type === "arrow") {
+    return {
+      minX: Math.min(op.from.x, op.to.x),
+      minY: Math.min(op.from.y, op.to.y),
+      maxX: Math.max(op.from.x, op.to.x),
+      maxY: Math.max(op.from.y, op.to.y),
+    };
+  }
+  if (op.type === "text") {
+    ctx.save();
+    ctx.font = `${op.size}px ${TEXT_FONT_STACK}`;
+    let width = 0;
+    for (const line of op.text.split("\n")) {
+      width = Math.max(width, ctx.measureText(line).width);
+    }
+    ctx.restore();
+    const lineCount = op.text.split("\n").length;
+    return { minX: op.x, minY: op.y, maxX: op.x + width, maxY: op.y + lineCount * op.size * 1.25 };
+  }
+  return { minX: op.x, minY: op.y, maxX: op.x + op.width, maxY: op.y + op.height };
+}
+
+function translateOp(op: Annotation, dx: number, dy: number): Annotation {
+  if (op.type === "arrow") {
+    return {
+      ...op,
+      from: { x: op.from.x + dx, y: op.from.y + dy },
+      to: { x: op.to.x + dx, y: op.to.y + dy },
+    };
+  }
+  return { ...op, x: op.x + dx, y: op.y + dy };
+}
+
+function paintSelectionBox(
+  ctx: CanvasRenderingContext2D,
+  op: Annotation,
+  color: string,
+  scale: number,
+): void {
+  const b = annotationBounds(ctx, op);
+  const pad = Math.max(4, Math.round(scale * 4));
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = Math.max(1, Math.round(scale));
+  ctx.setLineDash([6, 4]);
+  ctx.strokeRect(
+    b.minX - pad,
+    b.minY - pad,
+    b.maxX - b.minX + pad * 2,
+    b.maxY - b.minY + pad * 2,
+  );
+  ctx.restore();
 }
 
 function normalizeRect(a: Point, b: Point): { x: number; y: number; width: number; height: number } {
