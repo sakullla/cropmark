@@ -2,6 +2,7 @@ import { listen } from "@tauri-apps/api/event";
 import { mountDelay } from "./overlay/delay";
 import { mountCaptureError } from "./overlay/error";
 import { mountOverlay } from "./overlay/index";
+import { mountPin } from "./pin";
 import { mountPreview } from "./preview";
 import { mountSettings } from "./settings";
 import { mountToast } from "./toast";
@@ -21,6 +22,8 @@ if (root instanceof HTMLElement) {
     mountCaptureError(root);
   } else if (view === "toast") {
     mountToast(root);
+  } else if (view === "pin") {
+    mountPin(root);
   }
 }
 

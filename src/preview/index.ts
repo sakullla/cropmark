@@ -149,6 +149,7 @@ export function mountPreview(root: HTMLElement): void {
       <div class="preview-actions">
         <button type="button" data-tool="ocr" title="取字 (O)">取字</button>
         <button type="button" data-action="copy-ocr-all" hidden>复制全部</button>
+        <button type="button" data-action="pin" title="贴图">贴图</button>
         <button type="button" data-action="save" title="保存 (Ctrl+S)">保存</button>
         <button type="button" class="primary" data-action="copy" title="复制 (Ctrl+C)">复制</button>
       </div>
@@ -171,6 +172,7 @@ export function mountPreview(root: HTMLElement): void {
   const frameEl = root.querySelector(".preview-frame");
   const copyAllBtn = root.querySelector("[data-action=copy-ocr-all]");
   const ocrBtn = root.querySelector("[data-tool=ocr]");
+  const pinBtn = root.querySelector("[data-action=pin]");
   const styleRoot = root.querySelector("[data-style-root]");
   const stylePanel = root.querySelector("[data-style-panel]");
   const styleBtn = root.querySelector("[data-action=style]");
@@ -183,6 +185,7 @@ export function mountPreview(root: HTMLElement): void {
     !(frameEl instanceof HTMLElement) ||
     !(copyAllBtn instanceof HTMLButtonElement) ||
     !(ocrBtn instanceof HTMLButtonElement) ||
+    !(pinBtn instanceof HTMLButtonElement) ||
     !(styleRoot instanceof HTMLElement) ||
     !(stylePanel instanceof HTMLElement) ||
     !(styleBtn instanceof HTMLButtonElement) ||
@@ -234,8 +237,10 @@ export function mountPreview(root: HTMLElement): void {
   let ocrCurrent: Point | null = null;
   let ocrGen = 0;
   let composing = false;
-  // 功能入口开关(设置页 features.ocrEntry):关闭时取字按钮隐藏、O 键停用。
+  // 功能入口开关(设置页 features.ocrEntry / features.pinEntry):
+  // 关闭时取字按钮隐藏、O 键停用;关闭贴图后隐藏预览工具条贴图按钮。
   let ocrEntryEnabled = true;
+  let pinEntryEnabled = true;
   let styleColor = FALLBACK_STROKE;
   let styleWidth: number | null = null;
   let styleTextBase: number | null = null;
@@ -776,6 +781,23 @@ export function mountPreview(root: HTMLElement): void {
     }
   };
 
+  // 贴图:当前标注合成图钉成置顶小窗;预览保持打开,可继续标注/再贴。
+  const pin = async (): Promise<void> => {
+    if (busy) {
+      return;
+    }
+    commitEditor();
+    busy = true;
+    try {
+      await invoke("pin_current", { annotations: exportList() });
+      setNote("已贴图。", "success");
+    } catch (error) {
+      setNote(invokeError(error, "无法创建贴图。"), "error");
+    } finally {
+      busy = false;
+    }
+  };
+
   canvas.addEventListener("mousedown", (event) => {
     if (event.button !== 0 || !frame) {
       return;
@@ -1001,6 +1023,10 @@ export function mountPreview(root: HTMLElement): void {
       void copyOcrAll();
     } else if (button.dataset.action === "save") {
       void save();
+    } else if (button.dataset.action === "pin") {
+      if (pinEntryEnabled) {
+        void pin();
+      }
     } else if (button.dataset.action === "close") {
       void invoke("close_preview");
     }
@@ -1111,16 +1137,19 @@ export function mountPreview(root: HTMLElement): void {
   syncUndo();
 
   // 重读功能入口开关并同步预览 UI:ocrEntryEnabled 同时驱动工具条按钮显隐、
-  // O 键映射与当前 ocr 工具的回退;每次 reload 都要重读,不能只在首载做一次。
-  const syncFeatureFlags = (settings?: { features?: { ocrEntry?: boolean } }): void => {
+  // O 键映射与当前 ocr 工具的回退;pinEntryEnabled 驱动贴图按钮显隐;
+  // 每次 reload 都要重读,不能只在首载做一次。
+  const syncFeatureFlags = (settings?: { features?: { ocrEntry?: boolean; pinEntry?: boolean } }): void => {
     ocrEntryEnabled = settings?.features?.ocrEntry !== false;
     ocrBtn.hidden = !ocrEntryEnabled;
     if (!ocrEntryEnabled && tool === "ocr") {
       setTool("arrow");
     }
+    pinEntryEnabled = settings?.features?.pinEntry !== false;
+    pinBtn.hidden = !pinEntryEnabled;
   };
   const reloadFeatureFlags = (): void => {
-    void invoke<{ features?: { ocrEntry?: boolean } }>("get_ui_settings")
+    void invoke<{ features?: { ocrEntry?: boolean; pinEntry?: boolean } }>("get_ui_settings")
       .then((settings) => {
         syncFeatureFlags(settings);
       })
@@ -1131,7 +1160,7 @@ export function mountPreview(root: HTMLElement): void {
   const loadStyleDefaults = (): void => {
     void invoke<{
       annotationDefaults?: { color?: string; width?: number | null; textSize?: number | null };
-      features?: { ocrEntry?: boolean };
+      features?: { ocrEntry?: boolean; pinEntry?: boolean };
     }>("get_ui_settings")
       .then((settings) => {
         syncFeatureFlags(settings);

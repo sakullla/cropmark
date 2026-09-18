@@ -5,6 +5,7 @@ mod clipboard;
 mod export;
 mod hotkeys;
 mod ocr;
+mod pin;
 mod settings;
 mod tray;
 
@@ -66,15 +67,28 @@ pub fn run() {
             ocr::copy_ocr_point,
             ocr::copy_ocr_rect,
             ocr::copy_ocr_all,
+            pin::pin_current,
+            pin::get_pin_image,
+            pin::close_pin,
+            pin::close_all_pins,
         ])
+        .on_window_event(|window, event| {
+            // 贴图窗口销毁(手动关闭/显示器断开/退出)即释放标签与交接邮箱。
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                pin::handle_destroyed(window.label());
+            }
+        })
         .build(tauri::generate_context!())
         .expect("Cropmark failed to start")
-        .run(|_app, event| {
-            if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
+        .run(|app, event| match event {
+            tauri::RunEvent::ExitRequested { api, code, .. } => {
                 if should_prevent_exit(code) {
                     api.prevent_exit();
                 }
             }
+            // 托盘退出(code=Some(0))等真实退出路径:退出前统一收掉贴图。
+            tauri::RunEvent::Exit => pin::close_all(app),
+            _ => {}
         });
 }
 
