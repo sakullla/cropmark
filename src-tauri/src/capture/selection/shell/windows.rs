@@ -20,10 +20,11 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetMessageW,
     LoadCursorW, PostQuitMessage, RegisterClassExW, SetCursor, SetForegroundWindow, SetWindowPos,
-    ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW, HWND_TOPMOST, IDC_CROSS, MSG,
-    SWP_SHOWWINDOW, SW_SHOW, WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONDOWN, WM_SETCURSOR, WNDCLASSEXW,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW, HWND_TOPMOST, IDC_ARROW, IDC_CROSS,
+    IDC_HAND, IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, MSG,
+    SWP_SHOWWINDOW, SW_SHOW, WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONDOWN, WM_SETCURSOR,
+    WM_SETFOCUS, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 use crate::capture::buffer::Frame;
@@ -31,7 +32,8 @@ use crate::capture::error::CaptureError;
 use crate::capture::geometry::{MonitorGeom, PhysicalRect};
 use crate::capture::selection::composer::{self, Composer};
 use crate::capture::selection::{
-    EngineOutcome, FeatureFlags, InputEvent, LogicalKey, SelectionAction, SelectionEngine,
+    CursorHint, EngineOutcome, FeatureFlags, InputEvent, LogicalKey, SelectionAction,
+    SelectionEngine,
 };
 use crate::capture::session::QuietAction;
 
@@ -88,6 +90,11 @@ struct ShellState {
     shift_down: bool,
     outcome: Option<RegionOutcome>,
     timing: bool,
+    /// 是否曾真正获得焦点:仅"获得过焦点后又失去"才触发失焦取消,
+    /// 防止建窗时 SetForegroundWindow 被前台锁拒绝/焦点弹跳导致的
+    /// 建窗即 KILLFOCUS 误取消(用户表现为"触发后毫无反应")。
+    had_focus: bool,
+    created_at: Instant,
 }
 
 thread_local! {
@@ -119,7 +126,9 @@ fn run_shell(
         *slot.borrow_mut() = Some(ShellState {
             hooks,
             canvas: Canvas {
-                engine: SelectionEngine::new(width as u32, height as u32, flags),
+                // 注入冻结帧 DPI 缩放:chrome(放大镜面板)光标命中需要。
+                engine: SelectionEngine::new(width as u32, height as u32, flags)
+                    .with_scale(frame.scale),
                 composer,
                 scratch: vec![0; bytes],
                 present_buf: vec![0; bytes],
@@ -129,6 +138,8 @@ fn run_shell(
             shift_down: false,
             outcome: None,
             timing: std::env::var_os("CROPMARK_CAPTURE_TIMING").is_some(),
+            had_focus: false,
+            created_at: Instant::now(),
         });
     });
     let hwnd =
@@ -189,6 +200,17 @@ fn feed_event(state: &mut ShellState, event: InputEvent, hwnd: HWND) -> bool {
     }
 }
 
+/// 失焦兜底:Esc/Enter 只会送到前台窗口,overlay 失焦后键盘输入永远丢失,
+/// 不取消会让消息泵永挂、会话 busy 卡死(Snipaste 惯例:失焦即取消)。
+/// toast 反馈窗是 focused(false),不会触发本路径。返回 true 表示应退出泵。
+fn cancel_on_focus_loss(state: &mut ShellState) -> bool {
+    if state.outcome.is_some() {
+        return false;
+    }
+    state.outcome = Some(RegionOutcome::Cancelled);
+    true
+}
+
 /// 操作条/菜单动作到静默完成动作的映射;标注/取消/复制色值不在此列。
 fn quiet_action_for(action: SelectionAction) -> Option<QuietAction> {
     match action {
@@ -207,6 +229,20 @@ fn copy_color_value(state: &mut ShellState) {
     let hex = composer::hex_readout(pixel);
     let text = format!("{} {}", hex, composer::rgb_readout(pixel));
     (state.hooks.copy_color)(&text, &hex);
+}
+
+/// 引擎光标提示 → Win32 系统光标资源。
+fn cursor_resource(hint: CursorHint) -> PCWSTR {
+    match hint {
+        CursorHint::Move => IDC_SIZEALL,
+        CursorHint::ResizeNS => IDC_SIZENS,
+        CursorHint::ResizeEW => IDC_SIZEWE,
+        CursorHint::ResizeNWSE => IDC_SIZENWSE,
+        CursorHint::ResizeNESW => IDC_SIZENESW,
+        CursorHint::Pointer => IDC_HAND,
+        CursorHint::Arrow => IDC_ARROW,
+        CursorHint::Crosshair => IDC_CROSS,
+    }
 }
 
 fn map_virtual_key(vk: u32) -> Option<LogicalKey> {
@@ -265,6 +301,10 @@ fn present(timing: bool, hwnd: HWND, canvas: &mut Canvas) {
 }
 
 unsafe fn blit(hwnd: HWND, width: i32, height: i32, bgra: &[u8]) {
+    // 集成测试以空 hwnd 驱动 feed_event:跳过真实 blit。
+    if hwnd.0.is_null() {
+        return;
+    }
     let info = BITMAPINFO {
         bmiHeader: BITMAPINFOHEADER {
             biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
@@ -352,6 +392,33 @@ unsafe extern "system" fn wnd_proc(
 ) -> LRESULT {
     match msg {
         WM_ERASEBKGND => LRESULT(1),
+        WM_KILLFOCUS => {
+            // 失焦即取消:键盘 Esc/Enter 只送前台窗口,失焦后继续泵只会永挂。
+            // 但仅"曾获得焦点后又失去"才取消——建窗期 SetForegroundWindow 可能被
+            // 前台锁拒绝,焦点弹跳产生的 KILLFOCUS 不得误杀会话(另留 500ms 宽限)。
+            let done = STATE.with(|slot| {
+                let mut guard = slot.borrow_mut();
+                let Some(state) = guard.as_mut() else {
+                    return false;
+                };
+                if !state.had_focus || state.created_at.elapsed() < Duration::from_millis(500) {
+                    return false;
+                }
+                cancel_on_focus_loss(state)
+            });
+            if done {
+                PostQuitMessage(0);
+            }
+            LRESULT(0)
+        }
+        WM_SETFOCUS => {
+            STATE.with(|slot| {
+                if let Some(state) = slot.borrow_mut().as_mut() {
+                    state.had_focus = true;
+                }
+            });
+            LRESULT(0)
+        }
         WM_PAINT => {
             // 直接呈现缓存位图,不重合成(合成只发生在引擎 Redraw 时)。
             STATE.with(|slot| {
@@ -370,7 +437,16 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         WM_SETCURSOR => {
-            if let Ok(cursor) = LoadCursorW(None, IDC_CROSS) {
+            // 引擎光标提示(chrome 优先):菜单项/图标轨按钮→手型,放大镜面板→
+            // 箭头,手柄/边→resize 箭头,选区内部→移动,其他→十字。
+            let hint = STATE.with(|slot| {
+                slot.borrow().as_ref().map(|state| {
+                    let (x, y) = state.canvas.engine.cursor();
+                    state.canvas.engine.cursor_for(x, y)
+                })
+            });
+            let resource = cursor_resource(hint.unwrap_or(CursorHint::Crosshair));
+            if let Ok(cursor) = LoadCursorW(None, resource) {
                 let _ = SetCursor(Some(cursor));
             }
             LRESULT(1)
@@ -429,7 +505,13 @@ unsafe extern "system" fn wnd_proc(
 
 unsafe fn pump() {
     let mut msg = MSG::default();
-    while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+    loop {
+        // GetMessageW 出错返回 -1(BOOL 非零),.as_bool() 会误判为真而死循环;
+        // 只有严格大于 0 才是普通消息,0(WM_QUIT)与负数都退出。
+        let result = GetMessageW(&mut msg, None, 0, 0);
+        if result.0 <= 0 {
+            break;
+        }
         let _ = TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
@@ -439,6 +521,189 @@ unsafe fn pump() {
 mod tests {
     use super::*;
     use crate::capture::buffer::{accept_buffer, RawBuffer};
+
+    /// 合成壳状态:真实引擎+合成器,空 hwnd(blit 守卫跳过真实呈现)。
+    /// wnd_proc 只做消息→InputEvent 映射,集成测试直接驱动 feed_event 即
+    /// 等价覆盖「消息序列 → 终态/退出」链路。
+    fn test_state(width: u32, height: u32) -> ShellState {
+        fn noop_copy_color(_text: &str, _hex: &str) {}
+        let frame = accept_buffer(RawBuffer::ready(width, height, vec![60u8; (width * height * 4) as usize])).unwrap();
+        let bytes = frame.rgba.len();
+        ShellState {
+            hooks: ShellHooks {
+                copy_color: noop_copy_color,
+            },
+            canvas: Canvas {
+                engine: SelectionEngine::new(width, height, FeatureFlags::default())
+                    .with_scale(frame.scale),
+                composer: Composer::new(&frame).unwrap(),
+                scratch: vec![0; bytes],
+                present_buf: vec![0; bytes],
+                width: width as i32,
+                height: height as i32,
+            },
+            shift_down: false,
+            outcome: None,
+            timing: false,
+            had_focus: true,
+            created_at: Instant::now() - Duration::from_secs(1),
+        }
+    }
+
+    fn key(key: LogicalKey) -> InputEvent {
+        InputEvent::Key { key, shift: false }
+    }
+
+    #[test]
+    fn zero_drag_then_escape_still_terminates() {
+        let mut state = test_state(320, 200);
+        let hwnd = HWND::default();
+        // down→up 零位移:微选区被丢弃,会话继续(不终态)。
+        assert!(!feed_event(&mut state, InputEvent::LeftDown { x: 50, y: 50 }, hwnd));
+        assert!(!feed_event(&mut state, InputEvent::LeftUp { x: 50, y: 50 }, hwnd));
+        assert!(state.outcome.is_none());
+        // Esc 兜底退出。
+        assert!(feed_event(&mut state, key(LogicalKey::Escape), hwnd));
+        assert_eq!(state.outcome, Some(RegionOutcome::Cancelled));
+    }
+
+    #[test]
+    fn drag_then_enter_confirms_and_terminates() {
+        let mut state = test_state(320, 200);
+        let hwnd = HWND::default();
+        assert!(!feed_event(&mut state, InputEvent::LeftDown { x: 40, y: 30 }, hwnd));
+        assert!(!feed_event(
+            &mut state,
+            InputEvent::PointerMove { x: 200, y: 120 },
+            hwnd
+        ));
+        assert!(!feed_event(&mut state, InputEvent::LeftUp { x: 200, y: 120 }, hwnd));
+        assert!(feed_event(&mut state, key(LogicalKey::Enter), hwnd));
+        assert_eq!(
+            state.outcome,
+            Some(RegionOutcome::Preview(PhysicalRect {
+                x: 40,
+                y: 30,
+                width: 161,
+                height: 91
+            }))
+        );
+    }
+
+    #[test]
+    fn menu_open_escape_and_item_click_both_terminate() {
+        let hwnd = HWND::default();
+        // 菜单 open + Esc → Cancelled。
+        let mut state = test_state(320, 200);
+        for event in [
+            InputEvent::LeftDown { x: 40, y: 30 },
+            InputEvent::PointerMove { x: 200, y: 120 },
+            InputEvent::LeftUp { x: 200, y: 120 },
+            InputEvent::RightDown { x: 150, y: 100 },
+        ] {
+            assert!(!feed_event(&mut state, event, hwnd));
+        }
+        assert!(feed_event(&mut state, key(LogicalKey::Escape), hwnd));
+        assert_eq!(state.outcome, Some(RegionOutcome::Cancelled));
+        // 菜单 open + 点击「复制」→ Quiet(Copy)。
+        let mut state = test_state(320, 200);
+        for event in [
+            InputEvent::LeftDown { x: 40, y: 30 },
+            InputEvent::PointerMove { x: 200, y: 120 },
+            InputEvent::LeftUp { x: 200, y: 120 },
+            InputEvent::RightDown { x: 150, y: 100 },
+        ] {
+            assert!(!feed_event(&mut state, event, hwnd));
+        }
+        let items = composer::menu_items(state.canvas.engine.flags());
+        let panel = composer::menu_panel(state.canvas.engine.menu_anchor(), (320, 200), &items);
+        let (_, copy_rect) = composer::menu_item_rects(panel, &items)
+            .into_iter()
+            .find(|(action, _)| *action == SelectionAction::Copy)
+            .unwrap();
+        let (cx, cy) = copy_rect.center();
+        assert!(feed_event(&mut state, InputEvent::LeftDown { x: cx, y: cy }, hwnd));
+        assert_eq!(
+            state.outcome,
+            Some(RegionOutcome::Quiet(
+                PhysicalRect {
+                    x: 40,
+                    y: 30,
+                    width: 161,
+                    height: 91
+                },
+                QuietAction::Copy
+            ))
+        );
+    }
+
+    #[test]
+    fn edge_drag_release_outside_then_enter_terminates() {
+        let mut state = test_state(320, 200);
+        let hwnd = HWND::default();
+        for event in [
+            InputEvent::LeftDown { x: 40, y: 30 },
+            InputEvent::PointerMove { x: 200, y: 120 },
+            InputEvent::LeftUp { x: 200, y: 120 },
+        ] {
+            assert!(!feed_event(&mut state, event, hwnd));
+        }
+        // 边缘拖拽,up 落在画布外坐标(钳制):回 Selected,不终态。
+        assert!(!feed_event(&mut state, InputEvent::LeftDown { x: 203, y: 100 }, hwnd));
+        assert!(!feed_event(
+            &mut state,
+            InputEvent::PointerMove { x: 999, y: 100 },
+            hwnd
+        ));
+        assert!(!feed_event(&mut state, InputEvent::LeftUp { x: 999, y: 100 }, hwnd));
+        // EdgeResize 中 Esc 也能直接终态(另起会话验证 Enter 路径前先看钳制)。
+        assert!(feed_event(&mut state, key(LogicalKey::Enter), hwnd));
+        assert!(matches!(state.outcome, Some(RegionOutcome::Preview(_))));
+        if let Some(RegionOutcome::Preview(rect)) = state.outcome {
+            assert_eq!((rect.width, rect.height), (280, 91)); // 右边钳到 319
+        }
+        // EdgeResize 中 Esc → Cancelled。
+        let mut state = test_state(320, 200);
+        for event in [
+            InputEvent::LeftDown { x: 40, y: 30 },
+            InputEvent::PointerMove { x: 200, y: 120 },
+            InputEvent::LeftUp { x: 200, y: 120 },
+            InputEvent::LeftDown { x: 203, y: 100 },
+        ] {
+            assert!(!feed_event(&mut state, event, hwnd));
+        }
+        assert!(feed_event(&mut state, key(LogicalKey::Escape), hwnd));
+        assert_eq!(state.outcome, Some(RegionOutcome::Cancelled));
+    }
+
+    #[test]
+    fn focus_loss_cancels_instead_of_hanging() {
+        let mut state = test_state(320, 200);
+        let hwnd = HWND::default();
+        // 拖到一半失焦(Alt+Tab/Win+D/点击另一屏):必须退出而非永挂。
+        assert!(!feed_event(&mut state, InputEvent::LeftDown { x: 40, y: 30 }, hwnd));
+        assert!(!feed_event(
+            &mut state,
+            InputEvent::PointerMove { x: 120, y: 90 },
+            hwnd
+        ));
+        assert!(cancel_on_focus_loss(&mut state));
+        assert_eq!(state.outcome, Some(RegionOutcome::Cancelled));
+        // 已有终态时不再覆盖。
+        assert!(!cancel_on_focus_loss(&mut state));
+    }
+
+    #[test]
+    fn cursor_hints_map_to_win32_cursor_resources() {
+        assert_eq!(cursor_resource(CursorHint::Pointer), IDC_HAND);
+        assert_eq!(cursor_resource(CursorHint::Arrow), IDC_ARROW);
+        assert_eq!(cursor_resource(CursorHint::Crosshair), IDC_CROSS);
+        assert_eq!(cursor_resource(CursorHint::Move), IDC_SIZEALL);
+        assert_eq!(cursor_resource(CursorHint::ResizeNS), IDC_SIZENS);
+        assert_eq!(cursor_resource(CursorHint::ResizeEW), IDC_SIZEWE);
+        assert_eq!(cursor_resource(CursorHint::ResizeNWSE), IDC_SIZENWSE);
+        assert_eq!(cursor_resource(CursorHint::ResizeNESW), IDC_SIZENESW);
+    }
 
     #[test]
     fn virtual_keys_map_to_engine_logical_keys() {
@@ -584,7 +849,11 @@ mod tests {
                     let _ = DestroyWindow(hwnd);
                     PostQuitMessage(0);
                     let mut msg = MSG::default();
-                    while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                    loop {
+                        let result = GetMessageW(&mut msg, None, 0, 0);
+                        if result.0 <= 0 {
+                            break;
+                        }
                         let _ = TranslateMessage(&msg);
                         DispatchMessageW(&msg);
                     }

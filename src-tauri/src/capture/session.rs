@@ -46,6 +46,7 @@ struct ActiveSession {
     file_written: bool,
     cancelled: bool,
     frame_deadline: Option<Instant>,
+    started_at: Instant,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,11 +132,24 @@ async fn run(app: AppHandle, mode: CaptureMode, delay_ms: u64) -> Result<(), Cap
 fn try_begin_with_delay(app: &AppHandle, mode: CaptureMode, delay_ms: u64) -> bool {
     let runtime = app.state::<CaptureRuntime>();
     let mut guard = lock(&runtime.inner);
+    // 看门狗:正常截取远小于 30s;busy 超时说明壳消息泵/线程卡死,
+    // 强制重置旧会话,避免"取消一次后再也无法截取"的静默死锁。
+    const STALE_SESSION_TIMEOUT: Duration = Duration::from_secs(30);
+    if guard.as_ref().is_some_and(|session| {
+        session.busy && session.started_at.elapsed() > STALE_SESSION_TIMEOUT
+    }) {
+        eprintln!("Cropmark: stale busy session reset after {STALE_SESSION_TIMEOUT:?}");
+        for label in ui::session_window_labels() {
+            ui::hide_window(app, label);
+        }
+        *guard = None;
+    }
     if guard.as_ref().is_some_and(|session| session.busy) {
         return false;
     }
-    // A lingering toast must not leak into the next capture (hide-before-capture).
-    ui::close_window(app, ui::TOAST);
+    // A lingering toast must not leak into the next capture (hide-before-capture);
+    // 仅隐藏——toast 窗是预创建复用的 webview,关闭会破坏复用。
+    ui::hide_window(app, ui::TOAST);
     // Replacing the session drops any frame retained by a previous quiet finish.
     *guard = Some(ActiveSession {
         mode,
@@ -152,6 +166,7 @@ fn try_begin_with_delay(app: &AppHandle, mode: CaptureMode, delay_ms: u64) -> bo
         file_written: false,
         cancelled: false,
         frame_deadline: None,
+        started_at: Instant::now(),
     });
     *lock(&runtime.last_error) = None;
     true
@@ -907,7 +922,8 @@ pub fn close_preview(app: &AppHandle) {
 }
 
 pub fn close_error(app: &AppHandle) {
-    ui::close_window(app, ui::ERROR);
+    // 仅隐藏:error 窗是预创建复用的 webview。
+    ui::hide_window(app, ui::ERROR);
 }
 
 fn with_session<R>(app: &AppHandle, f: impl FnOnce(&Option<ActiveSession>) -> R) -> R {
@@ -1030,6 +1046,7 @@ mod tests {
             file_written: false,
             cancelled: false,
             frame_deadline: None,
+            started_at: Instant::now(),
         }
     }
 

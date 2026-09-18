@@ -13,6 +13,11 @@
   background: #000;
 }
 
+/* 窗口模式:整帧压暗 + 描边高亮(画布内绘制,不挖洞),光标用指针表达可点。*/
+.overlay-root.mode-window {
+  cursor: pointer;
+}
+
 .overlay-root canvas {
   position: absolute;
   inset: 0;

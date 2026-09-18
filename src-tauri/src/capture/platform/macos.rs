@@ -110,6 +110,7 @@ pub fn list_windows(self_pid: u32) -> Result<Vec<ListedWindow>, CaptureError> {
         )));
     }
     let mut listed = Vec::new();
+    // CGWindowList 返回 front-to-back(自顶向下),符合 selectable_windows 契约。
     for item in raw.into_iter().take(count.max(0) as usize) {
         let title = unsafe { CStr::from_ptr(item.title.as_ptr()) }
             .to_string_lossy()

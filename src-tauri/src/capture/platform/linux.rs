@@ -208,6 +208,8 @@ fn x11_list_windows(self_pid: u32) -> Result<Vec<ListedWindow>, CaptureError> {
             listed.push(window);
         }
     }
+    // _NET_CLIENT_LIST 按 stacking 自底向上;反转为契约要求的自顶向下。
+    listed.reverse();
     Ok(selectable_windows(&listed, self_pid))
 }
 

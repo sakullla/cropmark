@@ -47,6 +47,7 @@ pub fn list_windows(self_pid: u32) -> Result<Vec<ListedWindow>, CaptureError> {
     let mut collected: Vec<ListedWindow> = Vec::new();
     let param = LPARAM(&mut collected as *mut Vec<ListedWindow> as isize);
     unsafe {
+        // EnumWindows 按 z 序自顶向下枚举,符合 selectable_windows 契约。
         EnumWindows(Some(enum_windows_callback), param)
             .map_err(|_| CaptureError::api("无法列出窗口。"))?;
     }

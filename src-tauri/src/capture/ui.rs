@@ -136,6 +136,10 @@ pub fn preview_payload(frame: &Frame, png: &[u8], clipboard_written: bool) -> Pr
 pub fn precreate(app: &AppHandle) {
     let _ = ensure_window(app, OVERLAY, "overlay", 320.0, 240.0, false, true);
     let _ = ensure_window(app, PREVIEW, "preview", 520.0, 360.0, false, false);
+    // toast/error 预创建复用:这两个窗每次 close+create 重建时,新 webview
+    // 偶发导航失败显示"无法访问此页面"(协议宿主竞态);预创建后仅 show/hide。
+    let _ = ensure_window(app, TOAST, "toast", TOAST_WIDTH, TOAST_HEIGHT, true, true);
+    let _ = ensure_window(app, ERROR, "error", 420.0, 220.0, true, true);
 }
 
 pub fn open_overlay(app: &AppHandle, monitor: &MonitorGeom) -> Result<WebviewWindow, CaptureError> {
@@ -194,15 +198,11 @@ pub fn open_delay(app: &AppHandle, delay_ms: u64) -> Result<WebviewWindow, Captu
 }
 
 pub fn open_error(app: &AppHandle, error: &CaptureError) -> Result<(), CaptureError> {
-    close_window(app, ERROR);
-    let window = builder(app, ERROR, "error", true, true)?
-        .inner_size(420.0, 220.0)
-        .center()
-        .always_on_top(true)
-        .focused(true)
-        .visible(true)
-        .build()
-        .map_err(|err| CaptureError::api(err.to_string()))?;
+    // 复用预创建的 error 窗,避免重建 webview 的偶发导航失败。
+    let window = ensure_window(app, ERROR, "error", 420.0, 220.0, true, true)?;
+    let _ = window.center();
+    let _ = window.show();
+    let _ = window.set_focus();
     let _ = window.emit("capture-error", error.clone());
     Ok(())
 }
@@ -226,34 +226,21 @@ pub fn show_toast(app: &AppHandle, message: &str) {
     *LAST_TOAST
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(message.clone());
-    // Only the newest toast may close the window; older timers become no-ops.
+    // Only the newest toast may hide the window; older timers become no-ops.
     let generation = TOAST_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
-    close_window(app, TOAST);
-    let window = builder(app, TOAST, "toast", true, true)
-        .and_then(|builder| {
-            builder
-                .inner_size(TOAST_WIDTH, TOAST_HEIGHT)
-                .always_on_top(true)
-                .focused(false)
-                .visible(false)
-                .build()
-                .map_err(|err| CaptureError::api(err.to_string()))
-        })
-        .inspect(|window| {
-            let (x, y) = toast_origin(target_work_area(app), TOAST_WIDTH, TOAST_HEIGHT);
-            let _ = window.set_position(Position::Logical(LogicalPosition { x, y }));
-            let _ = window.show();
-            let _ = window.emit("capture-toast", ToastPayload { message });
-        });
-    if window.is_err() {
-        // A failed toast window must not break the capture flow; no timer runs.
-        return;
+    // 复用预创建的 toast 窗:仅重定位+显示+发消息,不重建 webview。
+    let window = ensure_window(app, TOAST, "toast", TOAST_WIDTH, TOAST_HEIGHT, true, true);
+    if let Ok(window) = window {
+        let (x, y) = toast_origin(target_work_area(app), TOAST_WIDTH, TOAST_HEIGHT);
+        let _ = window.set_position(Position::Logical(LogicalPosition { x, y }));
+        let _ = window.show();
+        let _ = window.emit("capture-toast", ToastPayload { message });
     }
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         let _ = tauri::async_runtime::spawn_blocking(move || std::thread::sleep(TOAST_DURATION)).await;
         if TOAST_GENERATION.load(Ordering::SeqCst) == generation {
-            close_window(&handle, TOAST);
+            hide_window(&handle, TOAST);
         }
     });
 }

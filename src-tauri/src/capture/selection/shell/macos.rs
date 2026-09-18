@@ -316,6 +316,8 @@ fn run_shell(
     window.setHidesOnDeactivate(false);
     let content_view: &NSView = &view;
     window.setContentView(Some(content_view));
+    // TODO(cursor-hint): 接入引擎 `cursor_for` 光标提示(手柄/边→resize 箭头,
+    // 内部→move,外部→crosshair);本轮仅 Windows 壳消费,这里先固定十字。
     NSCursor::crosshairCursor().set();
     // 先合成首帧再上屏,避免 orderFront 到首次 drawRect 之间闪黑。
     STATE.with(|slot| {

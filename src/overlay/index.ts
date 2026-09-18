@@ -119,6 +119,9 @@ export function mountOverlay(root: HTMLElement): void {
     ctx.fillStyle = "rgba(12, 10, 9, 0.48)";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     if (frame.mode === "window") {
+      // 窗口模式不挖洞(Snipaste 惯例):整帧均匀压暗,冻结帧中缺失的
+      // 后开窗口不再呈现黑洞;悬停窗口画 accent 描边 + 轻微 accent 填充,
+      // 其余候选窗口 1px 浅色描边。
       for (const listed of frame.windows) {
         const rect = windowRectOnFrame(listed, frame);
         if (!rect) {
@@ -126,14 +129,22 @@ export function mountOverlay(root: HTMLElement): void {
         }
         const mapped = toCanvas(rect.x, rect.y, rect.width, rect.height);
         const active = hoverId === listed.id;
-        ctx.save();
-        ctx.globalCompositeOperation = "destination-out";
-        ctx.fillStyle = active ? "rgba(0,0,0,0.85)" : "rgba(0,0,0,0.35)";
-        ctx.fillRect(mapped.x, mapped.y, mapped.width, mapped.height);
-        ctx.restore();
-        ctx.strokeStyle = active ? "#2dd4bf" : "rgba(245, 240, 232, 0.55)";
-        ctx.lineWidth = active ? 3 : 1.5;
-        ctx.strokeRect(mapped.x + 0.5, mapped.y + 0.5, mapped.width - 1, mapped.height - 1);
+        if (active) {
+          ctx.fillStyle = "rgba(45, 212, 191, 0.16)";
+          ctx.fillRect(mapped.x, mapped.y, mapped.width, mapped.height);
+          ctx.strokeStyle = "#2dd4bf";
+          ctx.lineWidth = 2.5;
+          ctx.strokeRect(
+            mapped.x + 1.25,
+            mapped.y + 1.25,
+            mapped.width - 2.5,
+            mapped.height - 2.5,
+          );
+        } else {
+          ctx.strokeStyle = "rgba(245, 240, 232, 0.55)";
+          ctx.lineWidth = 1;
+          ctx.strokeRect(mapped.x + 0.5, mapped.y + 0.5, mapped.width - 1, mapped.height - 1);
+        }
       }
       return;
     }
@@ -183,6 +194,8 @@ export function mountOverlay(root: HTMLElement): void {
     try {
       frame = await invoke<OverlayFrame>("get_overlay_frame");
       fitCanvas();
+      root.classList.toggle("mode-window", frame.mode === "window");
+      root.classList.toggle("mode-region", frame.mode !== "window");
       hint.textContent =
         frame.mode === "window" ? "点击要截取的窗口" : "拖出矩形截取区域";
       void getCurrentWindow().setFocus();
@@ -301,6 +314,15 @@ export function mountOverlay(root: HTMLElement): void {
     void invoke("cancel_capture");
   };
 
+  // 窗口模式下右键=取消(Esc 失焦卡住时的兜底);区域模式右键留给动作菜单。
+  canvas.addEventListener("contextmenu", (event) => {
+    if (!frame || frame.mode !== "window") {
+      return;
+    }
+    event.preventDefault();
+    cancel();
+  });
+
   cancelBtn.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
@@ -385,7 +407,11 @@ function windowRectOnFrame(window: ListedWindow, frame: OverlayFrame): Selection
 }
 
 function hitWindow(frame: OverlayFrame, x: number, y: number): string | null {
-  for (const window of [...frame.windows].reverse()) {
+  // frame.windows 按 z 序自顶向下(平台层契约:Windows EnumWindows /
+  // macOS CGWindowList 天然自顶向下,X11 _NET_CLIENT_LIST 已在后端反转)。
+  // 首个命中即用户实际看到的最上层窗口;不可再 reverse,否则最底层
+  // 窗口(常常是桌面)会吞掉所有点击。
+  for (const window of frame.windows) {
     const rect = windowRectOnFrame(window, frame);
     if (!rect) {
       continue;

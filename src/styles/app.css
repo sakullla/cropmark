@@ -48,6 +48,11 @@
   box-sizing: border-box;
 }
 
+/* hidden 属性必须始终生效:作者规则的 display:flex 等会覆盖 UA 的 [hidden] 规则。 */
+[hidden] {
+  display: none !important;
+}
+
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;

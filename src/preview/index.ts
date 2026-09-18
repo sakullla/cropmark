@@ -274,6 +274,15 @@ export function mountPreview(root: HTMLElement): void {
     note.classList.toggle("is-error", kind === "error");
   };
 
+  // 诊断面:未捕获的脚本错误与 Promise 拒绝直接显现在提示条,避免"按钮点了没反应"无处可查。
+  window.addEventListener("error", (event) => {
+    setNote(`界面错误:${String(event.message ?? "未知错误").slice(0, 80)}`, "error");
+  });
+  window.addEventListener("unhandledrejection", (event) => {
+    const reason = event.reason instanceof Error ? event.reason.message : String(event.reason);
+    setNote(`操作失败:${reason.slice(0, 80)}`, "error");
+  });
+
   const setTool = (next: Tool): void => {
     commitEditor();
     tool = next;

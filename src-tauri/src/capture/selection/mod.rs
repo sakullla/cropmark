@@ -57,6 +57,49 @@ pub enum HandleKind {
     West,
 }
 
+/// 边缘拉伸的命中边(边线 ±EDGE_HIT_RADIUS);拖动=沿该边法向轴 resize。
+/// 新增命中类型,不改变既有 8 向 Handle 语义(角/边中手柄优先)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EdgeKind {
+    North,
+    East,
+    South,
+    West,
+}
+
+/// 光标提示:平台壳据此切换系统光标(Windows 壳在 WM_SETCURSOR 消费)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CursorHint {
+    Crosshair,
+    Move,
+    ResizeNS,
+    ResizeEW,
+    ResizeNWSE,
+    ResizeNESW,
+    /// chrome 可点击元素(图标轨按钮/菜单项):手型。
+    Pointer,
+    /// 放大镜面板上方(只读区):默认箭头。
+    Arrow,
+}
+
+impl CursorHint {
+    fn for_handle(kind: HandleKind) -> Self {
+        match kind {
+            HandleKind::North | HandleKind::South => Self::ResizeNS,
+            HandleKind::East | HandleKind::West => Self::ResizeEW,
+            HandleKind::NorthWest | HandleKind::SouthEast => Self::ResizeNWSE,
+            HandleKind::NorthEast | HandleKind::SouthWest => Self::ResizeNESW,
+        }
+    }
+
+    fn for_edge(edge: EdgeKind) -> Self {
+        match edge {
+            EdgeKind::North | EdgeKind::South => Self::ResizeNS,
+            EdgeKind::East | EdgeKind::West => Self::ResizeEW,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogicalKey {
     Enter,
@@ -112,6 +155,8 @@ pub enum EngineState {
     Selected,
     /// 拖动手柄调整大小。
     Adjusting { handle: HandleKind },
+    /// 拖动选区边线沿单轴调整大小(EdgeResize)。
+    AdjustingEdge { edge: EdgeKind },
     /// 拖动选区内部整体移动。
     Moving { grab_x: i32, grab_y: i32 },
     /// 右键菜单打开。
@@ -138,6 +183,8 @@ pub struct SelectionEngine {
     selection: Option<PhysicalRect>,
     cursor: (i32, i32),
     menu_anchor: (i32, i32),
+    /// 冻结帧 DPI 缩放(放大镜面板命中需要;默认 1.0,壳经 with_scale 注入)。
+    scale: f32,
 }
 
 impl SelectionEngine {
@@ -150,7 +197,18 @@ impl SelectionEngine {
             selection: None,
             cursor: (0, 0),
             menu_anchor: (0, 0),
+            scale: 1.0,
         }
+    }
+
+    /// 注入冻结帧 DPI 缩放(放大镜面板 chrome 命中用;不注入时按 1.0)。
+    pub fn with_scale(mut self, scale: f64) -> Self {
+        self.scale = if scale.is_finite() && scale > 0.25 {
+            (scale as f32).min(4.0)
+        } else {
+            1.0
+        };
+        self
     }
 
     pub fn size(&self) -> (u32, u32) {
@@ -175,6 +233,55 @@ impl SelectionEngine {
 
     pub fn menu_anchor(&self) -> (i32, i32) {
         self.menu_anchor
+    }
+
+    /// 指定点的光标提示:chrome 优先于选区几何——菜单打开时菜单项(手型)
+    /// 优先;放大镜面板(箭头)恒判定;选中态图标轨可见时按钮(手型)优先;
+    /// 其后才是手柄/边→resize 箭头、选区内部→move、其他→crosshair。
+    /// 拖动手柄/边/移动期间保持对应提示。
+    pub fn cursor_for(&self, x: i32, y: i32) -> CursorHint {
+        match self.state {
+            EngineState::Adjusting { handle } => CursorHint::for_handle(handle),
+            EngineState::AdjustingEdge { edge } => CursorHint::for_edge(edge),
+            EngineState::Moving { .. } => CursorHint::Move,
+            EngineState::Menu => {
+                if self.hit_menu(x, y).is_some() {
+                    return CursorHint::Pointer;
+                }
+                CursorHint::Crosshair
+            }
+            EngineState::Selected => {
+                // chrome 优先:放大镜面板(箭头)→ 图标轨按钮(手型)→ 选区几何。
+                if self.flags.magnifier
+                    && composer::magnifier_hit(self.cursor, self.size(), self.scale, x, y)
+                {
+                    return CursorHint::Arrow;
+                }
+                if self.scene().toolbar_visible && self.hit_toolbar(x, y).is_some() {
+                    return CursorHint::Pointer;
+                }
+                if let Some(selection) = self.selection {
+                    if let Some(handle) = composer::handle_hit(selection, x, y) {
+                        return CursorHint::for_handle(handle);
+                    }
+                    if let Some(edge) = composer::edge_hit(selection, x, y) {
+                        return CursorHint::for_edge(edge);
+                    }
+                    if IntRect::from(selection).contains(x, y) {
+                        return CursorHint::Move;
+                    }
+                }
+                CursorHint::Crosshair
+            }
+            EngineState::Idle | EngineState::Dragging { .. } => {
+                if self.flags.magnifier
+                    && composer::magnifier_hit(self.cursor, self.size(), self.scale, x, y)
+                {
+                    return CursorHint::Arrow;
+                }
+                CursorHint::Crosshair
+            }
+        }
     }
 
     /// 当前状态对应的合成场景。
@@ -241,6 +348,16 @@ impl SelectionEngine {
                     ));
                 }
             }
+            EngineState::AdjustingEdge { edge } => {
+                if let Some(selection) = self.selection {
+                    self.selection = Some(Self::resize_by_edge(
+                        selection,
+                        edge,
+                        self.cursor,
+                        (self.width as i32, self.height as i32),
+                    ));
+                }
+            }
             EngineState::Moving { grab_x, grab_y } => {
                 if let Some(selection) = self.selection {
                     self.selection = Some(Self::translate(
@@ -276,6 +393,10 @@ impl SelectionEngine {
                         self.state = EngineState::Adjusting { handle };
                         return EngineOutcome::Redraw;
                     }
+                    if let Some(edge) = composer::edge_hit(selection, x, y) {
+                        self.state = EngineState::AdjustingEdge { edge };
+                        return EngineOutcome::Redraw;
+                    }
                     let sel = IntRect::from(selection);
                     if sel.contains(x, y) {
                         self.state = EngineState::Moving {
@@ -293,7 +414,9 @@ impl SelectionEngine {
                 self.selection = None;
                 EngineOutcome::Redraw
             }
-            EngineState::Adjusting { .. } | EngineState::Moving { .. } => EngineOutcome::Redraw,
+            EngineState::Adjusting { .. }
+            | EngineState::AdjustingEdge { .. }
+            | EngineState::Moving { .. } => EngineOutcome::Redraw,
             EngineState::Menu => {
                 if let Some(action) = self.hit_menu(x, y) {
                     return if action == SelectionAction::Cancel {
@@ -330,7 +453,9 @@ impl SelectionEngine {
                 }
                 EngineOutcome::Redraw
             }
-            EngineState::Adjusting { .. } | EngineState::Moving { .. } => {
+            EngineState::Adjusting { .. }
+            | EngineState::AdjustingEdge { .. }
+            | EngineState::Moving { .. } => {
                 self.state = EngineState::Selected;
                 EngineOutcome::Redraw
             }
@@ -462,6 +587,30 @@ impl SelectionEngine {
                 y1 = cursor.1.clamp(y0 + min, screen.1 - 1);
             }
             HandleKind::West => x0 = cursor.0.clamp(0, x1 - min),
+        }
+        PhysicalRect {
+            x: x0 as u32,
+            y: y0 as u32,
+            width: (x1 - x0 + 1) as u32,
+            height: (y1 - y0 + 1) as u32,
+        }
+    }
+
+    /// 边缘拉伸:只沿该边法向轴调整,钳制画布内、最小尺寸约束与手柄一致。
+    fn resize_by_edge(
+        rect: PhysicalRect,
+        edge: EdgeKind,
+        cursor: (i32, i32),
+        screen: (i32, i32),
+    ) -> PhysicalRect {
+        let min = MIN_SELECTION_SIZE as i32 - 1;
+        let (mut x0, mut y0) = (rect.x as i32, rect.y as i32);
+        let (mut x1, mut y1) = (x0 + rect.width as i32 - 1, y0 + rect.height as i32 - 1);
+        match edge {
+            EdgeKind::North => y0 = cursor.1.clamp(0, y1 - min),
+            EdgeKind::South => y1 = cursor.1.clamp(y0 + min, screen.1 - 1),
+            EdgeKind::West => x0 = cursor.0.clamp(0, x1 - min),
+            EdgeKind::East => x1 = cursor.0.clamp(x0 + min, screen.0 - 1),
         }
         PhysicalRect {
             x: x0 as u32,
@@ -695,7 +844,19 @@ mod tests {
         drag(&mut restricted, (40, 30), (200, 120));
         let buttons = composer::toolbar_buttons(off);
         assert!(!buttons.contains(&SelectionAction::Copy));
-        assert_eq!(restricted.hit_toolbar(60, 140), Some(SelectionAction::Save));
+        // 首位变为保存:按共享布局取首个按钮中心命中。
+        let panel =
+            composer::toolbar_panel(restricted.selection().unwrap(), restricted.size(), &buttons)
+                .unwrap();
+        let (_, first) = composer::toolbar_button_rects(panel, &buttons)
+            .first()
+            .copied()
+            .unwrap();
+        let (fx, fy) = first.center();
+        assert_eq!(
+            restricted.hit_toolbar(fx, fy),
+            Some(SelectionAction::Save)
+        );
     }
 
     #[test]
@@ -765,6 +926,207 @@ mod tests {
                 shift: false
             }),
             EngineOutcome::Redraw
+        );
+    }
+
+    #[test]
+    fn edge_drag_resizes_along_single_axis_and_clamps() {
+        let mut engine = new_engine();
+        drag(&mut engine, (40, 30), (200, 120)); // (40,30)-(200,120)
+        // 拖右边线(±6px 带内、手柄半径外):只改宽度。
+        assert_eq!(
+            engine.handle_event(InputEvent::LeftDown { x: 203, y: 100 }),
+            EngineOutcome::Redraw
+        );
+        assert_eq!(
+            engine.state(),
+            &EngineState::AdjustingEdge {
+                edge: EdgeKind::East
+            }
+        );
+        engine.handle_event(InputEvent::PointerMove { x: 260, y: 100 });
+        assert_eq!(
+            engine.selection(),
+            Some(PhysicalRect {
+                x: 40,
+                y: 30,
+                width: 221,
+                height: 91
+            })
+        );
+        engine.handle_event(InputEvent::LeftUp { x: 260, y: 100 });
+        assert_eq!(engine.state(), &EngineState::Selected);
+        // 拖下边线:只改高度,且钳制到画布底。
+        engine.handle_event(InputEvent::LeftDown { x: 100, y: 120 });
+        assert_eq!(
+            engine.state(),
+            &EngineState::AdjustingEdge {
+                edge: EdgeKind::South
+            }
+        );
+        engine.handle_event(InputEvent::PointerMove { x: 100, y: 999 });
+        assert_eq!(
+            engine.selection(),
+            Some(PhysicalRect {
+                x: 40,
+                y: 30,
+                width: 221,
+                height: 170
+            })
+        );
+        engine.handle_event(InputEvent::LeftUp { x: 100, y: 999 });
+        // 拖左边线越过右边:钳制为最小宽度,位置随动。
+        engine.handle_event(InputEvent::LeftDown { x: 40, y: 100 });
+        assert_eq!(
+            engine.state(),
+            &EngineState::AdjustingEdge {
+                edge: EdgeKind::West
+            }
+        );
+        engine.handle_event(InputEvent::PointerMove { x: 400, y: 100 });
+        let sel = engine.selection().unwrap();
+        assert_eq!((sel.x, sel.width), (259, 2));
+        engine.handle_event(InputEvent::LeftUp { x: 400, y: 100 });
+        assert_eq!(engine.state(), &EngineState::Selected);
+    }
+
+    #[test]
+    fn cursor_hint_maps_handles_edges_interior_and_outside() {
+        // 关闭放大镜:本测试只核对选区几何映射(chrome 优先级另有专项测试)。
+        let flags = FeatureFlags {
+            magnifier: false,
+            ..FeatureFlags::default()
+        };
+        let mut engine = SelectionEngine::new(320, 200, flags);
+        // 无选区:crosshair。
+        assert_eq!(engine.cursor_for(10, 10), CursorHint::Crosshair);
+        drag(&mut engine, (40, 30), (200, 120)); // (40,30)-(200,120)
+        // 角/边手柄 → 对应斜向/轴向 resize。
+        assert_eq!(engine.cursor_for(40, 30), CursorHint::ResizeNWSE);
+        assert_eq!(engine.cursor_for(200, 120), CursorHint::ResizeNWSE);
+        assert_eq!(engine.cursor_for(200, 30), CursorHint::ResizeNESW);
+        assert_eq!(engine.cursor_for(40, 120), CursorHint::ResizeNESW);
+        assert_eq!(engine.cursor_for(120, 30), CursorHint::ResizeNS);
+        assert_eq!(engine.cursor_for(200, 75), CursorHint::ResizeEW);
+        // 边带(手柄半径外、边线 ±6px 内)→ 轴向 resize。
+        assert_eq!(engine.cursor_for(160, 34), CursorHint::ResizeNS);
+        assert_eq!(engine.cursor_for(44, 100), CursorHint::ResizeEW);
+        assert_eq!(engine.cursor_for(160, 116), CursorHint::ResizeNS);
+        // 内部 → move;外部 → crosshair。
+        assert_eq!(engine.cursor_for(120, 75), CursorHint::Move);
+        assert_eq!(engine.cursor_for(10, 10), CursorHint::Crosshair);
+        // 拖动手柄/移动期间保持对应提示。
+        engine.handle_event(InputEvent::LeftDown { x: 40, y: 30 });
+        assert_eq!(engine.cursor_for(100, 100), CursorHint::ResizeNWSE);
+        engine.handle_event(InputEvent::LeftUp { x: 40, y: 30 });
+        engine.handle_event(InputEvent::LeftDown { x: 120, y: 75 });
+        assert_eq!(engine.cursor_for(10, 10), CursorHint::Move);
+        engine.handle_event(InputEvent::LeftUp { x: 120, y: 75 });
+    }
+
+    #[test]
+    fn cursor_hint_prioritizes_chrome_over_selection_geometry() {
+        // 关闭放大镜:本测试只核对图标轨 chrome 与选区几何的优先级。
+        let flags = FeatureFlags {
+            magnifier: false,
+            ..FeatureFlags::default()
+        };
+        let mut engine = SelectionEngine::new(320, 200, flags);
+        drag(&mut engine, (40, 30), (200, 120)); // (40,30)-(200,120),320×200
+        // 图标轨按钮上 → 手型(即使该点也在选区边带/内部附近)。
+        let buttons = composer::toolbar_buttons(engine.flags());
+        let panel =
+            composer::toolbar_panel(engine.selection().unwrap(), engine.size(), &buttons).unwrap();
+        let (_, first) = composer::toolbar_button_rects(panel, &buttons)
+            .first()
+            .copied()
+            .unwrap();
+        let (bx, by) = first.center();
+        assert_eq!(engine.cursor_for(bx, by), CursorHint::Pointer);
+        // 选区几何 fallback 不受影响。
+        assert_eq!(engine.cursor_for(120, 75), CursorHint::Move);
+    }
+
+    #[test]
+    fn cursor_hint_menu_items_take_priority_when_menu_open() {
+        let mut engine = new_engine();
+        drag(&mut engine, (40, 30), (200, 120));
+        engine.handle_event(InputEvent::RightDown { x: 150, y: 100 });
+        assert_eq!(engine.state(), &EngineState::Menu);
+        let items = composer::menu_items(engine.flags());
+        let panel = composer::menu_panel(engine.menu_anchor(), engine.size(), &items);
+        let (_, first) = composer::menu_item_rects(panel, &items)
+            .first()
+            .copied()
+            .unwrap();
+        let (mx, my) = first.center();
+        // 菜单项 → 手型;菜单外(即使曾在选区内部)→ 十字。
+        assert_eq!(engine.cursor_for(mx, my), CursorHint::Pointer);
+        assert_eq!(engine.cursor_for(5, 5), CursorHint::Crosshair);
+    }
+
+    #[test]
+    fn cursor_hint_magnifier_panel_is_arrow() {
+        let mut engine = new_engine();
+        // 光标移到屏幕右下角附近:放大镜面板翻转到光标左上,覆盖 (200,100) 一带。
+        engine.handle_event(InputEvent::PointerMove { x: 300, y: 180 });
+        let panel = composer::magnifier_rect(engine.cursor(), engine.size(), 1.0);
+        let (px, py) = panel.center();
+        assert_eq!(engine.cursor_for(px, py), CursorHint::Arrow);
+        // 面板外仍是十字;关闭放大镜开关后不再判定。
+        assert_eq!(engine.cursor_for(10, 10), CursorHint::Crosshair);
+        let mut off = new_engine();
+        off.flags.magnifier = false;
+        off.handle_event(InputEvent::PointerMove { x: 300, y: 180 });
+        assert_eq!(off.cursor_for(px, py), CursorHint::Crosshair);
+    }
+
+    #[test]
+    fn terminal_keys_are_never_swallowed() {
+        // 菜单打开时 Enter → 确认当前选区(不是 Redraw)。
+        let mut engine = new_engine();
+        drag(&mut engine, (40, 30), (200, 120));
+        engine.handle_event(InputEvent::RightDown { x: 150, y: 100 });
+        assert_eq!(engine.state(), &EngineState::Menu);
+        assert!(matches!(
+            engine.handle_event(InputEvent::Key {
+                key: LogicalKey::Enter,
+                shift: false
+            }),
+            EngineOutcome::Confirmed(_)
+        ));
+        // EdgeResize 中 Esc → Cancelled(不依赖先收到 LeftUp)。
+        let mut engine = new_engine();
+        drag(&mut engine, (40, 30), (200, 120));
+        engine.handle_event(InputEvent::LeftDown { x: 203, y: 100 });
+        assert_eq!(
+            engine.state(),
+            &EngineState::AdjustingEdge {
+                edge: EdgeKind::East
+            }
+        );
+        assert_eq!(
+            engine.handle_event(InputEvent::Key {
+                key: LogicalKey::Escape,
+                shift: false
+            }),
+            EngineOutcome::Cancelled
+        );
+        // 无选区 Enter 不伪装终态(Redraw),Esc 始终 Cancelled。
+        let mut engine = new_engine();
+        assert_eq!(
+            engine.handle_event(InputEvent::Key {
+                key: LogicalKey::Enter,
+                shift: false
+            }),
+            EngineOutcome::Redraw
+        );
+        assert_eq!(
+            engine.handle_event(InputEvent::Key {
+                key: LogicalKey::Escape,
+                shift: false
+            }),
+            EngineOutcome::Cancelled
         );
     }
 

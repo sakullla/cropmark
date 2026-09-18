@@ -337,6 +337,9 @@ pub fn pick_region(
         .map_err(|_| window_failed())?;
 
     // 十字光标(glyph cursor);字体缺失时退回服务器默认指针。
+    // TODO(cursor-hint): 接入引擎 `cursor_for` 光标提示(手柄/边→resize 箭头,
+    // 内部→move,外部→crosshair),需要为各 resize 方向准备 glyph/主题光标;
+    // 本轮仅 Windows 壳消费,这里先固定十字。
     let font = conn.generate_id().map_err(|_| id_failed())?;
     let cursor = conn.generate_id().map_err(|_| id_failed())?;
     let cursor_ready = build_cross_cursor(&conn, font, cursor);

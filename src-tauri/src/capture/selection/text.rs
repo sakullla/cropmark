@@ -77,6 +77,25 @@ pub fn draw_text(
     true
 }
 
+/// 加粗绘制:正常描画后按字号比例水平偏移二次描画(faux bold,
+/// 字体管线只有一个字重时的通用做法)。无字体时返回 false 且不落笔。
+#[allow(clippy::too_many_arguments)]
+pub fn draw_text_bold(
+    rgba: &mut [u8],
+    width: u32,
+    height: u32,
+    x: f32,
+    y: f32,
+    text: &str,
+    size: f32,
+    color: [u8; 4],
+) -> bool {
+    let first = draw_text(rgba, width, height, x, y, text, size, color);
+    let offset = (size * 0.045).max(0.6);
+    let second = draw_text(rgba, width, height, x + offset, y, text, size, color);
+    first || second
+}
+
 fn blend_pixel(
     rgba: &mut [u8],
     width: u32,
