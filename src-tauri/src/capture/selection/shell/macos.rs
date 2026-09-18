@@ -1,4 +1,4 @@
-//! macOS 区域选区壳:objc2 无边框 NSWindow + CG 位图呈现 + AppKit 事件转发。
+//! macOS 区域选区壳:objc2 无边框 NSPanel + CG 位图呈现 + AppKit 事件转发。
 //!
 //! 交互语义全部由平台无关选区引擎(`capture::selection`)决定;本壳只把
 //! 鼠标(左/右/移动/拖拽)与键盘(方向键/Shift/Enter/Esc/C)事件以物理像素
@@ -6,21 +6,19 @@
 //! Esc=取消;Enter 确认;操作条/菜单动作经 `RegionOutcome` 交回会话层分发,
 //! 与 `shell/windows.rs` 同构(ShellHooks 零 tauri 依赖模式)。
 //!
-//! 窗口模式对标 Apple screencapture:每屏一个 borderless NSWindow
-//! (screen saver window level + CanJoinAllSpaces),激活 App 自身,自定义
-//! NSWindow 子类放行 canBecomeKeyWindow 以接收键盘;内容视图为自定义 NSView,
-//! `drawRect:` 中经 CGImage 绘制合成帧(引擎输出 RGBA→BGRA,
-//! kCGBitmapByteOrder32Little|kCGImageAlphaPremultipliedFirst)。
-//!
-//! 接线说明:本文件尚未被模块树引用(接线行不在 macos-shell 任务 scope)。
-//! 参照 Windows 壳的挂接方式,需要 `capture/native_overlay.rs` 的 cfg 从
-//! `#[cfg(windows)]` 放宽为 windows/macos 双平台,或新增
-//! `#[cfg(target_os = "macos")] #[path = "selection/shell/macos.rs"] mod imp;`
-//! 分发;`session.rs` 的 `capture_region` 需将 macOS 分支切到
-//! `pick_region`(Windows 实现为同文件同构范本)。
+//! 窗口模式对标 Apple screencapture:每屏一个 borderless NSPanel
+//! (NonactivatingPanel + screen saver window level + CanJoinAllSpaces).
+//! Cropmark 是 Accessory 托盘应用;macOS 14+ 的 `NSApp.activate()` 不会抢焦点,
+//! `activateIgnoringOtherApps:` 也已失效,所以必须用 NonactivatingPanel 才能
+//! 在不激活应用的情况下收下鼠标/键盘.自定义 NSPanel 子类放行 canBecomeKeyWindow,
+//! 并绕过 constrainFrameRect(否则 AppKit 会把全屏框压到菜单栏下方).
+//! 内容视图为自定义 NSView,`drawRect:` 中经 CGImage 绘制合成帧(引擎输出 RGBA→BGRA,
+//! kCGBitmapByteOrder32Little|kCGImageAlphaPremultipliedFirst).
+//! 鼠标坐标用 `NSEvent.mouseLocation`(AppKit 左下原点)换到引擎左上原点;事件泵
+//! 像 Windows 壳的窗口过程一样直接转发,不把输入只交给 NSView 响应链.
 //!
 //! 注意:本模块只能在 macOS 编译;Windows/Linux 主机上的离线核对以
-//! windows.rs 逐块对照为准(事件映射、坐标换算、Outcome 处理)。
+//! windows.rs 逐块对照 + `geometry::appkit_global_to_physical` 测试为准.
 
 use std::cell::RefCell;
 use std::ffi::c_void;
@@ -30,7 +28,7 @@ use objc2::rc::Retained;
 use objc2::{define_class, msg_send, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSBackingStoreType, NSCursor, NSEvent, NSEventMask, NSEventModifierFlags,
-    NSEventType, NSGraphicsContext, NSResponder, NSScreen, NSView, NSWindow,
+    NSEventType, NSGraphicsContext, NSPanel, NSResponder, NSScreen, NSView, NSWindow,
     NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 use objc2_core_foundation::{CFRetained, CGPoint, CGRect, CGSize, CGFloat};
@@ -38,11 +36,11 @@ use objc2_core_graphics::{
     kCGScreenSaverWindowLevel, CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGContext,
     CGDataProvider, CGImage, CGImageAlphaInfo, CGImageByteOrderInfo,
 };
-use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSPoint, NSRect, NSSize};
+use objc2_foundation::{NSDate, NSPoint, NSRect, NSRunLoopCommonModes, NSSize};
 
 use crate::capture::buffer::Frame;
 use crate::capture::error::CaptureError;
-use crate::capture::geometry::{MonitorGeom, PhysicalRect};
+use crate::capture::geometry::{self, MonitorGeom, PhysicalRect};
 use crate::capture::selection::composer::{self, Composer};
 use crate::capture::selection::{
     EngineOutcome, FeatureFlags, InputEvent, LogicalKey, SelectionAction, SelectionEngine,
@@ -95,6 +93,10 @@ struct ShellState {
     canvas: Canvas,
     /// 逻辑点→物理像素换算系数(取自捕获时的屏幕 backingScale)。
     scale: f64,
+    /// 选区窗 AppKit 框(左下原点),供 `NSEvent.mouseLocation` 换算兜底.
+    frame_x: f64,
+    frame_y: f64,
+    frame_h: f64,
     /// 最近一次 Redraw 合成的 CGImage;provider 不持有数据,
     /// 由 `canvas.present_buf`(定容,地址不漂移)保活。
     image: Option<CFRetained<CGImage>>,
@@ -119,6 +121,16 @@ define_class!(
     impl SelectionView {
         #[unsafe(method(acceptsFirstResponder))]
         fn accepts_first_responder(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(acceptsFirstMouse:))]
+        fn accepts_first_mouse(&self, _event: Option<&NSEvent>) -> bool {
+            true
+        }
+
+        #[unsafe(method(isOpaque))]
+        fn is_opaque(&self) -> bool {
             true
         }
 
@@ -162,11 +174,11 @@ define_class!(
     }
 );
 
-// 自定义窗口:borderless NSWindow 默认不能成为 key window,
-// 覆盖 canBecomeKeyWindow/main 才能把键盘路由给内容视图。
+// 自定义面板:borderless NSWindow 默认不能成为 key window;NonactivatingPanel
+// 让 Accessory 应用在不抢前台的情况下仍能收鼠标/键盘(macOS 14+ 无法 steal focus).
 define_class!(
-    // SAFETY: superclass 是 NSWindow;只放行 key/main 资格,无额外契约。
-    #[unsafe(super(NSWindow))]
+    // SAFETY: superclass 是 NSPanel;放行 key/main,并禁止 AppKit 把全屏框钳到菜单栏下.
+    #[unsafe(super(NSPanel))]
     #[name = "CropmarkSelectionKeyWindow"]
     #[thread_kind = MainThreadOnly]
     struct KeyWindow;
@@ -180,6 +192,15 @@ define_class!(
         #[unsafe(method(canBecomeMainWindow))]
         fn can_become_main_window(&self) -> bool {
             true
+        }
+
+        #[unsafe(method(constrainFrameRect:toScreen:))]
+        fn constrain_frame_rect_to_screen(
+            &self,
+            frame_rect: NSRect,
+            _screen: Option<&NSScreen>,
+        ) -> NSRect {
+            frame_rect
         }
     }
 );
@@ -225,7 +246,7 @@ pub fn pick_region(
     let height = frame_h.min(monitor.physical_height).max(1) as i32;
     let bytes = frame.rgba.len();
     let canvas = Canvas {
-        engine: SelectionEngine::new(width as u32, height as u32, flags),
+        engine: SelectionEngine::new(width as u32, height as u32, flags).with_scale(frame.scale),
         composer,
         scratch: vec![0; bytes],
         present_buf: vec![0; bytes],
@@ -288,11 +309,15 @@ fn run_shell(
     geometry: ShellGeometry,
     hooks: ShellHooks,
 ) -> Result<RegionOutcome, CaptureError> {
+    let frame = screen_frame_for(mtm, &geometry);
     STATE.with(|slot| {
         *slot.borrow_mut() = Some(ShellState {
             hooks,
             canvas,
             scale: geometry.scale,
+            frame_x: frame.origin.x,
+            frame_y: frame.origin.y,
+            frame_h: frame.size.height,
             image: None,
             dirty: false,
             outcome: None,
@@ -300,9 +325,11 @@ fn run_shell(
         });
     });
     let app = NSApplication::sharedApplication(mtm);
-    // AppKit 推荐 API(macOS 14+ 取代 deprecated 的 activateIgnoringOtherApps:)。
+    // Accessory 托盘应用:macOS 14+ 的 activate() 不抢焦点,旧 API 在 14+ 也无效果,
+    // 仍调用一次以覆盖 13 及更早;真正收事件靠 NonactivatingPanel + 事件泵转发.
     app.activate();
-    let frame = screen_frame_for(mtm, &geometry);
+    #[allow(deprecated)]
+    app.activateIgnoringOtherApps(true);
     let view = unsafe { create_selection_view(mtm, frame.size) };
     let window = unsafe { create_key_window(mtm, frame)? };
     window.setLevel(kCGScreenSaverWindowLevel as isize);
@@ -311,11 +338,16 @@ fn run_shell(
             .union(NSWindowCollectionBehavior::FullScreenAuxiliary),
     );
     window.setAcceptsMouseMovedEvents(true);
+    window.setIgnoresMouseEvents(false);
     window.setOpaque(true);
     window.setHasShadow(false);
     window.setHidesOnDeactivate(false);
+    window.setFloatingPanel(true);
+    window.setBecomesKeyOnlyIfNeeded(false);
+    window.setWorksWhenModal(true);
     let content_view: &NSView = &view;
     window.setContentView(Some(content_view));
+    window.setFrame_display(frame, true);
     // TODO(cursor-hint): 接入引擎 `cursor_for` 光标提示(手柄/边→resize 箭头,
     // 内部→move,外部→crosshair);本轮仅 Windows 壳消费,这里先固定十字。
     NSCursor::crosshairCursor().set();
@@ -325,11 +357,13 @@ fn run_shell(
             present(state, &view);
         }
     });
+    // Accessory 未激活时 makeKeyAndOrderFront 可能不上屏;Regardless 仍置顶.
+    window.orderFrontRegardless();
     window.makeKeyAndOrderFront(None);
     let responder: &NSResponder = &view;
     window.makeFirstResponder(Some(responder));
     view.display();
-    pump_until_done(&app);
+    pump_until_done(&app, &view);
     window.orderOut(None);
     NSCursor::arrowCursor().set();
     let state = STATE.with(|slot| slot.borrow_mut().take());
@@ -378,9 +412,10 @@ unsafe fn create_key_window(
     content_rect: NSRect,
 ) -> Result<Retained<KeyWindow>, CaptureError> {
     let allocated = mtm.alloc::<KeyWindow>().set_ivars(());
+    let style = NSWindowStyleMask::Borderless.union(NSWindowStyleMask::NonactivatingPanel);
     let window: Retained<KeyWindow> = msg_send![super(allocated),
         initWithContentRect: content_rect,
-        styleMask: NSWindowStyleMask::Borderless,
+        styleMask: style,
         backing: NSBackingStoreType::Buffered,
         defer: false];
     Ok(window)
@@ -388,7 +423,7 @@ unsafe fn create_key_window(
 
 /// 手动泵事件直到引擎给出终态;阻塞等待期间 run loop 会顺带服务
 /// 窗口刷新(display/drawRect)与其它来源。
-fn pump_until_done(app: &NSApplication) {
+fn pump_until_done(app: &NSApplication, view: &SelectionView) {
     loop {
         let done = STATE.with(|slot| {
             slot.borrow()
@@ -401,14 +436,47 @@ fn pump_until_done(app: &NSApplication) {
         let event = app.nextEventMatchingMask_untilDate_inMode_dequeue(
             NSEventMask::Any,
             Some(&NSDate::distantFuture()),
-            // NSDefaultRunLoopMode 是 extern block static,读取需 unsafe。
-            unsafe { NSDefaultRunLoopMode },
+            // CommonModes 覆盖 default+tracking,拖拽时 LeftMouseDragged 不会丢.
+            unsafe { NSRunLoopCommonModes },
             true,
         );
         if let Some(event) = event {
-            app.sendEvent(&event);
+            // 输入走窗口过程同构路径,不依赖 NSView 响应链(Accessory 未激活时
+            // sendEvent 常常到不了 mouseDown:/mouseMoved:).
+            if !route_input(view, &event) {
+                app.sendEvent(&event);
+            }
             app.updateWindows();
         }
+    }
+}
+
+/// 消费鼠标/键盘并交给引擎;返回 true 表示已处理,调用方不再 sendEvent(避免双分发).
+fn route_input(view: &SelectionView, event: &NSEvent) -> bool {
+    let ty = event.r#type();
+    if ty == NSEventType::MouseMoved
+        || ty == NSEventType::LeftMouseDragged
+        || ty == NSEventType::RightMouseDragged
+    {
+        forward_mouse(view, event, MouseInput::Move);
+        true
+    } else if ty == NSEventType::LeftMouseDown {
+        forward_mouse(view, event, MouseInput::LeftDown);
+        true
+    } else if ty == NSEventType::LeftMouseUp {
+        forward_mouse(view, event, MouseInput::LeftUp);
+        true
+    } else if ty == NSEventType::RightMouseDown {
+        forward_mouse(view, event, MouseInput::RightDown);
+        true
+    } else if ty == NSEventType::KeyDown {
+        if let Some(key) = map_key_code(event.keyCode()) {
+            let shift = event.modifierFlags().contains(NSEventModifierFlags::Shift);
+            dispatch_input(view, InputEvent::Key { key, shift });
+        }
+        true
+    } else {
+        false
     }
 }
 
@@ -431,21 +499,30 @@ fn forward_mouse(view: &SelectionView, event: &NSEvent, kind: MouseInput) {
     dispatch_input(view, input);
 }
 
-/// 事件物理像素坐标:窗口坐标(左下原点,逻辑点)→视图坐标(同为左下原点)
-/// →物理像素(引擎坐标系,左上原点),换算系数取捕获时屏幕 backingScale。
-fn event_point(view: &SelectionView, event: &NSEvent) -> (i32, i32) {
-    let (scale, logical_height) = STATE
+/// 事件物理像素坐标:`NSEvent.mouseLocation` 是 AppKit 全局坐标(主屏左下原点),
+/// 再减去窗框得到内容区偏移并翻转 Y,得到引擎物理像素(左上原点).
+fn event_point(view: &SelectionView, _event: &NSEvent) -> (i32, i32) {
+    let (scale, fallback) = STATE
         .with(|slot| {
-            slot.borrow()
-                .as_ref()
-                .map(|state| (state.scale, state.canvas.height as f64 / state.scale))
+            slot.borrow().as_ref().map(|state| {
+                (
+                    state.scale,
+                    (state.frame_x, state.frame_y, state.frame_h),
+                )
+            })
         })
-        .unwrap_or((1.0, 0.0));
-    let location = event.locationInWindow();
-    let in_view = view.convertPoint_fromView(location, None);
-    let x = (in_view.x * scale).round() as i32;
-    let y = ((logical_height - in_view.y) * scale).round() as i32;
-    (x, y)
+        .unwrap_or((1.0, (0.0, 0.0, 0.0)));
+    let (frame_x, frame_y, frame_h) = view
+        .window()
+        .map(|window: Retained<NSWindow>| {
+            let frame = window.frame();
+            (frame.origin.x, frame.origin.y, frame.size.height)
+        })
+        .unwrap_or(fallback);
+    let screen = NSEvent::mouseLocation();
+    geometry::appkit_global_to_physical(
+        screen.x, screen.y, frame_x, frame_y, frame_h, scale,
+    )
 }
 
 /// 把一次输入事件交给引擎并处理其输出;终态由 pump 读取 STATE 判定。
@@ -752,5 +829,14 @@ mod tests {
             height: 4,
         };
         assert!(compose_canvas(&mut canvas).is_none());
+    }
+
+    #[test]
+    fn appkit_mouse_location_flips_y_so_bottom_is_not_engine_top() {
+        // 与 geometry 回归同构:漏翻转时底部点击会变成引擎 y=0,选区钉在顶边.
+        let (x, y) = geometry::appkit_global_to_physical(40.0, 0.0, 0.0, 0.0, 600.0, 2.0);
+        assert_eq!((x, y), (80, 1200));
+        let (x, y) = geometry::appkit_global_to_physical(40.0, 600.0, 0.0, 0.0, 600.0, 2.0);
+        assert_eq!((x, y), (80, 0));
     }
 }

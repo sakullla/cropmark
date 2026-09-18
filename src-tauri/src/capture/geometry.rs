@@ -112,6 +112,25 @@ pub fn normalize_logical_rect(x0: f64, y0: f64, x1: f64, y1: f64) -> LogicalRect
     }
 }
 
+/// AppKit 全局坐标(主屏左下原点,Y 向上,逻辑点)→ 引擎物理像素(窗口内容区左上原点,Y 向下).
+///
+/// `frame_*` 是选区窗的 AppKit `NSWindow.frame`(同样左下原点).点击屏幕底部必须得到
+/// 接近 `frame_height * scale` 的引擎 y,而不是 0(顶部);漏掉 Y 翻转时选区会钉在顶边.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn appkit_global_to_physical(
+    screen_x: f64,
+    screen_y: f64,
+    frame_x: f64,
+    frame_y: f64,
+    frame_height: f64,
+    scale: f64,
+) -> (i32, i32) {
+    let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+    let x = ((screen_x - frame_x) * scale).round() as i32;
+    let y = ((frame_y + frame_height - screen_y) * scale).round() as i32;
+    (x, y)
+}
+
 pub fn crop_from_logical(scale: f64, rect: LogicalRect, frame_w: u32, frame_h: u32) -> PhysicalRect {
     let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
     let x = (rect.x * scale).round().max(0.0) as u32;
@@ -188,5 +207,27 @@ mod tests {
         assert_eq!(monitor.logical_height, 800);
         assert!(monitor.contains_logical(10, 10));
         assert!(!monitor.contains_logical(2000, 10));
+    }
+
+    #[test]
+    fn appkit_bottom_left_origin_does_not_map_to_engine_top() {
+        // 主屏 1440×900 @2x,窗框覆盖整屏.底部点击不得落到引擎 y=0.
+        let (x, y) = appkit_global_to_physical(100.0, 0.0, 0.0, 0.0, 900.0, 2.0);
+        assert_eq!(x, 200);
+        assert_eq!(y, 1800);
+        let (x, y) = appkit_global_to_physical(100.0, 900.0, 0.0, 0.0, 900.0, 2.0);
+        assert_eq!(x, 200);
+        assert_eq!(y, 0);
+        let (x, y) = appkit_global_to_physical(720.0, 450.0, 0.0, 0.0, 900.0, 2.0);
+        assert_eq!((x, y), (1440, 900));
+    }
+
+    #[test]
+    fn appkit_secondary_display_uses_window_frame_origin() {
+        // 右侧副屏,AppKit 原点仍在主屏左下;窗框 origin=(1440, 0),高度 1080.
+        let (x, y) = appkit_global_to_physical(1440.0, 1080.0, 1440.0, 0.0, 1080.0, 1.0);
+        assert_eq!((x, y), (0, 0));
+        let (x, y) = appkit_global_to_physical(1640.0, 80.0, 1440.0, 0.0, 1080.0, 1.0);
+        assert_eq!((x, y), (200, 1000));
     }
 }
