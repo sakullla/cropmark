@@ -537,6 +537,10 @@ export function mountPreview(root: HTMLElement): void {
     editor.value = "";
     editorOrigin = null;
     editTarget = null;
+    // 失焦收口:隐藏后仍持有焦点会吞掉 A/R/M/T 等工具快捷键。
+    if (document.activeElement === editor) {
+      editor.blur();
+    }
   };
 
   const editorOpen = (): boolean => editor.classList.contains("is-open");
@@ -597,11 +601,28 @@ export function mountPreview(root: HTMLElement): void {
     redraw();
   };
 
+  // 拖移中触发 undo/redo 时,拖移位移只被 mousemove 原地写入、尚未入栈。
+  // undo 前先把已产生的位移补推成 replace,使本次 Ctrl+Z 先回退拖移,
+  // 且位移进入 redo 栈,动作链保持可回溯。
+  const settleMove = (): void => {
+    if (!moving || !moveState) {
+      return;
+    }
+    const { index, before, moved } = moveState;
+    moving = false;
+    moveState = null;
+    if (moved) {
+      pushAction({ kind: "replace", index, before, after: annotations[index] });
+      syncUndo();
+    }
+  };
+
   const undo = (): void => {
     if (editorOpen()) {
       cancelEditor();
       return;
     }
+    settleMove();
     const action = undoStack.pop();
     if (!action) {
       return;
@@ -618,6 +639,12 @@ export function mountPreview(root: HTMLElement): void {
   const redo = (): void => {
     if (editorOpen()) {
       return;
+    }
+    if (moving && moveState) {
+      // 重做前丢弃未入栈的拖移位移(此处不能补推动作,否则会清空 redo 栈)。
+      annotations[moveState.index] = moveState.before;
+      moving = false;
+      moveState = null;
     }
     const action = redoStack.pop();
     if (!action) {
@@ -806,12 +833,14 @@ export function mountPreview(root: HTMLElement): void {
     if (!frame) {
       return;
     }
+    // 与 mousedown 同序:先提交编辑器再算命中。编辑器提交若删除清空标注,
+    // 数组索引会前移,先命中后提交会把右键菜单指到错误的标注上。
+    commitEditor();
     const point = physicalPoint(event);
     const hit = hitAnnotation(point);
     if (hit === -1) {
       return;
     }
-    commitEditor();
     selected = hit;
     moving = false;
     moveState = null;
@@ -825,8 +854,14 @@ export function mountPreview(root: HTMLElement): void {
       let dx = point.x - moveState.grab.x;
       let dy = point.y - moveState.grab.y;
       const b = annotationBounds(ctx, moveState.before);
-      dx = clamp(dx, -b.minX, canvas.width - b.maxX);
-      dy = clamp(dy, -b.minY, canvas.height - b.maxY);
+      // 标注比画布更宽/更高时钳制区间为空(min>max),clamp 会恒取 max 把标注
+      // 吸死在右/下缘、抓取点脱节;此时钳到左/上缘并保持抓取点相对偏移。
+      const minX = -b.minX;
+      const maxX = canvas.width - b.maxX;
+      const minY = -b.minY;
+      const maxY = canvas.height - b.maxY;
+      dx = minX > maxX ? minX : clamp(dx, minX, maxX);
+      dy = minY > maxY ? minY : clamp(dy, minY, maxY);
       if (dx !== 0 || dy !== 0) {
         moveState.moved = true;
       }
@@ -1143,7 +1178,9 @@ export function mountPreview(root: HTMLElement): void {
     selected = null;
     moving = false;
     moveState = null;
-    editTarget = null;
+    // 新帧不带旧编辑态:收掉文字编辑器,清掉 editorOrigin,防旧文本误入新帧。
+    hideEditor();
+    syncUndo();
     hideContextMenu();
     ocrDoc = null;
     ocrSelected = [];
