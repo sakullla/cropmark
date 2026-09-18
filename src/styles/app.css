@@ -230,6 +230,22 @@ h1 {
   margin-top: 8px;
 }
 
+.feature-rows {
+  margin-top: 10px;
+  gap: 12px;
+}
+
+.feature-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.feature-row .hint {
+  margin-top: 2px;
+}
+
 .switch {
   width: 44px;
   height: 26px;

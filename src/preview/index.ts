@@ -170,6 +170,7 @@ export function mountPreview(root: HTMLElement): void {
   const undoBtn = root.querySelector("[data-action=undo]");
   const frameEl = root.querySelector(".preview-frame");
   const copyAllBtn = root.querySelector("[data-action=copy-ocr-all]");
+  const ocrBtn = root.querySelector("[data-tool=ocr]");
   const styleRoot = root.querySelector("[data-style-root]");
   const stylePanel = root.querySelector("[data-style-panel]");
   const styleBtn = root.querySelector("[data-action=style]");
@@ -181,6 +182,7 @@ export function mountPreview(root: HTMLElement): void {
     !(undoBtn instanceof HTMLButtonElement) ||
     !(frameEl instanceof HTMLElement) ||
     !(copyAllBtn instanceof HTMLButtonElement) ||
+    !(ocrBtn instanceof HTMLButtonElement) ||
     !(styleRoot instanceof HTMLElement) ||
     !(stylePanel instanceof HTMLElement) ||
     !(styleBtn instanceof HTMLButtonElement) ||
@@ -232,6 +234,8 @@ export function mountPreview(root: HTMLElement): void {
   let ocrCurrent: Point | null = null;
   let ocrGen = 0;
   let composing = false;
+  // 功能入口开关(设置页 features.ocrEntry):关闭时取字按钮隐藏、O 键停用。
+  let ocrEntryEnabled = true;
   let styleColor = FALLBACK_STROKE;
   let styleWidth: number | null = null;
   let styleTextBase: number | null = null;
@@ -974,6 +978,9 @@ export function mountPreview(root: HTMLElement): void {
     }
     const nextTool = button.dataset.tool;
     if (nextTool === "arrow" || nextTool === "rect" || nextTool === "mosaic" || nextTool === "text" || nextTool === "ocr") {
+      if (nextTool === "ocr" && !ocrEntryEnabled) {
+        return;
+      }
       setTool(nextTool);
       return;
     }
@@ -1089,8 +1096,10 @@ export function mountPreview(root: HTMLElement): void {
       r: "rect",
       m: "mosaic",
       t: "text",
-      o: "ocr",
     };
+    if (ocrEntryEnabled) {
+      toolKeys.o = "ocr";
+    }
     const nextTool = toolKeys[event.key.toLowerCase()];
     if (nextTool) {
       event.preventDefault();
@@ -1101,12 +1110,19 @@ export function mountPreview(root: HTMLElement): void {
   setTool("arrow");
   syncUndo();
 
-  // 跨会话记忆：加载时读后端保存的上次样式（读写失败均静默回退当前值）。
+  // 跨会话记忆：加载时读后端保存的上次样式（读写失败均静默回退当前值）；
+  // 同时读取功能入口开关，关闭取字后隐藏预览工具条按钮并停用 O 键。
   const loadStyleDefaults = (): void => {
     void invoke<{
       annotationDefaults?: { color?: string; width?: number | null; textSize?: number | null };
+      features?: { ocrEntry?: boolean };
     }>("get_ui_settings")
       .then((settings) => {
+        ocrEntryEnabled = settings?.features?.ocrEntry !== false;
+        ocrBtn.hidden = !ocrEntryEnabled;
+        if (!ocrEntryEnabled && tool === "ocr") {
+          setTool("arrow");
+        }
         const defaults = settings?.annotationDefaults;
         if (!defaults) {
           return;

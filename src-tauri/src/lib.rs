@@ -47,6 +47,7 @@ pub fn run() {
             settings::set_hotkey,
             settings::set_autostart_enabled,
             settings::set_annotation_defaults,
+            settings::set_feature,
             capture::get_overlay_frame,
             capture::get_preview_frame,
             capture::confirm_region,

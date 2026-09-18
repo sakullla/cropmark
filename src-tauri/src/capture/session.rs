@@ -277,6 +277,20 @@ fn copy_color_feedback(text: &str, hex: &str) {
     }
 }
 
+/// 把设置里的功能入口开关映射为选区引擎 FeatureFlags(字段一一对应)。
+/// 每次截取启动时读取,关闭的入口下一次截取即消失。
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+fn feature_flags_from(features: crate::settings::FeatureSettings) -> super::selection::FeatureFlags {
+    super::selection::FeatureFlags {
+        ocr_entry: features.ocr_entry,
+        pin_entry: features.pin_entry,
+        magnifier: features.magnifier,
+        toolbar_copy: features.toolbar_copy,
+        toolbar_save: features.toolbar_save,
+        toolbar_pin: features.toolbar_pin,
+    }
+}
+
 /// 原生壳区域路径(Windows/macOS/Linux X11):冻结指针所在屏像素并交给
 /// 平台壳,按壳结果走 Preview/Quiet/取消分发(三平台同构,ADR-008)。
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
@@ -287,12 +301,13 @@ async fn capture_region_native(app: &AppHandle) -> Result<(), CaptureError> {
     let picked = tauri::async_runtime::spawn_blocking(move || {
         let (frame, monitor) = grab_pointer_screen(&handle)?;
         store_pixels(&handle, frame.clone(), monitor.clone())?;
+        let flags = feature_flags_from(crate::settings::current_features(&handle));
         // 壳回调在同一线程内同步执行,经 thread-local 取回 AppHandle。
         SHELL_APP.with(|slot| *slot.borrow_mut() = Some(handle.clone()));
         let picked = super::native_overlay::pick_region(
             &frame,
             &monitor,
-            super::selection::FeatureFlags::default(),
+            flags,
             super::native_overlay::ShellHooks {
                 copy_color: copy_color_feedback,
             },
@@ -934,6 +949,27 @@ mod tests {
     use crate::capture::hide::{
         grab_allowed, session_steps, HideWait, RecordedSurface, SessionStep, SurfaceKind,
     };
+
+    #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn feature_flags_mirror_stored_feature_settings() {
+        let all_on = feature_flags_from(crate::settings::FeatureSettings::default());
+        assert_eq!(all_on, super::super::selection::FeatureFlags::default());
+        let all_off = feature_flags_from(crate::settings::FeatureSettings {
+            ocr_entry: false,
+            pin_entry: false,
+            magnifier: false,
+            toolbar_copy: false,
+            toolbar_save: false,
+            toolbar_pin: false,
+        });
+        assert!(!all_off.ocr_entry);
+        assert!(!all_off.pin_entry);
+        assert!(!all_off.magnifier);
+        assert!(!all_off.toolbar_copy);
+        assert!(!all_off.toolbar_save);
+        assert!(!all_off.toolbar_pin);
+    }
 
     #[test]
     fn cancel_has_no_clipboard_file_or_preview() {

@@ -21,12 +21,33 @@ export interface AutostartState {
   message: string | null;
 }
 
+export interface FeatureSettings {
+  ocrEntry: boolean;
+  pinEntry: boolean;
+  magnifier: boolean;
+  toolbarCopy: boolean;
+  toolbarSave: boolean;
+  toolbarPin: boolean;
+}
+
 export interface UiSettings {
   hotkeys: Hotkeys;
   hotkeyErrors: HotkeyErrors;
   autostart: AutostartState;
   notice: string | null;
+  features: FeatureSettings;
 }
+
+type FeatureKey = keyof FeatureSettings;
+
+const FEATURE_ITEMS: Array<{ key: FeatureKey; label: string; hint: string }> = [
+  { key: "ocrEntry", label: "取字", hint: "关闭后选区菜单与预览工具条不再显示取字，O 键停用。" },
+  { key: "pinEntry", label: "贴图", hint: "关闭后选区菜单不再显示贴图入口。" },
+  { key: "magnifier", label: "放大镜", hint: "选区时跟随指针的像素放大镜。" },
+  { key: "toolbarCopy", label: "操作条·复制", hint: "选区操作条上的复制按钮。" },
+  { key: "toolbarSave", label: "操作条·保存", hint: "选区操作条上的保存按钮。" },
+  { key: "toolbarPin", label: "操作条·贴图", hint: "选区操作条上的贴图按钮。" },
+];
 
 const MODE_LABEL: Record<CaptureMode, string> = {
   region: "区域截取",
@@ -65,6 +86,11 @@ export function mountSettings(root: HTMLElement): void {
             </button>
           </div>
         </section>
+        <section class="card" aria-labelledby="features-title">
+          <h1 id="features-title">功能入口</h1>
+          <p class="hint">关闭的入口即刻生效，从下一次截取起消失；截取热键与复制/保存能力始终保留。</p>
+          <div class="rows feature-rows" data-features></div>
+        </section>
         <section class="card about" aria-labelledby="about-title">
           <h1 id="about-title">关于</h1>
           <p class="about-name">Cropmark</p>
@@ -76,12 +102,14 @@ export function mountSettings(root: HTMLElement): void {
 
   const noticeEl = root.querySelector(".notice");
   const hotkeyRoot = root.querySelector("[data-hotkeys]");
+  const featureRoot = root.querySelector("[data-features]");
   const helpEl = root.querySelector(".autostart-help");
   const switchEl = root.querySelector("[data-action=autostart]");
   const closeEl = root.querySelector("[data-action=close]");
   if (
     !(noticeEl instanceof HTMLElement) ||
     !(hotkeyRoot instanceof HTMLElement) ||
+    !(featureRoot instanceof HTMLElement) ||
     !(helpEl instanceof HTMLElement) ||
     !(switchEl instanceof HTMLButtonElement) ||
     !(closeEl instanceof HTMLButtonElement)
@@ -145,6 +173,40 @@ export function mountSettings(root: HTMLElement): void {
       hotkeyRoot.append(row);
     }
 
+    featureRoot.replaceChildren();
+    for (const item of FEATURE_ITEMS) {
+      const enabled = settings.features[item.key];
+      const row = document.createElement("div");
+      row.className = "feature-row";
+
+      const text = document.createElement("div");
+      const label = document.createElement("div");
+      label.className = "label";
+      label.id = `feature-label-${item.key}`;
+      label.textContent = item.label;
+      const hint = document.createElement("p");
+      hint.className = "hint";
+      hint.textContent = item.hint;
+      text.append(label, hint);
+
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "switch";
+      toggle.dataset.feature = item.key;
+      toggle.setAttribute("role", "switch");
+      toggle.setAttribute("aria-checked", enabled ? "true" : "false");
+      toggle.setAttribute("aria-labelledby", label.id);
+      const knob = document.createElement("span");
+      knob.className = "knob";
+      toggle.appendChild(knob);
+      if (enabled) {
+        toggle.classList.add("on");
+      }
+
+      row.append(text, toggle);
+      featureRoot.append(row);
+    }
+
     switchEl.setAttribute("aria-checked", settings.autostart.enabled ? "true" : "false");
     switchEl.classList.toggle("on", settings.autostart.enabled);
     helpEl.textContent = autostartHelp(
@@ -192,6 +254,26 @@ export function mountSettings(root: HTMLElement): void {
     const next = switchEl.getAttribute("aria-checked") !== "true";
     applying = true;
     void invoke<UiSettings>("set_autostart_enabled", { enabled: next })
+      .then(render)
+      .catch(showInvokeError)
+      .finally(() => {
+        applying = false;
+      });
+  });
+
+  featureRoot.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) {
+      return;
+    }
+    const button = target.closest("[data-feature]");
+    if (!(button instanceof HTMLButtonElement) || !button.dataset.feature) {
+      return;
+    }
+    const key = button.dataset.feature as FeatureKey;
+    const next = button.getAttribute("aria-checked") !== "true";
+    applying = true;
+    void invoke<UiSettings>("set_feature", { key, enabled: next })
       .then(render)
       .catch(showInvokeError)
       .finally(() => {
