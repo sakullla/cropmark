@@ -52,6 +52,9 @@ const FALLBACK_STROKE = "#e11d48";
 const FALLBACK_OCR_HL = "#0ea5e9";
 const FALLBACK_OCR_HL_STRONG = "#0369a1";
 
+// 与 Rust parse_hex_color 对齐：接受 #rgb / #rrggbb / #rrggbbaa，其余形式回退默认色。
+const HEX_COLOR_RE = /^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
+
 // 样式预设：颜色含现行玫红；线宽/字号档位为逻辑值，绘制时乘 scale 并 clamp 2..8（线宽）。
 const STYLE_COLORS = ["#e11d48", "#2563eb", "#f59e0b", "#10b981", "#111827"];
 const STYLE_WIDTHS: Array<{ value: number; label: string }> = [
@@ -215,7 +218,7 @@ export function mountPreview(root: HTMLElement): void {
   const strokeFor = (opWidth: number | null): number =>
     Math.min(8, Math.max(2, (opWidth ?? 3) * Math.max(frame?.scale ?? 1, 1)));
   const colorFor = (opColor: string): string =>
-    /^#[0-9a-f]{3}(?:[0-9a-f]{3})?$/i.test(opColor) ? opColor : strokeColor;
+    HEX_COLOR_RE.test(opColor) ? opColor : strokeColor;
   const annotationStyle = (op: Annotation): { color: string; lineWidth: number } => {
     if (op.type === "mosaic") {
       return { color: strokeColor, lineWidth: strokeFor(null) };
@@ -780,7 +783,7 @@ export function mountPreview(root: HTMLElement): void {
         if (!defaults) {
           return;
         }
-        if (typeof defaults.color === "string" && /^#[0-9a-f]{3}(?:[0-9a-f]{3})?$/i.test(defaults.color)) {
+        if (typeof defaults.color === "string" && HEX_COLOR_RE.test(defaults.color)) {
           styleColor = defaults.color;
         }
         styleWidth = typeof defaults.width === "number" && Number.isFinite(defaults.width) ? defaults.width : null;
