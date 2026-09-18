@@ -43,7 +43,7 @@ type FeatureKey = keyof FeatureSettings;
 const FEATURE_ITEMS: Array<{ key: FeatureKey; label: string; hint: string }> = [
   { key: "ocrEntry", label: "取字", hint: "关闭后选区菜单与预览工具条不再显示取字，O 键停用。" },
   { key: "pinEntry", label: "贴图", hint: "关闭后选区菜单不再显示贴图入口。" },
-  { key: "magnifier", label: "放大镜", hint: "选区时跟随指针的像素放大镜。" },
+  { key: "magnifier", label: "放大镜", hint: "选区时跟随指针的像素放大镜；关闭后选区内 C 键取色同时停用。" },
   { key: "toolbarCopy", label: "操作条·复制", hint: "选区操作条上的复制按钮。" },
   { key: "toolbarSave", label: "操作条·保存", hint: "选区操作条上的保存按钮。" },
   { key: "toolbarPin", label: "操作条·贴图", hint: "选区操作条上的贴图按钮。" },

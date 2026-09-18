@@ -1110,6 +1110,22 @@ export function mountPreview(root: HTMLElement): void {
   setTool("arrow");
   syncUndo();
 
+  // 重读功能入口开关并同步预览 UI:ocrEntryEnabled 同时驱动工具条按钮显隐、
+  // O 键映射与当前 ocr 工具的回退;每次 reload 都要重读,不能只在首载做一次。
+  const syncFeatureFlags = (settings?: { features?: { ocrEntry?: boolean } }): void => {
+    ocrEntryEnabled = settings?.features?.ocrEntry !== false;
+    ocrBtn.hidden = !ocrEntryEnabled;
+    if (!ocrEntryEnabled && tool === "ocr") {
+      setTool("arrow");
+    }
+  };
+  const reloadFeatureFlags = (): void => {
+    void invoke<{ features?: { ocrEntry?: boolean } }>("get_ui_settings")
+      .then((settings) => {
+        syncFeatureFlags(settings);
+      })
+      .catch(() => undefined);
+  };
   // 跨会话记忆：加载时读后端保存的上次样式（读写失败均静默回退当前值）；
   // 同时读取功能入口开关，关闭取字后隐藏预览工具条按钮并停用 O 键。
   const loadStyleDefaults = (): void => {
@@ -1118,11 +1134,7 @@ export function mountPreview(root: HTMLElement): void {
       features?: { ocrEntry?: boolean };
     }>("get_ui_settings")
       .then((settings) => {
-        ocrEntryEnabled = settings?.features?.ocrEntry !== false;
-        ocrBtn.hidden = !ocrEntryEnabled;
-        if (!ocrEntryEnabled && tool === "ocr") {
-          setTool("arrow");
-        }
+        syncFeatureFlags(settings);
         const defaults = settings?.annotationDefaults;
         if (!defaults) {
           return;
@@ -1200,6 +1212,9 @@ export function mountPreview(root: HTMLElement): void {
     hideContextMenu();
     ocrDoc = null;
     ocrSelected = [];
+    // 每次新帧重读功能入口开关:设置页关闭取字后,复用的预览窗口在下一次
+    // 截取时也要隐藏按钮/停用 O 键;样式默认只在首次加载,不在 reload 重置。
+    reloadFeatureFlags();
     loadPreview();
   });
   loadPreview();
