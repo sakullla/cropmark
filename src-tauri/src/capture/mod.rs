@@ -89,8 +89,8 @@ pub async fn finish_region_with(
 async fn run_quiet_action(app: &AppHandle, action: QuietAction) {
     match action {
         QuietAction::Copy => ui::show_toast(app, "已复制到剪贴板。"),
-        // Pin windows arrive in a later task; keep the entry point stable.
-        QuietAction::Pin => ui::show_toast(app, "贴图功能尚未开放，敬请期待。"),
+        // 选区操作条贴图:不经前端、不带标注;成功无提示(贴图窗即反馈),失败 toast。
+        QuietAction::Pin => crate::pin::pin_retained(app),
         QuietAction::Save => save_quiet_frame(app).await,
         QuietAction::Ocr => ocr_quiet_frame(app).await,
     }
