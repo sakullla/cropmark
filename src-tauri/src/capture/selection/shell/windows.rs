@@ -11,20 +11,23 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    GetDC, ReleaseDC, StretchDIBits, UpdateWindow, ValidateRect, BITMAPINFO, BITMAPINFOHEADER,
-    BI_RGB, DIB_RGB_COLORS, RGBQUAD, SRCCOPY,
+    GetDC, ReleaseDC, ScreenToClient, StretchDIBits, UpdateWindow, ValidateRect, BITMAPINFO,
+    BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, RGBQUAD, SRCCOPY,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetMessageW,
-    LoadCursorW, PostQuitMessage, RegisterClassExW, SetCursor, SetForegroundWindow, SetWindowPos,
-    ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW, HWND_TOPMOST, IDC_ARROW, IDC_CROSS,
-    IDC_HAND, IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, MSG,
-    SWP_SHOWWINDOW, SW_SHOW, WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONDOWN, WM_SETCURSOR,
-    WM_SETFOCUS, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetCursorPos,
+    GetForegroundWindow, GetMessageW, GetWindowThreadProcessId, LoadCursorW, PostQuitMessage,
+    RegisterClassExW, SetCursor, SetForegroundWindow,
+    SetWindowPos, ShowWindow, TranslateMessage,
+    CS_HREDRAW, CS_VREDRAW, HWND_TOPMOST, IDC_ARROW, IDC_CROSS, IDC_HAND, IDC_SIZEALL, IDC_SIZENESW,
+    IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, MSG, SWP_SHOWWINDOW, SW_SHOW, WM_DESTROY, WM_ERASEBKGND,
+    WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT,
+    WM_RBUTTONDOWN, WM_SETCURSOR, WM_SETFOCUS, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_POPUP,
 };
 
 use crate::capture::buffer::Frame;
@@ -211,6 +214,19 @@ fn cancel_on_focus_loss(state: &mut ShellState) -> bool {
     true
 }
 
+fn foreground_belongs_to_self() -> bool {
+    use windows::Win32::System::Threading::GetCurrentProcessId;
+    unsafe {
+        let fg = GetForegroundWindow();
+        if fg.0.is_null() {
+            return false;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(fg, Some(&mut pid));
+        pid == GetCurrentProcessId()
+    }
+}
+
 /// 操作条/菜单动作到静默完成动作的映射;标注/取消/复制色值不在此列。
 fn quiet_action_for(action: SelectionAction) -> Option<QuietAction> {
     match action {
@@ -321,12 +337,16 @@ unsafe fn blit(hwnd: HWND, width: i32, height: i32, bgra: &[u8]) {
     if hdc.0.is_null() {
         return;
     }
+    let mut client = RECT::default();
+    let _ = GetClientRect(hwnd, &mut client);
+    let dest_w = (client.right - client.left).max(1);
+    let dest_h = (client.bottom - client.top).max(1);
     let _ = StretchDIBits(
         hdc,
         0,
         0,
-        width,
-        height,
+        dest_w,
+        dest_h,
         0,
         0,
         width,
@@ -384,6 +404,38 @@ fn client_point(lparam: LPARAM) -> (i32, i32) {
     (x, y)
 }
 
+/// 客户区坐标 → 引擎物理像素。客户区与冻结帧尺寸不一致时(DPI 拉伸)
+/// 按比例映射,否则选框会相对光标越拖越偏。
+fn map_client_to_engine(x: i32, y: i32, client: RECT, engine_w: i32, engine_h: i32) -> (i32, i32) {
+    let cw = (client.right - client.left).max(1) as i64;
+    let ch = (client.bottom - client.top).max(1) as i64;
+    let ew = engine_w.max(1) as i64;
+    let eh = engine_h.max(1) as i64;
+    if cw == ew && ch == eh {
+        return (x, y);
+    }
+    (
+        (x as i64 * ew / cw) as i32,
+        (y as i64 * eh / ch) as i32,
+    )
+}
+
+/// 优先 GetCursorPos + ScreenToClient(物理像素、捕获后窗外仍准);
+/// 失败再退回 lParam 的 16 位客户区坐标。
+unsafe fn engine_point(hwnd: HWND, lparam: LPARAM, engine_w: i32, engine_h: i32) -> (i32, i32) {
+    let mut client = RECT::default();
+    let _ = GetClientRect(hwnd, &mut client);
+    let (x, y) = {
+        let mut point = POINT::default();
+        if GetCursorPos(&mut point).is_ok() && ScreenToClient(hwnd, &mut point).as_bool() {
+            (point.x, point.y)
+        } else {
+            client_point(lparam)
+        }
+    };
+    map_client_to_engine(x, y, client, engine_w, engine_h)
+}
+
 unsafe extern "system" fn wnd_proc(
     hwnd: HWND,
     msg: u32,
@@ -396,6 +448,11 @@ unsafe extern "system" fn wnd_proc(
             // 失焦即取消:键盘 Esc/Enter 只送前台窗口,失焦后继续泵只会永挂。
             // 但仅"曾获得焦点后又失去"才取消——建窗期 SetForegroundWindow 可能被
             // 前台锁拒绝,焦点弹跳产生的 KILLFOCUS 不得误杀会话(另留 500ms 宽限)。
+            // 焦点落到本进程其它窗(toast/贴图/预览)时不取消,否则点贴图会
+            // 拆掉覆盖层,鼠标尚未松开的点击穿透到下方置顶应用并把它关掉。
+            if foreground_belongs_to_self() {
+                return LRESULT(0);
+            }
             let done = STATE.with(|slot| {
                 let mut guard = slot.borrow_mut();
                 let Some(state) = guard.as_mut() else {
@@ -407,6 +464,7 @@ unsafe extern "system" fn wnd_proc(
                 cancel_on_focus_loss(state)
             });
             if done {
+                let _ = ReleaseCapture();
                 PostQuitMessage(0);
             }
             LRESULT(0)
@@ -452,7 +510,19 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(1)
         }
         WM_MOUSEMOVE | WM_LBUTTONDOWN | WM_LBUTTONUP | WM_RBUTTONDOWN => {
-            let (x, y) = client_point(lparam);
+            if msg == WM_LBUTTONDOWN {
+                let _ = SetCapture(hwnd);
+            }
+            if msg == WM_LBUTTONUP {
+                let _ = ReleaseCapture();
+            }
+            let (engine_w, engine_h) = STATE.with(|slot| {
+                slot.borrow()
+                    .as_ref()
+                    .map(|state| (state.canvas.width, state.canvas.height))
+                    .unwrap_or((1, 1))
+            });
+            let (x, y) = engine_point(hwnd, lparam, engine_w, engine_h);
             let event = match msg {
                 WM_MOUSEMOVE => InputEvent::PointerMove { x, y },
                 WM_LBUTTONDOWN => InputEvent::LeftDown { x, y },
@@ -467,6 +537,7 @@ unsafe extern "system" fn wnd_proc(
                 feed_event(state, event, hwnd)
             });
             if done {
+                let _ = ReleaseCapture();
                 PostQuitMessage(0);
             }
             LRESULT(0)
@@ -622,7 +693,8 @@ mod tests {
             .find(|(action, _)| *action == SelectionAction::Copy)
             .unwrap();
         let (cx, cy) = copy_rect.center();
-        assert!(feed_event(&mut state, InputEvent::LeftDown { x: cx, y: cy }, hwnd));
+        assert!(!feed_event(&mut state, InputEvent::LeftDown { x: cx, y: cy }, hwnd));
+        assert!(feed_event(&mut state, InputEvent::LeftUp { x: cx, y: cy }, hwnd));
         assert_eq!(
             state.outcome,
             Some(RegionOutcome::Quiet(
@@ -703,6 +775,39 @@ mod tests {
         assert_eq!(cursor_resource(CursorHint::ResizeEW), IDC_SIZEWE);
         assert_eq!(cursor_resource(CursorHint::ResizeNWSE), IDC_SIZENWSE);
         assert_eq!(cursor_resource(CursorHint::ResizeNESW), IDC_SIZENESW);
+    }
+
+    #[test]
+    fn map_client_to_engine_is_identity_when_sizes_match() {
+        let client = RECT {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
+        assert_eq!(
+            map_client_to_engine(100, 200, client, 1920, 1080),
+            (100, 200)
+        );
+    }
+
+    #[test]
+    fn map_client_to_engine_scales_when_client_is_logical() {
+        // 150% DPI: 客户区 1920×1080,冻结帧 2880×1620。
+        let client = RECT {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
+        assert_eq!(
+            map_client_to_engine(640, 360, client, 2880, 1620),
+            (960, 540)
+        );
+        assert_eq!(
+            map_client_to_engine(1920, 1080, client, 2880, 1620),
+            (2880, 1620)
+        );
     }
 
     #[test]

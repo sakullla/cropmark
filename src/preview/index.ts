@@ -98,16 +98,16 @@ export function mountPreview(root: HTMLElement): void {
   root.className = "preview-root";
   root.dataset.tool = "arrow";
   root.innerHTML = `
-    <header class="preview-titlebar" data-tauri-drag-region>
-      <div class="brand" data-tauri-drag-region>
+    <header class="preview-titlebar">
+      <div class="brand" data-drag-handle data-tauri-drag-region>
         <span class="mark" aria-hidden="true"></span>
         <span class="name">Cropmark</span>
       </div>
-      <p class="preview-note">未标注图已复制</p>
-      <button type="button" class="preview-close" data-action="close" aria-label="关闭" data-tauri-drag-region="false">关闭</button>
+      <p class="preview-note" data-drag-handle data-tauri-drag-region>未标注图已复制</p>
+      <button type="button" class="preview-close" data-action="close" aria-label="关闭">关闭</button>
     </header>
     <div class="preview-toolbar">
-      <div class="preview-tools" role="toolbar" aria-label="标注">
+      <div class="preview-tools" role="toolbar" aria-label="标注" data-tauri-drag-region="false">
         <button type="button" data-tool="arrow" title="箭头 (A)" aria-label="箭头">${ICONS.arrow}</button>
         <button type="button" data-tool="rect" title="框 (R)" aria-label="框">${ICONS.rect}</button>
         <button type="button" data-tool="mosaic" title="马赛克 (M)" aria-label="马赛克">${ICONS.mosaic}</button>
@@ -146,12 +146,12 @@ export function mountPreview(root: HTMLElement): void {
           </div>
         </div>
       </div>
-      <div class="preview-actions">
-        <button type="button" data-tool="ocr" title="取字 (O)">取字</button>
-        <button type="button" data-action="copy-ocr-all" hidden>复制全部</button>
-        <button type="button" data-action="pin" title="贴图">贴图</button>
-        <button type="button" data-action="save" title="保存 (Ctrl+S)">保存</button>
-        <button type="button" class="primary" data-action="copy" title="复制 (Ctrl+C)">复制</button>
+      <div class="preview-actions" data-tauri-drag-region="false">
+        <button type="button" data-tool="ocr" title="取字 (O)" data-tauri-drag-region="false">取字</button>
+        <button type="button" data-action="copy-ocr-all" hidden data-tauri-drag-region="false">复制全部</button>
+        <button type="button" data-action="pin" title="贴图" data-tauri-drag-region="false">贴图</button>
+        <button type="button" data-action="save" title="保存 (Ctrl+S)" data-tauri-drag-region="false">保存</button>
+        <button type="button" class="primary" data-action="copy" title="复制 (Ctrl+C)" data-tauri-drag-region="false">复制</button>
       </div>
     </div>
     <div class="preview-stage">
@@ -793,10 +793,12 @@ export function mountPreview(root: HTMLElement): void {
   // 贴图:当前标注合成图钉成置顶小窗;预览保持打开,可继续标注/再贴。
   const pin = async (): Promise<void> => {
     if (busy) {
+      setNote("正在处理，请稍候。");
       return;
     }
     commitEditor();
     busy = true;
+    setNote("正在贴图…");
     try {
       await invoke("pin_current", { annotations: exportList() });
       setNote("已贴图。", "success");
@@ -805,6 +807,12 @@ export function mountPreview(root: HTMLElement): void {
     } finally {
       busy = false;
     }
+  };
+
+  const closePreview = (): void => {
+    void invoke("close_preview").catch((error) => {
+      setNote(invokeError(error, "无法关闭预览。"), "error");
+    });
   };
 
   canvas.addEventListener("mousedown", (event) => {
@@ -1037,23 +1045,51 @@ export function mountPreview(root: HTMLElement): void {
         void pin();
       }
     } else if (button.dataset.action === "close") {
-      void invoke("close_preview");
+      closePreview();
     }
   });
 
-  const titlebar = root.querySelector(".preview-titlebar");
-  if (titlebar instanceof HTMLElement) {
-    titlebar.addEventListener("mousedown", (event) => {
-      if (event.button !== 0) {
+  // 点在按钮文字上时 target 是 Text 节点,不能用 instanceof Element,
+  // 否则标题栏会 startDragging,关闭/贴图的 click 被系统拖拽吃掉。
+  const eventElement = (event: Event): Element | null => {
+    const target = event.target;
+    if (target instanceof Element) {
+      return target;
+    }
+    return target instanceof Node ? target.parentElement : null;
+  };
+
+  pinBtn.addEventListener("pointerdown", (event) => event.stopPropagation());
+  pinBtn.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (pinEntryEnabled) {
+      void pin();
+    }
+  });
+
+  const closeBtn = root.querySelector(".preview-close");
+  if (closeBtn instanceof HTMLButtonElement) {
+    closeBtn.addEventListener("pointerdown", (event) => event.stopPropagation());
+    closeBtn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      closePreview();
+    });
+  }
+
+  root.querySelectorAll("[data-drag-handle]").forEach((handle) => {
+    handle.addEventListener("mousedown", (event) => {
+      if (!(event instanceof MouseEvent) || event.button !== 0) {
         return;
       }
-      if (event.target instanceof Element && event.target.closest("button")) {
+      if (eventElement(event)?.closest("button")) {
         return;
       }
       event.preventDefault();
       void getCurrentWindow().startDragging();
     });
-  }
+  });
 
   window.addEventListener("keydown", (event) => {
     if (event.isComposing || composing || event.keyCode === 229) {

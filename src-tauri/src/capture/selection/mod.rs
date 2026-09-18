@@ -157,10 +157,18 @@ pub enum EngineState {
     Adjusting { handle: HandleKind },
     /// 拖动选区边线沿单轴调整大小(EdgeResize)。
     AdjustingEdge { edge: EdgeKind },
-    /// 拖动选区内部整体移动。
-    Moving { grab_x: i32, grab_y: i32 },
+    /// 拖动选区内部整体移动。origin 是按下时的选区,每次移动用
+    /// `origin + (cursor - grab)` 重算,不能把位移叠到已移动的选区上。
+    Moving {
+        origin: PhysicalRect,
+        grab_x: i32,
+        grab_y: i32,
+    },
     /// 右键菜单打开。
     Menu,
+    /// 操作条/菜单项按下未松开:等 LeftUp 且仍命中同一动作才触发。
+    /// 若在 LeftDown 就拆掉覆盖层,鼠标尚未松开,点击会穿透到下方置顶窗。
+    PressingChrome { action: SelectionAction },
 }
 
 /// 合成器输入:由引擎当前状态派生的一帧静态场景。
@@ -244,6 +252,7 @@ impl SelectionEngine {
             EngineState::Adjusting { handle } => CursorHint::for_handle(handle),
             EngineState::AdjustingEdge { edge } => CursorHint::for_edge(edge),
             EngineState::Moving { .. } => CursorHint::Move,
+            EngineState::PressingChrome { .. } => CursorHint::Pointer,
             EngineState::Menu => {
                 if self.hit_menu(x, y).is_some() {
                     return CursorHint::Pointer;
@@ -286,8 +295,10 @@ impl SelectionEngine {
 
     /// 当前状态对应的合成场景。
     pub fn scene(&self) -> Scene {
-        let toolbar_visible = self.state == EngineState::Selected
-            && self.selection.is_some()
+        let toolbar_visible = matches!(
+            self.state,
+            EngineState::Selected | EngineState::PressingChrome { .. }
+        ) && self.selection.is_some()
             && !composer::toolbar_buttons(self.flags).is_empty();
         Scene {
             selection: self.selection,
@@ -358,15 +369,17 @@ impl SelectionEngine {
                     ));
                 }
             }
-            EngineState::Moving { grab_x, grab_y } => {
-                if let Some(selection) = self.selection {
-                    self.selection = Some(Self::translate(
-                        selection,
-                        self.cursor.0 - grab_x,
-                        self.cursor.1 - grab_y,
-                        (self.width as i32, self.height as i32),
-                    ));
-                }
+            EngineState::Moving {
+                origin,
+                grab_x,
+                grab_y,
+            } => {
+                self.selection = Some(Self::translate(
+                    origin,
+                    self.cursor.0 - grab_x,
+                    self.cursor.1 - grab_y,
+                    (self.width as i32, self.height as i32),
+                ));
             }
             _ => {}
         }
@@ -386,7 +399,8 @@ impl SelectionEngine {
             EngineState::Dragging { .. } => EngineOutcome::Redraw,
             EngineState::Selected => {
                 if let Some(action) = self.hit_toolbar(x, y) {
-                    return EngineOutcome::Action(action);
+                    self.state = EngineState::PressingChrome { action };
+                    return EngineOutcome::Redraw;
                 }
                 if let Some(selection) = self.selection {
                     if let Some(handle) = composer::handle_hit(selection, x, y) {
@@ -400,6 +414,7 @@ impl SelectionEngine {
                     let sel = IntRect::from(selection);
                     if sel.contains(x, y) {
                         self.state = EngineState::Moving {
+                            origin: selection,
                             grab_x: x,
                             grab_y: y,
                         };
@@ -416,14 +431,12 @@ impl SelectionEngine {
             }
             EngineState::Adjusting { .. }
             | EngineState::AdjustingEdge { .. }
-            | EngineState::Moving { .. } => EngineOutcome::Redraw,
+            | EngineState::Moving { .. }
+            | EngineState::PressingChrome { .. } => EngineOutcome::Redraw,
             EngineState::Menu => {
                 if let Some(action) = self.hit_menu(x, y) {
-                    return if action == SelectionAction::Cancel {
-                        EngineOutcome::Cancelled
-                    } else {
-                        EngineOutcome::Action(action)
-                    };
+                    self.state = EngineState::PressingChrome { action };
+                    return EngineOutcome::Redraw;
                 }
                 // 菜单外点击关闭菜单,保留选区。
                 self.state = if self.selection.is_some() {
@@ -458,6 +471,25 @@ impl SelectionEngine {
             | EngineState::Moving { .. } => {
                 self.state = EngineState::Selected;
                 EngineOutcome::Redraw
+            }
+            EngineState::PressingChrome { action } => {
+                let (x, y) = self.cursor;
+                let still = self.hit_toolbar(x, y) == Some(action)
+                    || self.hit_menu(x, y) == Some(action);
+                self.state = if self.selection.is_some() {
+                    EngineState::Selected
+                } else {
+                    EngineState::Idle
+                };
+                if still {
+                    if action == SelectionAction::Cancel {
+                        EngineOutcome::Cancelled
+                    } else {
+                        EngineOutcome::Action(action)
+                    }
+                } else {
+                    EngineOutcome::Redraw
+                }
             }
             _ => EngineOutcome::Redraw,
         }
@@ -811,6 +843,43 @@ mod tests {
     }
 
     #[test]
+    fn moving_selection_tracks_cursor_one_to_one_across_multiple_moves() {
+        let mut engine = new_engine();
+        drag(&mut engine, (20, 20), (100, 80)); // 81×61 at (20,20)
+        engine.handle_event(InputEvent::LeftDown { x: 60, y: 50 });
+        engine.handle_event(InputEvent::PointerMove { x: 70, y: 55 });
+        assert_eq!(
+            engine.selection(),
+            Some(PhysicalRect {
+                x: 30,
+                y: 25,
+                width: 81,
+                height: 61
+            })
+        );
+        engine.handle_event(InputEvent::PointerMove { x: 80, y: 60 });
+        assert_eq!(
+            engine.selection(),
+            Some(PhysicalRect {
+                x: 40,
+                y: 30,
+                width: 81,
+                height: 61
+            })
+        );
+        engine.handle_event(InputEvent::PointerMove { x: 50, y: 40 });
+        assert_eq!(
+            engine.selection(),
+            Some(PhysicalRect {
+                x: 10,
+                y: 10,
+                width: 81,
+                height: 61
+            })
+        );
+    }
+
+    #[test]
     fn left_down_outside_selection_starts_a_new_drag() {
         let mut engine = new_engine();
         drag(&mut engine, (20, 20), (100, 80));
@@ -833,6 +902,14 @@ mod tests {
         let (cx, cy) = rect.center();
         assert_eq!(
             engine.handle_event(InputEvent::LeftDown { x: cx, y: cy }),
+            EngineOutcome::Redraw
+        );
+        assert!(matches!(
+            engine.state(),
+            EngineState::PressingChrome { action } if *action == expected
+        ));
+        assert_eq!(
+            engine.handle_event(InputEvent::LeftUp { x: cx, y: cy }),
             EngineOutcome::Action(expected)
         );
         // 关闭复制开关后,动作集与命中都不再出现复制(首位变为保存)。
@@ -883,6 +960,10 @@ mod tests {
         let (cx, cy) = ocr.1.center();
         assert_eq!(
             with_menu.handle_event(InputEvent::LeftDown { x: cx, y: cy }),
+            EngineOutcome::Redraw
+        );
+        assert_eq!(
+            with_menu.handle_event(InputEvent::LeftUp { x: cx, y: cy }),
             EngineOutcome::Action(SelectionAction::Ocr)
         );
         // 点击"取消"结束会话。
@@ -895,6 +976,10 @@ mod tests {
         let (cx, cy) = cancel.1.center();
         assert_eq!(
             cancelling.handle_event(InputEvent::LeftDown { x: cx, y: cy }),
+            EngineOutcome::Redraw
+        );
+        assert_eq!(
+            cancelling.handle_event(InputEvent::LeftUp { x: cx, y: cy }),
             EngineOutcome::Cancelled
         );
         // 菜单外点击关闭菜单并保留选区。
@@ -905,6 +990,34 @@ mod tests {
         );
         assert_eq!(closing.state(), &EngineState::Selected);
         assert!(closing.selection().is_some());
+    }
+
+    #[test]
+    fn toolbar_press_aborted_if_released_off_button() {
+        let mut engine = new_engine();
+        drag(&mut engine, (40, 30), (200, 120));
+        let buttons = composer::toolbar_buttons(engine.flags());
+        let panel =
+            composer::toolbar_panel(engine.selection().unwrap(), engine.size(), &buttons).unwrap();
+        let (expected, rect) = composer::toolbar_button_rects(panel, &buttons)
+            .last()
+            .copied()
+            .unwrap();
+        let (cx, cy) = rect.center();
+        assert_eq!(
+            engine.handle_event(InputEvent::LeftDown { x: cx, y: cy }),
+            EngineOutcome::Redraw
+        );
+        assert!(matches!(
+            engine.state(),
+            EngineState::PressingChrome { action } if *action == expected
+        ));
+        assert_eq!(
+            engine.handle_event(InputEvent::LeftUp { x: 5, y: 5 }),
+            EngineOutcome::Redraw
+        );
+        assert_eq!(engine.state(), &EngineState::Selected);
+        assert!(engine.selection().is_some());
     }
 
     #[test]

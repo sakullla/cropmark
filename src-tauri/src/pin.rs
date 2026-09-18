@@ -182,37 +182,56 @@ pub fn open_pin(
     // 先定位再显示,避免窗口在左上角闪现后再跳到光标附近。
     let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
     let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize { width, height }));
+    let _ = window.set_ignore_cursor_events(false);
+    let _ = window.set_always_on_top(true);
     let _ = window.show();
+    let _ = window.unminimize();
     let _ = window.set_focus();
     Ok(window)
 }
 
-/// 从会话保留帧(预览帧或 Quiet TTL 帧)合成分成图并贴出;预览路径携带
-/// 标注,Quiet 路径传空标注。
-fn pin_retained_with(app: &AppHandle, annotations: &[Annotation]) -> Result<WebviewWindow, String> {
+struct PreparedPin {
+    png: Vec<u8>,
+    width: f64,
+    height: f64,
+}
+
+/// 从会话保留帧(预览帧或 Quiet TTL 帧)合成 PNG 与窗口尺寸;不含建窗。
+fn prepare_pin(app: &AppHandle, annotations: &[Annotation]) -> Result<PreparedPin, String> {
     let frame = session::current_preview_frame(app).map_err(fail)?;
     let rendered = rasterize(&frame, annotations).map_err(fail)?;
     let png = encode_png(&rendered).map_err(fail)?;
     let (_, work) = pointer_work_area(app);
     let (work_w, work_h) = work.map(|(.., w, h)| (w, h)).unwrap_or((1920.0, 1080.0));
     let (width, height) = pin_logical_size(frame.width, frame.height, frame.scale, work_w, work_h);
-    open_pin(app, png, width, height)
+    Ok(PreparedPin { png, width, height })
 }
 
-/// 预览工具条「贴图」:取当前保留帧 + 标注合成图并钉出。
+/// 预览工具条「贴图」:必须是 async。Windows 上同步 command 占主线程,
+/// WebviewWindowBuilder::build 要泵 WebView2 消息,会和 invoke 死锁,
+/// 预览停在「正在贴图…」且整个 UI 卡死。
 #[tauri::command]
-pub fn pin_current(app: AppHandle, annotations: Vec<Annotation>) -> Result<(), String> {
-    pin_retained_with(&app, &annotations).map(|_| ())
+pub async fn pin_current(app: AppHandle, annotations: Vec<Annotation>) -> Result<(), String> {
+    let prepared = tauri::async_runtime::spawn_blocking({
+        let app = app.clone();
+        move || prepare_pin(&app, &annotations)
+    })
+    .await
+    .map_err(|_| "贴图线程失败。".to_string())??;
+    open_pin(&app, prepared.png, prepared.width, prepared.height).map(|_| ())
 }
 
 /// Quiet Pin 动作入口(选区操作条 Pin:不经前端、不带标注)。
 /// 供 capture 动作分发接线(capture/mod.rs `run_quiet_action` 的 Pin 分支,
-/// 归 shell-wiring 任务):成功无提示(贴图窗口本身就是反馈),失败走 toast。
+/// 归 shell-wiring 任务):成功无提示(贴图窗即反馈),失败走 toast。
 #[allow(dead_code)]
 pub fn pin_retained(app: &AppHandle) {
-    if pin_retained_with(app, &[]).is_err() {
-        crate::capture::ui::show_toast(app, "贴图失败，请重试。");
-    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if pin_current(app.clone(), Vec::new()).await.is_err() {
+            crate::capture::ui::show_toast(&app, "贴图失败，请重试。");
+        }
+    });
 }
 
 /// 前端拉取本窗口的 PNG(取走即清,内存只留在前端)。

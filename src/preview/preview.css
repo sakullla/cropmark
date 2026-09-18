@@ -21,8 +21,14 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 8px 10px 8px 14px;
+  padding: 10px 14px 8px 14px;
   border-bottom: 1px solid var(--line);
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.preview-titlebar .brand,
+.preview-titlebar .preview-note {
   cursor: move;
   -webkit-app-region: drag;
   app-region: drag;
@@ -30,8 +36,10 @@
 
 .preview-close,
 .preview-titlebar button {
-  -webkit-app-region: no-drag;
-  app-region: no-drag;
+  position: relative;
+  z-index: 2;
+  -webkit-app-region: no-drag !important;
+  app-region: no-drag !important;
 }
 
 .preview-close {
@@ -95,6 +103,8 @@
   padding: 6px 10px;
   border-bottom: 1px solid var(--line);
   flex: 0 0 auto;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
 }
 
 .preview-tools,
@@ -117,6 +127,8 @@
   font: inherit;
   cursor: pointer;
   border-radius: 10px;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
 }
 
 .preview-tools button {

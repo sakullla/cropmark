@@ -70,15 +70,24 @@ pub fn session_window_labels() -> [&'static str; 3] {
 
 pub fn hide_window(app: &AppHandle, label: &str) {
     if let Some(window) = app.get_webview_window(label) {
-        let _ = window.set_always_on_top(false);
-        let _ = window.hide();
+        if label == OVERLAY {
+            dismiss_session_overlay_window(&window);
+        } else {
+            let _ = window.set_always_on_top(false);
+            let _ = window.hide();
+        }
     }
 }
 
 pub fn show_window(app: &AppHandle, label: &str) {
     if let Some(window) = app.get_webview_window(label) {
-        let _ = window.show();
-        let _ = window.set_focus();
+        if label == PREVIEW {
+            present_preview_window(&window, app);
+        } else {
+            let _ = window.set_ignore_cursor_events(false);
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
     }
 }
 
@@ -135,7 +144,13 @@ pub fn preview_payload(frame: &Frame, png: &[u8], clipboard_written: bool) -> Pr
 
 pub fn precreate(app: &AppHandle) {
     let _ = ensure_window(app, OVERLAY, "overlay", 320.0, 240.0, false, true);
+    // 预创建的 overlay 默认 always-on-top;立刻停放到屏外,避免隐藏态仍命中点击。
+    dismiss_session_overlay(app);
     let _ = ensure_window(app, PREVIEW, "preview", 520.0, 360.0, false, false);
+    if let Some(window) = app.get_webview_window(PREVIEW) {
+        let _ = window.set_always_on_top(false);
+        let _ = window.set_ignore_cursor_events(false);
+    }
     // toast/error 预创建复用:这两个窗每次 close+create 重建时,新 webview
     // 偶发导航失败显示"无法访问此页面"(协议宿主竞态);预创建后仅 show/hide。
     let _ = ensure_window(app, TOAST, "toast", TOAST_WIDTH, TOAST_HEIGHT, true, true);
@@ -152,6 +167,7 @@ pub fn open_overlay(app: &AppHandle, monitor: &MonitorGeom) -> Result<WebviewWin
         width: monitor.logical_width.max(1) as f64,
         height: monitor.logical_height.max(1) as f64,
     }));
+    let _ = window.set_ignore_cursor_events(false);
     let _ = window.set_always_on_top(true);
     let _ = window.show();
     let _ = window.set_focus();
@@ -160,7 +176,6 @@ pub fn open_overlay(app: &AppHandle, monitor: &MonitorGeom) -> Result<WebviewWin
 }
 
 pub fn open_preview(app: &AppHandle, frame: &Frame) -> Result<WebviewWindow, CaptureError> {
-    hide_window(app, OVERLAY);
     let area = target_work_area(app);
     let (work_w, work_h) = area.map(|(.., w, h)| (w, h)).unwrap_or((1920.0, 1080.0));
     let (width, height) = preview_size(frame, work_w, work_h);
@@ -175,10 +190,7 @@ pub fn open_preview(app: &AppHandle, frame: &Frame) -> Result<WebviewWindow, Cap
         let _ = window.center();
     }
     let _ = window.set_skip_taskbar(false);
-    let _ = window.set_always_on_top(true);
-    let _ = window.show();
-    let _ = window.set_focus();
-    let _ = window.set_always_on_top(true);
+    present_preview_window(&window, app);
     let _ = window.emit("preview-reload", ());
     Ok(window)
 }
@@ -252,6 +264,101 @@ fn toast_origin(area: Option<(f64, f64, f64, f64)>, width: f64, height: f64) -> 
             (origin_y + area_h - height - TOAST_MARGIN).max(origin_y + TOAST_MARGIN),
         ),
         None => (TOAST_MARGIN, TOAST_MARGIN),
+    }
+}
+
+/// 预览先置顶抬到前台拿到焦点,再取消 always-on-top。
+/// 这样用户能看见结果,也能切到其它应用;覆盖层在焦点到手后再停放,
+/// 避免 hide overlay 把前台让给资源管理器后预览点不了按钮。
+fn present_preview_window(window: &WebviewWindow, app: &AppHandle) {
+    let _ = window.set_ignore_cursor_events(false);
+    let _ = window.set_always_on_top(true);
+    let _ = window.show();
+    let _ = window.unminimize();
+    raise_and_focus(window);
+    dismiss_session_overlay(app);
+    // overlay hide 可能再次把前台让出去;停放后再抢一次,再摘置顶。
+    // 预览在任务栏,摘置顶后可切到其它应用;贴图窗才保持置顶。
+    raise_and_focus(window);
+    let _ = window.set_always_on_top(false);
+}
+
+fn raise_and_focus(window: &WebviewWindow) {
+    let _ = window.set_focus();
+    #[cfg(windows)]
+    force_foreground(window);
+}
+
+fn dismiss_session_overlay(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(OVERLAY) {
+        dismiss_session_overlay_window(&window);
+    }
+}
+
+fn dismiss_session_overlay_window(window: &WebviewWindow) {
+    let _ = window.set_ignore_cursor_events(true);
+    let _ = window.set_always_on_top(false);
+    let _ = window.hide();
+    let (pos, size) = overlay_park_placement();
+    let _ = window.set_size(Size::Logical(size));
+    let _ = window.set_position(Position::Logical(pos));
+}
+
+/// 隐藏失败时也不要盖住桌面:1×1 停在屏外。
+fn overlay_park_placement() -> (LogicalPosition<f64>, LogicalSize<f64>) {
+    (
+        LogicalPosition {
+            x: -32000.0,
+            y: -32000.0,
+        },
+        LogicalSize {
+            width: 1.0,
+            height: 1.0,
+        },
+    )
+}
+
+/// Windows 前台锁:热键/覆盖层 hide 之后 SetForegroundWindow 常被拒绝,
+/// 预览会变成“看得见但点不到”的置顶窗。把前台线程输入队列临时挂过来。
+#[cfg(windows)]
+fn force_foreground(window: &WebviewWindow) {
+    let Ok(hwnd) = window.hwnd() else {
+        return;
+    };
+    unsafe { force_foreground_hwnd(hwnd) };
+}
+
+/// # Safety
+/// `hwnd` 必须是仍有效的预览窗句柄。
+#[cfg(windows)]
+unsafe fn force_foreground_hwnd(hwnd: windows::Win32::Foundation::HWND) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow,
+        ShowWindow, SW_RESTORE,
+    };
+
+    let _ = ShowWindow(hwnd, SW_RESTORE);
+    if SetForegroundWindow(hwnd).as_bool() {
+        return;
+    }
+    let fg = GetForegroundWindow();
+    if fg == hwnd || fg == HWND::default() {
+        let _ = BringWindowToTop(hwnd);
+        let _ = SetForegroundWindow(hwnd);
+        return;
+    }
+    let fg_thread = GetWindowThreadProcessId(fg, None);
+    let this_thread = GetCurrentThreadId();
+    if fg_thread != 0 && fg_thread != this_thread {
+        let _ = AttachThreadInput(fg_thread, this_thread, true);
+        let _ = BringWindowToTop(hwnd);
+        let _ = SetForegroundWindow(hwnd);
+        let _ = AttachThreadInput(fg_thread, this_thread, false);
+    } else {
+        let _ = BringWindowToTop(hwnd);
+        let _ = SetForegroundWindow(hwnd);
     }
 }
 
@@ -433,5 +540,14 @@ mod tests {
         assert_eq!((x, y), (24.0, 24.0));
         let (x, y) = toast_origin(None, TOAST_WIDTH, TOAST_HEIGHT);
         assert_eq!((x, y), (24.0, 24.0));
+    }
+
+    #[test]
+    fn overlay_park_is_off_screen_and_tiny() {
+        let (pos, size) = overlay_park_placement();
+        assert!(pos.x <= -10000.0);
+        assert!(pos.y <= -10000.0);
+        assert_eq!(size.width, 1.0);
+        assert_eq!(size.height, 1.0);
     }
 }
