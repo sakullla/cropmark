@@ -38,18 +38,19 @@
   flex: 0 0 auto;
   height: 28px;
   padding: 0 12px;
-  border: 0;
-  border-radius: 8px;
-  background: var(--danger);
-  color: var(--on-danger);
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+  border-radius: 999px;
+  background: var(--danger-soft);
+  color: var(--danger);
   font: inherit;
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 600;
   cursor: pointer;
 }
 
 .preview-close:hover {
-  filter: brightness(1.08);
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 22%, transparent);
 }
 
 .preview-note {
@@ -134,8 +135,8 @@
 }
 
 .preview-tools button svg {
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
   display: block;
 }
 
@@ -169,11 +170,11 @@
   z-index: 20;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  min-width: 216px;
-  padding: 10px 12px;
+  gap: 12px;
+  min-width: 232px;
+  padding: 12px 14px;
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: 14px;
   background: var(--panel);
   box-shadow: var(--shadow);
 }
@@ -202,9 +203,9 @@
   color: var(--ink);
   font: inherit;
   font-size: 12px;
-  height: 24px;
+  height: 28px;
   min-width: 40px;
-  padding: 0 8px;
+  padding: 0 10px;
   border-radius: 999px;
   cursor: pointer;
 }
@@ -220,17 +221,33 @@
 }
 
 .style-options button[data-style-color] {
-  width: 22px;
-  min-width: 22px;
-  height: 22px;
+  position: relative;
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
   padding: 0;
+  border: 1px solid transparent;
   border-radius: 50%;
-  background: var(--swatch);
+  background: transparent;
 }
 
-.style-options button[data-style-color].active {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+.style-options button[data-style-color]::before {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: var(--swatch);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 14%, transparent);
+}
+
+.style-options button[data-style-color]:hover {
+  background: var(--accent-soft);
+}
+
+.style-options button[data-style-color].active::before {
+  box-shadow:
+    0 0 0 2px var(--accent),
+    inset 0 0 0 1px color-mix(in srgb, var(--ink) 14%, transparent);
 }
 
 .preview-actions button {
@@ -339,10 +356,10 @@
 .preview-context {
   position: absolute;
   z-index: 30;
-  min-width: 128px;
+  min-width: 132px;
   padding: 4px;
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--panel);
   box-shadow: var(--shadow);
 }
@@ -355,7 +372,7 @@
   padding: 6px 10px;
   text-align: left;
   border: 0;
-  border-radius: 7px;
+  border-radius: 8px;
   background: transparent;
   color: var(--ink);
   font: inherit;

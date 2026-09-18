@@ -55,8 +55,8 @@
   border: 1px solid var(--line);
   border-radius: 999px;
   padding: 8px 14px;
-  background: #fff;
-  color: #1c1917;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  color: var(--ink);
   font: inherit;
   font-size: 13px;
   font-weight: 650;
@@ -64,14 +64,15 @@
 }
 
 .overlay-cancel:hover {
-  background: #f5f0e8;
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .size-badge {
   padding: 4px 8px;
   border-radius: 8px;
-  background: rgba(15, 118, 110, 0.92);
-  color: #f5fffd;
+  background: color-mix(in srgb, var(--accent) 92%, transparent);
+  color: var(--on-accent);
   font-size: 12px;
   font-weight: 650;
 }
@@ -157,12 +158,18 @@
   background: var(--accent-soft);
   color: var(--ink);
   font: inherit;
-  padding: 6px 12px;
+  font-size: 13px;
+  padding: 7px 14px;
   cursor: pointer;
 }
 
+.delay-root button:hover,
+.error-root button:hover {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
 .error-root {
-  padding: 16px;
+  padding: 14px 16px;
   display: flex;
   flex-direction: column;
   gap: 12px;
