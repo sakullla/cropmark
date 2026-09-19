@@ -40,6 +40,23 @@ pub fn should_prevent_exit(code: Option<i32>) -> bool {
     code.is_none()
 }
 
+/// R15:环境变量门控的启动就绪日志。`CROPMARK_STARTUP_TIMING` 设置时在
+/// setup 收尾(托盘/降级、热键、预建窗口就绪,即视为可交互)输出一行时序:
+/// `elapsed_ms` 从 `run()` 起算,`epoch_ms` 为就绪时刻的 Unix 毫秒(外部工具
+/// 可据此换算进程创建到就绪的耗时,与无日志的 v0.2.4 基线同机对比)。未设置
+/// 该变量时零输出、零额外开销。
+fn log_startup_ready(started: std::time::Instant, tray_ready: bool) {
+    if std::env::var_os("CROPMARK_STARTUP_TIMING").is_none() {
+        return;
+    }
+    let elapsed_ms = started.elapsed().as_millis();
+    let epoch_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis());
+    let tray = if tray_ready { "ready" } else { "unavailable" };
+    eprintln!("Cropmark: startup ready tray={tray} elapsed_ms={elapsed_ms} epoch_ms={epoch_ms}");
+}
+
 /// R16:设置窗口的退出入口(无托盘环境下的兜底退出路径)。复用托盘"退出"的
 /// 同一条链:`app.exit(0)` 触发 `RunEvent::Exit`,由既有逻辑收掉全部贴图。
 /// 保持模块内私有:`pub` 会让 `#[tauri::command]` 生成的宏与 `#[macro_export]`
@@ -61,6 +78,9 @@ fn open_settings_on_main(app: &tauri::AppHandle) {
 }
 
 pub fn run() {
+    // R15:启动计时从进程入口附近起算,供门控日志在同机 release 构建中
+    // 测量冷启动到可交互;未设置环境变量时该对象无任何可观察开销。
+    let startup_started = std::time::Instant::now();
     // R1:单实例闸门先于任何 Tauri 初始化。已有实例时本进程在转发启动参数后
     // 直接退出,不创建托盘/窗口,也不注册热键;首实例无响应时同样有界退出。
     let settings_slot: Arc<OnceLock<tauri::AppHandle>> = Arc::new(OnceLock::new());
@@ -131,6 +151,9 @@ pub fn run() {
             };
             hotkeys::apply_to_app(app.handle(), &hotkeys);
             capture::precreate_windows(app.handle());
+            // R15:托盘(或降级)、热键与预建窗口就绪,启动路径到此结束;
+            // 门控日志只读时钟,不引入启动期同步 IO。
+            log_startup_ready(startup_started, tray_ready);
             if !tray_ready {
                 if let Err(error) = settings::open_settings(app.handle()) {
                     eprintln!("Cropmark: 无法打开设置窗口:{error}");
