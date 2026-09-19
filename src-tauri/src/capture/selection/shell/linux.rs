@@ -348,7 +348,9 @@ pub fn pick_region(
     let mut state = ShellState {
         hooks,
         canvas: Canvas {
-            engine: SelectionEngine::new(width as u32, height as u32, flags),
+            // 注入冻结帧 DPI 缩放:chrome(放大镜面板)光标命中需要。
+            engine: SelectionEngine::new(width as u32, height as u32, flags)
+                .with_scale(frame.scale),
             composer,
             scratch: vec![0; bytes],
             present: create_present_buffer(&conn, bytes),
@@ -783,6 +785,23 @@ fn put_image_banded(
 mod tests {
     use super::*;
     use crate::capture::buffer::{accept_buffer, RawBuffer};
+    use crate::capture::selection::{CursorHint, EngineState};
+
+    fn test_frame(width: u32, height: u32, scale: f64) -> Frame {
+        let mut frame = accept_buffer(RawBuffer::ready(
+            width,
+            height,
+            vec![80u8; (width * height * 4) as usize],
+        ))
+        .unwrap();
+        frame.scale = scale;
+        frame
+    }
+
+    fn engine_from_frame(frame: &Frame) -> SelectionEngine {
+        SelectionEngine::new(frame.width, frame.height, FeatureFlags::default())
+            .with_scale(frame.scale)
+    }
 
     /// min_keycode=8、每键 2 列的小键盘表:8=Return,9=Esc,10/11/12/13=方向,
     /// 14=c,17-21=Keypad Enter/方向,22='B';shift 列(奇数索引)填 NoSymbol
@@ -914,7 +933,7 @@ mod tests {
         let frame = accept_buffer(RawBuffer::ready(4, 4, vec![9u8; 64])).unwrap();
         let composer = Composer::new(&frame).unwrap();
         let mut canvas = Canvas {
-            engine: SelectionEngine::new(4, 4, FeatureFlags::default()),
+            engine: engine_from_frame(&frame),
             composer,
             scratch: vec![0; 64],
             present: PresentBuffer::Socket(vec![0; 8]), // 故意错误长度:防御路径不 panic。
@@ -923,6 +942,74 @@ mod tests {
             layout: VisualLayout::typical(),
         };
         assert!(compose_canvas(&mut canvas).is_none());
+    }
+
+    #[test]
+    fn selection_engine_uses_frame_scale_for_magnifier_hit() {
+        let cursor = (40, 40);
+        let scaled_frame = test_frame(800, 800, 2.0);
+        let mut scaled = engine_from_frame(&scaled_frame);
+        scaled.handle_event(InputEvent::PointerMove {
+            x: cursor.0,
+            y: cursor.1,
+        });
+        let size = scaled.size();
+        let unscaled_panel = composer::magnifier_rect(cursor, size, 1.0);
+        let scaled_panel = composer::magnifier_rect(cursor, size, 2.0);
+        let mut probe = None;
+        for y in scaled_panel.y..scaled_panel.bottom() {
+            for x in scaled_panel.x..scaled_panel.right() {
+                if !unscaled_panel.contains(x, y) {
+                    probe = Some((x, y));
+                    break;
+                }
+            }
+            if probe.is_some() {
+                break;
+            }
+        }
+        let (x, y) = probe.expect("scale 2.0 magnifier should extend past 1.0");
+        assert_eq!(scaled.cursor_for(x, y), CursorHint::Arrow);
+
+        let unscaled_frame = test_frame(800, 800, 1.0);
+        let mut unscaled = engine_from_frame(&unscaled_frame);
+        unscaled.handle_event(InputEvent::PointerMove {
+            x: cursor.0,
+            y: cursor.1,
+        });
+        assert_eq!(unscaled.cursor_for(x, y), CursorHint::Crosshair);
+    }
+
+    #[test]
+    fn toolbar_action_fires_on_left_up_not_press() {
+        let frame = test_frame(320, 200, 1.5);
+        let mut engine = engine_from_frame(&frame);
+        engine.handle_event(InputEvent::LeftDown { x: 40, y: 30 });
+        engine.handle_event(InputEvent::PointerMove { x: 200, y: 120 });
+        engine.handle_event(InputEvent::LeftUp { x: 200, y: 120 });
+        assert!(engine.scene().toolbar_visible);
+
+        let buttons = composer::toolbar_buttons(engine.flags());
+        let panel =
+            composer::toolbar_panel(engine.selection().unwrap(), engine.size(), &buttons).unwrap();
+        let (expected, rect) = composer::toolbar_button_rects(panel, &buttons)
+            .last()
+            .copied()
+            .unwrap();
+        let (cx, cy) = rect.center();
+        assert_eq!(
+            engine.handle_event(InputEvent::LeftDown { x: cx, y: cy }),
+            EngineOutcome::Redraw
+        );
+        assert!(matches!(
+            engine.state(),
+            EngineState::PressingChrome { action } if *action == expected
+        ));
+        assert!(engine.scene().toolbar_visible);
+        assert_eq!(
+            engine.handle_event(InputEvent::LeftUp { x: cx, y: cy }),
+            EngineOutcome::Action(expected)
+        );
     }
 
     #[test]
@@ -959,7 +1046,7 @@ mod tests {
         let bytes = vec![80u8; (w * h * 4) as usize];
         let frame = accept_buffer(RawBuffer::ready(w, h, bytes)).unwrap();
         let mut canvas = Canvas {
-            engine: SelectionEngine::new(w, h, FeatureFlags::default()),
+            engine: engine_from_frame(&frame),
             composer: Composer::new(&frame).unwrap(),
             scratch: vec![0; frame.rgba.len()],
             present: PresentBuffer::Socket(vec![0; frame.rgba.len()]),
