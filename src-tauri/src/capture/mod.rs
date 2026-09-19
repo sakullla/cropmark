@@ -22,6 +22,11 @@ pub fn begin(app: &AppHandle, mode: CaptureMode, delay_ms: u64) {
     session::begin(app, mode, delay_ms);
 }
 
+/// 托盘"上次区域"直取(R6):按记录区域抓取,不打开交互选区。
+pub fn begin_last_region(app: &AppHandle, delay_ms: u64) {
+    session::begin_last_region(app, delay_ms);
+}
+
 #[tauri::command]
 pub fn get_overlay_frame(app: AppHandle) -> Result<ui::OverlayPayload, CaptureError> {
     session::overlay_frame(&app)

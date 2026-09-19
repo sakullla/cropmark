@@ -172,24 +172,156 @@ pub fn begin(app: &AppHandle, mode: CaptureMode, delay_ms: u64) {
     });
 }
 
+/// 托盘"上次区域"直取(R6):先按当前显示环境校验并钳制记录,再走与常规
+/// 截取一致的隐藏前置与延时链路;无效记录给 toast 并让菜单回到禁用态,
+/// 不打开交互选区。
+pub fn begin_last_region(app: &AppHandle, delay_ms: u64) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = run_last_region(app.clone(), delay_ms).await {
+            if !error.is_cancelled() {
+                let _ = finish_error(&app, error);
+            }
+        }
+    });
+}
+
 async fn run(app: AppHandle, mode: CaptureMode, delay_ms: u64) -> Result<(), CaptureError> {
     if !try_begin_with_delay(&app, mode, delay_ms) {
         return Ok(());
     }
     hide_product_surfaces(&app)?;
-    let plan = plan_delay(delay_ms);
-    if plan.delay_ms > 0 && !plan.overlay_during_delay {
-        show_delay(&app, plan.delay_ms, mode)?;
-        if wait_delay(&app, plan.delay_ms).await? {
-            hide_session_surface(&app, ui::DELAY)?;
-            hide_product_surfaces(&app)?;
-        }
-    }
+    wait_delay_before_capture(&app, delay_ms, mode).await?;
     match mode {
         CaptureMode::Region => capture_region(&app).await,
         CaptureMode::Window => capture_window_mode(&app).await,
         CaptureMode::Fullscreen => capture_fullscreen(&app).await,
     }
+}
+
+/// 隐藏前置完成后按延时计划展示并等待倒计时(可取消);0 秒立即返回。
+async fn wait_delay_before_capture(
+    app: &AppHandle,
+    delay_ms: u64,
+    mode: CaptureMode,
+) -> Result<(), CaptureError> {
+    let plan = plan_delay(delay_ms);
+    if plan.delay_ms > 0 && !plan.overlay_during_delay {
+        show_delay(app, plan.delay_ms, mode)?;
+        if wait_delay(app, plan.delay_ms).await? {
+            hide_session_surface(app, ui::DELAY)?;
+            hide_product_surfaces(app)?;
+        }
+    }
+    Ok(())
+}
+
+async fn run_last_region(app: AppHandle, delay_ms: u64) -> Result<(), CaptureError> {
+    let plan = match plan_last_region(&app).await {
+        Ok(plan) => plan,
+        Err(reason) => {
+            // 记录缺失或与当前显示环境无交集:清除记录并提示,菜单变为
+            // "暂无记录"禁用态;不隐藏任何产品界面。
+            crate::settings::forget_last_region(&app);
+            ui::show_toast(&app, reason.toast());
+            return Ok(());
+        }
+    };
+    if !try_begin_with_delay(&app, CaptureMode::Region, delay_ms) {
+        return Ok(());
+    }
+    hide_product_surfaces(&app)?;
+    wait_delay_before_capture(&app, delay_ms, CaptureMode::Region).await?;
+    capture_last_region(&app, plan).await
+}
+
+/// 上次区域使用前的校验失败:两种都意味着该项当前不可用。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LastRegionPlanError {
+    Missing,
+    OutOfRange,
+}
+
+impl LastRegionPlanError {
+    fn toast(self) -> &'static str {
+        match self {
+            Self::Missing => "暂无上次区域，请先完成一次区域截取。",
+            Self::OutOfRange => "上次区域已不在当前显示范围内，请重新截取。",
+        }
+    }
+}
+
+/// 上次区域直取的执行计划:目标显示器 + 已钳制进该显示器的全局物理区域。
+#[derive(Debug, Clone, PartialEq)]
+struct FixedRegionPlan {
+    monitor: MonitorGeom,
+    region: crate::settings::LastRegion,
+}
+
+/// 读取记录并按当前显示器列表校验/钳制;记录不存在或与所有显示器都无
+/// 交集时返回错误,调用方提示且不进入抓取。读取与显示器枚举都在阻塞线程。
+async fn plan_last_region(app: &AppHandle) -> Result<FixedRegionPlan, LastRegionPlanError> {
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let region =
+            crate::settings::current_last_region(&handle).ok_or(LastRegionPlanError::Missing)?;
+        let monitors = tauri_monitors(&handle);
+        let rects: Vec<crate::settings::LastRegion> = monitors
+            .iter()
+            .map(|monitor| crate::settings::LastRegion {
+                x: monitor.physical_x,
+                y: monitor.physical_y,
+                width: monitor.physical_width,
+                height: monitor.physical_height,
+            })
+            .collect();
+        let (index, clamped) = region
+            .clamp_to_monitors(&rects)
+            .ok_or(LastRegionPlanError::OutOfRange)?;
+        Ok(FixedRegionPlan {
+            monitor: monitors[index].clone(),
+            region: clamped,
+        })
+    })
+    .await
+    .map_err(|_| LastRegionPlanError::OutOfRange)?
+}
+
+/// 抓取目标显示器并按钳制后的区域裁剪;与全屏/区域完成一样走
+/// `finish_configured`,预览/静默完成、自动复制、历史与 toast 行为一致。
+async fn capture_last_region(app: &AppHandle, plan: FixedRegionPlan) -> Result<(), CaptureError> {
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        require_capture_ready(&handle)?;
+        let frame = platform::capture_monitor(&plan.monitor)?;
+        let (x, y, width, height) = local_crop(&plan.monitor, &plan.region)
+            .ok_or_else(|| CaptureError::api("上次区域超出显示器范围。"))?;
+        let cropped = crop_rgba(&frame, x, y, width, height)?;
+        finish_configured(&handle, cropped).map(|_| ())
+    })
+    .await
+    .map_err(|_| CaptureError::api("截取线程失败。"))?
+}
+
+/// 全局物理区域 → 显示器帧内局部裁剪坐标;计划已钳制,正常必成功,
+/// 仍做边界检查保证任何异常数据都不越界。
+fn local_crop(
+    monitor: &MonitorGeom,
+    region: &crate::settings::LastRegion,
+) -> Option<(u32, u32, u32, u32)> {
+    let x = i64::from(region.x) - i64::from(monitor.physical_x);
+    let y = i64::from(region.y) - i64::from(monitor.physical_y);
+    if x < 0 || y < 0 {
+        return None;
+    }
+    let x = u32::try_from(x).ok()?;
+    let y = u32::try_from(y).ok()?;
+    if x.checked_add(region.width)? > monitor.physical_width
+        || y.checked_add(region.height)? > monitor.physical_height
+    {
+        return None;
+    }
+    Some((x, y, region.width, region.height))
 }
 
 fn try_begin_with_delay(app: &AppHandle, mode: CaptureMode, delay_ms: u64) -> bool {
@@ -533,10 +665,12 @@ fn require_capture_ready(app: &AppHandle) -> Result<(), CaptureError> {
     })
 }
 
-fn tauri_pointer_monitor(app: &AppHandle) -> Option<MonitorGeom> {
-    let position = app.cursor_position().ok()?;
-    let monitors = app.available_monitors().ok()?;
-    let geoms: Vec<MonitorGeom> = monitors
+/// 当前所有显示器(物理几何与缩放),供指针命中与"上次区域"钳制共用。
+fn tauri_monitors(app: &AppHandle) -> Vec<MonitorGeom> {
+    let Ok(monitors) = app.available_monitors() else {
+        return Vec::new();
+    };
+    monitors
         .iter()
         .enumerate()
         .map(|(index, monitor)| {
@@ -554,7 +688,12 @@ fn tauri_pointer_monitor(app: &AppHandle) -> Option<MonitorGeom> {
                 monitor.scale_factor(),
             )
         })
-        .collect();
+        .collect()
+}
+
+fn tauri_pointer_monitor(app: &AppHandle) -> Option<MonitorGeom> {
+    let position = app.cursor_position().ok()?;
+    let geoms = tauri_monitors(app);
     monitor_at_physical(&geoms, position.x as i32, position.y as i32)
         .cloned()
         .or_else(|| geoms.into_iter().next())
@@ -675,7 +814,41 @@ fn finish_selection(
         )
     })?;
     ui::hide_window(app, ui::OVERLAY);
-    finish_frame(app, frame, intent)
+    let summary = finish_frame(app, frame, intent)?;
+    // R6:成功完成的区域截图覆盖"上次区域",托盘直取从下一次打开菜单起可用。
+    remember_selection_region(app, &selection);
+    Ok(summary)
+}
+
+/// 显示器局部物理选区 → 全局桌面物理区域(R6 记录用);0 尺寸或坐标
+/// 超出 i32 时视为无有效区域。
+fn global_region(
+    monitor: &MonitorGeom,
+    selection: &RegionSelection,
+) -> Option<crate::settings::LastRegion> {
+    let x = i64::from(monitor.physical_x) + i64::from(selection.x);
+    let y = i64::from(monitor.physical_y) + i64::from(selection.y);
+    crate::settings::LastRegion {
+        x: i32::try_from(x).ok()?,
+        y: i32::try_from(y).ok()?,
+        width: selection.width,
+        height: selection.height,
+    }
+    .sanitized()
+}
+
+/// 从活动会话的显示器几何与本次选区得到全局区域并写入设置;
+/// 无活动会话/显示器(理论上不会发生)时跳过记录。
+fn remember_selection_region(app: &AppHandle, selection: &RegionSelection) {
+    let monitor = with_session(app, |session| {
+        session.as_ref().and_then(|current| current.monitor.clone())
+    });
+    if let Some(region) = monitor
+        .as_ref()
+        .and_then(|monitor| global_region(monitor, selection))
+    {
+        crate::settings::remember_last_region(app, region);
+    }
 }
 
 pub fn confirm_logical_region(app: &AppHandle, rect: LogicalRect) -> Result<(), CaptureError> {
@@ -786,7 +959,10 @@ pub fn finish_region_quiet(
     })?;
     ui::hide_window(app, ui::OVERLAY);
     // 显式动作(操作条/菜单复制等)不受 autoCopy 开关影响,始终写剪贴板。
-    finish_with_ttl(app, frame, FinishDisposition::Quiet, ttl, true)
+    let summary = finish_with_ttl(app, frame, FinishDisposition::Quiet, ttl, true)?;
+    // R6:静默完成同属成功完成的区域截图,同样刷新"上次区域"。
+    remember_selection_region(app, &selection);
+    Ok(summary)
 }
 
 pub fn cancel(app: &AppHandle) -> Result<CancelOutcome, CaptureError> {
@@ -1510,5 +1686,105 @@ mod tests {
             finish_disposition(FinishIntent::Annotate, off),
             FinishDisposition::Preview
         );
+    }
+
+    #[test]
+    fn monitor_local_selection_maps_to_global_physical_region() {
+        let monitor = MonitorGeom::from_physical("left", -1920, 0, 1920, 1080, 1.0);
+        let selection = RegionSelection {
+            x: 10,
+            y: 20,
+            width: 300,
+            height: 200,
+        };
+        assert_eq!(
+            global_region(&monitor, &selection),
+            Some(crate::settings::LastRegion {
+                x: -1910,
+                y: 20,
+                width: 300,
+                height: 200
+            })
+        );
+        // 0 尺寸选区不产生记录。
+        let zero = RegionSelection {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 5,
+        };
+        assert_eq!(global_region(&monitor, &zero), None);
+    }
+
+    #[test]
+    fn last_region_crop_stays_inside_target_monitor_frame() {
+        let monitor = MonitorGeom::from_physical("right", 1920, 0, 2560, 1440, 2.0);
+        let region = crate::settings::LastRegion {
+            x: 2000,
+            y: 100,
+            width: 400,
+            height: 300,
+        };
+        assert_eq!(local_crop(&monitor, &region), Some((80, 100, 400, 300)));
+
+        // 区域完全落在显示器之外:不得产生负坐标,调用方给提示而非越界裁剪。
+        let outside = crate::settings::LastRegion {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 100,
+        };
+        assert_eq!(local_crop(&monitor, &outside), None);
+
+        // 区域超出右/下边缘:同样拒绝(计划阶段已钳制,这里是防御检查)。
+        let overflow = crate::settings::LastRegion {
+            x: 1920,
+            y: 1400,
+            width: 5000,
+            height: 100,
+        };
+        assert_eq!(local_crop(&monitor, &overflow), None);
+    }
+
+    #[test]
+    fn last_region_plan_picks_monitor_with_largest_overlap() {
+        let monitors = [
+            MonitorGeom::from_physical("left", -1920, 0, 1920, 1080, 1.0),
+            MonitorGeom::from_physical("right", 0, 0, 2560, 1440, 1.0),
+        ];
+        let rects: Vec<crate::settings::LastRegion> = monitors
+            .iter()
+            .map(|monitor| crate::settings::LastRegion {
+                x: monitor.physical_x,
+                y: monitor.physical_y,
+                width: monitor.physical_width,
+                height: monitor.physical_height,
+            })
+            .collect();
+        // 跨屏区域:重叠更大的右屏胜出并裁剪进右屏。
+        let straddling = crate::settings::LastRegion {
+            x: -300,
+            y: 100,
+            width: 800,
+            height: 400,
+        };
+        let (index, clamped) = straddling.clamp_to_monitors(&rects).expect("has overlap");
+        assert_eq!(index, 1);
+        assert_eq!(
+            clamped,
+            crate::settings::LastRegion {
+                x: 0,
+                y: 100,
+                width: 500,
+                height: 400
+            }
+        );
+        assert!(local_crop(&monitors[index], &clamped).is_some());
+    }
+
+    #[test]
+    fn last_region_toast_messages_are_actionable() {
+        assert!(LastRegionPlanError::Missing.toast().contains("上次区域"));
+        assert!(LastRegionPlanError::OutOfRange.toast().contains("显示范围"));
     }
 }

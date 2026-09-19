@@ -27,6 +27,14 @@ pub fn dispatch_capture_with_delay(app: &tauri::AppHandle, mode: CaptureMode, de
     capture::begin(app, mode, delay_ms);
 }
 
+/// 托盘"上次区域"直取(R6):不进入交互选区,按记录区域抓屏裁剪;
+/// 延时与热键/托盘主项同源,触发路径与常规截取一致。
+pub fn dispatch_last_region(app: &tauri::AppHandle) {
+    let delay_ms = settings::current_capture(app).delay_ms();
+    let _ = app.emit("capture-requested", CaptureMode::Region);
+    capture::begin_last_region(app, delay_ms);
+}
+
 pub fn should_prevent_exit(code: Option<i32>) -> bool {
     code.is_none()
 }

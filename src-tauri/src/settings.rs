@@ -283,6 +283,75 @@ impl ExportSettings {
     }
 }
 
+/// 上次区域(R6):成功完成区域截图后记住的全局物理像素矩形(多显示器桌面允许负坐标),
+/// 托盘的"上次区域"用它直取,不再进入交互选区。分辨率/缩放/显示器变化后使用时
+/// 按当前显示器并集钳制,保证裁剪始终落在实际抓取的显示器帧内。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LastRegion {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl LastRegion {
+    /// 宽高为 0 的记录不是有效区域(其余字段天然合法)。
+    pub fn sanitized(self) -> Option<Self> {
+        (self.width > 0 && self.height > 0).then_some(self)
+    }
+
+    pub fn right(&self) -> i64 {
+        i64::from(self.x) + i64::from(self.width)
+    }
+
+    pub fn bottom(&self) -> i64 {
+        i64::from(self.y) + i64::from(self.height)
+    }
+
+    /// 与另一矩形求交;无交集(或任一矩形为空)返回 None。
+    pub fn intersection(&self, other: &LastRegion) -> Option<LastRegion> {
+        let left = i64::from(self.x).max(i64::from(other.x));
+        let top = i64::from(self.y).max(i64::from(other.y));
+        let right = self.right().min(other.right());
+        let bottom = self.bottom().min(other.bottom());
+        if right <= left || bottom <= top {
+            return None;
+        }
+        Some(LastRegion {
+            x: left as i32,
+            y: top as i32,
+            width: (right - left) as u32,
+            height: (bottom - top) as u32,
+        })
+    }
+
+    /// 按当前显示器矩形列表钳制:选重叠面积最大的显示器,把区域裁剪进该显示器。
+    /// 返回 `(显示器索引, 钳制后的区域)`;与所有显示器都无交集时返回 None,
+    /// 调用方应提示并回到"暂无记录"而不是硬裁/越界。
+    /// 显示器分辨率变大时保持原尺寸(不放大),变小或移位时只裁剪重叠部分。
+    pub fn clamp_to_monitors(&self, monitors: &[LastRegion]) -> Option<(usize, LastRegion)> {
+        let region = self.sanitized()?;
+        let mut best: Option<(usize, u64)> = None;
+        for (index, monitor) in monitors.iter().enumerate() {
+            let Some(overlap) = region.intersection(monitor) else {
+                continue;
+            };
+            let area = u64::from(overlap.width) * u64::from(overlap.height);
+            let better = match best {
+                Some((_, best_area)) => area > best_area,
+                None => true,
+            };
+            if better {
+                best = Some((index, area));
+            }
+        }
+        let (index, _) = best?;
+        let overlap = region.intersection(&monitors[index])?;
+        Some((index, overlap))
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredSettings {
@@ -298,6 +367,8 @@ pub struct StoredSettings {
     pub history: HistorySettings,
     #[serde(default)]
     pub export: ExportSettings,
+    #[serde(default)]
+    pub last_region: Option<LastRegion>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -324,6 +395,7 @@ pub struct SessionState {
     pub capture: Mutex<CaptureSettings>,
     pub history: Mutex<HistorySettings>,
     pub export: Mutex<ExportSettings>,
+    pub last_region: Mutex<Option<LastRegion>>,
 }
 
 impl SessionState {
@@ -338,6 +410,7 @@ impl SessionState {
             capture: Mutex::new(stored.capture.sanitized()),
             history: Mutex::new(stored.history.sanitized()),
             export: Mutex::new(stored.export.sanitized()),
+            last_region: Mutex::new(stored.last_region.and_then(LastRegion::sanitized)),
         }
     }
 }
@@ -379,6 +452,33 @@ pub fn remember_export(
     .sanitized();
     *lock(&app.state::<SessionState>().export) = next;
     persist_settings(app, "导出设置已记住");
+}
+
+/// 供托盘读取"上次区域"是否存在:决定菜单项可用状态与标签。
+pub fn current_last_region(app: &AppHandle) -> Option<LastRegion> {
+    *lock(&app.state::<SessionState>().last_region)
+}
+
+/// 区域截图成功后覆盖记录并重建托盘菜单(R6),"上次区域"立即直取同一区域;
+/// 写盘失败只影响 notice,不丢内存记录。
+pub fn remember_last_region(app: &AppHandle, region: LastRegion) {
+    let Some(region) = region.sanitized() else {
+        return;
+    };
+    *lock(&app.state::<SessionState>().last_region) = Some(region);
+    persist_settings(app, "上次区域已记录");
+    crate::tray::refresh_menu(app);
+}
+
+/// 使用时发现记录与当前显示环境无有效交集:清除记录并重建菜单,
+/// 让"上次区域"回到禁用+提示状态(缺记录时调用为无操作)。
+pub fn forget_last_region(app: &AppHandle) {
+    let state = app.state::<SessionState>();
+    if lock(&state.last_region).take().is_none() {
+        return;
+    }
+    persist_settings(app, "上次区域已清除");
+    crate::tray::refresh_menu(app);
 }
 
 pub fn load_from_app(app: &AppHandle) -> StoredSettings {
@@ -510,7 +610,7 @@ pub fn set_feature(
 pub fn set_capture_settings(app: AppHandle, settings: CaptureSettings) -> UiSettings {
     *lock(&app.state::<SessionState>().capture) = settings.sanitized();
     persist_settings(&app, "截图设置已应用");
-    crate::tray::refresh_delay_menu(&app);
+    crate::tray::refresh_menu(&app);
     snapshot(&app)
 }
 
@@ -533,6 +633,7 @@ fn persist_settings(app: &AppHandle, applied: &str) {
         capture: *lock(&state.capture),
         history: *lock(&state.history),
         export: lock(&state.export).clone(),
+        last_region: *lock(&state.last_region),
     };
     match save_to_path(&settings_path(app), &stored) {
         Ok(()) => *lock(&state.notice) = None,
@@ -607,6 +708,12 @@ mod tests {
                 last_dir: Some("C:/shots".into()),
                 quality: ExportQuality::Low,
             },
+            last_region: Some(LastRegion {
+                x: -640,
+                y: 120,
+                width: 320,
+                height: 200,
+            }),
         };
         save_to_path(&path, &stored).unwrap();
         let text = fs::read_to_string(&path).unwrap();
@@ -630,6 +737,15 @@ mod tests {
         assert_eq!(loaded.export.last_format, ExportFormat::Jpeg);
         assert_eq!(loaded.export.last_dir.as_deref(), Some("C:/shots"));
         assert_eq!(loaded.export.quality, ExportQuality::Low);
+        assert_eq!(
+            loaded.last_region,
+            Some(LastRegion {
+                x: -640,
+                y: 120,
+                width: 320,
+                height: 200
+            })
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -965,5 +1081,194 @@ mod tests {
         };
         assert!(missing.existing_directory().is_none());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_last_region_field_loads_none() {
+        let dir =
+            std::env::temp_dir().join(format!("cropmark-settings-region-{}", std::process::id()));
+        let path = dir.join("settings.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            r#"{"hotkeys":{"region":"Ctrl+Alt+R","window":"Alt+Shift+W","fullscreen":"Alt+Shift+S"}}"#,
+        )
+        .unwrap();
+        let loaded = load_from_path(&path);
+        assert_eq!(loaded.last_region, None);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn last_region_deserializes_from_camel_case_and_survives_roundtrip() {
+        let parsed: StoredSettings =
+            serde_json::from_str(r#"{"lastRegion":{"x":-1920,"y":40,"width":640,"height":480}}"#)
+                .unwrap();
+        assert_eq!(
+            parsed.last_region,
+            Some(LastRegion {
+                x: -1920,
+                y: 40,
+                width: 640,
+                height: 480
+            })
+        );
+        let serialized = serde_json::to_value(parsed.last_region).unwrap();
+        assert_eq!(serialized["x"], -1920);
+        assert_eq!(serialized["width"], 640);
+    }
+
+    #[test]
+    fn zero_sized_last_region_is_rejected() {
+        let zero = LastRegion {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 400,
+        };
+        assert_eq!(zero.sanitized(), None);
+        assert_eq!(
+            zero.clamp_to_monitors(&[LastRegion {
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080
+            }]),
+            None
+        );
+    }
+
+    #[test]
+    fn last_region_inside_monitor_keeps_size_and_picks_that_monitor() {
+        let region = LastRegion {
+            x: 100,
+            y: 200,
+            width: 300,
+            height: 150,
+        };
+        let monitors = [
+            LastRegion {
+                x: -1920,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            },
+            LastRegion {
+                x: 0,
+                y: 0,
+                width: 2560,
+                height: 1440,
+            },
+        ];
+        assert_eq!(region.clamp_to_monitors(&monitors), Some((1, region)));
+    }
+
+    #[test]
+    fn last_region_clamped_into_best_overlapping_monitor() {
+        // 区域跨屏(左屏 500px + 右屏 300px):选重叠更大的左屏并裁剪。
+        let region = LastRegion {
+            x: -500,
+            y: 100,
+            width: 800,
+            height: 400,
+        };
+        let monitors = [
+            LastRegion {
+                x: -1920,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            },
+            LastRegion {
+                x: 0,
+                y: 0,
+                width: 2560,
+                height: 1440,
+            },
+        ];
+        assert_eq!(
+            region.clamp_to_monitors(&monitors),
+            Some((
+                0,
+                LastRegion {
+                    x: -500,
+                    y: 100,
+                    width: 500,
+                    height: 400
+                }
+            ))
+        );
+    }
+
+    #[test]
+    fn last_region_is_cropped_when_resolution_shrinks() {
+        // 上次区域超出右/下边缘:只保留仍可见的重叠部分,不越界。
+        let region = LastRegion {
+            x: 2000,
+            y: 1300,
+            width: 800,
+            height: 600,
+        };
+        let monitors = [LastRegion {
+            x: 0,
+            y: 0,
+            width: 2560,
+            height: 1440,
+        }];
+        assert_eq!(
+            region.clamp_to_monitors(&monitors),
+            Some((
+                0,
+                LastRegion {
+                    x: 2000,
+                    y: 1300,
+                    width: 560,
+                    height: 140
+                }
+            ))
+        );
+    }
+
+    #[test]
+    fn last_region_without_intersection_or_monitors_is_rejected() {
+        let region = LastRegion {
+            x: 5000,
+            y: 5000,
+            width: 200,
+            height: 200,
+        };
+        let monitors = [LastRegion {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        }];
+        assert_eq!(region.clamp_to_monitors(&monitors), None);
+        assert_eq!(region.clamp_to_monitors(&[]), None);
+        // 显示器缩放到另一位置后原区域同样失效,不得越界。
+        let moved = LastRegion {
+            x: 4000,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        };
+        assert_eq!(region.clamp_to_monitors(&[moved]), None);
+    }
+
+    #[test]
+    fn last_region_negative_origin_is_preserved_when_monitor_unchanged() {
+        let region = LastRegion {
+            x: -1910,
+            y: 20,
+            width: 300,
+            height: 200,
+        };
+        let monitors = [LastRegion {
+            x: -1920,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        }];
+        assert_eq!(region.clamp_to_monitors(&monitors), Some((0, region)));
     }
 }

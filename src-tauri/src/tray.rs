@@ -8,8 +8,20 @@ use crate::settings;
 
 pub const TRAY_ID: &str = "cropmark-tray";
 
-/// 托盘一次性延时的档位(秒):保留 3/5/10,另加"使用设置的延时"。
+/// 托盘"上次区域"直取(R6)的菜单 id。
+pub const LAST_REGION_ID: &str = "capture-last-region";
+
+/// 延时一次性延时的档位(秒):保留 3/5/10,另加"使用设置的延时"。
 pub const FIXED_DELAY_SECONDS: [u64; 3] = [3, 5, 10];
+
+/// 无记录时菜单项禁用且标签即提示(禁用项无法点击,提示只能靠文案承载)。
+pub fn last_region_label(has_region: bool) -> &'static str {
+    if has_region {
+        "上次区域"
+    } else {
+        "上次区域（暂无记录）"
+    }
+}
 
 pub fn install(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let seconds = settings::current_capture(app).delay_seconds;
@@ -26,9 +38,10 @@ pub fn install(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// 延时设置变化后重建托盘菜单:裁剪主项与"使用设置的延时(N 秒)"标签
-/// 始终与当前配置一致。菜单事件按 id 分发,重建不丢处理器。
-pub fn refresh_delay_menu(app: &AppHandle) {
+/// 延时设置变化或"上次区域"记录更新后重建托盘菜单:裁剪主项、"使用设置的
+/// 延时(N 秒)"标签与"上次区域"可用状态/标签始终与当前状态一致。
+/// 菜单事件按 id 分发,重建不丢处理器。
+pub fn refresh_menu(app: &AppHandle) {
     let seconds = settings::current_capture(app).delay_seconds;
     let Some(tray) = app.tray_by_id(TRAY_ID) else {
         return;
@@ -84,6 +97,7 @@ fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
         "history" => {
             let _ = crate::history::open_window(app);
         }
+        LAST_REGION_ID => crate::dispatch_last_region(app),
         "quit" => app.exit(0),
         id => {
             if let Some(action) = menu_action(id) {
@@ -104,6 +118,14 @@ pub fn configured_delay_label(seconds: u32) -> String {
 
 fn build_menu(app: &AppHandle, configured_seconds: u32) -> tauri::Result<Menu<tauri::Wry>> {
     let region = MenuItem::with_id(app, "capture-region", "区域", true, None::<&str>)?;
+    let has_last_region = crate::settings::current_last_region(app).is_some();
+    let last_region = MenuItem::with_id(
+        app,
+        LAST_REGION_ID,
+        last_region_label(has_last_region),
+        has_last_region,
+        None::<&str>,
+    )?;
     let window = MenuItem::with_id(app, "capture-window", "窗口", true, None::<&str>)?;
     let fullscreen = MenuItem::with_id(app, "capture-fullscreen", "全屏", true, None::<&str>)?;
 
@@ -113,7 +135,8 @@ fn build_menu(app: &AppHandle, configured_seconds: u32) -> tauri::Result<Menu<ta
     }
     let delay_configured = configured_delay_submenu(app, configured_seconds)?;
 
-    let mut capture_items: Vec<&dyn IsMenuItem<tauri::Wry>> = vec![&region, &window, &fullscreen];
+    let mut capture_items: Vec<&dyn IsMenuItem<tauri::Wry>> =
+        vec![&region, &last_region, &window, &fullscreen];
     for submenu in &fixed_delays {
         capture_items.push(submenu);
     }
@@ -272,5 +295,18 @@ mod tests {
         assert_eq!(configured_delay_label(0), "使用设置的延时（0 秒）");
         assert_eq!(configured_delay_label(5), "使用设置的延时（5 秒）");
         assert_ne!(configured_delay_label(5), configured_delay_label(10));
+    }
+
+    #[test]
+    fn last_region_label_hints_when_no_record() {
+        assert_eq!(last_region_label(true), "上次区域");
+        assert_eq!(last_region_label(false), "上次区域（暂无记录）");
+        assert!(last_region_label(false).contains("暂无记录"));
+    }
+
+    #[test]
+    fn last_region_id_is_not_parsed_as_a_capture_mode() {
+        assert_eq!(menu_action(LAST_REGION_ID), None);
+        assert_eq!(menu_action("capture-last-region-delay-3"), None);
     }
 }
