@@ -7,7 +7,10 @@ mod hotkeys;
 mod ocr;
 mod pin;
 mod settings;
+mod single_instance;
 mod tray;
+
+use std::sync::{Arc, Mutex, OnceLock};
 
 use hotkeys::CaptureMode;
 use tauri::{Emitter, Manager};
@@ -27,11 +30,63 @@ pub fn should_prevent_exit(code: Option<i32>) -> bool {
     code.is_none()
 }
 
+/// 在任何线程请求唤出设置窗:非主线程转发到主线程,主线程直接执行。
+fn open_settings_on_main(app: &tauri::AppHandle) {
+    let app = app.clone();
+    let task_app = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Err(error) = settings::open_settings(&task_app) {
+            eprintln!("Cropmark: 无法打开设置窗口:{error}");
+        }
+    });
+}
+
 pub fn run() {
+    // R1:单实例闸门先于任何 Tauri 初始化。已有实例时本进程在转发启动参数后
+    // 直接退出,不创建托盘/窗口,也不注册热键;首实例无响应时同样有界退出。
+    let settings_slot: Arc<OnceLock<tauri::AppHandle>> = Arc::new(OnceLock::new());
+    let pending_activations: Arc<Mutex<Vec<single_instance::SecondLaunch>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let slot = Arc::clone(&settings_slot);
+    let pending = Arc::clone(&pending_activations);
+    let handler: single_instance::LaunchHandler =
+        Arc::new(move |launch: single_instance::SecondLaunch| {
+            let Some(app) = slot.get().cloned() else {
+                // 首实例尚未完成 setup(Unix 监听线程可能先于窗口就绪收到转发):
+                // 先记下,setup 完成后再补开设置窗,避免丢失这次激活。
+                pending
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(launch);
+                return;
+            };
+            open_settings_on_main(&app);
+        });
+    let _primary = match single_instance::acquire(single_instance::INSTANCE_ID, handler) {
+        Ok(single_instance::Acquire::Primary(primary)) => Some(primary),
+        Ok(single_instance::Acquire::Forwarded) => std::process::exit(0),
+        Err(error) => {
+            eprintln!("Cropmark: 单实例检测不可用,按普通启动继续:{error}");
+            None
+        }
+    };
+
     capture::platform::enable_per_monitor_v2();
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .setup(|app| {
+        .setup(move |app| {
+            let _ = settings_slot.set(app.handle().clone());
+            let missed = std::mem::take(
+                &mut *pending_activations
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            );
+            if !missed.is_empty() {
+                if let Err(error) = settings::open_settings(app.handle()) {
+                    eprintln!("Cropmark: 无法打开设置窗口:{error}");
+                }
+            }
+
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
