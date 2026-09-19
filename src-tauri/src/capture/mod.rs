@@ -140,8 +140,10 @@ async fn save_quiet_frame(app: &AppHandle) {
 }
 
 /// Offline OCR over the retained quiet frame, copying the full text to the
-/// clipboard with toast feedback (empty results included).
+/// clipboard with toast feedback (empty results included). 首次取字要加载模型,
+/// 先给不自动消失的进行中提示(R11);识别结果与失败提示替换该 toast。
 async fn ocr_quiet_frame(app: &AppHandle) {
+    ui::show_progress_toast(app, "正在识别…");
     match crate::ocr::recognize_preview(app.clone()).await {
         Ok(_) => match crate::ocr::copy_ocr_all(app.clone()) {
             Ok(text) => {

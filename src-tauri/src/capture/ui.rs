@@ -251,6 +251,17 @@ pub fn toast_message() -> Option<String> {
 /// Transient result feedback: one borderless topmost window, replaced on every
 /// call, auto-closed after ~2s. Never steals focus.
 pub fn show_toast(app: &AppHandle, message: &str) {
+    show_toast_inner(app, message, Some(TOAST_DURATION));
+}
+
+/// Long-running feedback (R11 静默取字首次加载模型): stays visible until the
+/// next toast replaces it, so the in-progress hint never expires before the
+/// result arrives.
+pub fn show_progress_toast(app: &AppHandle, message: &str) {
+    show_toast_inner(app, message, None);
+}
+
+fn show_toast_inner(app: &AppHandle, message: &str, auto_hide: Option<Duration>) {
     let message = message.trim().to_string();
     if message.is_empty() {
         return;
@@ -268,9 +279,12 @@ pub fn show_toast(app: &AppHandle, message: &str) {
         let _ = window.show();
         let _ = window.emit("capture-toast", ToastPayload { message });
     }
+    let Some(duration) = auto_hide else {
+        return;
+    };
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
-        let _ = tauri::async_runtime::spawn_blocking(move || std::thread::sleep(TOAST_DURATION)).await;
+        let _ = tauri::async_runtime::spawn_blocking(move || std::thread::sleep(duration)).await;
         if TOAST_GENERATION.load(Ordering::SeqCst) == generation {
             hide_window(&handle, TOAST);
         }
