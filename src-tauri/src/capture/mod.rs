@@ -52,11 +52,23 @@ pub fn open_pin_edit_preview(
     ui::open_preview(app, &frame).map(|_| ())
 }
 
+/// Web 覆盖层(Wayland)区域确认:坐标与冻帧物理像素一致,`annotations` 为
+/// 覆盖层标注层导出的图元(相对冻帧物理像素);省略或为空保持旧行为。
 #[tauri::command]
-pub async fn confirm_region(app: AppHandle, x: u32, y: u32, width: u32, height: u32) -> Result<(), CaptureError> {
+pub async fn confirm_region(
+    app: AppHandle,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    annotations: Option<Vec<crate::annotate::Annotation>>,
+) -> Result<(), CaptureError> {
+    let annotations = annotations.unwrap_or_default();
     tauri::async_runtime::spawn_blocking(move || {
-        session::confirm_region(&app, RegionSelection { x, y, width, height })
-    }).await.map_err(|_| CaptureError::api("error.capture.thread_failed"))?
+        session::confirm_region(&app, RegionSelection { x, y, width, height }, annotations)
+    })
+    .await
+    .map_err(|_| CaptureError::api("error.capture.thread_failed"))?
 }
 
 #[tauri::command]
@@ -197,5 +209,31 @@ pub fn get_capture_error(app: AppHandle) -> Option<CaptureError> {
 impl From<CaptureError> for String {
     fn from(value: CaptureError) -> Self {
         value.user_message()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::annotate::Annotation;
+
+    /// R21:Wayland 覆盖层确认请求携带的标注 JSON(共享标注层 `exportList`
+    /// 的序列化形状)必须能被命令参数解析;`null` 线宽与省略的样式字段回退
+    /// 默认值,空列表表示"无标注"的旧行为。
+    #[test]
+    fn overlay_annotation_payload_parses_for_confirm_region() {
+        let payload: Vec<Annotation> = serde_json::from_str(
+            r##"[
+                {"type":"rect","x":10,"y":12,"width":40,"height":30,"color":"#e11d48","strokeWidth":null},
+                {"type":"text","x":5,"y":5,"text":"你好","size":22,"color":"#2563eb"},
+                {"type":"blur","x":0,"y":0,"width":20,"height":16,"sigma":3}
+            ]"##,
+        )
+        .unwrap();
+        assert_eq!(payload.len(), 3);
+        assert!(matches!(payload[0], Annotation::Rect { .. }));
+        assert!(matches!(payload[1], Annotation::Text { .. }));
+        assert!(matches!(payload[2], Annotation::Blur { .. }));
+        // 无标注时前端发送空列表(旧行为:空裁剪仍走同一条完成路径)。
+        assert!(serde_json::from_str::<Vec<Annotation>>("[]").unwrap().is_empty());
     }
 }

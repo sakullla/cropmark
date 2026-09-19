@@ -650,8 +650,8 @@ fn feature_flags_from(features: crate::settings::FeatureSettings) -> super::sele
 }
 
 /// R21:选区即时标注的样式与文本输入能力。样式沿用 `AnnotationDefaults`
-/// (R8 记忆),文本输入通道在本任务内仅 Windows 壳具备(WM_CHAR/IME);
-/// posix 壳接入后此处再放开。
+/// (R8 记忆);三平台原生壳都具备文本输入通道(Windows WM_CHAR/IME、
+/// macOS NSTextInputClient、Linux X11 XIM+直输回退),工具条含文字工具。
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 fn annotation_options_from(app: &AppHandle) -> super::selection::AnnotationOptions {
     let defaults = crate::settings::current_annotation_defaults(app);
@@ -660,7 +660,7 @@ fn annotation_options_from(app: &AppHandle) -> super::selection::AnnotationOptio
         stroke_width: defaults.width,
         text_size: defaults.text_size,
         number_start: defaults.number_start,
-        text_input: cfg!(windows),
+        text_input: true,
     }
 }
 
@@ -1109,8 +1109,14 @@ pub fn writeback_target(app: &AppHandle) -> Option<String> {
     })
 }
 
-pub fn confirm_region(app: &AppHandle, selection: RegionSelection) -> Result<(), CaptureError> {
-    finish_selection(app, selection, Vec::new(), FinishIntent::Configured, None).map(|_| ())
+/// 命令层区域确认:Web 覆盖层(Wayland)把选区上的即时标注图元一并带入,
+/// 与原生壳 Enter 确认同路径(`finish_selection` 负责裁剪 + 坐标平移)。
+pub fn confirm_region(
+    app: &AppHandle,
+    selection: RegionSelection,
+    annotations: Vec<Annotation>,
+) -> Result<(), CaptureError> {
+    finish_selection(app, selection, annotations, FinishIntent::Configured, None).map(|_| ())
 }
 
 /// 原生壳 Enter 确认:携带壳启动时的会话代际,旧壳结果不作用于新会话。
@@ -1251,6 +1257,7 @@ pub fn confirm_logical_region(app: &AppHandle, rect: LogicalRect) -> Result<(), 
             width: physical.width,
             height: physical.height,
         },
+        Vec::new(),
     )
 }
 

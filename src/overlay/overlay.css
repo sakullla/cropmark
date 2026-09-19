@@ -73,6 +73,67 @@
   background: var(--accent-soft);
 }
 
+/* R21:选区固定后的确认入口(Enter 等效);标注关闭时不出现。 */
+.overlay-confirm {
+  pointer-events: auto;
+  cursor: pointer;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 8px 16px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  box-shadow: var(--shadow);
+}
+
+.overlay-confirm:hover {
+  filter: brightness(1.06);
+}
+
+/* R21:即时标注工具条,悬浮在选区下方居中;样式按钮面板向上展开。 */
+.overlay-tools {
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  max-width: calc(100% - 32px);
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  box-shadow: var(--shadow);
+  pointer-events: auto;
+}
+
+.overlay-tools .annotation-style-panel {
+  top: auto;
+  bottom: calc(100% + 8px);
+}
+
+/* 工具条出现时把即时说明抬到其上,避免遮挡。 */
+.overlay-root.has-tools .overlay-notice {
+  bottom: 84px;
+}
+
+.overlay-root[data-tool="text"].has-tools canvas {
+  cursor: text;
+}
+
+.overlay-root[data-tool="number"].has-tools canvas {
+  cursor: copy;
+}
+
+.overlay-tools[hidden],
+.overlay-confirm[hidden] {
+  display: none;
+}
+
 /* Wayland 网页覆盖层的能力说明入口(R13):不伪造操作条/放大镜/取色。*/
 .overlay-capabilities {
   pointer-events: auto;

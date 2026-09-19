@@ -1347,6 +1347,10 @@
     "zh-CN": "取消 Esc",
     "en": "Cancel Esc"
   },
+  "overlay.confirm": {
+    "zh-CN": "确认 Enter",
+    "en": "Confirm Enter"
+  },
   "overlay.hint.window": {
     "zh-CN": "点击要截取的窗口",
     "en": "Click the window to capture"
@@ -1359,6 +1363,14 @@
     "zh-CN": "拖出矩形截取区域",
     "en": "Drag to select a region"
   },
+  "overlay.hint.annotate": {
+    "zh-CN": "在选区内绘制标注 · Enter 确认 · Esc 取消",
+    "en": "Draw inside the selection · Enter to confirm · Esc to cancel"
+  },
+  "overlay.hint.reduced_annotate": {
+    "zh-CN": "在选区内绘制标注 · Enter 确认 · Esc 取消（无操作条/放大镜）",
+    "en": "Draw inside the selection · Enter to confirm · Esc to cancel (no action bar/magnifier)"
+  },
   "overlay.notice.select_first": {
     "zh-CN": "请先拖出要截取的区域。",
     "en": "Drag out a region first."
@@ -1368,8 +1380,8 @@
     "en": "The selection is too small; drag at least 2 × 2 pixels."
   },
   "overlay.notice.toolbar": {
-    "zh-CN": "当前覆盖层不提供操作条与右键菜单；请用 Enter 确认后在预览中复制、保存、贴图或取字。",
-    "en": "This overlay does not provide the action bar or context menu; press Enter to confirm, then copy, save, pin, or extract text in the preview."
+    "zh-CN": "当前覆盖层不提供原生操作条与右键菜单；请用 Enter 或「确认」完成，再到预览中复制、保存、贴图或取字。",
+    "en": "This overlay does not provide the native action bar or context menu; press Enter or Confirm, then copy, save, pin, or extract text in the preview."
   },
   "overlay.notice.color": {
     "zh-CN": "当前覆盖层不提供取色（C 键）；请使用系统或第三方取色工具。",
@@ -1387,13 +1399,21 @@
     "zh-CN": "可用：拖出矩形选区、Enter 确认、Esc 取消（取消不写剪贴板）；确认后在预览中复制、保存、贴图或取字。",
     "en": "Available: drag a rectangular selection, Enter to confirm, Esc to cancel (cancel does not write the clipboard); after confirming, copy, save, pin, or extract text in the preview."
   },
+  "overlay.panel.annotate_available": {
+    "zh-CN": "另可用：在选区内直接标注（矩形/椭圆/直线/箭头/序号/文字/画笔/荧光笔/马赛克/模糊，可撤销/重做/删除），Enter 或「确认」完成，输出与所见一致。",
+    "en": "Also available: annotate directly inside the selection (rectangle/ellipse/line/arrow/number/text/pen/highlighter/mosaic/blur, with undo/redo/delete); Enter or Confirm finishes with output matching what you see."
+  },
+  "overlay.panel.annotate_unavailable": {
+    "zh-CN": "即时标注已在设置中关闭：确认后在预览中标注。",
+    "en": "Inline annotation is disabled in Settings: annotate in the preview after confirming."
+  },
   "overlay.caps.toolbar_name": {
-    "zh-CN": "操作条与右键菜单",
-    "en": "Action bar and context menu"
+    "zh-CN": "原生操作条与右键菜单",
+    "en": "Native action bar and context menu"
   },
   "overlay.caps.toolbar_detail": {
-    "zh-CN": "不可用；请用 Enter 确认后在预览中复制、保存、贴图或取字。",
-    "en": "Unavailable; press Enter to confirm, then copy, save, pin, or extract text in the preview."
+    "zh-CN": "不可用；请用 Enter 或「确认」完成，再到预览中复制、保存、贴图或取字。",
+    "en": "Unavailable; press Enter or Confirm, then copy, save, pin, or extract text in the preview."
   },
   "overlay.caps.magnifier_name": {
     "zh-CN": "放大镜",

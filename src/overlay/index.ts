@@ -1,6 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import {
+  loadAnnotationDefaults,
+  mountAnnotationEditor,
+  type AnnotationEditor,
+} from "../annotation";
 import { t, type CatalogKey } from "../i18n";
 import "./overlay.css";
 
@@ -65,9 +70,11 @@ export function mountOverlay(root: HTMLElement): () => void {
     <canvas></canvas>
     <div class="overlay-chrome">
       <div class="overlay-hint"></div>
+      <button type="button" class="overlay-confirm" data-i18n="overlay.confirm" hidden>确认 Enter</button>
       <button type="button" class="overlay-capabilities" aria-expanded="false" data-i18n="overlay.capabilities" hidden>能力说明</button>
       <button type="button" class="overlay-cancel" data-i18n="overlay.cancel">取消 Esc</button>
     </div>
+    <div class="overlay-tools annotation-tools" role="toolbar" data-i18n-aria-label="preview.toolbar_group" aria-label="标注" hidden></div>
     <aside class="capability-panel" hidden></aside>
     <div class="overlay-notice" role="status" hidden></div>
     <div class="size-badge" hidden></div>
@@ -78,6 +85,8 @@ export function mountOverlay(root: HTMLElement): () => void {
   const badge = root.querySelector(".size-badge");
   const list = root.querySelector(".window-list");
   const cancelBtn = root.querySelector(".overlay-cancel");
+  const confirmBtn = root.querySelector(".overlay-confirm");
+  const toolsEl = root.querySelector(".overlay-tools");
   const capabilityToggle = root.querySelector(".overlay-capabilities");
   const capabilityPanel = root.querySelector(".capability-panel");
   const notice = root.querySelector(".overlay-notice");
@@ -87,6 +96,8 @@ export function mountOverlay(root: HTMLElement): () => void {
     !(badge instanceof HTMLElement) ||
     !(list instanceof HTMLElement) ||
     !(cancelBtn instanceof HTMLButtonElement) ||
+    !(confirmBtn instanceof HTMLButtonElement) ||
+    !(toolsEl instanceof HTMLElement) ||
     !(capabilityToggle instanceof HTMLButtonElement) ||
     !(capabilityPanel instanceof HTMLElement) ||
     !(notice instanceof HTMLElement)
@@ -109,6 +120,15 @@ export function mountOverlay(root: HTMLElement): () => void {
   let finishing = false;
   let raf = 0;
   let noticeTimer = 0;
+  /// R21:即时标注会话阶段;"select" 拖选区,"annotate" 选区固定后可标注。
+  let phase: "select" | "annotate" = "select";
+  /// R24:关闭 inlineAnnotation 后覆盖层不提供标注层,保持原有的松开即完成。
+  let inlineEnabled = false;
+  let editor: AnnotationEditor | null = null;
+  /// 标注合成层:与冻帧同物理尺寸的底图 + 图元(马赛克/模糊需要整帧像素)。
+  let annotationLayer: HTMLCanvasElement | null = null;
+  /// 底图缓存:冻帧位图按物理尺寸只缩放一次,避免逐帧重采样。
+  let annotationBase: HTMLCanvasElement | null = null;
 
   /// 与 `confirm_region` 发送的整数裁剪矩形完全一致:徽标数值、挖洞区域
   /// 与实际裁剪结果同源,且保证 x+width/y+height 不越出冻结帧(R13)。
@@ -121,6 +141,60 @@ export function mountOverlay(root: HTMLElement): () => void {
     const right = clamp(Math.round(selection.x + selection.width), 0, frame.width);
     const bottom = clamp(Math.round(selection.y + selection.height), 0, frame.height);
     return { x: left, y: top, width: right - left, height: bottom - top };
+  };
+
+  const annotationActive = (): boolean =>
+    inlineEnabled && frame !== null && frame.mode === "region" && phase === "annotate";
+
+  const resetAnnotationSession = (): void => {
+    const wasAnnotating = phase === "annotate";
+    phase = "select";
+    toolsEl.hidden = true;
+    confirmBtn.hidden = true;
+    root.classList.remove("has-tools");
+    editor?.cancelText();
+    editor?.setAnnotations([]);
+    if (wasAnnotating) {
+      renderHint();
+    }
+  };
+
+  const ensureAnnotationLayer = (target: OverlayFrame): HTMLCanvasElement => {
+    if (
+      !annotationLayer ||
+      annotationLayer.width !== Math.max(1, target.width) ||
+      annotationLayer.height !== Math.max(1, target.height)
+    ) {
+      annotationLayer = document.createElement("canvas");
+      annotationLayer.width = Math.max(1, target.width);
+      annotationLayer.height = Math.max(1, target.height);
+      annotationBase = null;
+    }
+    return annotationLayer;
+  };
+
+  /// 与冻帧同物理尺寸的底图:标注绘制(马赛克/模糊取像素)以它为基准,
+  /// 保证覆盖层所见与 Rust 对完整冻帧裁剪 + rasterize 的结果一致。
+  const ensureAnnotationBase = (target: OverlayFrame): HTMLCanvasElement | null => {
+    if (!image || image.naturalWidth === 0) {
+      return null;
+    }
+    if (
+      !annotationBase ||
+      annotationBase.width !== Math.max(1, target.width) ||
+      annotationBase.height !== Math.max(1, target.height)
+    ) {
+      const base = document.createElement("canvas");
+      base.width = Math.max(1, target.width);
+      base.height = Math.max(1, target.height);
+      const baseCtx = base.getContext("2d");
+      if (!baseCtx) {
+        return null;
+      }
+      baseCtx.drawImage(image, 0, 0, base.width, base.height);
+      annotationBase = base;
+    }
+    return annotationBase;
   };
 
   const showNotice = (message: string): void => {
@@ -148,7 +222,12 @@ export function mountOverlay(root: HTMLElement): () => void {
     title.textContent = t("overlay.panel.title");
     const available = document.createElement("p");
     available.className = "available";
-    available.textContent = t("overlay.panel.available");
+    // R21:能力说明随 inlineAnnotation 开关给出标注可用性与替代路径。
+    available.textContent = `${t("overlay.panel.available")} ${
+      inlineEnabled
+        ? t("overlay.panel.annotate_available")
+        : t("overlay.panel.annotate_unavailable")
+    }`;
     const listEl = document.createElement("dl");
     for (const item of REDUCED_CAPABILITIES) {
       const name = document.createElement("dt");
@@ -165,12 +244,15 @@ export function mountOverlay(root: HTMLElement): () => void {
       return;
     }
     const reduced = frame.reducedCapabilities === true;
+    const annotating = annotationActive();
     hint.textContent =
       frame.mode === "window"
         ? t("overlay.hint.window")
-        : reduced
-          ? t("overlay.hint.reduced")
-          : t("overlay.hint.region");
+        : annotating
+          ? t(reduced ? "overlay.hint.reduced_annotate" : "overlay.hint.annotate")
+          : reduced
+            ? t("overlay.hint.reduced")
+            : t("overlay.hint.region");
   };
 
   const fitCanvas = (): void => {
@@ -208,7 +290,7 @@ export function mountOverlay(root: HTMLElement): () => void {
   };
 
   const draw = (): void => {
-    if (!image || !frame) {
+    if (!image || !frame || image.naturalWidth === 0) {
       return;
     }
     fitCanvas();
@@ -266,6 +348,30 @@ export function mountOverlay(root: HTMLElement): () => void {
       mapped.width,
       mapped.height,
     );
+    // R21:标注层在冻帧物理像素上渲染(马赛克/模糊取冻帧底图像素),
+    // 再按选区裁剪合成,保证所见与 Rust 裁剪 + rasterize 的最终输出一致。
+    // 无标注内容时不合成,保持选区视图与既有性能特征。
+    if (annotationActive() && editor?.hasContent()) {
+      const layer = ensureAnnotationLayer(frame);
+      const base = ensureAnnotationBase(frame);
+      const layerCtx = layer.getContext("2d");
+      if (base && layerCtx) {
+        layerCtx.clearRect(0, 0, layer.width, layer.height);
+        layerCtx.drawImage(base, 0, 0);
+        editor.paint(layerCtx);
+        ctx.drawImage(
+          layer,
+          crop.x,
+          crop.y,
+          crop.width,
+          crop.height,
+          mapped.x,
+          mapped.y,
+          mapped.width,
+          mapped.height,
+        );
+      }
+    }
     ctx.strokeStyle = "#2dd4bf";
     ctx.lineWidth = 2;
     ctx.strokeRect(mapped.x + 1, mapped.y + 1, mapped.width - 2, mapped.height - 2);
@@ -294,6 +400,17 @@ export function mountOverlay(root: HTMLElement): () => void {
       fitCanvas();
       root.classList.toggle("mode-window", frame.mode === "window");
       root.classList.toggle("mode-region", frame.mode !== "window");
+      // R24:能力子集缺失(旧后端)视为可用;关闭后不出现标注入口,
+      // 区域确认保持原有的松开即完成行为。
+      inlineEnabled = frame.capabilities?.inlineAnnotation !== false;
+      selection = null;
+      hoverId = null;
+      dragging = false;
+      finishing = false;
+      // 旧帧位图先摘除,避免重置标注会话触发的重绘读到未加载的新图。
+      image = null;
+      annotationBase = null;
+      resetAnnotationSession();
       const reduced = frame.reducedCapabilities === true;
       capabilityToggle.hidden = !reduced;
       notice.hidden = true;
@@ -314,6 +431,11 @@ export function mountOverlay(root: HTMLElement): () => void {
       image = new Image();
       image.onload = () => scheduleDraw();
       image.src = `data:image/jpeg;base64,${frame.pngBase64}`;
+      // 跨会话样式(R8):每次会话重读设置页保存的颜色/线宽/字号/起始序号;
+      // 会话已重置,不存在覆盖本次编辑的问题。
+      void loadAnnotationDefaults().then((style) => {
+        editor?.setStyle(style);
+      });
     } catch (error) {
       // 无进行中的会话(cancelled)是预创建/隐藏时的正常路径,静默返回。
       if (isCancelledError(error)) {
@@ -337,6 +459,8 @@ export function mountOverlay(root: HTMLElement): () => void {
       }
       return;
     }
+    editor?.commitText();
+    const annotations = editor?.exportList() ?? [];
     finishing = true;
     try {
       await invoke("confirm_region", {
@@ -344,6 +468,7 @@ export function mountOverlay(root: HTMLElement): () => void {
         y: crop.y,
         width: crop.width,
         height: crop.height,
+        annotations,
       });
     } catch (error) {
       finishing = false;
@@ -365,8 +490,24 @@ export function mountOverlay(root: HTMLElement): () => void {
   };
 
   canvas.addEventListener("mousedown", (event) => {
-    if (!frame || frame.mode !== "region") {
+    if (!frame || frame.mode !== "region" || event.button !== 0) {
       return;
+    }
+    if (annotationActive()) {
+      const crop = roundedRect();
+      const point = physicalPoint(event);
+      if (
+        crop &&
+        point.x >= crop.x &&
+        point.x <= crop.x + crop.width &&
+        point.y >= crop.y &&
+        point.y <= crop.y + crop.height
+      ) {
+        // 选区内部交给共享标注层处理(绘制/选中/文字)。
+        return;
+      }
+      // 选区外按下=重新拖选:废弃旧选区与标注,回到选择阶段。
+      resetAnnotationSession();
     }
     const point = physicalPoint(event);
     dragging = true;
@@ -410,7 +551,24 @@ export function mountOverlay(root: HTMLElement): () => void {
       return;
     }
     dragging = false;
-    void finishRegion();
+    if (!inlineEnabled || !frame || frame.mode !== "region") {
+      void finishRegion();
+      return;
+    }
+    const crop = roundedRect();
+    if (!crop || crop.width < 2 || crop.height < 2) {
+      // 无效选区交由 finishRegion 给出具体提示。
+      void finishRegion();
+      return;
+    }
+    // 选区固定,进入标注阶段:工具条与确认按钮出现,Enter/确认完成。
+    phase = "annotate";
+    toolsEl.hidden = false;
+    confirmBtn.hidden = false;
+    root.classList.add("has-tools");
+    editor?.setTool("arrow");
+    renderHint();
+    scheduleDraw();
   });
 
   canvas.addEventListener("click", (event) => {
@@ -431,8 +589,9 @@ export function mountOverlay(root: HTMLElement): () => void {
 
   // 窗口模式下右键=取消(Esc 失焦卡住时的兜底);区域模式右键=动作菜单,
   // Wayland 覆盖层没有该菜单,必须说明而不是静默无响应(R13)。
+  // 标注阶段右键交给共享标注层(命中图元时给出删除菜单)。
   canvas.addEventListener("contextmenu", (event) => {
-    if (!frame) {
+    if (!frame || annotationActive()) {
       return;
     }
     if (frame.mode === "window") {
@@ -458,34 +617,72 @@ export function mountOverlay(root: HTMLElement): () => void {
     cancel();
   });
 
-  document.addEventListener(
-    "keydown",
-    (event) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        cancel();
-      }
-      if (event.key === "Enter") {
-        event.preventDefault();
-        void finishRegion();
-      }
-      if (!frame || !frame.reducedCapabilities || frame.mode !== "region") {
-        return;
-      }
-      // 原生壳的可用快捷键在 Wayland 覆盖层缺失:触发时给出说明与替代。
-      if (event.key === "c" || event.key === "C") {
-        event.preventDefault();
-        showNotice(t(COLOR_NOTICE_KEY));
-        return;
-      }
-      if (event.key.startsWith("Arrow") && selection) {
-        event.preventDefault();
-        showNotice(t(NUDGE_NOTICE_KEY));
+  confirmBtn.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    void finishRegion();
+  });
+
+  // R21:内嵌与预览同源的标注层;坐标映射到冻帧物理像素,图元由 Rust
+  // 裁剪平移后 rasterize,复制/保存输出与所见一致。
+  editor = mountAnnotationEditor({
+    root,
+    canvas,
+    ctx,
+    toolbar: toolsEl,
+    textHost: root,
+    frame: () => (frame ? { width: frame.width, height: frame.height, scale: frame.scale } : null),
+    redraw: () => scheduleDraw(),
+    isEditable: () => annotationActive(),
+    // 标注阶段右键未命中图元:与 R13 一致地说明操作条缺失与替代路径,
+    // 而不是静默无响应。
+    onContextMenuMiss: () => {
+      if (frame?.reducedCapabilities) {
+        showNotice(t(TOOLBAR_NOTICE_KEY));
       }
     },
-    true,
-  );
+    onError: (error) => {
+      showNotice(typeof error === "string" ? error : t(error.key, error.params));
+    },
+  });
+
+  // 标注层已在缺失能力说明里给出替代路径(R13);键盘只处理选区确认/取消,
+  // 标注层先消费 Escape/工具/撤销等按键,未消费时才回到这里。
+  window.addEventListener("keydown", (event) => {
+    if (event.defaultPrevented || editor?.isTextEditing()) {
+      return;
+    }
+    if (
+      document.activeElement instanceof HTMLTextAreaElement ||
+      document.activeElement instanceof HTMLInputElement
+    ) {
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      cancel();
+      return;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void finishRegion();
+      return;
+    }
+    if (!frame || !frame.reducedCapabilities || frame.mode !== "region") {
+      return;
+    }
+    // 原生壳的可用快捷键在 Wayland 覆盖层缺失:触发时给出说明与替代。
+    if (event.key === "c" || event.key === "C") {
+      event.preventDefault();
+      showNotice(t(COLOR_NOTICE_KEY));
+      return;
+    }
+    if (event.key.startsWith("Arrow") && selection) {
+      event.preventDefault();
+      showNotice(t(NUDGE_NOTICE_KEY));
+    }
+  });
 
   void listen("overlay-reload", () => {
     void load();
@@ -495,6 +692,7 @@ export function mountOverlay(root: HTMLElement): () => void {
   // 语言切换:提示条、能力面板与开关文案即时更新;静态标签由 main 应用。
   return () => {
     renderHint();
+    editor?.refreshLabels();
     setCapabilityPanel(!capabilityPanel.hidden);
     if (!capabilityPanel.hidden) {
       renderCapabilityPanel();
