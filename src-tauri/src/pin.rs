@@ -11,6 +11,9 @@ use crate::capture::session;
 /// 同时存在的贴图上限:标签 pin-1..pin-N 轮转复用空闲槽位。
 pub const PIN_MAX: usize = 8;
 pub const PIN_LABEL_PREFIX: &str = "pin-";
+/// 满员时 `open_pin` 与 Quiet Pin Toast 共用的说明。
+pub const PIN_FULL_MESSAGE: &str = "贴图最多同时 8 张，请先关闭部分贴图。";
+const PIN_RETRY_MESSAGE: &str = "贴图失败，请重试。";
 
 /// 轮转游标:下一次分配从上一次分配槽位之后开始找空闲标签。
 static NEXT_SLOT: AtomicUsize = AtomicUsize::new(0);
@@ -150,7 +153,7 @@ pub fn open_pin(
     let slot = pick_slot(cursor, |slot| {
         app.get_webview_window(&slot_label(slot)).is_some()
     })
-    .ok_or_else(|| "贴图最多同时 8 张，请先关闭部分贴图。".to_string())?;
+    .ok_or_else(|| PIN_FULL_MESSAGE.to_string())?;
     NEXT_SLOT.store((slot + 1) % PIN_MAX, Ordering::SeqCst);
 
     let label = slot_label(slot);
@@ -221,6 +224,16 @@ pub async fn pin_current(app: AppHandle, annotations: Vec<Annotation>) -> Result
     open_pin(&app, prepared.png, prepared.width, prepared.height).map(|_| ())
 }
 
+/// Quiet Pin 失败 Toast:保留 `pin_current` 的可读原因(含满 8 张说明);
+/// 空串才退回泛化重试文案。
+fn quiet_pin_toast(message: &str) -> &str {
+    if message.is_empty() {
+        PIN_RETRY_MESSAGE
+    } else {
+        message
+    }
+}
+
 /// Quiet Pin 动作入口(选区操作条 Pin:不经前端、不带标注)。
 /// 供 capture 动作分发接线(capture/mod.rs `run_quiet_action` 的 Pin 分支,
 /// 归 shell-wiring 任务):成功无提示(贴图窗即反馈),失败走 toast。
@@ -228,8 +241,8 @@ pub async fn pin_current(app: AppHandle, annotations: Vec<Annotation>) -> Result
 pub fn pin_retained(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        if pin_current(app.clone(), Vec::new()).await.is_err() {
-            crate::capture::ui::show_toast(&app, "贴图失败，请重试。");
+        if let Err(message) = pin_current(app.clone(), Vec::new()).await {
+            crate::capture::ui::show_toast(&app, quiet_pin_toast(&message));
         }
     });
 }
@@ -393,5 +406,17 @@ mod tests {
         // 0 倍防御:非法 scale 不至于除零崩溃。
         let (w, h) = pin_logical_size(10, 10, 0.0, 1920.0, 1080.0);
         assert!(w.is_finite() && h.is_finite());
+    }
+
+    #[test]
+    fn quiet_pin_toast_surfaces_eight_slot_notice() {
+        assert_eq!(quiet_pin_toast(PIN_FULL_MESSAGE), PIN_FULL_MESSAGE);
+    }
+
+    #[test]
+    fn quiet_pin_toast_keeps_other_readable_errors() {
+        assert_eq!(quiet_pin_toast("无法创建贴图窗口：timeout"), "无法创建贴图窗口：timeout");
+        assert_eq!(quiet_pin_toast("贴图线程失败。"), "贴图线程失败。");
+        assert_eq!(quiet_pin_toast(""), PIN_RETRY_MESSAGE);
     }
 }
