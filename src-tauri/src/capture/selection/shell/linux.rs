@@ -48,10 +48,11 @@ use x11rb::{COPY_DEPTH_FROM_PARENT, COPY_FROM_PARENT, CURRENT_TIME, NONE, NO_SYM
 use crate::capture::buffer::Frame;
 use crate::capture::error::CaptureError;
 use crate::capture::geometry::{MonitorGeom, PhysicalRect};
+use crate::annotate::Annotation;
 use crate::capture::selection::composer::{self, Composer};
 use crate::capture::selection::{
-    CursorHint, EngineOutcome, FeatureFlags, InputEvent, LogicalKey, SelectionAction,
-    SelectionEngine,
+    AnnotationOptions, CursorHint, EngineOutcome, FeatureFlags, InputEvent, LogicalKey,
+    SelectionAction, SelectionEngine,
 };
 use crate::capture::session::QuietAction;
 
@@ -137,14 +138,16 @@ pub fn request_shell_close() {
 }
 
 /// 壳的最终结果:会话层据此选择完成路径(与 Windows 壳同构)。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// R21 起携带即时标注图元;X11 文本输入由 posix 任务接入前,
+/// `AnnotationOptions::text_input` 为假,工具条不含文字工具。
+#[derive(Debug, Clone, PartialEq)]
 pub enum RegionOutcome {
     /// Enter 确认:rect 走普通完成路径(按 finishAction 预览或静默)。
-    Preview(PhysicalRect),
+    Preview(PhysicalRect, Vec<Annotation>),
     /// 操作条/菜单的「标注」动作:rect 强制走预览编辑器,不受静默完成配置影响。
-    Annotate(PhysicalRect),
+    Annotate(PhysicalRect, Vec<Annotation>),
     /// 操作条/菜单的 copy/save/pin/ocr 动作:rect 走 Quiet 完成路径并执行动作。
-    Quiet(PhysicalRect, QuietAction),
+    Quiet(PhysicalRect, QuietAction, Vec<Annotation>),
     /// Esc 或菜单「取消」:整个会话取消。
     Cancelled,
 }
@@ -446,6 +449,7 @@ pub fn pick_region(
     frame: &Frame,
     monitor: &MonitorGeom,
     flags: FeatureFlags,
+    annotation_options: AnnotationOptions,
     hooks: ShellHooks,
 ) -> Result<RegionOutcome, CaptureError> {
     let composer = Composer::new(frame)?;
@@ -521,7 +525,8 @@ pub fn pick_region(
         canvas: Canvas {
             // 注入冻结帧 DPI 缩放:chrome(放大镜面板)光标命中需要。
             engine: SelectionEngine::new(width as u32, height as u32, flags)
-                .with_scale(frame.scale),
+                .with_scale(frame.scale)
+                .with_annotation_options(annotation_options),
             composer,
             scratch: vec![0; bytes],
             present: create_present_buffer(&conn, bytes),
@@ -800,7 +805,10 @@ fn feed_event(state: &mut ShellState, surface: &Surface<'_>, event: InputEvent) 
             false
         }
         EngineOutcome::Confirmed(rect) => {
-            state.outcome = Some(RegionOutcome::Preview(rect));
+            state.outcome = Some(RegionOutcome::Preview(
+                rect,
+                state.canvas.engine.annotations().to_vec(),
+            ));
             true
         }
         EngineOutcome::Cancelled => {
@@ -809,7 +817,7 @@ fn feed_event(state: &mut ShellState, surface: &Surface<'_>, event: InputEvent) 
         }
         EngineOutcome::Action(action) => match action {
             SelectionAction::Annotate => {
-                if let Some(outcome) = annotate_outcome(state.canvas.engine.selection()) {
+                if let Some(outcome) = annotate_outcome(&state.canvas.engine) {
                     state.outcome = Some(outcome);
                     return true;
                 }
@@ -824,11 +832,20 @@ fn feed_event(state: &mut ShellState, surface: &Surface<'_>, event: InputEvent) 
                 copy_color_value(state);
                 false
             }
+            // 标注工具条动作由引擎内部消费,不会到达这里;防御性忽略。
+            SelectionAction::Tool(_)
+            | SelectionAction::Undo
+            | SelectionAction::Redo
+            | SelectionAction::Delete => false,
             quiet => {
                 if let (Some(rect), Some(action)) =
                     (state.canvas.engine.selection(), quiet_action_for(quiet))
                 {
-                    state.outcome = Some(RegionOutcome::Quiet(rect, action));
+                    state.outcome = Some(RegionOutcome::Quiet(
+                        rect,
+                        action,
+                        state.canvas.engine.annotations().to_vec(),
+                    ));
                     return true;
                 }
                 false
@@ -838,18 +855,27 @@ fn feed_event(state: &mut ShellState, surface: &Surface<'_>, event: InputEvent) 
 }
 
 /// 「标注」动作到壳结果的映射:引擎尚无选区时返回 None,会话继续等待。
-fn annotate_outcome(selection: Option<PhysicalRect>) -> Option<RegionOutcome> {
-    selection.map(RegionOutcome::Annotate)
+fn annotate_outcome(engine: &SelectionEngine) -> Option<RegionOutcome> {
+    engine.selection().map(|rect| {
+        RegionOutcome::Annotate(rect, engine.annotations().to_vec())
+    })
 }
 
-/// 操作条/菜单动作到静默完成动作的映射;标注/取消/复制色值不在此列。
+/// 操作条/菜单动作到静默完成动作的映射;标注/取消/复制色值与标注工具条
+/// 动作不在此列。
 fn quiet_action_for(action: SelectionAction) -> Option<QuietAction> {
     match action {
         SelectionAction::Copy => Some(QuietAction::Copy),
         SelectionAction::Save => Some(QuietAction::Save),
         SelectionAction::Pin => Some(QuietAction::Pin),
         SelectionAction::Ocr => Some(QuietAction::Ocr),
-        SelectionAction::Annotate | SelectionAction::Cancel | SelectionAction::CopyColor => None,
+        SelectionAction::Annotate
+        | SelectionAction::Cancel
+        | SelectionAction::CopyColor
+        | SelectionAction::Tool(_)
+        | SelectionAction::Undo
+        | SelectionAction::Redo
+        | SelectionAction::Delete => None,
     }
 }
 
@@ -871,7 +897,10 @@ fn compose_canvas(canvas: &mut Canvas) -> Option<Duration> {
     // 长度不符时跳过本次合成而非崩溃。
     if canvas.scratch.len() == expected && canvas.present.len() == expected {
         let scene = canvas.engine.scene();
-        canvas.composer.compose_into(&scene, &mut canvas.scratch);
+        let overlay = canvas.engine.annotation_overlay();
+        canvas
+            .composer
+            .compose_into_with_overlay(&scene, &overlay, &mut canvas.scratch);
         let layout = canvas.layout;
         let present = canvas.present.as_mut_slice();
         pack_rgba_to_x(&canvas.scratch, present, &layout);
@@ -1157,17 +1186,16 @@ mod tests {
 
     #[test]
     fn annotate_outcome_needs_a_selection_and_keeps_rect() {
-        let rect = PhysicalRect {
-            x: 5,
-            y: 6,
-            width: 30,
-            height: 40,
-        };
+        let mut engine = SelectionEngine::new(320, 200, FeatureFlags::default());
+        assert_eq!(annotate_outcome(&engine), None);
+        engine.handle_event(InputEvent::LeftDown { x: 5, y: 6 });
+        engine.handle_event(InputEvent::PointerMove { x: 35, y: 46 });
+        engine.handle_event(InputEvent::LeftUp { x: 35, y: 46 });
+        let rect = engine.selection().unwrap();
         assert_eq!(
-            annotate_outcome(Some(rect)),
-            Some(RegionOutcome::Annotate(rect))
+            annotate_outcome(&engine),
+            Some(RegionOutcome::Annotate(rect, Vec::new()))
         );
-        assert_eq!(annotate_outcome(None), None);
     }
 
     #[test]

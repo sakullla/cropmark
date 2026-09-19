@@ -75,6 +75,62 @@
     "zh-CN": "复制色值",
     "en": "Copy color"
   },
+  "selection.tool.rect": {
+    "zh-CN": "矩形",
+    "en": "Rectangle"
+  },
+  "selection.tool.ellipse": {
+    "zh-CN": "椭圆",
+    "en": "Ellipse"
+  },
+  "selection.tool.line": {
+    "zh-CN": "直线",
+    "en": "Line"
+  },
+  "selection.tool.arrow": {
+    "zh-CN": "箭头",
+    "en": "Arrow"
+  },
+  "selection.tool.number": {
+    "zh-CN": "序号",
+    "en": "Number"
+  },
+  "selection.tool.text": {
+    "zh-CN": "文字",
+    "en": "Text"
+  },
+  "selection.tool.pen": {
+    "zh-CN": "画笔",
+    "en": "Pen"
+  },
+  "selection.tool.highlighter": {
+    "zh-CN": "荧光笔",
+    "en": "Highlighter"
+  },
+  "selection.tool.mosaic": {
+    "zh-CN": "马赛克",
+    "en": "Mosaic"
+  },
+  "selection.tool.blur": {
+    "zh-CN": "模糊",
+    "en": "Blur"
+  },
+  "selection.tool.undo": {
+    "zh-CN": "撤销",
+    "en": "Undo"
+  },
+  "selection.tool.redo": {
+    "zh-CN": "重做",
+    "en": "Redo"
+  },
+  "selection.tool.delete": {
+    "zh-CN": "删除",
+    "en": "Delete"
+  },
+  "preview.note.inline_annotations": {
+    "zh-CN": "已带入选区标注，可继续编辑。",
+    "en": "Selection annotations were carried over; you can keep editing."
+  },
   "error.capture.no_permission": {
     "zh-CN": "没有截屏权限，未能截取。",
     "en": "No screen capture permission; nothing was captured."

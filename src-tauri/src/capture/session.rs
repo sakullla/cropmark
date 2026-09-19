@@ -15,6 +15,7 @@ use super::hide::{
 use super::platform;
 use super::ui::{self, DelayPayload, OverlayPayload, PreviewPayload};
 use super::windows_list::ListedWindow;
+use crate::annotate::{rasterize_lenient, Annotation};
 use crate::clipboard::{self, ClipboardGuard};
 use crate::hotkeys::CaptureMode;
 
@@ -374,7 +375,7 @@ async fn capture_last_region(
         if !session_matches_generation(&handle, generation) {
             return Ok(());
         }
-        finish_configured(&handle, cropped, Some(generation)).map(|_| ())
+        finish_configured(&handle, cropped, Vec::new(), Some(generation)).map(|_| ())
     })
     .await
     .map_err(|_| CaptureError::api("error.capture.thread_failed"))?
@@ -643,6 +644,23 @@ fn feature_flags_from(features: crate::settings::FeatureSettings) -> super::sele
         toolbar_pin: features.toolbar_pin,
         // R24:选区壳光标提示;关闭后引擎固定十字。
         cursor_hints: features.cursor_hints,
+        // R21:选区即时标注;关闭后选区不出现标注工具。
+        inline_annotation: features.inline_annotation,
+    }
+}
+
+/// R21:选区即时标注的样式与文本输入能力。样式沿用 `AnnotationDefaults`
+/// (R8 记忆),文本输入通道在本任务内仅 Windows 壳具备(WM_CHAR/IME);
+/// posix 壳接入后此处再放开。
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+fn annotation_options_from(app: &AppHandle) -> super::selection::AnnotationOptions {
+    let defaults = crate::settings::current_annotation_defaults(app);
+    super::selection::AnnotationOptions {
+        color: defaults.color,
+        stroke_width: defaults.width,
+        text_size: defaults.text_size,
+        number_start: defaults.number_start,
+        text_input: cfg!(windows),
     }
 }
 
@@ -658,12 +676,14 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
         let (frame, monitor) = grab_pointer_screen(&handle)?;
         store_pixels(&handle, frame.clone(), monitor.clone(), generation)?;
         let flags = feature_flags_from(crate::settings::current_features(&handle));
+        let annotation_options = annotation_options_from(&handle);
         // 壳回调在同一线程内同步执行,经 thread-local 取回 AppHandle。
         SHELL_APP.with(|slot| *slot.borrow_mut() = Some(handle.clone()));
         let picked = super::native_overlay::pick_region(
             &frame,
             &monitor,
             flags,
+            annotation_options,
             super::native_overlay::ShellHooks {
                 copy_color: copy_color_feedback,
             },
@@ -683,8 +703,9 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
         return Ok(());
     }
     match picked {
-        // Enter 确认:按 finishAction 选择预览或静默(复制+toast)。
-        RegionOutcome::Preview(rect) => {
+        // Enter 确认:按 finishAction 选择预览或静默(复制+toast);即时标注
+        // 已在壳内完成,图元随结果进入裁剪/预览路径。
+        RegionOutcome::Preview(rect, annotations) => {
             let handle = app.clone();
             tauri::async_runtime::spawn_blocking(move || {
                 confirm_region_from_shell(
@@ -695,6 +716,7 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
                         width: rect.width,
                         height: rect.height,
                     },
+                    annotations,
                     generation,
                 )
             })
@@ -702,7 +724,7 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
             .map_err(|_| CaptureError::api("error.capture.thread_failed"))?
         }
         // 「标注」动作:强制打开预览编辑器,静默完成配置不适用于显式标注(R4 review)。
-        RegionOutcome::Annotate(rect) => {
+        RegionOutcome::Annotate(rect, annotations) => {
             let handle = app.clone();
             tauri::async_runtime::spawn_blocking(move || {
                 annotate_region_from_shell(
@@ -713,14 +735,16 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
                         width: rect.width,
                         height: rect.height,
                     },
+                    annotations,
                     generation,
                 )
             })
             .await
             .map_err(|_| CaptureError::api("error.capture.thread_failed"))?
         }
-        // 操作条/菜单动作:静默完成并执行动作(不开预览)。
-        RegionOutcome::Quiet(rect, action) => {
+        // 操作条/菜单动作:静默完成并执行动作(不开预览);标注先在完成路径
+        // 与像素合并,复制/保存/贴图/取字输出与所见一致。
+        RegionOutcome::Quiet(rect, action, annotations) => {
             finish_region_with(
                 app,
                 RegionSelection {
@@ -729,6 +753,7 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
                     width: rect.width,
                     height: rect.height,
                 },
+                annotations,
                 action,
                 Some(generation),
             )
@@ -841,7 +866,7 @@ async fn capture_fullscreen(app: &AppHandle, generation: u64) -> Result<(), Capt
         if !session_matches_generation(&handle, generation) {
             return Ok(());
         }
-        finish_configured(&handle, frame, Some(generation)).map(|_| ())
+        finish_configured(&handle, frame, Vec::new(), Some(generation)).map(|_| ())
     })
     .await
     .map_err(|_| CaptureError::api("error.capture.thread_failed"))?
@@ -1062,7 +1087,7 @@ pub fn adopt_external_frame(
         return Err(CaptureError::api("error.capture.pin_busy"));
     }
     let png = encode_png(&frame)?;
-    let preview = ui::preview_payload(&frame, &png, ui::PreviewCopyState::Disabled);
+    let preview = ui::preview_payload(&frame, &png, ui::PreviewCopyState::Disabled, &[]);
     with_session_mut(app, |session| {
         let mut current = ActiveSession::new(CaptureMode::Region, 0, Instant::now());
         current.busy = false;
@@ -1085,16 +1110,24 @@ pub fn writeback_target(app: &AppHandle) -> Option<String> {
 }
 
 pub fn confirm_region(app: &AppHandle, selection: RegionSelection) -> Result<(), CaptureError> {
-    finish_selection(app, selection, FinishIntent::Configured, None).map(|_| ())
+    finish_selection(app, selection, Vec::new(), FinishIntent::Configured, None).map(|_| ())
 }
 
 /// 原生壳 Enter 确认:携带壳启动时的会话代际,旧壳结果不作用于新会话。
 fn confirm_region_from_shell(
     app: &AppHandle,
     selection: RegionSelection,
+    annotations: Vec<Annotation>,
     generation: u64,
 ) -> Result<(), CaptureError> {
-    finish_selection(app, selection, FinishIntent::Configured, Some(generation)).map(|_| ())
+    finish_selection(
+        app,
+        selection,
+        annotations,
+        FinishIntent::Configured,
+        Some(generation),
+    )
+    .map(|_| ())
 }
 
 /// 原生选区壳的「标注」动作(操作条/右键菜单):总是打开预览编辑器,不受
@@ -1103,18 +1136,27 @@ fn confirm_region_from_shell(
 fn annotate_region_from_shell(
     app: &AppHandle,
     selection: RegionSelection,
+    annotations: Vec<Annotation>,
     generation: u64,
 ) -> Result<(), CaptureError> {
-    finish_selection(app, selection, FinishIntent::Annotate, Some(generation)).map(|_| ())
+    finish_selection(
+        app,
+        selection,
+        annotations,
+        FinishIntent::Annotate,
+        Some(generation),
+    )
+    .map(|_| ())
 }
 
 fn finish_selection(
     app: &AppHandle,
     selection: RegionSelection,
+    annotations: Vec<Annotation>,
     intent: FinishIntent,
     expected: Option<u64>,
 ) -> Result<FinishSummary, CaptureError> {
-    let frame = with_session(app, |session| {
+    let (frame, annotations) = with_session(app, |session| {
         let session = session.as_ref().ok_or_else(CaptureError::cancelled)?;
         // 取消受理后代际不符的完成动作一律拒绝(ADR-16:停止接收完成动作)。
         if session.cancelled || generation_mismatch(session, expected) {
@@ -1124,19 +1166,36 @@ fn finish_selection(
             .freeze
             .as_ref()
             .ok_or_else(|| CaptureError::invalid_buffer("error.capture.buffer_uninitialized"))?;
-        crop_rgba(
-            freeze,
-            selection.x,
-            selection.y,
-            selection.width,
-            selection.height,
-        )
+        crop_selection_with_annotations(freeze, &selection, &annotations)
     })?;
     ui::hide_window(app, ui::OVERLAY);
-    let summary = finish_frame(app, frame, intent, expected)?;
+    let summary = finish_frame(app, frame, annotations, intent, expected)?;
     // R6:成功完成的区域截图覆盖"上次区域",托盘直取从下一次打开菜单起可用。
     remember_selection_region(app, &selection);
     Ok(summary)
+}
+
+/// 选区裁剪 + 即时标注整屏坐标 → 裁剪坐标系(R21)。
+/// 静默完成在 `finish_with_ttl` 内把图元合并进像素;预览完成把图元列表
+/// 随干净帧下发,供预览编辑器继续编辑/撤销。
+fn crop_selection_with_annotations(
+    freeze: &Frame,
+    selection: &RegionSelection,
+    annotations: &[Annotation],
+) -> Result<(Frame, Vec<Annotation>), CaptureError> {
+    let frame = crop_rgba(
+        freeze,
+        selection.x,
+        selection.y,
+        selection.width,
+        selection.height,
+    )?;
+    let translated = crate::annotate::translated_all(
+        annotations,
+        -(selection.x as f64),
+        -(selection.y as f64),
+    );
+    Ok((frame, translated))
 }
 
 /// 显示器局部物理选区 → 全局桌面物理区域(R6 记录用);0 尺寸或坐标
@@ -1202,7 +1261,7 @@ pub fn confirm_window(app: &AppHandle, window_id: String) -> Result<(), CaptureE
         return Err(CaptureError::cancelled());
     }
     let frame = platform::capture_window(&window_id)?;
-    finish_configured(app, frame, None).map(|_| ())
+    finish_configured(app, frame, Vec::new(), None).map(|_| ())
 }
 
 /// 完成路径的结果摘要(供动作反馈区分剪贴板成败)。
@@ -1248,6 +1307,7 @@ fn finish_generation_stale(app: &AppHandle, expected: Option<u64>) -> bool {
 pub async fn finish_region_with(
     app: &AppHandle,
     selection: RegionSelection,
+    annotations: Vec<Annotation>,
     action: QuietAction,
     expected: Option<u64>,
 ) -> Result<(), CaptureError> {
@@ -1256,7 +1316,7 @@ pub async fn finish_region_with(
         if !quiet_finish_allowed(&handle) {
             return Err(CaptureError::api("error.capture.region_missing"));
         }
-        finish_region_quiet(&handle, selection, DEFAULT_FRAME_TTL, expected)
+        finish_region_quiet(&handle, selection, annotations, DEFAULT_FRAME_TTL, expected)
     })
     .await
     .map_err(|_| CaptureError::api("error.capture.thread_failed"))??;
@@ -1280,10 +1340,11 @@ pub async fn finish_region_with(
 pub fn finish_region_quiet(
     app: &AppHandle,
     selection: RegionSelection,
+    annotations: Vec<Annotation>,
     ttl: Duration,
     expected: Option<u64>,
 ) -> Result<FinishSummary, CaptureError> {
-    let frame = with_session(app, |session| {
+    let (frame, annotations) = with_session(app, |session| {
         let session = session.as_ref().ok_or_else(CaptureError::cancelled)?;
         if session.cancelled || generation_mismatch(session, expected) {
             return Err(CaptureError::cancelled());
@@ -1292,17 +1353,20 @@ pub fn finish_region_quiet(
             .freeze
             .as_ref()
             .ok_or_else(|| CaptureError::invalid_buffer("error.capture.buffer_uninitialized"))?;
-        crop_rgba(
-            freeze,
-            selection.x,
-            selection.y,
-            selection.width,
-            selection.height,
-        )
+        crop_selection_with_annotations(freeze, &selection, &annotations)
     })?;
     ui::hide_window(app, ui::OVERLAY);
-    // 显式动作(操作条/菜单复制等)不受 autoCopy 开关影响,始终写剪贴板。
-    let summary = finish_with_ttl(app, frame, FinishDisposition::Quiet, ttl, true, expected)?;
+    // 显式动作(操作条/菜单复制等)不受 autoCopy 开关影响,始终写剪贴板;
+    // 即时标注在 `finish_with_ttl` 内先合并进像素再执行动作。
+    let summary = finish_with_ttl(
+        app,
+        frame,
+        annotations,
+        FinishDisposition::Quiet,
+        ttl,
+        true,
+        expected,
+    )?;
     // R6:静默完成同属成功完成的区域截图,同样刷新"上次区域"。
     remember_selection_region(app, &selection);
     Ok(summary)
@@ -1386,14 +1450,16 @@ fn cancel_internal(
 fn finish_configured(
     app: &AppHandle,
     frame: Frame,
+    annotations: Vec<Annotation>,
     expected: Option<u64>,
 ) -> Result<FinishSummary, CaptureError> {
-    finish_frame(app, frame, FinishIntent::Configured, expected)
+    finish_frame(app, frame, annotations, FinishIntent::Configured, expected)
 }
 
 fn finish_frame(
     app: &AppHandle,
     frame: Frame,
+    annotations: Vec<Annotation>,
     intent: FinishIntent,
     expected: Option<u64>,
 ) -> Result<FinishSummary, CaptureError> {
@@ -1402,6 +1468,7 @@ fn finish_frame(
     let summary = finish_with_ttl(
         app,
         frame,
+        annotations,
         disposition,
         DEFAULT_FRAME_TTL,
         capture.auto_copy,
@@ -1451,6 +1518,7 @@ fn configured_disposition(capture: crate::settings::CaptureSettings) -> FinishDi
 fn finish_with_ttl(
     app: &AppHandle,
     frame: Frame,
+    annotations: Vec<Annotation>,
     disposition: FinishDisposition,
     frame_ttl: Duration,
     auto_copy: bool,
@@ -1460,6 +1528,14 @@ fn finish_with_ttl(
     if is_cancelled(app) || finish_generation_stale(app, expected) {
         return Err(CaptureError::cancelled());
     }
+    // R21:静默完成(复制/保存/贴图/取字/静默 Enter)先把即时标注合并进
+    // 像素,输出与所见一致;单个图元失败(字体缺失等)跳过而不阻断完成。
+    // 预览完成保留干净帧 + 图元列表,供继续编辑。
+    let frame = if disposition == FinishDisposition::Quiet {
+        rasterize_lenient(&frame, &annotations)
+    } else {
+        frame
+    };
     let png = encode_png(&frame)?;
     let encoded_at = started.elapsed();
     if is_cancelled(app) || finish_generation_stale(app, expected) {
@@ -1478,7 +1554,12 @@ fn finish_with_ttl(
         (true, true) => ui::PreviewCopyState::Copied,
         (true, false) => ui::PreviewCopyState::Failed,
     };
-    let preview = ui::preview_payload(&frame, &png, copy_state);
+    let preview_annotations: &[Annotation] = if disposition == FinishDisposition::Preview {
+        &annotations
+    } else {
+        &[]
+    };
+    let preview = ui::preview_payload(&frame, &png, copy_state, preview_annotations);
     // 编码/剪贴板写入期间会话可能已被 stale 重置替换:替换后不再提交状态、
     // 不打开预览,旧帧不得污染新会话(ADR-16)。
     if is_cancelled(app) || finish_generation_stale(app, expected) {
@@ -2303,5 +2384,63 @@ mod tests {
     fn last_region_toast_messages_are_actionable() {
         assert!(LastRegionPlanError::Missing.toast().contains("上次区域"));
         assert!(LastRegionPlanError::OutOfRange.toast().contains("显示范围"));
+    }
+
+    #[test]
+    fn crop_selection_translates_inline_annotations_into_crop_coordinates() {
+        use crate::annotate::Annotation;
+        let width = 100u32;
+        let height = 80u32;
+        let freeze = Frame {
+            width,
+            height,
+            rgba: vec![10; (width * height * 4) as usize],
+            scale: 1.0,
+        };
+        let selection = RegionSelection {
+            x: 20,
+            y: 10,
+            width: 30,
+            height: 20,
+        };
+        let annotations = vec![Annotation::Rect {
+            x: 25.0,
+            y: 15.0,
+            width: 10.0,
+            height: 8.0,
+            color: "#e11d48".into(),
+            stroke_width: None,
+        }];
+        let (cropped, translated) =
+            crop_selection_with_annotations(&freeze, &selection, &annotations).unwrap();
+        assert_eq!((cropped.width, cropped.height), (30, 20));
+        match &translated[0] {
+            Annotation::Rect { x, y, .. } => assert_eq!((*x, *y), (5.0, 5.0)),
+            other => panic!("expected rect, got {other:?}"),
+        }
+        // 静默完成路径:图元合并进裁剪像素,输出与所见一致。
+        let merged = rasterize_lenient(&cropped, &translated);
+        assert_eq!((merged.width, merged.height), (30, 20));
+        assert_ne!(merged.rgba, cropped.rgba, "annotation must change pixels");
+    }
+
+    #[test]
+    fn crop_selection_without_annotations_keeps_plain_pixels() {
+        let freeze = Frame {
+            width: 40,
+            height: 30,
+            rgba: vec![7; 40 * 30 * 4],
+            scale: 1.0,
+        };
+        let selection = RegionSelection {
+            x: 5,
+            y: 5,
+            width: 10,
+            height: 10,
+        };
+        let (cropped, translated) =
+            crop_selection_with_annotations(&freeze, &selection, &[]).unwrap();
+        assert!(translated.is_empty());
+        assert_eq!(cropped.rgba, vec![7; 10 * 10 * 4]);
     }
 }

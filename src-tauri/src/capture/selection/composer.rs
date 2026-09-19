@@ -7,8 +7,13 @@
 //! 纯几何,状态机与绘制共用同一份,保证命中判定与合成输出一致。
 //! 不含任何窗口/平台代码。
 
+use std::cell::RefCell;
+
 use super::text;
-use super::{EdgeKind, FeatureFlags, HandleKind, Scene, SelectionAction};
+use super::{
+    AnnotationOverlay, AnnotationTool, EdgeKind, FeatureFlags, HandleKind, Scene, SelectionAction,
+};
+use crate::annotate::raster;
 use crate::capture::buffer::{validate_frame, Frame};
 use crate::capture::error::CaptureError;
 use crate::capture::geometry::PhysicalRect;
@@ -247,6 +252,22 @@ pub fn action_label(action: SelectionAction) -> String {
         SelectionAction::Ocr => "selection.action.ocr",
         SelectionAction::Cancel => "selection.action.cancel",
         SelectionAction::CopyColor => "selection.action.copy_color",
+        // 标注工具条按钮为纯图标;名称仍提供词条供辅助文本/后续提示复用。
+        SelectionAction::Tool(tool) => match tool {
+            AnnotationTool::Rect => "selection.tool.rect",
+            AnnotationTool::Ellipse => "selection.tool.ellipse",
+            AnnotationTool::Line => "selection.tool.line",
+            AnnotationTool::Arrow => "selection.tool.arrow",
+            AnnotationTool::Number => "selection.tool.number",
+            AnnotationTool::Text => "selection.tool.text",
+            AnnotationTool::Pen => "selection.tool.pen",
+            AnnotationTool::Highlighter => "selection.tool.highlighter",
+            AnnotationTool::Mosaic => "selection.tool.mosaic",
+            AnnotationTool::Blur => "selection.tool.blur",
+        },
+        SelectionAction::Undo => "selection.tool.undo",
+        SelectionAction::Redo => "selection.tool.redo",
+        SelectionAction::Delete => "selection.tool.delete",
     })
 }
 
@@ -277,6 +298,146 @@ pub fn menu_items(flags: FeatureFlags) -> Vec<SelectionAction> {
     }
     items.push(SelectionAction::Cancel);
     items
+}
+
+/// 即时标注工具条按钮集:全部工具 + 撤销/重做/删除(R21)。
+/// 关闭 inlineAnnotation 时为空;平台无文本输入通道时不含文字工具。
+pub fn annotation_buttons(flags: FeatureFlags, text_input: bool) -> Vec<SelectionAction> {
+    if !flags.inline_annotation {
+        return Vec::new();
+    }
+    let mut buttons: Vec<SelectionAction> = AnnotationTool::ALL
+        .iter()
+        .copied()
+        .filter(|tool| *tool != AnnotationTool::Text || text_input)
+        .map(SelectionAction::Tool)
+        .collect();
+    buttons.push(SelectionAction::Undo);
+    buttons.push(SelectionAction::Redo);
+    buttons.push(SelectionAction::Delete);
+    buttons
+}
+
+/// 两个面板是否相交(标注工具条避让操作条用)。
+fn intersects(a: IntRect, b: IntRect) -> bool {
+    a.x < b.right() && b.x < a.right() && a.y < b.bottom() && b.y < a.bottom()
+}
+
+/// 标注工具条面板矩形(纯按钮网格,不含留白)。
+///
+/// 放置顺序:选区内顶部(按选区宽度折行居中)→ 选区下方 → 选区上方 →
+/// 兜底选区内钳制;前三个候选都避开操作条面板(`avoid`),避免两个 chrome
+/// 浮层互相遮盖。返回 None 表示无按钮(关闭即时标注)。
+pub fn annotation_panel(
+    metrics: ChromeMetrics,
+    selection: PhysicalRect,
+    screen: (u32, u32),
+    buttons: &[SelectionAction],
+    avoid: Option<IntRect>,
+) -> Option<IntRect> {
+    if buttons.is_empty() {
+        return None;
+    }
+    let sel = IntRect::from(selection);
+    let button = metrics.rail_button;
+    let gap = metrics.rail_gap;
+    let pad = metrics.rail_margin_h;
+    let count = buttons.len() as i32;
+    let grid = |cols: i32| {
+        let rows = (count + cols - 1) / cols;
+        (
+            cols * button + (cols - 1) * gap,
+            rows * button + (rows - 1) * gap,
+        )
+    };
+    let clear = |panel: IntRect| !avoid.is_some_and(|other| intersects(panel, other));
+    // 1) 选区内顶部居中:按选区宽度折行,从最宽布局起试;完整放进选区
+    // 且不与操作条相交才采用(小选区会自然落到选区外)。
+    let inner_cols = ((sel.width - pad * 2 + gap) / (button + gap)).max(0).min(count);
+    for cols in (1..=inner_cols).rev() {
+        let (w, h) = grid(cols);
+        if h + pad * 2 > sel.height {
+            continue;
+        }
+        let panel = IntRect {
+            x: sel.x + (sel.width - w) / 2,
+            y: sel.y + pad,
+            width: w,
+            height: h,
+        };
+        if clear(panel) {
+            return Some(panel);
+        }
+    }
+    // 2/3) 选区下方、上方:按屏幕宽度折行(避免小选区生成超长条),
+    // 居中钳制屏内并避开操作条。
+    let outside_cols = ((screen.0 as i32 - pad * 2 + gap) / (button + gap))
+        .max(1)
+        .min(count);
+    let (panel_w, panel_h) = grid(outside_cols);
+    let centered_x =
+        || (sel.x + sel.width / 2 - panel_w / 2).clamp(0, (screen.0 as i32 - panel_w).max(0));
+    let below = IntRect {
+        x: centered_x(),
+        y: sel.bottom() + metrics.rail_margin_h,
+        width: panel_w,
+        height: panel_h,
+    };
+    if below.bottom() <= screen.1 as i32 && clear(below) {
+        return Some(below);
+    }
+    let above = IntRect {
+        x: centered_x(),
+        y: sel.y - metrics.rail_margin_h - panel_h,
+        width: panel_w,
+        height: panel_h,
+    };
+    if above.y >= 0 && clear(above) {
+        return Some(above);
+    }
+    // 4) 兜底:按选区顶部居中对齐并钳制屏内(即使与操作条/选区相交也保证
+    // 工具条可见可点,不会生成超出屏幕的超长条)。
+    let fallback_w = panel_w.min(screen.0 as i32).max(button);
+    let fallback_h = panel_h.min(screen.1 as i32).max(button);
+    Some(IntRect {
+        x: centered_x().clamp(0, (screen.0 as i32 - fallback_w).max(0)),
+        y: sel.y.clamp(0, (screen.1 as i32 - fallback_h).max(0)),
+        width: fallback_w,
+        height: fallback_h,
+    })
+}
+
+/// 面板内逐按钮矩形(与绘制共用,保证 hitbox 一致);每行居中。
+pub fn annotation_button_rects(
+    metrics: ChromeMetrics,
+    panel: IntRect,
+    buttons: &[SelectionAction],
+) -> Vec<(SelectionAction, IntRect)> {
+    let button = metrics.rail_button;
+    let gap = metrics.rail_gap;
+    let count = buttons.len() as i32;
+    let cols = ((panel.width + gap) / (button + gap)).max(1);
+    let rows = (count + cols - 1) / cols;
+    let mut rects = Vec::with_capacity(buttons.len());
+    for row in 0..rows {
+        let row_count = (count - row * cols).min(cols);
+        let row_w = row_count * button + (row_count - 1) * gap;
+        let x0 = panel.x + (panel.width - row_w) / 2;
+        let y = panel.y + row * (button + gap);
+        for col in 0..row_count {
+            let index = (row * cols + col) as usize;
+            rects.push((
+                buttons[index],
+                IntRect {
+                    x: x0 + col * (button + gap),
+                    y,
+                    width: button,
+                    height: button,
+                },
+            ));
+        }
+    }
+    rects
 }
 
 /// 底部横排网格:按选区宽度决定每行按钮数,折行为多行居中。
@@ -657,6 +818,13 @@ pub fn sample_pixel(frame: &Frame, x: i32, y: i32) -> [u8; 4] {
     pixel
 }
 
+/// 已确认标注在选区内的烘焙结果缓存;revision + 选区矩形变化即失效。
+struct AnnotationCache {
+    revision: u64,
+    selection: PhysicalRect,
+    region: Vec<u8>,
+}
+
 /// CPU 合成器:持有冻结帧原件与预计算的暗幕帧;chrome 尺寸随 frame.scale 等比。
 pub struct Composer {
     width: u32,
@@ -666,6 +834,8 @@ pub struct Composer {
     metrics: ChromeMetrics,
     original: Vec<u8>,
     dimmed: Vec<u8>,
+    /// 即时标注的选区烘焙缓存(逐笔重绘不重复应用已确认图元)。
+    annotation_cache: RefCell<Option<AnnotationCache>>,
 }
 
 impl Composer {
@@ -689,6 +859,7 @@ impl Composer {
             metrics: ChromeMetrics::for_scale(scale),
             original: frame.rgba.clone(),
             dimmed,
+            annotation_cache: RefCell::new(None),
         })
     }
 
@@ -715,8 +886,17 @@ impl Composer {
         out
     }
 
+    /// 合成完整一帧并叠加即时标注层(R21):已确认图元 + 草稿 + 文本编辑 +
+    /// 标注工具条。渲染复用 `annotate::raster` 的图元绘制,与最终
+    /// `rasterize` 同几何/颜色,保证所见即所得。
+    pub fn compose_with_overlay(&self, scene: &Scene, overlay: &AnnotationOverlay) -> Vec<u8> {
+        let mut out = self.dimmed.clone();
+        self.compose_into_with_overlay(scene, overlay, &mut out);
+        out
+    }
+
     /// 就地合成;`out` 长度必须与冻结帧一致(先整体写为暗幕)。
-    /// 合成顺序:暗幕→开洞→描边→手柄→徽标→操作条/菜单→放大镜(最顶)。
+    /// 合成顺序:暗幕→开洞→描边→手柄→徽标→操作条/菜单→放大镜→标注/工具条。
     pub fn compose_into(&self, scene: &Scene, out: &mut [u8]) {
         out.copy_from_slice(&self.dimmed);
         let (w, h) = (self.width, self.height);
@@ -734,6 +914,201 @@ impl Composer {
         }
         if scene.flags.magnifier {
             self.draw_magnifier(out, w, h, scene.cursor);
+        }
+    }
+
+    /// 叠加标注层版本的就地合成(在 `compose_into` 之上绘制)。
+    pub fn compose_into_with_overlay(
+        &self,
+        scene: &Scene,
+        overlay: &AnnotationOverlay,
+        out: &mut [u8],
+    ) {
+        self.compose_into(scene, out);
+        let (w, h) = (self.width, self.height);
+        let Some(selection) = scene.selection else {
+            return;
+        };
+        self.draw_annotations(out, selection, overlay);
+        if scene.flags.inline_annotation && !annotation_buttons(scene.flags, overlay.text_input).is_empty()
+        {
+            self.draw_annotation_toolbar(out, w, h, selection, scene, overlay);
+        }
+    }
+
+    /// 标注层:在选区内烘焙已确认图元(带缓存)、叠加草稿与文本编辑态,
+    /// 再整体贴回合成缓冲。区内像素取自冻结帧原件,与最终裁剪裁剪一致。
+    fn draw_annotations(
+        &self,
+        rgba: &mut [u8],
+        selection: PhysicalRect,
+        overlay: &AnnotationOverlay,
+    ) {
+        if selection.width == 0 || selection.height == 0 {
+            return;
+        }
+        if overlay.annotations.is_empty() && overlay.draft.is_none() && overlay.text.is_none() {
+            return;
+        }
+        let mut region = self.baked_region(selection, overlay);
+        if let Some(draft) = overlay.draft {
+            let local = crate::annotate::translated(draft, -(selection.x as f64), -(selection.y as f64));
+            let _ = raster::apply_annotation(
+                &mut region,
+                selection.width,
+                selection.height,
+                f64::from(self.scale),
+                &local,
+            );
+        }
+        if let Some(edit) = overlay.text {
+            self.draw_text_edit(&mut region, selection, overlay, edit);
+        }
+        self.blit_region(rgba, selection, &region);
+    }
+
+    /// 选区区域的已确认图元烘焙:revision + 选区矩形不变时复用缓存。
+    fn baked_region(&self, selection: PhysicalRect, overlay: &AnnotationOverlay) -> Vec<u8> {
+        {
+            let cache = self.annotation_cache.borrow();
+            if let Some(cache) = cache.as_ref() {
+                if cache.revision == overlay.revision && cache.selection == selection {
+                    return cache.region.clone();
+                }
+            }
+        }
+        let mut region = self.copy_selection(selection);
+        if !overlay.annotations.is_empty() {
+            let translated =
+                crate::annotate::translated_all(overlay.annotations, -(selection.x as f64), -(selection.y as f64));
+            let _ = raster::apply_annotations(
+                &mut region,
+                selection.width,
+                selection.height,
+                f64::from(self.scale),
+                &translated,
+            );
+        }
+        *self.annotation_cache.borrow_mut() = Some(AnnotationCache {
+            revision: overlay.revision,
+            selection,
+            region: region.clone(),
+        });
+        region
+    }
+
+    /// 从冻结帧原件取出选区像素。
+    fn copy_selection(&self, selection: PhysicalRect) -> Vec<u8> {
+        let row_bytes = selection.width as usize * 4;
+        let stride = self.width as usize * 4;
+        let mut region = Vec::with_capacity(row_bytes * selection.height as usize);
+        for row in 0..selection.height as usize {
+            let start = (selection.y as usize + row) * stride + selection.x as usize * 4;
+            region.extend_from_slice(&self.original[start..start + row_bytes]);
+        }
+        region
+    }
+
+    fn blit_region(&self, rgba: &mut [u8], selection: PhysicalRect, region: &[u8]) {
+        let row_bytes = selection.width as usize * 4;
+        let stride = self.width as usize * 4;
+        for row in 0..selection.height as usize {
+            let src = row * row_bytes;
+            let dst = (selection.y as usize + row) * stride + selection.x as usize * 4;
+            if dst + row_bytes <= rgba.len() && src + row_bytes <= region.len() {
+                rgba[dst..dst + row_bytes].copy_from_slice(&region[src..src + row_bytes]);
+            }
+        }
+    }
+
+    /// 文本编辑态:已提交文本按标注色、组合串按强调色,末尾画 2px 光标。
+    fn draw_text_edit(
+        &self,
+        region: &mut [u8],
+        selection: PhysicalRect,
+        overlay: &AnnotationOverlay,
+        edit: &super::TextEdit,
+    ) {
+        let x = edit.x as f32 - selection.x as f32;
+        let y = edit.y as f32 - selection.y as f32;
+        let size = overlay.text_size;
+        let committed = edit.text.clone();
+        text::draw_text(
+            region,
+            selection.width,
+            selection.height,
+            x,
+            y,
+            &committed,
+            size,
+            overlay.color,
+        );
+        if !edit.preedit.is_empty() {
+            let committed_w = text::measure_width(&committed, size).unwrap_or(0.0);
+            text::draw_text(
+                region,
+                selection.width,
+                selection.height,
+                x + committed_w,
+                y,
+                &edit.preedit,
+                size,
+                ACCENT_DEEP,
+            );
+        }
+        let width = text::measure_width(&edit.display(), size).unwrap_or(0.0);
+        let caret_x = (x + width).round() as i32;
+        let caret_h = text::line_height(size).max(10.0) as i32;
+        for dy in 0..caret_h {
+            put(
+                region,
+                selection.width,
+                selection.height,
+                caret_x,
+                y.round() as i32 + dy,
+                ACCENT_DEEP,
+            );
+        }
+    }
+
+    /// 标注工具条:亮铬面板 + 圆形按钮,当前工具用亮 accent 底。
+    fn draw_annotation_toolbar(
+        &self,
+        rgba: &mut [u8],
+        w: u32,
+        h: u32,
+        selection: PhysicalRect,
+        scene: &Scene,
+        overlay: &AnnotationOverlay,
+    ) {
+        let metrics = self.metrics;
+        let buttons = annotation_buttons(scene.flags, overlay.text_input);
+        if buttons.is_empty() {
+            return;
+        }
+        let avoid = toolbar_panel(
+            metrics,
+            selection,
+            (w, h),
+            &toolbar_buttons(scene.flags),
+        );
+        let Some(panel) = annotation_panel(metrics, selection, (w, h), &buttons, avoid) else {
+            return;
+        };
+        draw_panel_chrome(rgba, w, h, panel, metrics.panel_radius);
+        for (action, rect) in annotation_button_rects(metrics, panel, &buttons) {
+            let (cx, cy) = rect.center();
+            let active = matches!(action, SelectionAction::Tool(tool) if overlay.tool == Some(tool));
+            let hover = rect.contains(scene.cursor.0, scene.cursor.1);
+            let (bg, ink) = if active {
+                (ACCENT, ACCENT_DEEP)
+            } else if hover {
+                (ACCENT_DARK, ICON_INK)
+            } else {
+                (ACCENT_DEEP, ICON_INK)
+            };
+            fill_circle(rgba, w, h, cx, cy, metrics.rail_button / 2 - metrics.rail_gap / 2, bg);
+            draw_annotation_icon(rgba, w, h, action, rect, ink, metrics.toolbar_icon);
         }
     }
 
@@ -1154,13 +1529,179 @@ fn draw_icon(
             // 兜底(不在图标轨/菜单动作集内):实心圆点。
             fill_circle(rgba, w, h, cx, cy, 3, ink);
         }
+        // 标注工具条图标由 `draw_annotation_icon` 绘制。
+        SelectionAction::Tool(_)
+        | SelectionAction::Undo
+        | SelectionAction::Redo
+        | SelectionAction::Delete => {}
+    }
+}
+
+/// 椭圆描边(细线):按参数曲线采样盖章,用于工具条圆/模糊图标。
+#[allow(clippy::too_many_arguments)]
+fn stroke_ellipse(
+    rgba: &mut [u8],
+    w: u32,
+    h: u32,
+    cx: i32,
+    cy: i32,
+    rx: i32,
+    ry: i32,
+    color: [u8; 4],
+) {
+    let steps = 28;
+    for i in 0..steps {
+        let t = i as f32 / steps as f32 * std::f32::consts::TAU;
+        fill_circle(
+            rgba,
+            w,
+            h,
+            cx + (rx as f32 * t.cos()).round() as i32,
+            cy + (ry as f32 * t.sin()).round() as i32,
+            1,
+            color,
+        );
+    }
+}
+
+/// 标注工具条图标:(cx, cy) 为中心,`size` 为图标外接盒边长。
+/// 工具图标保持简洁几何形,保证 40px 圆形按钮内可辨识。
+#[allow(clippy::too_many_arguments)]
+fn draw_annotation_icon(
+    rgba: &mut [u8],
+    w: u32,
+    h: u32,
+    action: SelectionAction,
+    rect: IntRect,
+    ink: [u8; 4],
+    size: i32,
+) {
+    let (cx, cy) = rect.center();
+    let s = (size / 2).max(4);
+    match action {
+        SelectionAction::Tool(AnnotationTool::Rect) => {
+            draw_line(rgba, w, h, cx - s, cy - s, cx + s, cy - s, 1, ink);
+            draw_line(rgba, w, h, cx - s, cy - s, cx - s, cy + s, 1, ink);
+            draw_line(rgba, w, h, cx + s, cy - s, cx + s, cy + s, 1, ink);
+            draw_line(rgba, w, h, cx - s, cy + s, cx + s, cy + s, 1, ink);
+        }
+        SelectionAction::Tool(AnnotationTool::Ellipse) => {
+            stroke_ellipse(rgba, w, h, cx, cy, s, s - 1, ink);
+        }
+        SelectionAction::Tool(AnnotationTool::Line) => {
+            draw_line(rgba, w, h, cx - s, cy + s, cx + s, cy - s, 1, ink);
+        }
+        SelectionAction::Tool(AnnotationTool::Arrow) => {
+            draw_line(rgba, w, h, cx - s, cy + s, cx + s - 3, cy - s + 3, 1, ink);
+            draw_line(rgba, w, h, cx + s, cy - s, cx + s - 5, cy - s + 1, 2, ink);
+            draw_line(rgba, w, h, cx + s, cy - s, cx + s - 1, cy - s + 5, 2, ink);
+        }
+        SelectionAction::Tool(AnnotationTool::Number) => {
+            let font = (size as f32 + 2.0).max(12.0);
+            let label = "1";
+            let text_w = text::measure_width(label, font).unwrap_or(font * 0.6);
+            text::draw_text_bold(
+                rgba,
+                w,
+                h,
+                cx as f32 - text_w / 2.0,
+                cy as f32 - text::line_height(font) / 2.0,
+                label,
+                font,
+                ink,
+            );
+        }
+        SelectionAction::Tool(AnnotationTool::Text) => {
+            let font = (size as f32 + 2.0).max(12.0);
+            let label = "T";
+            let text_w = text::measure_width(label, font).unwrap_or(font * 0.6);
+            text::draw_text_bold(
+                rgba,
+                w,
+                h,
+                cx as f32 - text_w / 2.0,
+                cy as f32 - text::line_height(font) / 2.0,
+                label,
+                font,
+                ink,
+            );
+        }
+        SelectionAction::Tool(AnnotationTool::Pen) => {
+            // 折线笔迹 + 笔尖圆点。
+            draw_line(rgba, w, h, cx - s, cy + 2, cx - 2, cy - s + 2, 1, ink);
+            draw_line(rgba, w, h, cx - 2, cy - s + 2, cx + s, cy + s - 2, 1, ink);
+            fill_circle(rgba, w, h, cx - s, cy + 2, 2, ink);
+        }
+        SelectionAction::Tool(AnnotationTool::Highlighter) => {
+            // 粗横条:荧光笔语义(半透明覆盖在最终渲染里,图标为实心示意)。
+            draw_line(rgba, w, h, cx - s, cy + 2, cx + s, cy - 2, 3, ink);
+        }
+        SelectionAction::Tool(AnnotationTool::Mosaic) => {
+            // 2×2 棋盘格(实心两格 + 描边两格示意像素化)。
+            let cell = (s / 2).max(2);
+            fill_rect(
+                rgba,
+                w,
+                h,
+                IntRect {
+                    x: cx - cell,
+                    y: cy - cell,
+                    width: cell,
+                    height: cell,
+                },
+                ink,
+            );
+            fill_rect(
+                rgba,
+                w,
+                h,
+                IntRect {
+                    x: cx,
+                    y: cy,
+                    width: cell,
+                    height: cell,
+                },
+                ink,
+            );
+            draw_line(rgba, w, h, cx, cy - cell, cx + cell, cy - cell, 1, ink);
+            draw_line(rgba, w, h, cx + cell, cy - cell, cx + cell, cy, 1, ink);
+            draw_line(rgba, w, h, cx - cell, cy, cx - cell, cy + cell, 1, ink);
+            draw_line(rgba, w, h, cx - cell, cy + cell, cx, cy + cell, 1, ink);
+        }
+        SelectionAction::Tool(AnnotationTool::Blur) => {
+            stroke_ellipse(rgba, w, h, cx, cy, s, s - 1, ink);
+            stroke_ellipse(rgba, w, h, cx, cy, s / 2 + 1, s / 2, ink);
+            fill_circle(rgba, w, h, cx, cy, 1, ink);
+        }
+        SelectionAction::Undo | SelectionAction::Redo => {
+            // 弧形箭头:横杆 + 箭头 + 右侧回钩;Redo 水平镜像。
+            let flip = if action == SelectionAction::Redo { -1 } else { 1 };
+            let (ax, bx) = (cx - s * flip, cx + s * flip);
+            draw_line(rgba, w, h, ax, cy, bx, cy, 1, ink);
+            draw_line(rgba, w, h, ax, cy, ax + 4 * flip, cy - 4, 1, ink);
+            draw_line(rgba, w, h, ax, cy, ax + 4 * flip, cy + 4, 1, ink);
+            draw_line(rgba, w, h, bx, cy, bx, cy - s, 1, ink);
+            draw_line(rgba, w, h, bx, cy - s, bx - 3 * flip, cy - s, 1, ink);
+        }
+        SelectionAction::Delete => {
+            // 垃圾桶:盖 + 提手 + 桶身 + 两条内竖线。
+            draw_line(rgba, w, h, cx - s, cy - s + 3, cx + s, cy - s + 3, 1, ink);
+            draw_line(rgba, w, h, cx - 2, cy - s, cx + 2, cy - s, 1, ink);
+            draw_line(rgba, w, h, cx - s + 2, cy - s + 3, cx - s + 2, cy + s - 1, 1, ink);
+            draw_line(rgba, w, h, cx + s - 2, cy - s + 3, cx + s - 2, cy + s - 1, 1, ink);
+            draw_line(rgba, w, h, cx - s + 2, cy + s - 1, cx + s - 2, cy + s - 1, 1, ink);
+            draw_line(rgba, w, h, cx - 1, cy - s + 5, cx - 1, cy + s - 3, 1, ink);
+            draw_line(rgba, w, h, cx + 1, cy - s + 5, cx + 1, cy + s - 3, 1, ink);
+        }
+        _ => {}
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capture::buffer::{accept_buffer, RawBuffer};
+    use crate::annotate::{Annotation, Point};
+    use crate::capture::buffer::{accept_buffer, crop_rgba, RawBuffer};
 
     fn solid_frame(width: u32, height: u32, rgba: [u8; 4]) -> Frame {
         let mut bytes = Vec::with_capacity((width * height * 4) as usize);
@@ -1168,6 +1709,247 @@ mod tests {
             bytes.extend_from_slice(&rgba);
         }
         accept_buffer(RawBuffer::ready(width, height, bytes)).unwrap()
+    }
+
+    /// 选区标注测试场景:未选中、无操作条/放大镜、光标在选区外。
+    fn annotation_scene(selection: PhysicalRect, flags: FeatureFlags) -> Scene {
+        Scene {
+            selection: Some(selection),
+            cursor: (300, 300),
+            flags,
+            toolbar_visible: false,
+            menu_open: false,
+            menu_anchor: (0, 0),
+        }
+    }
+
+    fn annotation_overlay<'a>(
+        annotations: &'a [Annotation],
+        draft: Option<&'a Annotation>,
+        tool: Option<AnnotationTool>,
+        revision: u64,
+    ) -> AnnotationOverlay<'a> {
+        AnnotationOverlay {
+            annotations,
+            draft,
+            tool,
+            text: None,
+            revision,
+            color: [225, 29, 72, 255],
+            text_size: 22.0,
+            text_input: true,
+        }
+    }
+
+    /// R21 核心一致性:合成器在选区内绘制已确认图元的结果,必须与最终
+    /// 输出(`rasterize` 裁剪帧 + 平移图元)逐像素一致(所见即所得)。
+    #[test]
+    fn annotation_overlay_matches_rasterize_inside_selection() {
+        let width = 200;
+        let height = 160;
+        let mut frame = solid_frame(width, height, [40, 80, 120, 255]);
+        // 选区内加棋盘底图,确保遮盖/折线等工具改变像素可辨别。
+        for y in 20..100u32 {
+            for x in 20..120u32 {
+                let i = ((y * width + x) * 4) as usize;
+                let tone = if (x + y) % 2 == 0 { 200 } else { 60 };
+                frame.rgba[i..i + 4].copy_from_slice(&[tone, tone / 2, 255 - tone, 255]);
+            }
+        }
+        let composer = Composer::new(&frame).unwrap();
+        let selection = PhysicalRect {
+            x: 20,
+            y: 20,
+            width: 100,
+            height: 80,
+        };
+        let annotations = vec![
+            Annotation::Rect {
+                x: 30.0,
+                y: 30.0,
+                width: 40.0,
+                height: 30.0,
+                color: "#e11d48".into(),
+                stroke_width: None,
+            },
+            Annotation::Ellipse {
+                x: 40.0,
+                y: 40.0,
+                width: 30.0,
+                height: 20.0,
+                color: "#2563eb".into(),
+                stroke_width: Some(3.0),
+            },
+            Annotation::Mosaic {
+                x: 60.0,
+                y: 50.0,
+                width: 30.0,
+                height: 24.0,
+                block: 12,
+            },
+            Annotation::Highlighter {
+                points: vec![
+                    Point { x: 35.0, y: 80.0 },
+                    Point { x: 95.0, y: 88.0 },
+                ],
+                color: "#f59e0b".into(),
+                stroke_width: None,
+            },
+        ];
+        // 关闭即时标注:本测试只核对图元与 rasterize 的逐像素一致性。
+        let flags = FeatureFlags {
+            magnifier: false,
+            inline_annotation: false,
+            ..FeatureFlags::default()
+        };
+        let scene = annotation_scene(selection, flags);
+        let overlay = annotation_overlay(&annotations, None, None, 1);
+        let composed = composer.compose_with_overlay(&scene, &overlay);
+
+        let cropped = crop_rgba(&frame, 20, 20, 100, 80).unwrap();
+        let translated = crate::annotate::translated_all(&annotations, -20.0, -20.0);
+        let expected = crate::annotate::rasterize(&cropped, &translated).unwrap();
+        // 排除选区边框/手柄/徽标覆盖的 8px 边带后逐像素一致。
+        for row in 8..72usize {
+            for col in 8..92usize {
+                let dst = ((selection.y as usize + row) * width as usize + selection.x as usize + col) * 4;
+                let src = (row * 100 + col) * 4;
+                assert_eq!(
+                    &composed[dst..dst + 4],
+                    &expected.rgba[src..src + 4],
+                    "pixel ({col},{row})"
+                );
+            }
+        }
+        // 选区外仍为暗幕(未被标注污染)。
+        let outside = (10 * width as usize + 10) * 4;
+        assert_eq!(composed[outside], (40u16 * 52 / 100) as u8);
+    }
+
+    /// 草稿即使未达导出下限也要可见(拖动过程中的即时反馈)。
+    #[test]
+    fn annotation_draft_renders_below_export_minimum() {
+        let frame = solid_frame(200, 160, [30, 30, 30, 255]);
+        let composer = Composer::new(&frame).unwrap();
+        let selection = PhysicalRect {
+            x: 20,
+            y: 20,
+            width: 100,
+            height: 80,
+        };
+        let flags = no_magnifier_flags();
+        let scene = annotation_scene(selection, flags);
+        let empty: Vec<Annotation> = Vec::new();
+        let baseline = composer.compose_with_overlay(&scene, &annotation_overlay(&empty, None, None, 0));
+        // 1×1 矩形低于 exportable 下限,但草稿路径不过滤,应可见。
+        let draft = Annotation::Rect {
+            x: 50.0,
+            y: 50.0,
+            width: 1.0,
+            height: 1.0,
+            color: "#e11d48".into(),
+            stroke_width: None,
+        };
+        let with_draft =
+            composer.compose_with_overlay(&scene, &annotation_overlay(&empty, Some(&draft), None, 0));
+        let count = baseline
+            .chunks_exact(4)
+            .zip(with_draft.chunks_exact(4))
+            .filter(|(before, after)| before != after)
+            .count();
+        assert!(count > 0, "draft must be visible while dragging");
+    }
+
+    /// 工具条仅在 inlineAnnotation 开启时绘制;选中工具时按钮高亮。
+    #[test]
+    fn annotation_toolbar_draws_only_when_enabled() {
+        let frame = solid_frame(800, 600, [30, 30, 30, 255]);
+        let composer = Composer::new(&frame).unwrap();
+        let selection = PhysicalRect {
+            x: 40,
+            y: 30,
+            width: 720,
+            height: 530,
+        };
+        let enabled = FeatureFlags {
+            magnifier: false,
+            ..FeatureFlags::default()
+        };
+        let disabled = FeatureFlags {
+            magnifier: false,
+            inline_annotation: false,
+            ..FeatureFlags::default()
+        };
+        let empty: Vec<Annotation> = Vec::new();
+        assert!(annotation_panel(
+            ChromeMetrics::for_scale(1.0),
+            selection,
+            (800, 600),
+            &annotation_buttons(enabled, true),
+            None,
+        )
+        .is_some());
+        let count_deep = |bytes: &[u8]| {
+            bytes
+                .chunks_exact(4)
+                .filter(|px| {
+                    px[0] == ACCENT_DEEP[0] && px[1] == ACCENT_DEEP[1] && px[2] == ACCENT_DEEP[2]
+                })
+                .count()
+        };
+        let with_tools = composer.compose_with_overlay(
+            &annotation_scene(selection, enabled),
+            &annotation_overlay(&empty, None, None, 0),
+        );
+        let without_tools = composer.compose_with_overlay(
+            &annotation_scene(selection, disabled),
+            &annotation_overlay(&empty, None, None, 0),
+        );
+        assert!(count_deep(&with_tools) > 0, "toolbar buttons should be drawn");
+        assert_eq!(
+            count_deep(&without_tools),
+            0,
+            "disabled flag keeps the frame free of toolbar chrome"
+        );
+        assert_eq!(without_tools.len(), with_tools.len());
+    }
+
+    /// 文本编辑会话按标注色绘制字符并画出光标(无字体环境仅验证不 panic)。
+    #[test]
+    fn text_edit_overlay_renders_text_and_caret() {
+        let frame = solid_frame(240, 160, [30, 30, 30, 255]);
+        let composer = Composer::new(&frame).unwrap();
+        let selection = PhysicalRect {
+            x: 20,
+            y: 20,
+            width: 200,
+            height: 120,
+        };
+        // 关闭工具条,避免覆盖文本编辑区(工具条绘制另有专项测试)。
+        let flags = FeatureFlags {
+            magnifier: false,
+            inline_annotation: false,
+            ..FeatureFlags::default()
+        };
+        let scene = annotation_scene(selection, flags);
+        let empty: Vec<Annotation> = Vec::new();
+        let mut overlay = annotation_overlay(&empty, None, Some(AnnotationTool::Text), 0);
+        let edit = crate::capture::selection::TextEdit {
+            x: 40,
+            y: 50,
+            text: "中文".into(),
+            preedit: String::new(),
+        };
+        overlay.text = Some(&edit);
+        let composed = composer.compose_with_overlay(&scene, &overlay);
+        if text::ui_font().is_none() {
+            return; // 无字体环境:不落笔,仅保证不 panic。
+        }
+        // 文本覆盖处在暗底上出现标注色像素。
+        let painted = composed.chunks_exact(4).filter(|px| {
+            px[0] > 100 && px[1] < 90 && px[2] < 110
+        }).count();
+        assert!(painted > 0, "text overlay should draw in annotation color");
     }
 
     fn no_magnifier_flags() -> FeatureFlags {

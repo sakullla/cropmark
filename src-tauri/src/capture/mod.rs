@@ -102,6 +102,7 @@ pub async fn finish_region_with(
     session::finish_region_with(
         &app,
         RegionSelection { x, y, width, height },
+        Vec::new(),
         action,
         None,
     )

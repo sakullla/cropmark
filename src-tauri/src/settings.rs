@@ -500,6 +500,12 @@ pub fn current_features(app: &AppHandle) -> FeatureSettings {
     *lock(&app.state::<SessionState>().features)
 }
 
+/// 供选区即时标注(R21)读取当前标注样式默认值;只读克隆,不做平台查询,
+/// 不进入启动路径。
+pub fn current_annotation_defaults(app: &AppHandle) -> AnnotationDefaults {
+    lock(&app.state::<SessionState>().annotation_defaults).clone()
+}
+
 /// 供截取链路(热键/托盘取延时、完成路径取动作与自动复制)即时读取。
 /// 设置变更下一次截取即生效,无需重启。
 pub fn current_capture(app: &AppHandle) -> CaptureSettings {

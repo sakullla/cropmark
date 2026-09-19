@@ -12,6 +12,7 @@
 pub mod composer;
 mod text;
 
+use crate::annotate::{Annotation, Point, DEFAULT_COLOR};
 use crate::capture::geometry::PhysicalRect;
 use composer::{ChromeMetrics, IntRect};
 
@@ -20,6 +21,122 @@ pub const MIN_SELECTION_SIZE: u32 = 2;
 /// 键盘微调步长:默认 1 物理像素,Shift 为 10。
 pub const KEY_STEP: i32 = 1;
 pub const KEY_STEP_LARGE: i32 = 10;
+/// 拖动式标注草稿的最小边长(物理像素),与预览编辑器 `MIN_DRAW_SIZE` 对齐。
+pub const MIN_DRAW_SIZE: i32 = 3;
+
+
+/// 选区即时标注工具(R21);工具集与预览编辑器一致。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnnotationTool {
+    Rect,
+    Ellipse,
+    Line,
+    Arrow,
+    Number,
+    Text,
+    Pen,
+    Highlighter,
+    Mosaic,
+    Blur,
+}
+
+impl AnnotationTool {
+    /// 工具条展示顺序(绘制类在前,序号/文字居中,遮盖类在后)。
+    pub const ALL: [Self; 10] = [
+        Self::Rect,
+        Self::Ellipse,
+        Self::Line,
+        Self::Arrow,
+        Self::Number,
+        Self::Text,
+        Self::Pen,
+        Self::Highlighter,
+        Self::Mosaic,
+        Self::Blur,
+    ];
+
+    fn is_drag(self) -> bool {
+        matches!(
+            self,
+            Self::Rect | Self::Ellipse | Self::Line | Self::Arrow | Self::Mosaic | Self::Blur
+        )
+    }
+
+    fn is_freehand(self) -> bool {
+        matches!(self, Self::Pen | Self::Highlighter)
+    }
+}
+
+/// 标注样式与文本输入能力,由会话层按 `AnnotationDefaults` 与平台壳能力注入。
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnnotationOptions {
+    pub color: String,
+    pub stroke_width: Option<f64>,
+    pub text_size: Option<f64>,
+    pub number_start: u32,
+    /// 平台壳是否具备文本输入通道(Windows 的 WM_CHAR/IME;posix 接入后置真)。
+    /// 为假时工具条不出现文字工具,选择/确认/取消完全不受影响。
+    pub text_input: bool,
+}
+
+impl Default for AnnotationOptions {
+    fn default() -> Self {
+        Self {
+            color: DEFAULT_COLOR.into(),
+            stroke_width: None,
+            text_size: None,
+            number_start: 1,
+            text_input: false,
+        }
+    }
+}
+
+impl AnnotationOptions {
+    fn color_rgba(&self) -> [u8; 4] {
+        crate::annotate::parse_hex_color(&self.color).unwrap_or(crate::annotate::raster::STROKE)
+    }
+}
+
+/// 撤销/重做栈条目:记录图元的增删及位置,重放即可双向恢复。
+#[derive(Debug, Clone, PartialEq)]
+enum AnnotationEdit {
+    Add { index: usize, op: Annotation },
+    Remove { index: usize, op: Annotation },
+}
+
+/// 选区内的文本编辑会话(未提交);`preedit` 为 IME 组合串。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextEdit {
+    pub x: i32,
+    pub y: i32,
+    pub text: String,
+    pub preedit: String,
+}
+
+impl TextEdit {
+    /// 已提交文本 + 组合串,合成器按此绘制并可在末尾画光标。
+    pub fn display(&self) -> String {
+        let mut out = self.text.clone();
+        out.push_str(&self.preedit);
+        out
+    }
+}
+
+/// 合成器标注层:已确认图元 + 拖动草稿 + 文本编辑态 + 生效样式。
+/// 引擎提供只读视图,壳不解释内容直接交给 `Composer` 绘制。
+#[derive(Debug, Clone, Copy)]
+pub struct AnnotationOverlay<'a> {
+    pub annotations: &'a [Annotation],
+    pub draft: Option<&'a Annotation>,
+    pub tool: Option<AnnotationTool>,
+    pub text: Option<&'a TextEdit>,
+    /// 已确认图元的变更序号(合成器缓存失效键)。
+    pub revision: u64,
+    pub color: [u8; 4],
+    pub text_size: f32,
+    /// 平台壳文本输入能力(决定工具条是否含文字工具)。
+    pub text_input: bool,
+}
 
 /// 功能入口开关(默认全开);操作条/菜单动作集由此决定。
 /// `cursor_hints` 为 R24 光标提示开关:关闭后 `cursor_for` 固定十字,
@@ -33,6 +150,8 @@ pub struct FeatureFlags {
     pub toolbar_save: bool,
     pub toolbar_pin: bool,
     pub cursor_hints: bool,
+    /// R21:选区即时标注;关闭后选区不出现标注工具,`标注` 动作仍进预览编辑器。
+    pub inline_annotation: bool,
 }
 
 impl Default for FeatureFlags {
@@ -45,6 +164,7 @@ impl Default for FeatureFlags {
             toolbar_save: true,
             toolbar_pin: true,
             cursor_hints: true,
+            inline_annotation: true,
         }
     }
 }
@@ -114,6 +234,12 @@ pub enum LogicalKey {
     ArrowDown,
     /// 取色快捷键(平台壳把 C 键映射到这里)。
     CopyColor,
+    /// 即时标注:撤销(Ctrl+Z)。
+    Undo,
+    /// 即时标注:重做(Ctrl+Y / Ctrl+Shift+Z)。
+    Redo,
+    /// 即时标注文本退格/删除(Backspace/Delete)。
+    Delete,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,6 +252,12 @@ pub enum SelectionAction {
     Cancel,
     /// 复制放大镜当前指向像素的色值文本。
     CopyColor,
+    /// 即时标注工具切换/撤销/重做/删除:由引擎内部消费,平台壳不解释
+    /// (`EngineOutcome` 不会把这类动作交给会话层)。
+    Tool(AnnotationTool),
+    Undo,
+    Redo,
+    Delete,
 }
 
 /// 一次输入事件的处理结果;除 `None` 外都意味着需要重新合成并呈现。
@@ -140,13 +272,17 @@ pub enum EngineOutcome {
     Action(SelectionAction),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputEvent {
     PointerMove { x: i32, y: i32 },
     LeftDown { x: i32, y: i32 },
     LeftUp { x: i32, y: i32 },
     RightDown { x: i32, y: i32 },
     Key { key: LogicalKey, shift: bool },
+    /// 文本输入(WM_CHAR 直入或 IME 已提交结果)。
+    Text(String),
+    /// IME 组合串更新(未提交);空串表示组合结束。
+    Composition(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,6 +309,8 @@ pub enum EngineState {
     /// 操作条/菜单项按下未松开:等 LeftUp 且仍命中同一动作才触发。
     /// 若在 LeftDown 就拆掉覆盖层,鼠标尚未松开,点击会穿透到下方置顶窗。
     PressingChrome { action: SelectionAction },
+    /// 标注工具拖动绘制中(起点为 anchor,草稿在 `draft`)。
+    Drawing { anchor_x: i32, anchor_y: i32 },
 }
 
 /// 合成器输入:由引擎当前状态派生的一帧静态场景。
@@ -186,7 +324,7 @@ pub struct Scene {
     pub menu_anchor: (i32, i32),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct SelectionEngine {
     width: u32,
     height: u32,
@@ -198,6 +336,20 @@ pub struct SelectionEngine {
     /// 冻结帧 DPI 缩放:全部 chrome(菜单/操作条/徽标/手柄)与放大镜面板
     /// 尺寸/命中共用同一份派生来源(ChromeMetrics),默认 1.0。
     scale: f32,
+    /// R21 即时标注:已确认图元(坐标相对冻结帧物理像素)。
+    annotations: Vec<Annotation>,
+    /// 撤销/重做栈(与预览编辑器同构的 add/remove 动作)。
+    undo: Vec<AnnotationEdit>,
+    redo: Vec<AnnotationEdit>,
+    /// 当前工具;None = 选择/移动模式。
+    tool: Option<AnnotationTool>,
+    /// 拖动中的草稿(未入栈)。
+    draft: Option<Annotation>,
+    options: AnnotationOptions,
+    /// 文本编辑会话;有值时键盘输入进入文本框而不是选择交互。
+    text_edit: Option<TextEdit>,
+    /// 已确认图元变更序号:合成器缓存以它 + 选区矩形为失效键。
+    revision: u64,
 }
 
 impl SelectionEngine {
@@ -211,6 +363,14 @@ impl SelectionEngine {
             cursor: (0, 0),
             menu_anchor: (0, 0),
             scale: 1.0,
+            annotations: Vec::new(),
+            undo: Vec::new(),
+            redo: Vec::new(),
+            tool: None,
+            draft: None,
+            options: AnnotationOptions::default(),
+            text_edit: None,
+            revision: 0,
         }
     }
 
@@ -225,8 +385,60 @@ impl SelectionEngine {
         self
     }
 
+    /// 注入标注样式与文本输入能力(会话层按 `AnnotationDefaults` 提供)。
+    pub fn with_annotation_options(mut self, options: AnnotationOptions) -> Self {
+        self.options = options;
+        self
+    }
+
+    /// 已确认图元(相对冻结帧物理像素)。
+    pub fn annotations(&self) -> &[Annotation] {
+        &self.annotations
+    }
+
+    /// 当前工具(None = 选择/移动模式)。
+    pub fn tool(&self) -> Option<AnnotationTool> {
+        self.tool
+    }
+
+    /// 文本编辑会话(壳据此定位 IME 候选窗)。
+    pub fn text_edit(&self) -> Option<&TextEdit> {
+        self.text_edit.as_ref()
+    }
+
+    /// 文本光标左上角(引擎物理像素);无编辑会话时为 None。
+    pub fn text_caret(&self) -> Option<(i32, i32)> {
+        let edit = self.text_edit.as_ref()?;
+        let display = edit.display();
+        let width = text::measure_width(&display, self.resolved_text_size()).unwrap_or(0.0);
+        Some((edit.x + width.ceil() as i32, edit.y))
+    }
+
+    /// 生效字号:与预览 `textSize()` 同规则(基础档位 × max(DPI, 长边/1920),
+    /// 下限 10),保证选区标注与预览编辑器字号一致。
+    fn resolved_text_size(&self) -> f32 {
+        let base = self.options.text_size.unwrap_or(16.0);
+        let dpi = f64::from(self.scale).max(1.0);
+        let longest = f64::from(self.width.max(self.height));
+        (base * dpi.max(longest / 1920.0)).max(10.0).round() as f32
+    }
+
+    /// 合成器标注层视图(图元/草稿/工具/文本/样式同源)。
+    pub fn annotation_overlay(&self) -> AnnotationOverlay<'_> {
+        AnnotationOverlay {
+            annotations: &self.annotations,
+            draft: self.draft.as_ref(),
+            tool: self.tool,
+            text: self.text_edit.as_ref(),
+            revision: self.revision,
+            color: self.options.color_rgba(),
+            text_size: self.resolved_text_size(),
+            text_input: self.options.text_input,
+        }
+    }
+
     /// 当前 chrome 尺寸派生(布局/绘制/命中共用;ADR-15)。
-    fn metrics(&self) -> ChromeMetrics {
+    pub(crate) fn metrics(&self) -> ChromeMetrics {
         ChromeMetrics::for_scale(self.scale)
     }
 
@@ -276,7 +488,8 @@ impl SelectionEngine {
                 CursorHint::Crosshair
             }
             EngineState::Selected => {
-                // chrome 优先:放大镜面板(箭头)→ 图标轨按钮(手型)→ 选区几何。
+                // chrome 优先:放大镜面板(箭头)→ 图标轨/标注工具条按钮(手型)
+                // → 选区几何;工具激活时选区内部为绘制十字。
                 if self.flags.magnifier
                     && composer::magnifier_hit(self.cursor, self.size(), self.scale, x, y)
                 {
@@ -285,19 +498,27 @@ impl SelectionEngine {
                 if self.scene().toolbar_visible && self.hit_toolbar(x, y).is_some() {
                     return CursorHint::Pointer;
                 }
+                if self.hit_annotation_toolbar(x, y).is_some() {
+                    return CursorHint::Pointer;
+                }
                 if let Some(selection) = self.selection {
+                    let interior = IntRect::from(selection).contains(x, y);
+                    if self.tool.is_some() && interior {
+                        return CursorHint::Crosshair;
+                    }
                     if let Some(handle) = composer::handle_hit(self.metrics(), selection, x, y) {
                         return CursorHint::for_handle(handle);
                     }
                     if let Some(edge) = composer::edge_hit(self.metrics(), selection, x, y) {
                         return CursorHint::for_edge(edge);
                     }
-                    if IntRect::from(selection).contains(x, y) {
+                    if interior {
                         return CursorHint::Move;
                     }
                 }
                 CursorHint::Crosshair
             }
+            EngineState::Drawing { .. } => CursorHint::Crosshair,
             EngineState::Idle | EngineState::Dragging { .. } => {
                 if self.flags.magnifier
                     && composer::magnifier_hit(self.cursor, self.size(), self.scale, x, y)
@@ -313,7 +534,9 @@ impl SelectionEngine {
     pub fn scene(&self) -> Scene {
         let toolbar_visible = matches!(
             self.state,
-            EngineState::Selected | EngineState::PressingChrome { .. }
+            EngineState::Selected
+                | EngineState::PressingChrome { .. }
+                | EngineState::Drawing { .. }
         ) && self.selection.is_some()
             && !composer::toolbar_buttons(self.flags).is_empty();
         Scene {
@@ -346,6 +569,16 @@ impl SelectionEngine {
                 self.on_right_down()
             }
             InputEvent::Key { key, shift } => self.on_key(key, shift),
+            InputEvent::Text(text) => {
+                self.insert_text(&text);
+                EngineOutcome::Redraw
+            }
+            InputEvent::Composition(text) => {
+                if let Some(edit) = self.text_edit.as_mut() {
+                    edit.preedit = text;
+                }
+                EngineOutcome::Redraw
+            }
         }
     }
 
@@ -397,12 +630,20 @@ impl SelectionEngine {
                     (self.width as i32, self.height as i32),
                 ));
             }
+            EngineState::Drawing { anchor_x, anchor_y } => {
+                let point = self.clamp_to_selection(self.cursor);
+                self.update_draft((anchor_x, anchor_y), point);
+            }
             _ => {}
         }
     }
 
     fn on_left_down(&mut self) -> EngineOutcome {
         let (x, y) = self.cursor;
+        // 文本编辑中点击:先提交当前文本,再按本次点击继续。
+        if self.text_edit.is_some() {
+            self.commit_text_edit();
+        }
         match self.state {
             EngineState::Idle => {
                 self.state = EngineState::Dragging {
@@ -410,6 +651,7 @@ impl SelectionEngine {
                     anchor_y: y,
                 };
                 self.selection = None;
+                self.clear_annotations();
                 EngineOutcome::Redraw
             }
             EngineState::Dragging { .. } => EngineOutcome::Redraw,
@@ -418,7 +660,16 @@ impl SelectionEngine {
                     self.state = EngineState::PressingChrome { action };
                     return EngineOutcome::Redraw;
                 }
+                if let Some(action) = self.hit_annotation_toolbar(x, y) {
+                    self.state = EngineState::PressingChrome { action };
+                    return EngineOutcome::Redraw;
+                }
                 if let Some(selection) = self.selection {
+                    let interior = IntRect::from(selection).contains(x, y);
+                    if self.tool.is_some() && interior {
+                        self.begin_annotation_draw();
+                        return EngineOutcome::Redraw;
+                    }
                     if let Some(handle) = composer::handle_hit(self.metrics(), selection, x, y) {
                         self.state = EngineState::Adjusting { handle };
                         return EngineOutcome::Redraw;
@@ -437,18 +688,21 @@ impl SelectionEngine {
                         return EngineOutcome::Redraw;
                     }
                 }
-                // 选区外重新拖出新选区。
+                // 选区外:退出工具,重新拖出新选区(新选区从零开始标注)。
+                self.tool = None;
                 self.state = EngineState::Dragging {
                     anchor_x: x,
                     anchor_y: y,
                 };
                 self.selection = None;
+                self.clear_annotations();
                 EngineOutcome::Redraw
             }
             EngineState::Adjusting { .. }
             | EngineState::AdjustingEdge { .. }
             | EngineState::Moving { .. }
-            | EngineState::PressingChrome { .. } => EngineOutcome::Redraw,
+            | EngineState::PressingChrome { .. }
+            | EngineState::Drawing { .. } => EngineOutcome::Redraw,
             EngineState::Menu => {
                 if let Some(action) = self.hit_menu(x, y) {
                     self.state = EngineState::PressingChrome { action };
@@ -488,8 +742,27 @@ impl SelectionEngine {
                 self.state = EngineState::Selected;
                 EngineOutcome::Redraw
             }
+            EngineState::Drawing { .. } => {
+                self.commit_draft();
+                self.state = EngineState::Selected;
+                EngineOutcome::Redraw
+            }
             EngineState::PressingChrome { action } => {
                 let (x, y) = self.cursor;
+                // 标注工具条动作(工具切换/撤销/重做/删除)由引擎就地消费,
+                // 不向会话层产出 Action。
+                if is_internal_annotation_action(action) {
+                    let still = self.hit_annotation_toolbar(x, y) == Some(action);
+                    self.state = if self.selection.is_some() {
+                        EngineState::Selected
+                    } else {
+                        EngineState::Idle
+                    };
+                    if still {
+                        self.apply_annotation_action(action);
+                    }
+                    return EngineOutcome::Redraw;
+                }
                 let still = self.hit_toolbar(x, y) == Some(action)
                     || self.hit_menu(x, y) == Some(action);
                 self.state = if self.selection.is_some() {
@@ -528,12 +801,43 @@ impl SelectionEngine {
     }
 
     fn on_key(&mut self, key: LogicalKey, shift: bool) -> EngineOutcome {
+        // 文本编辑中:Esc 退出编辑、Enter 提交、退格/删除删字;其余键不改变
+        // 选择交互,也不终止会话(编辑优先于整体快捷键)。
+        if self.text_edit.is_some() {
+            match key {
+                LogicalKey::Escape => {
+                    self.text_edit = None;
+                    return EngineOutcome::Redraw;
+                }
+                LogicalKey::Enter => {
+                    self.commit_text_edit();
+                    return EngineOutcome::Redraw;
+                }
+                LogicalKey::Delete => {
+                    self.backspace_text();
+                    return EngineOutcome::Redraw;
+                }
+                _ => return EngineOutcome::Redraw,
+            }
+        }
         match key {
             LogicalKey::Escape => EngineOutcome::Cancelled,
             LogicalKey::Enter => match self.selection {
                 Some(rect) => EngineOutcome::Confirmed(rect),
                 None => EngineOutcome::Redraw,
             },
+            LogicalKey::Undo => {
+                self.undo_annotation();
+                EngineOutcome::Redraw
+            }
+            LogicalKey::Redo => {
+                self.redo_annotation();
+                EngineOutcome::Redraw
+            }
+            LogicalKey::Delete => {
+                self.delete_annotation();
+                EngineOutcome::Redraw
+            }
             LogicalKey::CopyColor => {
                 if self.flags.magnifier {
                     EngineOutcome::Action(SelectionAction::CopyColor)
@@ -590,6 +894,414 @@ impl SelectionEngine {
             .into_iter()
             .find(|(_, rect)| rect.contains(x, y))
             .map(|(action, _)| action)
+    }
+
+    // ---- R21 选区即时标注:工具/草稿/文本编辑与撤销栈。----
+
+    /// 操作条面板矩形(标注工具条避让用)。
+    fn toolbar_panel(&self) -> Option<IntRect> {
+        let buttons = composer::toolbar_buttons(self.flags);
+        composer::toolbar_panel(self.metrics(), self.selection?, self.size(), &buttons)
+    }
+
+    /// 标注工具条按钮集(受 inlineAnnotation 开关与平台文本输入能力控制)。
+    pub(crate) fn annotation_buttons(&self) -> Vec<SelectionAction> {
+        composer::annotation_buttons(self.flags, self.options.text_input)
+    }
+
+    /// 标注工具条面板矩形;关闭即时标注或无选区时为 None。
+    pub(crate) fn annotation_panel(&self) -> Option<IntRect> {
+        if !self.flags.inline_annotation {
+            return None;
+        }
+        let selection = self.selection?;
+        let buttons = self.annotation_buttons();
+        if buttons.is_empty() {
+            return None;
+        }
+        composer::annotation_panel(
+            self.metrics(),
+            selection,
+            self.size(),
+            &buttons,
+            self.toolbar_panel(),
+        )
+    }
+
+    fn hit_annotation_toolbar(&self, x: i32, y: i32) -> Option<SelectionAction> {
+        let buttons = self.annotation_buttons();
+        let panel = self.annotation_panel()?;
+        composer::annotation_button_rects(self.metrics(), panel, &buttons)
+            .into_iter()
+            .find(|(_, rect)| rect.contains(x, y))
+            .map(|(action, _)| action)
+    }
+
+    /// 点钳制到选区内部(标注绘制只发生在选区内)。
+    fn clamp_to_selection(&self, point: (i32, i32)) -> (i32, i32) {
+        match self.selection {
+            Some(selection) => (
+                point.0.clamp(
+                    selection.x as i32,
+                    selection.x as i32 + selection.width as i32 - 1,
+                ),
+                point.1.clamp(
+                    selection.y as i32,
+                    selection.y as i32 + selection.height as i32 - 1,
+                ),
+            ),
+            None => point,
+        }
+    }
+
+    /// 按下左键开始一次标注:序号即落点、文字进入编辑、其余工具起草稿。
+    fn begin_annotation_draw(&mut self) {
+        let Some(tool) = self.tool else {
+            return;
+        };
+        let point = self.clamp_to_selection(self.cursor);
+        match tool {
+            AnnotationTool::Number => {
+                let value = self.next_number_value();
+                let op = Annotation::Number {
+                    x: point.0 as f64,
+                    y: point.1 as f64,
+                    value,
+                    size: self.resolved_text_size() as f64,
+                    color: self.options.color.clone(),
+                };
+                self.push_annotation(op);
+            }
+            AnnotationTool::Text => self.begin_text_edit(point.0, point.1),
+            _ => {
+                self.state = EngineState::Drawing {
+                    anchor_x: point.0,
+                    anchor_y: point.1,
+                };
+                let op = self.draft_for(point, point);
+                self.draft = Some(op);
+            }
+        }
+    }
+
+    /// 按当前工具与选项生成 (anchor → cursor) 草稿图元;与预览 `draft()` 同规则。
+    fn draft_for(&self, anchor: (i32, i32), cursor: (i32, i32)) -> Annotation {
+        let tool = self.tool.unwrap_or(AnnotationTool::Rect);
+        let color = self.options.color.clone();
+        let stroke_width = self.options.stroke_width;
+        if tool.is_freehand() {
+            let points = vec![
+                Point {
+                    x: anchor.0 as f64,
+                    y: anchor.1 as f64,
+                },
+                Point {
+                    x: cursor.0 as f64,
+                    y: cursor.1 as f64,
+                },
+            ];
+            return match tool {
+                AnnotationTool::Highlighter => Annotation::Highlighter {
+                    points,
+                    color,
+                    stroke_width,
+                },
+                _ => Annotation::Pen {
+                    points,
+                    color,
+                    stroke_width,
+                },
+            };
+        }
+        if matches!(tool, AnnotationTool::Line | AnnotationTool::Arrow) {
+            let from = Point {
+                x: anchor.0 as f64,
+                y: anchor.1 as f64,
+            };
+            let to = Point {
+                x: cursor.0 as f64,
+                y: cursor.1 as f64,
+            };
+            return match tool {
+                AnnotationTool::Arrow => Annotation::Arrow {
+                    from,
+                    to,
+                    color,
+                    stroke_width,
+                },
+                _ => Annotation::Line {
+                    from,
+                    to,
+                    color,
+                    stroke_width,
+                },
+            };
+        }
+        let x = anchor.0.min(cursor.0) as f64;
+        let y = anchor.1.min(cursor.1) as f64;
+        let width = (cursor.0 - anchor.0).unsigned_abs() as f64;
+        let height = (cursor.1 - anchor.1).unsigned_abs() as f64;
+        match tool {
+            AnnotationTool::Mosaic => Annotation::Mosaic {
+                x,
+                y,
+                width,
+                height,
+                block: mosaic_block(self.scale),
+            },
+            AnnotationTool::Blur => Annotation::Blur {
+                x,
+                y,
+                width,
+                height,
+                sigma: blur_sigma(width, height),
+            },
+            AnnotationTool::Ellipse => Annotation::Ellipse {
+                x,
+                y,
+                width,
+                height,
+                color,
+                stroke_width,
+            },
+            _ => Annotation::Rect {
+                x,
+                y,
+                width,
+                height,
+                color,
+                stroke_width,
+            },
+        }
+    }
+
+    fn update_draft(&mut self, anchor: (i32, i32), cursor: (i32, i32)) {
+        let Some(tool) = self.tool else {
+            return;
+        };
+        if tool.is_freehand() {
+            if let Some(Annotation::Pen { points, .. } | Annotation::Highlighter { points, .. }) =
+                self.draft.as_mut()
+            {
+                let last = points.last().copied();
+                let reaches = last.map_or(true, |point| {
+                    (point.x - cursor.0 as f64).hypot(point.y - cursor.1 as f64) >= 1.0
+                });
+                if reaches {
+                    points.push(Point {
+                        x: cursor.0 as f64,
+                        y: cursor.1 as f64,
+                    });
+                }
+            }
+            return;
+        }
+        let next = self.draft_for(anchor, cursor);
+        self.draft = Some(next);
+    }
+
+    /// 松开左键提交草稿:退化图元(与预览 MIN_DRAW_SIZE 同规则)不入栈。
+    fn commit_draft(&mut self) {
+        let Some(op) = self.draft.take() else {
+            return;
+        };
+        if !is_meaningful_draft(&op) {
+            return;
+        }
+        self.push_annotation(op);
+    }
+
+    /// 开始拖新选区时清空标注会话:图元、撤销/重做栈与编辑态都属于
+    /// 当前选区,避免旧图元落到新选区上。
+    fn clear_annotations(&mut self) {
+        if self.annotations.is_empty()
+            && self.undo.is_empty()
+            && self.redo.is_empty()
+            && self.draft.is_none()
+            && self.text_edit.is_none()
+        {
+            return;
+        }
+        self.annotations.clear();
+        self.undo.clear();
+        self.redo.clear();
+        self.draft = None;
+        self.text_edit = None;
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// 图元入栈并记录撤销动作;新动作清空重做栈。
+    fn push_annotation(&mut self, op: Annotation) {
+        let index = self.annotations.len();
+        self.annotations.push(op.clone());
+        self.undo.push(AnnotationEdit::Add { index, op });
+        self.redo.clear();
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// 删除:优先删除光标下的图元,否则删除最近一个;可撤销。
+    fn delete_annotation(&mut self) -> bool {
+        let index = self
+            .annotation_at(self.cursor.0, self.cursor.1)
+            .or_else(|| self.annotations.len().checked_sub(1));
+        let Some(index) = index else {
+            return false;
+        };
+        let op = self.annotations.remove(index);
+        self.undo.push(AnnotationEdit::Remove { index, op });
+        self.redo.clear();
+        self.revision = self.revision.wrapping_add(1);
+        true
+    }
+
+    fn undo_annotation(&mut self) -> bool {
+        let Some(edit) = self.undo.pop() else {
+            return false;
+        };
+        match &edit {
+            AnnotationEdit::Add { index, .. } => {
+                if *index < self.annotations.len() {
+                    self.annotations.remove(*index);
+                }
+            }
+            AnnotationEdit::Remove { index, op } => {
+                let index = (*index).min(self.annotations.len());
+                self.annotations.insert(index, op.clone());
+            }
+        }
+        self.redo.push(edit);
+        self.revision = self.revision.wrapping_add(1);
+        true
+    }
+
+    fn redo_annotation(&mut self) -> bool {
+        let Some(edit) = self.redo.pop() else {
+            return false;
+        };
+        match &edit {
+            AnnotationEdit::Add { index, op } => {
+                let index = (*index).min(self.annotations.len());
+                self.annotations.insert(index, op.clone());
+            }
+            AnnotationEdit::Remove { index, .. } => {
+                if *index < self.annotations.len() {
+                    self.annotations.remove(*index);
+                }
+            }
+        }
+        self.undo.push(edit);
+        self.revision = self.revision.wrapping_add(1);
+        true
+    }
+
+    /// 工具条/快捷键动作:工具切换与撤销/重做/删除。
+    fn apply_annotation_action(&mut self, action: SelectionAction) {
+        match action {
+            SelectionAction::Tool(tool) => self.select_tool(tool),
+            SelectionAction::Undo => {
+                self.undo_annotation();
+            }
+            SelectionAction::Redo => {
+                self.redo_annotation();
+            }
+            SelectionAction::Delete => {
+                self.delete_annotation();
+            }
+            _ => {}
+        }
+    }
+
+    /// 切换工具(再次点击同一工具回到选择模式);平台无文本输入时忽略文字工具。
+    fn select_tool(&mut self, tool: AnnotationTool) {
+        if !self.flags.inline_annotation {
+            return;
+        }
+        if tool == AnnotationTool::Text && !self.options.text_input {
+            return;
+        }
+        if self.text_edit.is_some() {
+            self.commit_text_edit();
+        }
+        self.tool = if self.tool == Some(tool) {
+            None
+        } else {
+            Some(tool)
+        };
+        self.draft = None;
+    }
+
+    /// 下一个序号值:取现有序号最大值 + 1(默认从 `number_start` 起),
+    /// 撤销/删除后重放不会与剩余序号重复。
+    fn next_number_value(&self) -> u32 {
+        let max = self
+            .annotations
+            .iter()
+            .filter_map(|op| match op {
+                Annotation::Number { value, .. } => Some(*value),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0);
+        max.max(self.options.number_start.saturating_sub(1))
+            .saturating_add(1)
+    }
+
+    /// 光标下最上层图元的索引(按外接框判定;用于删除)。
+    fn annotation_at(&self, x: i32, y: i32) -> Option<usize> {
+        self.annotations.iter().enumerate().rev().find_map(|(index, op)| {
+            let (min_x, min_y, max_x, max_y) = annotation_bounds(op)?;
+            ((x as f64) >= min_x && (x as f64) <= max_x && (y as f64) >= min_y && (y as f64) <= max_y)
+                .then_some(index)
+        })
+    }
+
+    fn begin_text_edit(&mut self, x: i32, y: i32) {
+        self.text_edit = Some(TextEdit {
+            x,
+            y,
+            text: String::new(),
+            preedit: String::new(),
+        });
+    }
+
+    fn insert_text(&mut self, text: &str) {
+        let Some(edit) = self.text_edit.as_mut() else {
+            return;
+        };
+        edit.preedit.clear();
+        edit.text.push_str(text);
+    }
+
+    fn backspace_text(&mut self) {
+        let Some(edit) = self.text_edit.as_mut() else {
+            return;
+        };
+        if !edit.preedit.is_empty() {
+            edit.preedit.pop();
+            return;
+        }
+        edit.text.pop();
+    }
+
+    /// 提交文本编辑:空白文本丢弃;Enter/切换工具/点击别处都会提交。
+    fn commit_text_edit(&mut self) {
+        let Some(edit) = self.text_edit.take() else {
+            return;
+        };
+        let mut text = edit.text;
+        text.push_str(&edit.preedit);
+        if text.trim().is_empty() {
+            return;
+        }
+        let size = self.resolved_text_size() as f64;
+        let color = self.options.color.clone();
+        self.push_annotation(Annotation::Text {
+            x: edit.x as f64,
+            y: edit.y as f64,
+            text,
+            size,
+            color,
+        });
     }
 
     fn drag_rect(anchor: (i32, i32), current: (i32, i32), screen: (i32, i32)) -> PhysicalRect {
@@ -680,12 +1392,148 @@ impl SelectionEngine {
     }
 }
 
+/// 标注工具条动作(工具切换/撤销/重做/删除):引擎内部消费,壳不解释。
+fn is_internal_annotation_action(action: SelectionAction) -> bool {
+    matches!(
+        action,
+        SelectionAction::Tool(_)
+            | SelectionAction::Undo
+            | SelectionAction::Redo
+            | SelectionAction::Delete
+    )
+}
+
+/// 拖动草稿是否达到入栈下限;与预览编辑器 `MIN_DRAW_SIZE`/折线长度规则一致。
+fn is_meaningful_draft(op: &Annotation) -> bool {
+    match op {
+        Annotation::Arrow { from, to, .. } | Annotation::Line { from, to, .. } => {
+            (from.x - to.x).hypot(from.y - to.y) >= f64::from(MIN_DRAW_SIZE)
+        }
+        Annotation::Rect { width, height, .. }
+        | Annotation::Ellipse { width, height, .. }
+        | Annotation::Mosaic { width, height, .. }
+        | Annotation::Blur { width, height, .. } => {
+            width.abs() >= f64::from(MIN_DRAW_SIZE) && height.abs() >= f64::from(MIN_DRAW_SIZE)
+        }
+        Annotation::Pen { points, .. } | Annotation::Highlighter { points, .. } => {
+            polyline_length(points) >= 1.0
+        }
+        _ => op.is_exportable(),
+    }
+}
+
+fn polyline_length(points: &[Point]) -> f64 {
+    points
+        .windows(2)
+        .map(|pair| (pair[1].x - pair[0].x).hypot(pair[1].y - pair[0].y))
+        .sum()
+}
+
+/// 马赛克块边长(物理像素):与预览 `mosaicBlock()` 同规则,随冻结帧 scale。
+fn mosaic_block(scale: f32) -> u32 {
+    (12.0 * scale.max(1.0)).round().max(8.0) as u32
+}
+
+/// 模糊强度:与预览 `blurSigma()` 同规则(区域短边自适应,3–48)。
+fn blur_sigma(width: f64, height: f64) -> f64 {
+    (width.min(height) / 8.0).clamp(3.0, 48.0).round()
+}
+
+/// 图元外接框(命中删除用);文本按标注自带字号测量。
+fn annotation_bounds(op: &Annotation) -> Option<(f64, f64, f64, f64)> {
+    let rect_bounds = |x: f64, y: f64, width: f64, height: f64| {
+        let (x0, x1) = if width < 0.0 {
+            (x + width, x)
+        } else {
+            (x, x + width)
+        };
+        let (y0, y1) = if height < 0.0 {
+            (y + height, y)
+        } else {
+            (y, y + height)
+        };
+        (x0, y0, x1, y1)
+    };
+    match op {
+        Annotation::Rect {
+            x,
+            y,
+            width,
+            height,
+            ..
+        }
+        | Annotation::Ellipse {
+            x,
+            y,
+            width,
+            height,
+            ..
+        }
+        | Annotation::Mosaic {
+            x,
+            y,
+            width,
+            height,
+            ..
+        }
+        | Annotation::Blur {
+            x,
+            y,
+            width,
+            height,
+            ..
+        } => Some(rect_bounds(*x, *y, *width, *height)),
+        Annotation::Arrow { from, to, .. } | Annotation::Line { from, to, .. } => Some((
+            from.x.min(to.x),
+            from.y.min(to.y),
+            from.x.max(to.x),
+            from.y.max(to.y),
+        )),
+        Annotation::Text { x, y, text, size, .. } => {
+            let size = (*size as f32).max(10.0);
+            let width = text::measure_width(text, size).unwrap_or(0.0) as f64;
+            Some((*x, *y, x + width, y + text::line_height(size) as f64))
+        }
+        Annotation::Number {
+            x,
+            y,
+            value,
+            size,
+            ..
+        } => {
+            let size = (*size as f32).max(10.0);
+            let width = text::measure_width(&value.to_string(), size).unwrap_or(0.0) as f64;
+            Some((*x, *y, x + width, y + text::line_height(size) as f64))
+        }
+        Annotation::Pen { points, .. } | Annotation::Highlighter { points, .. } => {
+            let first = points.first()?;
+            let mut bounds = (first.x, first.y, first.x, first.y);
+            for point in points {
+                bounds.0 = bounds.0.min(point.x);
+                bounds.1 = bounds.1.min(point.y);
+                bounds.2 = bounds.2.max(point.x);
+                bounds.3 = bounds.3.max(point.y);
+            }
+            Some(bounds)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 选区几何/交互测试基准:关闭即时标注与光标提示之外无关的开关,
+    /// 避免标注工具条覆盖选区内部探针;标注行为由专门测试覆盖。
     fn new_engine() -> SelectionEngine {
-        SelectionEngine::new(320, 200, FeatureFlags::default())
+        SelectionEngine::new(
+            320,
+            200,
+            FeatureFlags {
+                inline_annotation: false,
+                ..FeatureFlags::default()
+            },
+        )
     }
 
     fn drag(engine: &mut SelectionEngine, from: (i32, i32), to: (i32, i32)) {
@@ -972,7 +1820,7 @@ mod tests {
             .find(|(action, _)| *action == SelectionAction::Ocr)
             .copied()
             .unwrap();
-        let mut with_menu = engine;
+        let mut with_menu = engine.clone();
         let (cx, cy) = ocr.1.center();
         assert_eq!(
             with_menu.handle_event(InputEvent::LeftDown { x: cx, y: cy }),
@@ -988,7 +1836,7 @@ mod tests {
             .find(|(action, _)| *action == SelectionAction::Cancel)
             .copied()
             .unwrap();
-        let mut cancelling = engine;
+        let mut cancelling = engine.clone();
         let (cx, cy) = cancel.1.center();
         assert_eq!(
             cancelling.handle_event(InputEvent::LeftDown { x: cx, y: cy }),
@@ -1121,9 +1969,10 @@ mod tests {
 
     #[test]
     fn cursor_hint_maps_handles_edges_interior_and_outside() {
-        // 关闭放大镜:本测试只核对选区几何映射(chrome 优先级另有专项测试)。
+        // 关闭放大镜与即时标注:本测试只核对选区几何映射(chrome 优先级另有专项测试)。
         let flags = FeatureFlags {
             magnifier: false,
+            inline_annotation: false,
             ..FeatureFlags::default()
         };
         let mut engine = SelectionEngine::new(320, 200, flags);
@@ -1351,8 +2200,13 @@ mod tests {
 
     #[test]
     fn chrome_hits_follow_scaled_metrics() {
+        // 关闭即时标注:本测试只核对操作条/手柄/菜单的 scale 派生。
+        let flags = FeatureFlags {
+            inline_annotation: false,
+            ..FeatureFlags::default()
+        };
         for scale in [1.5_f64, 2.0] {
-            let mut engine = SelectionEngine::new(800, 600, FeatureFlags::default()).with_scale(scale);
+            let mut engine = SelectionEngine::new(800, 600, flags).with_scale(scale);
             drag(&mut engine, (40, 30), (200, 120));
             let metrics = engine.metrics();
             let buttons = composer::toolbar_buttons(engine.flags());
@@ -1391,5 +2245,341 @@ mod tests {
             let (mx, my) = m_rect.center();
             assert_eq!(engine.hit_menu(mx, my), Some(m_action), "scale {scale}");
         }
+    }
+
+    // ---- R21 选区即时标注。----
+
+    fn inline_engine(width: u32, height: u32) -> SelectionEngine {
+        SelectionEngine::new(width, height, FeatureFlags::default()).with_annotation_options(
+            AnnotationOptions {
+                text_input: true,
+                ..AnnotationOptions::default()
+            },
+        )
+    }
+
+    fn drag_selection(engine: &mut SelectionEngine, from: (i32, i32), to: (i32, i32)) {
+        drag(engine, from, to);
+    }
+
+    /// 点击标注工具条上指定动作的按钮中心。
+    fn click_annotation_button(engine: &mut SelectionEngine, action: SelectionAction) {
+        let panel = engine.annotation_panel().expect("annotation panel");
+        let buttons = engine.annotation_buttons();
+        let rect = composer::annotation_button_rects(engine.metrics(), panel, &buttons)
+            .into_iter()
+            .find(|(candidate, _)| *candidate == action)
+            .map(|(_, rect)| rect)
+            .expect("button present");
+        let (cx, cy) = rect.center();
+        engine.handle_event(InputEvent::LeftDown { x: cx, y: cy });
+        engine.handle_event(InputEvent::LeftUp { x: cx, y: cy });
+        assert_eq!(engine.state(), &EngineState::Selected);
+    }
+
+    #[test]
+    fn annotation_toolbar_visibility_follows_feature_and_text_input() {
+        let mut on = inline_engine(800, 600);
+        drag_selection(&mut on, (40, 30), (760, 560));
+        assert!(on.annotation_panel().is_some());
+        let buttons = on.annotation_buttons();
+        for tool in AnnotationTool::ALL {
+            assert!(
+                buttons.contains(&SelectionAction::Tool(tool)),
+                "missing {tool:?}"
+            );
+        }
+        assert!(buttons.contains(&SelectionAction::Undo));
+        assert!(buttons.contains(&SelectionAction::Redo));
+        assert!(buttons.contains(&SelectionAction::Delete));
+        // 平台无文本输入通道:文字工具不出现在工具条。
+        let mut no_text = SelectionEngine::new(800, 600, FeatureFlags::default());
+        drag_selection(&mut no_text, (40, 30), (760, 560));
+        assert!(!no_text
+            .annotation_buttons()
+            .contains(&SelectionAction::Tool(AnnotationTool::Text)));
+        // 关闭 inlineAnnotation:选区无标注工具,操作条/选择交互保持可用。
+        let mut off = SelectionEngine::new(
+            800,
+            600,
+            FeatureFlags {
+                inline_annotation: false,
+                ..FeatureFlags::default()
+            },
+        );
+        drag_selection(&mut off, (40, 30), (760, 560));
+        assert!(off.annotation_panel().is_none());
+        assert!(off.annotation_buttons().is_empty());
+    }
+
+    #[test]
+    fn drawing_tools_commit_annotations_and_support_undo_redo_delete() {
+        let mut engine = inline_engine(800, 600);
+        drag_selection(&mut engine, (40, 30), (760, 560));
+
+        click_annotation_button(&mut engine, SelectionAction::Tool(AnnotationTool::Rect));
+        assert_eq!(engine.tool(), Some(AnnotationTool::Rect));
+        // 选区内(避开工具条与操作条)拖出矩形。
+        engine.handle_event(InputEvent::LeftDown { x: 200, y: 300 });
+        assert!(matches!(engine.state(), EngineState::Drawing { .. }));
+        engine.handle_event(InputEvent::PointerMove { x: 420, y: 420 });
+        engine.handle_event(InputEvent::LeftUp { x: 420, y: 420 });
+        assert_eq!(engine.state(), &EngineState::Selected);
+        assert_eq!(engine.annotations().len(), 1);
+        assert!(matches!(engine.annotations()[0], Annotation::Rect { .. }));
+
+        click_annotation_button(&mut engine, SelectionAction::Tool(AnnotationTool::Ellipse));
+        engine.handle_event(InputEvent::LeftDown { x: 250, y: 320 });
+        engine.handle_event(InputEvent::PointerMove { x: 450, y: 440 });
+        engine.handle_event(InputEvent::LeftUp { x: 450, y: 440 });
+        assert_eq!(engine.annotations().len(), 2);
+
+        // Ctrl+Z 撤销、Ctrl+Y 重做(平台壳映射为 LogicalKey)。
+        assert_eq!(
+            engine.handle_event(InputEvent::Key {
+                key: LogicalKey::Undo,
+                shift: false
+            }),
+            EngineOutcome::Redraw
+        );
+        assert_eq!(engine.annotations().len(), 1);
+        assert_eq!(
+            engine.handle_event(InputEvent::Key {
+                key: LogicalKey::Redo,
+                shift: false
+            }),
+            EngineOutcome::Redraw
+        );
+        assert_eq!(engine.annotations().len(), 2);
+
+        // 光标停在最后一个图元内:Delete 删除它,Undo 恢复。
+        engine.handle_event(InputEvent::PointerMove { x: 450, y: 440 });
+        engine.handle_event(InputEvent::Key {
+            key: LogicalKey::Delete,
+            shift: false,
+        });
+        assert_eq!(engine.annotations().len(), 1);
+        engine.handle_event(InputEvent::Key {
+            key: LogicalKey::Undo,
+            shift: false,
+        });
+        assert_eq!(engine.annotations().len(), 2);
+
+        // 退化草稿不入栈(2px 高低于 MIN_DRAW_SIZE)。
+        click_annotation_button(&mut engine, SelectionAction::Tool(AnnotationTool::Rect));
+        engine.handle_event(InputEvent::LeftDown { x: 500, y: 300 });
+        engine.handle_event(InputEvent::PointerMove { x: 520, y: 301 });
+        engine.handle_event(InputEvent::LeftUp { x: 520, y: 301 });
+        assert_eq!(engine.annotations().len(), 2);
+    }
+
+    #[test]
+    fn freehand_tools_collect_points_and_commit() {
+        let mut engine = inline_engine(800, 600);
+        drag_selection(&mut engine, (40, 30), (760, 560));
+        click_annotation_button(&mut engine, SelectionAction::Tool(AnnotationTool::Pen));
+        engine.handle_event(InputEvent::LeftDown { x: 200, y: 300 });
+        for point in [(220, 320), (260, 360), (300, 380)] {
+            engine.handle_event(InputEvent::PointerMove {
+                x: point.0,
+                y: point.1,
+            });
+        }
+        engine.handle_event(InputEvent::LeftUp { x: 300, y: 380 });
+        match &engine.annotations()[0] {
+            Annotation::Pen { points, .. } => assert!(points.len() >= 3),
+            other => panic!("expected pen, got {other:?}"),
+        }
+
+        click_annotation_button(&mut engine, SelectionAction::Tool(AnnotationTool::Highlighter));
+        engine.handle_event(InputEvent::LeftDown { x: 200, y: 400 });
+        engine.handle_event(InputEvent::PointerMove { x: 320, y: 430 });
+        engine.handle_event(InputEvent::LeftUp { x: 320, y: 430 });
+        assert!(matches!(
+            engine.annotations()[1],
+            Annotation::Highlighter { .. }
+        ));
+    }
+
+    #[test]
+    fn number_tool_places_incrementing_values_and_reuses_after_undo() {
+        let mut engine = inline_engine(800, 600).with_annotation_options(AnnotationOptions {
+            text_input: true,
+            number_start: 5,
+            ..AnnotationOptions::default()
+        });
+        drag_selection(&mut engine, (40, 30), (760, 560));
+        click_annotation_button(&mut engine, SelectionAction::Tool(AnnotationTool::Number));
+        engine.handle_event(InputEvent::LeftDown { x: 200, y: 300 });
+        engine.handle_event(InputEvent::LeftUp { x: 200, y: 300 });
+        engine.handle_event(InputEvent::LeftDown { x: 260, y: 300 });
+        engine.handle_event(InputEvent::LeftUp { x: 260, y: 300 });
+        let values: Vec<u32> = engine
+            .annotations()
+            .iter()
+            .filter_map(|op| match op {
+                Annotation::Number { value, .. } => Some(*value),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(values, [5, 6]);
+        engine.handle_event(InputEvent::Key {
+            key: LogicalKey::Undo,
+            shift: false,
+        });
+        engine.handle_event(InputEvent::LeftDown { x: 320, y: 300 });
+        engine.handle_event(InputEvent::LeftUp { x: 320, y: 300 });
+        let last = engine.annotations().last().cloned().unwrap();
+        assert!(matches!(last, Annotation::Number { value: 6, .. }));
+    }
+
+    #[test]
+    fn text_tool_edits_commits_and_cancels() {
+        let mut engine = inline_engine(800, 600);
+        drag_selection(&mut engine, (40, 30), (760, 560));
+        click_annotation_button(&mut engine, SelectionAction::Tool(AnnotationTool::Text));
+        engine.handle_event(InputEvent::LeftDown { x: 200, y: 300 });
+        engine.handle_event(InputEvent::LeftUp { x: 200, y: 300 });
+        assert!(engine.text_edit().is_some());
+        // IME 组合串 + 直入字符;Enter 提交。
+        engine.handle_event(InputEvent::Composition("zhong".into()));
+        engine.handle_event(InputEvent::Text("中".into()));
+        assert_eq!(engine.text_edit().unwrap().text, "中");
+        assert!(engine.text_edit().unwrap().preedit.is_empty());
+        engine.handle_event(InputEvent::Key {
+            key: LogicalKey::Enter,
+            shift: false,
+        });
+        match &engine.annotations()[0] {
+            Annotation::Text { text, x, y, .. } => {
+                assert_eq!(text, "中");
+                assert_eq!((*x, *y), (200.0, 300.0));
+            }
+            other => panic!("expected text, got {other:?}"),
+        }
+        // 空白文本提交丢弃;Esc 取消编辑不产生图元。
+        engine.handle_event(InputEvent::LeftDown { x: 300, y: 400 });
+        engine.handle_event(InputEvent::LeftUp { x: 300, y: 400 });
+        engine.handle_event(InputEvent::Key {
+            key: LogicalKey::Enter,
+            shift: false,
+        });
+        assert_eq!(engine.annotations().len(), 1);
+        engine.handle_event(InputEvent::Text("x".into()));
+        engine.handle_event(InputEvent::Key {
+            key: LogicalKey::Escape,
+            shift: false,
+        });
+        assert!(engine.text_edit().is_none());
+        assert_eq!(engine.annotations().len(), 1);
+    }
+
+    #[test]
+    fn typing_without_text_edit_never_creates_annotations() {
+        let mut engine = inline_engine(800, 600);
+        drag_selection(&mut engine, (40, 30), (760, 560));
+        engine.handle_event(InputEvent::Text("abc".into()));
+        engine.handle_event(InputEvent::Composition("ni".into()));
+        assert!(engine.annotations().is_empty());
+    }
+
+    #[test]
+    fn enabled_tool_draws_and_clamps_inside_selection_and_exits_outside() {
+        let mut engine = inline_engine(400, 300);
+        drag_selection(&mut engine, (40, 30), (300, 250));
+        click_annotation_button(&mut engine, SelectionAction::Tool(AnnotationTool::Arrow));
+        // 工具条在选区顶部;从下方空白处拖出选区外,端点钳制在选区内。
+        engine.handle_event(InputEvent::LeftDown { x: 100, y: 220 });
+        engine.handle_event(InputEvent::PointerMove { x: 900, y: 900 });
+        engine.handle_event(InputEvent::LeftUp { x: 900, y: 900 });
+        match &engine.annotations()[0] {
+            Annotation::Arrow { to, .. } => {
+                assert_eq!((to.x, to.y), (300.0, 250.0));
+            }
+            other => panic!("expected arrow, got {other:?}"),
+        }
+        // 选区外按下:退出工具并重新拖选。
+        engine.handle_event(InputEvent::LeftDown { x: 5, y: 5 });
+        assert_eq!(engine.tool(), None);
+        assert_eq!(engine.state(), &EngineState::Dragging { anchor_x: 5, anchor_y: 5 });
+        assert!(engine.selection().is_none());
+    }
+
+    #[test]
+    fn starting_a_new_selection_resets_annotation_session() {
+        let mut engine = inline_engine(800, 600);
+        drag_selection(&mut engine, (40, 30), (760, 560));
+        click_annotation_button(&mut engine, SelectionAction::Tool(AnnotationTool::Rect));
+        engine.handle_event(InputEvent::LeftDown { x: 200, y: 300 });
+        engine.handle_event(InputEvent::PointerMove { x: 400, y: 420 });
+        engine.handle_event(InputEvent::LeftUp { x: 400, y: 420 });
+        assert_eq!(engine.annotations().len(), 1);
+        // 选区外重新拖选:旧图元/撤销栈不落到新选区。
+        engine.handle_event(InputEvent::LeftDown { x: 10, y: 10 });
+        engine.handle_event(InputEvent::PointerMove { x: 300, y: 200 });
+        engine.handle_event(InputEvent::LeftUp { x: 300, y: 200 });
+        assert!(engine.annotations().is_empty());
+        assert_eq!(engine.tool(), None);
+        assert!(!engine.undo_annotation());
+    }
+
+    #[test]
+    fn inline_disabled_keeps_selection_move_and_confirm_paths() {
+        let mut engine = SelectionEngine::new(
+            320,
+            200,
+            FeatureFlags {
+                inline_annotation: false,
+                ..FeatureFlags::default()
+            },
+        );
+        drag(&mut engine, (20, 20), (100, 80));
+        engine.handle_event(InputEvent::LeftDown { x: 60, y: 50 });
+        assert!(matches!(engine.state(), EngineState::Moving { .. }));
+        engine.handle_event(InputEvent::PointerMove { x: 70, y: 55 });
+        engine.handle_event(InputEvent::LeftUp { x: 70, y: 55 });
+        assert_eq!(engine.state(), &EngineState::Selected);
+        assert_eq!(
+            engine.selection(),
+            Some(PhysicalRect {
+                x: 30,
+                y: 25,
+                width: 81,
+                height: 61
+            })
+        );
+        // 工具快捷键在关闭时也不产生图元。
+        engine.handle_event(InputEvent::Key {
+            key: LogicalKey::Undo,
+            shift: false,
+        });
+        assert!(engine.annotations().is_empty());
+    }
+
+    #[test]
+    fn annotation_toolbar_actions_never_leak_to_shell_outcomes() {
+        let mut engine = inline_engine(800, 600);
+        drag_selection(&mut engine, (40, 30), (760, 560));
+        let panel = engine.annotation_panel().unwrap();
+        let buttons = engine.annotation_buttons();
+        for (_action, rect) in composer::annotation_button_rects(engine.metrics(), panel, &buttons) {
+            let (cx, cy) = rect.center();
+            assert_eq!(
+                engine.handle_event(InputEvent::LeftDown { x: cx, y: cy }),
+                EngineOutcome::Redraw
+            );
+            assert_eq!(
+                engine.handle_event(InputEvent::LeftUp { x: cx, y: cy }),
+                EngineOutcome::Redraw
+            );
+        }
+        // 工具条动作不改变终态语义:Enter 仍确认选区。
+        assert!(matches!(
+            engine.handle_event(InputEvent::Key {
+                key: LogicalKey::Enter,
+                shift: false
+            }),
+            EngineOutcome::Confirmed(_)
+        ));
     }
 }

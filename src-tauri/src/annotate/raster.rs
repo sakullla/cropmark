@@ -21,13 +21,62 @@ pub fn rasterize(frame: &Frame, annotations: &[Annotation]) -> Result<Frame, Cap
         return Err(CaptureError::invalid_buffer("error.capture.buffer_empty"));
     }
     let mut out = frame.clone();
-    for op in exportable(annotations) {
-        apply(&mut out, &op)?;
-    }
+    apply_annotations(
+        &mut out.rgba,
+        out.width,
+        out.height,
+        out.scale,
+        annotations,
+    )?;
     Ok(out)
 }
 
-fn apply(frame: &mut Frame, op: &Annotation) -> Result<(), CaptureError> {
+/// 宽松合成:逐图元应用,单个图元失败(如系统字体缺失导致文字无法绘制)
+/// 时跳过该图元而不是让整次完成失败。选区即时标注的完成路径使用它,
+/// 标注失败不得阻断复制/保存/贴图/取字(ADR-14 失败边界)。
+pub fn rasterize_lenient(frame: &Frame, annotations: &[Annotation]) -> Frame {
+    let mut out = frame.clone();
+    for op in exportable(annotations) {
+        let _ = apply_one(&mut out.rgba, out.width, out.height, out.scale, &op);
+    }
+    out
+}
+
+/// 把图元列表应用到任意 RGBA 缓冲,过滤退化图元(`exportable`)。
+/// 与 `rasterize` 共用同一几何/颜色/字体管线:选区即时标注的合成呈现与
+/// 最终输出(`rasterize`)走同一实现,保证所见即所得(ADR-14)。
+pub(crate) fn apply_annotations(
+    rgba: &mut [u8],
+    width: u32,
+    height: u32,
+    scale: f64,
+    annotations: &[Annotation],
+) -> Result<(), CaptureError> {
+    for op in exportable(annotations) {
+        apply_one(rgba, width, height, scale, &op)?;
+    }
+    Ok(())
+}
+
+/// 单个图元,不做 `exportable` 过滤:合成器的拖动草稿需要即时反馈,
+/// 即便当前尺寸尚未达到导出下限也要可见。
+pub(crate) fn apply_annotation(
+    rgba: &mut [u8],
+    width: u32,
+    height: u32,
+    scale: f64,
+    op: &Annotation,
+) -> Result<(), CaptureError> {
+    apply_one(rgba, width, height, scale, op)
+}
+
+fn apply_one(
+    rgba: &mut [u8],
+    buf_w: u32,
+    buf_h: u32,
+    scale: f64,
+    op: &Annotation,
+) -> Result<(), CaptureError> {
     match op {
         Annotation::Mosaic {
             x,
@@ -36,18 +85,9 @@ fn apply(frame: &mut Frame, op: &Annotation) -> Result<(), CaptureError> {
             height,
             block,
         } => {
-            let (x, y, w, h) = clamped_rect(*x, *y, *width, *height, frame.width, frame.height);
+            let (x, y, w, h) = clamped_rect(*x, *y, *width, *height, buf_w, buf_h);
             if w > 0 && h > 0 {
-                pixelate(
-                    &mut frame.rgba,
-                    frame.width,
-                    frame.height,
-                    x,
-                    y,
-                    w,
-                    h,
-                    *block,
-                );
+                pixelate(rgba, buf_w, buf_h, x, y, w, h, *block);
             }
         }
         Annotation::Rect {
@@ -60,14 +100,14 @@ fn apply(frame: &mut Frame, op: &Annotation) -> Result<(), CaptureError> {
         } => {
             let (x0, y0, w, h) = normalized(*x, *y, *width, *height);
             draw_rect(
-                &mut frame.rgba,
-                frame.width,
-                frame.height,
+                rgba,
+                buf_w,
+                buf_h,
                 x0,
                 y0,
                 w,
                 h,
-                resolve_stroke(frame.scale, *stroke_width),
+                resolve_stroke(scale, *stroke_width),
                 resolve_color(color),
             );
         }
@@ -78,14 +118,14 @@ fn apply(frame: &mut Frame, op: &Annotation) -> Result<(), CaptureError> {
             stroke_width,
         } => {
             draw_arrow(
-                &mut frame.rgba,
-                frame.width,
-                frame.height,
+                rgba,
+                buf_w,
+                buf_h,
                 from.x as f32,
                 from.y as f32,
                 to.x as f32,
                 to.y as f32,
-                resolve_stroke(frame.scale, *stroke_width),
+                resolve_stroke(scale, *stroke_width),
                 resolve_color(color),
             );
         }
@@ -97,9 +137,9 @@ fn apply(frame: &mut Frame, op: &Annotation) -> Result<(), CaptureError> {
             color,
         } => {
             draw_text(
-                &mut frame.rgba,
-                frame.width,
-                frame.height,
+                rgba,
+                buf_w,
+                buf_h,
                 *x as f32,
                 *y as f32,
                 text,
@@ -117,14 +157,14 @@ fn apply(frame: &mut Frame, op: &Annotation) -> Result<(), CaptureError> {
         } => {
             let (x0, y0, w, h) = normalized(*x, *y, *width, *height);
             draw_ellipse(
-                &mut frame.rgba,
-                frame.width,
-                frame.height,
+                rgba,
+                buf_w,
+                buf_h,
                 x0,
                 y0,
                 w,
                 h,
-                resolve_stroke(frame.scale, *stroke_width),
+                resolve_stroke(scale, *stroke_width),
                 resolve_color(color),
             );
         }
@@ -135,14 +175,14 @@ fn apply(frame: &mut Frame, op: &Annotation) -> Result<(), CaptureError> {
             stroke_width,
         } => {
             draw_line(
-                &mut frame.rgba,
-                frame.width,
-                frame.height,
+                rgba,
+                buf_w,
+                buf_h,
                 from.x as f32,
                 from.y as f32,
                 to.x as f32,
                 to.y as f32,
-                resolve_stroke(frame.scale, *stroke_width),
+                resolve_stroke(scale, *stroke_width),
                 resolve_color(color),
             );
         }
@@ -154,9 +194,9 @@ fn apply(frame: &mut Frame, op: &Annotation) -> Result<(), CaptureError> {
             color,
         } => {
             draw_text(
-                &mut frame.rgba,
-                frame.width,
-                frame.height,
+                rgba,
+                buf_w,
+                buf_h,
                 *x as f32,
                 *y as f32,
                 &value.to_string(),
@@ -170,11 +210,11 @@ fn apply(frame: &mut Frame, op: &Annotation) -> Result<(), CaptureError> {
             stroke_width,
         } => {
             draw_polyline_translucent(
-                &mut frame.rgba,
-                frame.width,
-                frame.height,
+                rgba,
+                buf_w,
+                buf_h,
                 points,
-                resolve_stroke(frame.scale, *stroke_width),
+                resolve_stroke(scale, *stroke_width),
                 resolve_color(color),
                 HIGHLIGHTER_ALPHA,
             );
@@ -185,11 +225,11 @@ fn apply(frame: &mut Frame, op: &Annotation) -> Result<(), CaptureError> {
             stroke_width,
         } => {
             draw_polyline(
-                &mut frame.rgba,
-                frame.width,
-                frame.height,
+                rgba,
+                buf_w,
+                buf_h,
                 points,
-                resolve_stroke(frame.scale, *stroke_width),
+                resolve_stroke(scale, *stroke_width),
                 resolve_color(color),
             );
         }
@@ -200,18 +240,9 @@ fn apply(frame: &mut Frame, op: &Annotation) -> Result<(), CaptureError> {
             height,
             sigma,
         } => {
-            let (x, y, w, h) = clamped_rect(*x, *y, *width, *height, frame.width, frame.height);
+            let (x, y, w, h) = clamped_rect(*x, *y, *width, *height, buf_w, buf_h);
             if w >= 2 && h >= 2 {
-                blur::gaussian(
-                    &mut frame.rgba,
-                    frame.width,
-                    frame.height,
-                    x,
-                    y,
-                    w,
-                    h,
-                    *sigma,
-                );
+                blur::gaussian(rgba, buf_w, buf_h, x, y, w, h, *sigma);
             }
         }
     }

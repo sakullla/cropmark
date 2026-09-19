@@ -16,6 +16,10 @@ use windows::Win32::Graphics::Gdi::{
     GetDC, ReleaseDC, ScreenToClient, StretchDIBits, UpdateWindow, ValidateRect, BITMAPINFO,
     BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, RGBQUAD, SRCCOPY,
 };
+use windows::Win32::UI::Input::Ime::{
+    ImmGetCompositionStringW, ImmGetContext, ImmReleaseContext, ImmSetCompositionWindow,
+    COMPOSITIONFORM, CFS_POINT, GCS_COMPSTR, GCS_RESULTSTR, HIMC, IME_COMPOSITION_STRING,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -24,19 +28,21 @@ use windows::Win32::UI::WindowsAndMessaging::{
     PostQuitMessage, RegisterClassExW, SetCursor, SetForegroundWindow,
     SetWindowPos, ShowWindow, TranslateMessage,
     CS_HREDRAW, CS_VREDRAW, HWND_TOPMOST, IDC_ARROW, IDC_CROSS, IDC_HAND, IDC_SIZEALL, IDC_SIZENESW,
-    IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, MSG, SWP_SHOWWINDOW, SW_SHOW, WM_CLOSE, WM_DESTROY,
-    WM_ERASEBKGND, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
-    WM_PAINT, WM_RBUTTONDOWN, WM_SETCURSOR, WM_SETFOCUS, WNDCLASSEXW, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_POPUP,
+    IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, MSG, SWP_SHOWWINDOW, SW_SHOW, WM_CHAR, WM_CLOSE,
+    WM_DESTROY, WM_ERASEBKGND, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_STARTCOMPOSITION,
+    WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT,
+    WM_RBUTTONDOWN, WM_SETCURSOR, WM_SETFOCUS, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_POPUP,
 };
 
+use crate::annotate::Annotation;
 use crate::capture::buffer::Frame;
 use crate::capture::error::CaptureError;
 use crate::capture::geometry::{MonitorGeom, PhysicalRect};
 use crate::capture::selection::composer::{self, Composer};
 use crate::capture::selection::{
-    CursorHint, EngineOutcome, FeatureFlags, InputEvent, LogicalKey, SelectionAction,
-    SelectionEngine,
+    AnnotationOptions, CursorHint, EngineOutcome, FeatureFlags, InputEvent, LogicalKey,
+    SelectionAction, SelectionEngine,
 };
 use crate::capture::session::QuietAction;
 
@@ -47,25 +53,31 @@ static CLASS_SERIAL: AtomicU32 = AtomicU32::new(1);
 /// `request_shell_close` 从任意线程请求关闭,泵退出后旧结果按代际丢弃。
 static ACTIVE_SHELL_HWND: AtomicIsize = AtomicIsize::new(0);
 
-// 虚拟键码(直接使用数值,不为 Shift 状态引入新的 windows crate feature)。
+// 虚拟键码(直接使用数值,不为修饰键状态引入新的 windows crate feature)。
+const VK_BACK: u32 = 0x08;
 const VK_SHIFT: u32 = 0x10;
+const VK_CONTROL: u32 = 0x11;
 const VK_RETURN: u32 = 0x0D;
 const VK_ESCAPE: u32 = 0x1B;
 const VK_C: u32 = 0x43;
+const VK_Y: u32 = 0x59;
+const VK_Z: u32 = 0x5A;
+const VK_DELETE: u32 = 0x2E;
 const VK_LEFT: u32 = 0x25;
 const VK_UP: u32 = 0x26;
 const VK_RIGHT: u32 = 0x27;
 const VK_DOWN: u32 = 0x28;
 
-/// 壳的最终结果:会话层据此选择完成路径。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// 壳的最终结果:会话层据此选择完成路径。R21 起携带即时标注图元
+/// (坐标相对冻结帧物理像素,由会话层平移到裁剪坐标系)。
+#[derive(Debug, Clone, PartialEq)]
 pub enum RegionOutcome {
     /// Enter 确认:rect 走普通完成路径(按 finishAction 预览或静默)。
-    Preview(PhysicalRect),
+    Preview(PhysicalRect, Vec<Annotation>),
     /// 操作条/菜单的「标注」动作:rect 强制走预览编辑器,不受静默完成配置影响。
-    Annotate(PhysicalRect),
+    Annotate(PhysicalRect, Vec<Annotation>),
     /// 操作条/菜单的 copy/save/pin/ocr 动作:rect 走 Quiet 完成路径并执行动作。
-    Quiet(PhysicalRect, QuietAction),
+    Quiet(PhysicalRect, QuietAction, Vec<Annotation>),
     /// Esc 或菜单「取消」:整个会话取消。
     Cancelled,
 }
@@ -97,6 +109,8 @@ struct ShellState {
     hooks: ShellHooks,
     canvas: Canvas,
     shift_down: bool,
+    /// Ctrl 按下状态:即时标注的撤销/重做快捷键(Ctrl+Z / Ctrl+Y)判定。
+    ctrl_down: bool,
     outcome: Option<RegionOutcome>,
     timing: bool,
     /// 是否曾真正获得焦点:仅"获得过焦点后又失去"才触发失焦取消,
@@ -115,9 +129,10 @@ pub fn pick_region(
     frame: &Frame,
     monitor: &MonitorGeom,
     flags: FeatureFlags,
+    annotation_options: AnnotationOptions,
     hooks: ShellHooks,
 ) -> Result<RegionOutcome, CaptureError> {
-    run_shell(frame, monitor, flags, hooks)
+    run_shell(frame, monitor, flags, annotation_options, hooks)
 }
 
 /// 请求关闭当前选区壳(线程安全,可从任意线程调用):wm_close 走默认窗口
@@ -137,6 +152,7 @@ fn run_shell(
     frame: &Frame,
     monitor: &MonitorGeom,
     flags: FeatureFlags,
+    annotation_options: AnnotationOptions,
     hooks: ShellHooks,
 ) -> Result<RegionOutcome, CaptureError> {
     let composer = Composer::new(frame)?;
@@ -150,7 +166,8 @@ fn run_shell(
             canvas: Canvas {
                 // 注入冻结帧 DPI 缩放:chrome(放大镜面板)光标命中需要。
                 engine: SelectionEngine::new(width as u32, height as u32, flags)
-                    .with_scale(frame.scale),
+                    .with_scale(frame.scale)
+                    .with_annotation_options(annotation_options),
                 composer,
                 scratch: vec![0; bytes],
                 present_buf: vec![0; bytes],
@@ -158,6 +175,7 @@ fn run_shell(
                 height,
             },
             shift_down: false,
+            ctrl_down: false,
             outcome: None,
             timing: std::env::var_os("CROPMARK_CAPTURE_TIMING").is_some(),
             had_focus: false,
@@ -187,7 +205,8 @@ fn feed_event(state: &mut ShellState, event: InputEvent, hwnd: HWND) -> bool {
             false
         }
         EngineOutcome::Confirmed(rect) => {
-            state.outcome = Some(RegionOutcome::Preview(rect));
+            let annotations = state.canvas.engine.annotations().to_vec();
+            state.outcome = Some(RegionOutcome::Preview(rect, annotations));
             true
         }
         EngineOutcome::Cancelled => {
@@ -196,7 +215,7 @@ fn feed_event(state: &mut ShellState, event: InputEvent, hwnd: HWND) -> bool {
         }
         EngineOutcome::Action(action) => match action {
             SelectionAction::Annotate => {
-                if let Some(outcome) = annotate_outcome(state.canvas.engine.selection()) {
+                if let Some(outcome) = annotate_outcome(&state.canvas.engine) {
                     state.outcome = Some(outcome);
                     return true;
                 }
@@ -211,11 +230,18 @@ fn feed_event(state: &mut ShellState, event: InputEvent, hwnd: HWND) -> bool {
                 copy_color_value(state);
                 false
             }
+            // 标注工具条动作(工具切换/撤销/重做/删除)在引擎内消费,不会到达这里;
+            // 防御性忽略,不结束会话。
+            SelectionAction::Tool(_)
+            | SelectionAction::Undo
+            | SelectionAction::Redo
+            | SelectionAction::Delete => false,
             quiet => {
                 if let (Some(rect), Some(action)) =
                     (state.canvas.engine.selection(), quiet_action_for(quiet))
                 {
-                    state.outcome = Some(RegionOutcome::Quiet(rect, action));
+                    let annotations = state.canvas.engine.annotations().to_vec();
+                    state.outcome = Some(RegionOutcome::Quiet(rect, action, annotations));
                     return true;
                 }
                 false
@@ -249,18 +275,27 @@ fn foreground_belongs_to_self() -> bool {
 }
 
 /// 「标注」动作到壳结果的映射:引擎尚无选区时返回 None,会话继续等待。
-fn annotate_outcome(selection: Option<PhysicalRect>) -> Option<RegionOutcome> {
-    selection.map(RegionOutcome::Annotate)
+fn annotate_outcome(engine: &SelectionEngine) -> Option<RegionOutcome> {
+    engine.selection().map(|rect| {
+        RegionOutcome::Annotate(rect, engine.annotations().to_vec())
+    })
 }
 
-/// 操作条/菜单动作到静默完成动作的映射;标注/取消/复制色值不在此列。
+/// 操作条/菜单动作到静默完成动作的映射;标注/取消/复制色值/标注工具条
+/// 动作不在此列。
 fn quiet_action_for(action: SelectionAction) -> Option<QuietAction> {
     match action {
         SelectionAction::Copy => Some(QuietAction::Copy),
         SelectionAction::Save => Some(QuietAction::Save),
         SelectionAction::Pin => Some(QuietAction::Pin),
         SelectionAction::Ocr => Some(QuietAction::Ocr),
-        SelectionAction::Annotate | SelectionAction::Cancel | SelectionAction::CopyColor => None,
+        SelectionAction::Annotate
+        | SelectionAction::Cancel
+        | SelectionAction::CopyColor
+        | SelectionAction::Tool(_)
+        | SelectionAction::Undo
+        | SelectionAction::Redo
+        | SelectionAction::Delete => None,
     }
 }
 
@@ -296,6 +331,8 @@ fn map_virtual_key(vk: u32) -> Option<LogicalKey> {
         VK_RIGHT => Some(LogicalKey::ArrowRight),
         VK_DOWN => Some(LogicalKey::ArrowDown),
         VK_C => Some(LogicalKey::CopyColor),
+        // 文本编辑的退格/删除(非编辑态下引擎忽略)。
+        VK_BACK | VK_DELETE => Some(LogicalKey::Delete),
         _ => None,
     }
 }
@@ -305,11 +342,14 @@ fn compose_canvas(canvas: &mut Canvas) -> Option<Duration> {
     let started = Instant::now();
     let (w, h) = canvas.composer.size();
     let expected = w as usize * h as usize * 4;
-    // 壳侧防御:compose_into 要求 out 长度与冻结帧严格一致,越界会 panic;
+    // 壳侧防御:compose_* 要求 out 长度与冻结帧严格一致,越界会 panic;
     // 长度不符时跳过本次合成而非崩溃。
     if canvas.scratch.len() == expected && canvas.present_buf.len() == expected {
         let scene = canvas.engine.scene();
-        canvas.composer.compose_into(&scene, &mut canvas.scratch);
+        let overlay = canvas.engine.annotation_overlay();
+        canvas
+            .composer
+            .compose_into_with_overlay(&scene, &overlay, &mut canvas.scratch);
         swizzle_rgba_to_bgra(&canvas.scratch, &mut canvas.present_buf);
         return Some(started.elapsed());
     }
@@ -579,13 +619,114 @@ unsafe extern "system" fn wnd_proc(
                     state.shift_down = msg == WM_KEYDOWN;
                     return false;
                 }
+                if vk == VK_CONTROL {
+                    state.ctrl_down = msg == WM_KEYDOWN;
+                    return false;
+                }
                 if msg == WM_KEYDOWN {
+                    let shift = state.shift_down;
+                    // 即时标注快捷键:Ctrl+Z 撤销、Ctrl+Y / Ctrl+Shift+Z 重做
+                    // (非编辑/非标注态由引擎忽略)。
+                    if state.ctrl_down {
+                        let redo = shift;
+                        match vk {
+                            VK_Z => {
+                                let key = if redo {
+                                    LogicalKey::Redo
+                                } else {
+                                    LogicalKey::Undo
+                                };
+                                return feed_event(state, InputEvent::Key { key, shift }, hwnd);
+                            }
+                            VK_Y => {
+                                return feed_event(
+                                    state,
+                                    InputEvent::Key {
+                                        key: LogicalKey::Redo,
+                                        shift,
+                                    },
+                                    hwnd,
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
                     if let Some(key) = map_virtual_key(vk) {
-                        let shift = state.shift_down;
                         return feed_event(state, InputEvent::Key { key, shift }, hwnd);
                     }
                 }
                 false
+            });
+            if done {
+                PostQuitMessage(0);
+            }
+            LRESULT(0)
+        }
+        // 文本输入:WM_CHAR 直入(IME 关闭/英文模式);控制字符(退格/回车/
+        // 制表)由 WM_KEYDOWN 分支处理,这里丢弃避免重复。
+        WM_CHAR => {
+            if let Some(ch) = char::from_u32(wparam.0 as u32) {
+                if !ch.is_control() {
+                    let done = STATE.with(|slot| {
+                        let mut guard = slot.borrow_mut();
+                        let Some(state) = guard.as_mut() else {
+                            return false;
+                        };
+                        feed_event(state, InputEvent::Text(ch.to_string()), hwnd)
+                    });
+                    if done {
+                        PostQuitMessage(0);
+                    }
+                }
+            }
+            LRESULT(0)
+        }
+        // IME:组合串更新/提交结果都送给引擎;候选窗定位在组合开始时按文本
+        // 光标设置(基础路径,IME 不可用时 WM_CHAR 仍然工作)。
+        WM_IME_STARTCOMPOSITION => {
+            unsafe { position_composition_window(hwnd) };
+            LRESULT(0)
+        }
+        WM_IME_COMPOSITION => {
+            let flags = lparam.0 as u32;
+            let mut events: Vec<InputEvent> = Vec::new();
+            unsafe {
+                let himc = ImmGetContext(hwnd);
+                if !himc.0.is_null() {
+                    if flags & GCS_RESULTSTR.0 != 0 {
+                        if let Some(text) = read_ime_string(himc, GCS_RESULTSTR) {
+                            events.push(InputEvent::Text(text));
+                        }
+                    }
+                    if flags & GCS_COMPSTR.0 != 0 {
+                        let text = read_ime_string(himc, GCS_COMPSTR).unwrap_or_default();
+                        events.push(InputEvent::Composition(text));
+                    }
+                    let _ = ImmReleaseContext(hwnd, himc);
+                }
+            }
+            let mut done = false;
+            for event in events {
+                done = STATE.with(|slot| {
+                    let mut guard = slot.borrow_mut();
+                    let Some(state) = guard.as_mut() else {
+                        return false;
+                    };
+                    feed_event(state, event, hwnd)
+                }) || done;
+            }
+            if done {
+                PostQuitMessage(0);
+            }
+            LRESULT(0)
+        }
+        WM_IME_ENDCOMPOSITION => {
+            let done = STATE.with(|slot| {
+                let mut guard = slot.borrow_mut();
+                let Some(state) = guard.as_mut() else {
+                    return false;
+                };
+                feed_event(state, InputEvent::Composition(String::new()), hwnd)
             });
             if done {
                 PostQuitMessage(0);
@@ -598,6 +739,72 @@ unsafe extern "system" fn wnd_proc(
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
+}
+
+/// 读取 IME 组合串/结果串(UTF-16 → String);空串返回 None。
+unsafe fn read_ime_string(himc: HIMC, kind: IME_COMPOSITION_STRING) -> Option<String> {
+    let bytes = ImmGetCompositionStringW(himc, kind, None, 0);
+    if bytes <= 0 {
+        return None;
+    }
+    let mut buffer = vec![0u16; (bytes as usize).div_ceil(2)];
+    let written =
+        ImmGetCompositionStringW(himc, kind, Some(buffer.as_mut_ptr().cast()), bytes as u32);
+    if written <= 0 {
+        return None;
+    }
+    buffer.truncate(written as usize / 2);
+    String::from_utf16(&buffer)
+        .ok()
+        .filter(|text| !text.is_empty())
+}
+
+/// 把 IME 候选窗定位到文本光标处(客户区坐标);无编辑会话时为 no-op。
+unsafe fn position_composition_window(hwnd: HWND) {
+    let target = STATE.with(|slot| {
+        let guard = slot.borrow();
+        let state = guard.as_ref()?;
+        let caret = state.canvas.engine.text_caret()?;
+        Some((caret, state.canvas.width, state.canvas.height))
+    });
+    let Some(((x, y), engine_w, engine_h)) = target else {
+        return;
+    };
+    let mut client = RECT::default();
+    let _ = GetClientRect(hwnd, &mut client);
+    let (cx, cy) = map_engine_to_client(x, y, client, engine_w, engine_h);
+    let himc = ImmGetContext(hwnd);
+    if himc.0.is_null() {
+        return;
+    }
+    let form = COMPOSITIONFORM {
+        dwStyle: CFS_POINT,
+        ptCurrentPos: POINT { x: cx, y: cy },
+        rcArea: RECT::default(),
+    };
+    let _ = ImmSetCompositionWindow(himc, &form);
+    let _ = ImmReleaseContext(hwnd, himc);
+}
+
+/// 引擎物理像素 → 客户区坐标(DPI 拉伸下与 `map_client_to_engine` 互逆)。
+fn map_engine_to_client(
+    x: i32,
+    y: i32,
+    client: RECT,
+    engine_w: i32,
+    engine_h: i32,
+) -> (i32, i32) {
+    let cw = (client.right - client.left).max(1) as i64;
+    let ch = (client.bottom - client.top).max(1) as i64;
+    let ew = engine_w.max(1) as i64;
+    let eh = engine_h.max(1) as i64;
+    if cw == ew && ch == eh {
+        return (x, y);
+    }
+    (
+        (i64::from(x) * cw / ew) as i32,
+        (i64::from(y) * ch / eh) as i32,
+    )
 }
 
 unsafe fn pump() {
@@ -618,11 +825,25 @@ unsafe fn pump() {
 mod tests {
     use super::*;
     use crate::capture::buffer::{accept_buffer, RawBuffer};
+    use crate::capture::selection::AnnotationTool;
 
     /// 合成壳状态:真实引擎+合成器,空 hwnd(blit 守卫跳过真实呈现)。
     /// wnd_proc 只做消息→InputEvent 映射,集成测试直接驱动 feed_event 即
     /// 等价覆盖「消息序列 → 终态/退出」链路。
+    /// 默认关闭即时标注,避免工具条覆盖既有选区交互探针;
+    /// 标注链路使用 [`test_state_with_flags`]。
     fn test_state(width: u32, height: u32) -> ShellState {
+        test_state_with_flags(
+            width,
+            height,
+            FeatureFlags {
+                inline_annotation: false,
+                ..FeatureFlags::default()
+            },
+        )
+    }
+
+    fn test_state_with_flags(width: u32, height: u32, flags: FeatureFlags) -> ShellState {
         fn noop_copy_color(_text: &str, _hex: &str) {}
         let frame = accept_buffer(RawBuffer::ready(width, height, vec![60u8; (width * height * 4) as usize])).unwrap();
         let bytes = frame.rgba.len();
@@ -631,8 +852,12 @@ mod tests {
                 copy_color: noop_copy_color,
             },
             canvas: Canvas {
-                engine: SelectionEngine::new(width, height, FeatureFlags::default())
-                    .with_scale(frame.scale),
+                engine: SelectionEngine::new(width, height, flags)
+                    .with_scale(frame.scale)
+                    .with_annotation_options(AnnotationOptions {
+                        text_input: true,
+                        ..AnnotationOptions::default()
+                    }),
                 composer: Composer::new(&frame).unwrap(),
                 scratch: vec![0; bytes],
                 present_buf: vec![0; bytes],
@@ -640,6 +865,7 @@ mod tests {
                 height: height as i32,
             },
             shift_down: false,
+            ctrl_down: false,
             outcome: None,
             timing: false,
             had_focus: true,
@@ -678,12 +904,15 @@ mod tests {
         assert!(feed_event(&mut state, key(LogicalKey::Enter), hwnd));
         assert_eq!(
             state.outcome,
-            Some(RegionOutcome::Preview(PhysicalRect {
-                x: 40,
-                y: 30,
-                width: 161,
-                height: 91
-            }))
+            Some(RegionOutcome::Preview(
+                PhysicalRect {
+                    x: 40,
+                    y: 30,
+                    width: 161,
+                    height: 91
+                },
+                Vec::new()
+            ))
         );
     }
 
@@ -731,7 +960,8 @@ mod tests {
                     width: 161,
                     height: 91
                 },
-                QuietAction::Copy
+                QuietAction::Copy,
+                Vec::new()
             ))
         );
     }
@@ -761,28 +991,35 @@ mod tests {
         // 「标注」必须与 Enter 确认区分:会话层据此强制打开预览编辑器。
         assert_eq!(
             state.outcome,
-            Some(RegionOutcome::Annotate(PhysicalRect {
-                x: 40,
-                y: 30,
-                width: 161,
-                height: 91
-            }))
+            Some(RegionOutcome::Annotate(
+                PhysicalRect {
+                    x: 40,
+                    y: 30,
+                    width: 161,
+                    height: 91
+                },
+                Vec::new()
+            ))
         );
     }
 
     #[test]
     fn annotate_outcome_needs_a_selection_and_keeps_rect() {
-        let rect = PhysicalRect {
-            x: 5,
-            y: 6,
-            width: 30,
-            height: 40,
-        };
+        let mut state = test_state(320, 200);
+        assert_eq!(annotate_outcome(&state.canvas.engine), None);
+        let hwnd = HWND::default();
+        for event in [
+            InputEvent::LeftDown { x: 5, y: 6 },
+            InputEvent::PointerMove { x: 35, y: 46 },
+            InputEvent::LeftUp { x: 35, y: 46 },
+        ] {
+            assert!(!feed_event(&mut state, event, hwnd));
+        }
+        let rect = state.canvas.engine.selection().unwrap();
         assert_eq!(
-            annotate_outcome(Some(rect)),
-            Some(RegionOutcome::Annotate(rect))
+            annotate_outcome(&state.canvas.engine),
+            Some(RegionOutcome::Annotate(rect, Vec::new()))
         );
-        assert_eq!(annotate_outcome(None), None);
     }
 
     #[test]
@@ -806,8 +1043,8 @@ mod tests {
         assert!(!feed_event(&mut state, InputEvent::LeftUp { x: 999, y: 100 }, hwnd));
         // EdgeResize 中 Esc 也能直接终态(另起会话验证 Enter 路径前先看钳制)。
         assert!(feed_event(&mut state, key(LogicalKey::Enter), hwnd));
-        assert!(matches!(state.outcome, Some(RegionOutcome::Preview(_))));
-        if let Some(RegionOutcome::Preview(rect)) = state.outcome {
+        assert!(matches!(state.outcome, Some(RegionOutcome::Preview(..))));
+        if let Some(RegionOutcome::Preview(rect, _)) = state.outcome {
             assert_eq!((rect.width, rect.height), (280, 91)); // 右边钳到 319
         }
         // EdgeResize 中 Esc → Cancelled。
@@ -895,8 +1132,137 @@ mod tests {
         assert_eq!(map_virtual_key(VK_RIGHT), Some(LogicalKey::ArrowRight));
         assert_eq!(map_virtual_key(VK_DOWN), Some(LogicalKey::ArrowDown));
         assert_eq!(map_virtual_key(VK_C), Some(LogicalKey::CopyColor));
+        assert_eq!(map_virtual_key(VK_BACK), Some(LogicalKey::Delete));
+        assert_eq!(map_virtual_key(VK_DELETE), Some(LogicalKey::Delete));
         assert_eq!(map_virtual_key(VK_SHIFT), None);
+        assert_eq!(map_virtual_key(VK_CONTROL), None);
+        assert_eq!(map_virtual_key(VK_Z), None);
         assert_eq!(map_virtual_key(0x41), None);
+    }
+
+    #[test]
+    fn inline_annotation_flows_to_preview_and_quiet_outcomes() {
+        // Enter 确认:Preview 结果携带图元。
+        let mut state = test_state_with_flags(800, 600, FeatureFlags::default());
+        let hwnd = HWND::default();
+        for event in [
+            InputEvent::LeftDown { x: 40, y: 30 },
+            InputEvent::PointerMove { x: 760, y: 560 },
+            InputEvent::LeftUp { x: 760, y: 560 },
+        ] {
+            assert!(!feed_event(&mut state, event, hwnd));
+        }
+        click_engine_tool(&mut state, hwnd, AnnotationTool::Rect);
+        for event in [
+            InputEvent::LeftDown { x: 200, y: 300 },
+            InputEvent::PointerMove { x: 400, y: 420 },
+            InputEvent::LeftUp { x: 400, y: 420 },
+        ] {
+            assert!(!feed_event(&mut state, event, hwnd));
+        }
+        assert_eq!(state.canvas.engine.annotations().len(), 1);
+        assert!(feed_event(&mut state, key(LogicalKey::Enter), hwnd));
+        match &state.outcome {
+            Some(RegionOutcome::Preview(rect, annotations)) => {
+                assert_eq!(rect.width, 721);
+                assert_eq!(annotations.len(), 1);
+                assert!(matches!(annotations[0], Annotation::Rect { .. }));
+            }
+            other => panic!("expected preview outcome, got {other:?}"),
+        }
+
+        // 操作条「复制」:Quiet 结果同样携带图元(输出合并后再执行动作)。
+        let mut state = test_state_with_flags(800, 600, FeatureFlags::default());
+        for event in [
+            InputEvent::LeftDown { x: 40, y: 30 },
+            InputEvent::PointerMove { x: 760, y: 560 },
+            InputEvent::LeftUp { x: 760, y: 560 },
+        ] {
+            assert!(!feed_event(&mut state, event, hwnd));
+        }
+        click_engine_tool(&mut state, hwnd, AnnotationTool::Ellipse);
+        for event in [
+            InputEvent::LeftDown { x: 220, y: 320 },
+            InputEvent::PointerMove { x: 420, y: 440 },
+            InputEvent::LeftUp { x: 420, y: 440 },
+        ] {
+            assert!(!feed_event(&mut state, event, hwnd));
+        }
+        let selection = state.canvas.engine.selection().unwrap();
+        let metrics = composer::ChromeMetrics::for_scale(1.0);
+        let buttons = composer::toolbar_buttons(state.canvas.engine.flags());
+        let panel =
+            composer::toolbar_panel(metrics, selection, (800, 600), &buttons).unwrap();
+        let (_, copy_rect) = composer::toolbar_button_rects(metrics, panel, &buttons)[0];
+        let (cx, cy) = copy_rect.center();
+        assert!(!feed_event(&mut state, InputEvent::LeftDown { x: cx, y: cy }, hwnd));
+        assert!(feed_event(&mut state, InputEvent::LeftUp { x: cx, y: cy }, hwnd));
+        match &state.outcome {
+            Some(RegionOutcome::Quiet(rect, QuietAction::Copy, annotations)) => {
+                assert_eq!(rect.width, 721);
+                assert_eq!(annotations.len(), 1);
+                assert!(matches!(annotations[0], Annotation::Ellipse { .. }));
+            }
+            other => panic!("expected quiet copy outcome, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn inline_text_tool_commits_from_shell_text_events() {
+        let mut state = test_state_with_flags(800, 600, FeatureFlags::default());
+        let hwnd = HWND::default();
+        for event in [
+            InputEvent::LeftDown { x: 40, y: 30 },
+            InputEvent::PointerMove { x: 760, y: 560 },
+            InputEvent::LeftUp { x: 760, y: 560 },
+        ] {
+            assert!(!feed_event(&mut state, event, hwnd));
+        }
+        click_engine_tool(&mut state, hwnd, AnnotationTool::Text);
+        assert!(!feed_event(
+            &mut state,
+            InputEvent::LeftDown { x: 200, y: 300 },
+            hwnd
+        ));
+        assert!(!feed_event(
+            &mut state,
+            InputEvent::LeftUp { x: 200, y: 300 },
+            hwnd
+        ));
+        assert!(state.canvas.engine.text_edit().is_some());
+        // IME 组合串 + 提交结果(壳按 WM_IME_* 转发)。
+        assert!(!feed_event(
+            &mut state,
+            InputEvent::Composition("zhong".into()),
+            hwnd
+        ));
+        assert!(!feed_event(&mut state, InputEvent::Text("中".into()), hwnd));
+        // 第一次 Enter 提交文本(不结束会话),第二次 Enter 确认选区。
+        assert!(!feed_event(&mut state, key(LogicalKey::Enter), hwnd));
+        assert!(state.canvas.engine.text_edit().is_none());
+        assert!(feed_event(&mut state, key(LogicalKey::Enter), hwnd));
+        match &state.outcome {
+            Some(RegionOutcome::Preview(_, annotations)) => match &annotations[0] {
+                Annotation::Text { text, .. } => assert_eq!(text, "中"),
+                other => panic!("expected text, got {other:?}"),
+            },
+            other => panic!("expected preview outcome, got {other:?}"),
+        }
+    }
+
+    /// 点击标注工具条上指定工具的按钮中心(引擎内部消费该动作)。
+    fn click_engine_tool(state: &mut ShellState, hwnd: HWND, tool: AnnotationTool) {
+        let panel = state.canvas.engine.annotation_panel().expect("panel");
+        let buttons = state.canvas.engine.annotation_buttons();
+        let rect = composer::annotation_button_rects(state.canvas.engine.metrics(), panel, &buttons)
+            .into_iter()
+            .find(|(action, _)| *action == SelectionAction::Tool(tool))
+            .map(|(_, rect)| rect)
+            .expect("tool button");
+        let (cx, cy) = rect.center();
+        assert!(!feed_event(state, InputEvent::LeftDown { x: cx, y: cy }, hwnd));
+        assert!(!feed_event(state, InputEvent::LeftUp { x: cx, y: cy }, hwnd));
+        assert_eq!(state.canvas.engine.tool(), Some(tool));
     }
 
     #[test]

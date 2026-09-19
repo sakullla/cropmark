@@ -318,6 +318,8 @@ export function mountPreview(root: HTMLElement): () => void {
   let source: HTMLCanvasElement | null = null;
   let tool: Tool = "arrow";
   let annotations: Annotation[] = [];
+  // R21:选区即时标注随帧带入的初始图元;新帧到达时恢复到该列表(可继续编辑)。
+  let carriedAnnotations: Annotation[] = [];
   const undoStack: EditAction[] = [];
   const redoStack: EditAction[] = [];
   let selected: number | null = null;
@@ -584,7 +586,11 @@ export function mountPreview(root: HTMLElement): () => void {
       return;
     }
     numberStart = next;
-    numberPlaced = 0;
+    // 起始值变化后从新起点重算:已有序号(含选区带入)中不小于新起点的
+    // 数量决定下一个值,避免与既有编号重复。
+    numberPlaced = annotations.filter(
+      (op) => op.type === "number" && op.value >= numberStart,
+    ).length;
     persistStyle();
     if (tool === "number" && !note.classList.contains("is-error")) {
       setNoteKey("preview.note.number_hint", { start: numberStart });
@@ -1591,7 +1597,7 @@ export function mountPreview(root: HTMLElement): () => void {
         return;
       }
       if (generation !== previewLoad) return;
-      if (bytes.byteLength <= 20) {
+      if (bytes.byteLength <= 24) {
         setNoteKey("preview.note.image_incomplete", undefined, "error");
         return;
       }
@@ -1599,6 +1605,24 @@ export function mountPreview(root: HTMLElement): () => void {
       const header = new DataView(bytes);
       // 16..20:0=设置关闭自动复制,1=已复制,2=自动复制失败。
       const copyState = header.getUint32(16, true);
+      // 20..24:随帧带入的即时标注 JSON 长度;其后是 JSON,再接 PNG。
+      const annotationsLength = header.getUint32(20, true);
+      const pngOffset = 24 + annotationsLength;
+      if (pngOffset > bytes.byteLength) {
+        setNoteKey("preview.note.image_incomplete", undefined, "error");
+        return;
+      }
+      let carried: Annotation[] = [];
+      if (annotationsLength > 0) {
+        try {
+          const parsed: unknown = JSON.parse(
+            new TextDecoder().decode(new Uint8Array(bytes, 24, annotationsLength)),
+          );
+          if (Array.isArray(parsed)) carried = parsed as Annotation[];
+        } catch {
+          carried = [];
+        }
+      }
       const payload: PreviewFrame = {
         width: header.getUint32(0, true),
         height: header.getUint32(4, true),
@@ -1608,7 +1632,7 @@ export function mountPreview(root: HTMLElement): () => void {
       canvas.width = payload.width;
       canvas.height = payload.height;
       const image = new Image();
-      const imageUrl = URL.createObjectURL(new Blob([bytes.slice(20)], { type: "image/png" }));
+      const imageUrl = URL.createObjectURL(new Blob([bytes.slice(pngOffset)], { type: "image/png" }));
       image.onload = () => {
         URL.revokeObjectURL(imageUrl);
         if (generation !== previewLoad) return;
@@ -1621,6 +1645,16 @@ export function mountPreview(root: HTMLElement): () => void {
           return;
         }
         sourceCtx.drawImage(image, 0, 0, payload.width, payload.height);
+        // 选区即时标注并入可编辑列表:撤销栈从零开始,序号继续递增。
+        carriedAnnotations = carried;
+        annotations = carriedAnnotations.slice();
+        undoStack.length = 0;
+        redoStack.length = 0;
+        selected = null;
+        numberPlaced = annotations.filter((op) => op.type === "number").length;
+        if (annotations.length > 0) {
+          setNoteKey("preview.note.inline_annotations", undefined, "feedback");
+        }
         if (activeWriteback) {
           setCopied({ key: "preview.copied_writeback", text: "" }, "feedback");
         } else if (copyState === 1) {
@@ -1641,6 +1675,8 @@ export function mountPreview(root: HTMLElement): () => void {
   };
 
   void listen("preview-reload", () => {
+    // 新帧可能带入选区即时标注(R21):列表随帧在 loadPreview 中恢复,
+    // 这里先清空避免旧编辑态残留。
     annotations = [];
     undoStack.length = 0;
     redoStack.length = 0;
@@ -1651,7 +1687,7 @@ export function mountPreview(root: HTMLElement): () => void {
     start = null;
     current = null;
     freehand = [];
-    // 新帧的序号重新从设置起始值开始递增。
+    // 新帧的序号从携带图元之后继续递增(image.onload 中重算)。
     numberPlaced = 0;
     // 新帧不带旧编辑态:收掉文字编辑器,清掉 editorOrigin,防旧文本误入新帧。
     hideEditor();

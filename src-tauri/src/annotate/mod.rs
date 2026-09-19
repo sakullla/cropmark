@@ -4,6 +4,7 @@ pub(crate) mod raster;
 
 pub(crate) use raster::parse_hex_color;
 pub use raster::rasterize;
+pub use raster::rasterize_lenient;
 
 use serde::{Deserialize, Serialize};
 
@@ -181,6 +182,144 @@ pub fn exportable(ops: &[Annotation]) -> Vec<Annotation> {
         .filter(|op| op.is_exportable())
         .cloned()
         .collect()
+}
+
+/// 平移单个图元(dx/dy 加到全部坐标);选区即时标注把整屏坐标映射到
+/// 裁剪坐标系时与 `translated_all` 共用。
+pub fn translated(op: &Annotation, dx: f64, dy: f64) -> Annotation {
+    let point = |point: &Point| Point {
+        x: point.x + dx,
+        y: point.y + dy,
+    };
+    let points = |points: &[Point]| points.iter().map(point).collect::<Vec<_>>();
+    match op {
+        Annotation::Arrow {
+            from,
+            to,
+            color,
+            stroke_width,
+        } => Annotation::Arrow {
+            from: point(from),
+            to: point(to),
+            color: color.clone(),
+            stroke_width: *stroke_width,
+        },
+        Annotation::Rect {
+            x,
+            y,
+            width,
+            height,
+            color,
+            stroke_width,
+        } => Annotation::Rect {
+            x: x + dx,
+            y: y + dy,
+            width: *width,
+            height: *height,
+            color: color.clone(),
+            stroke_width: *stroke_width,
+        },
+        Annotation::Mosaic {
+            x,
+            y,
+            width,
+            height,
+            block,
+        } => Annotation::Mosaic {
+            x: x + dx,
+            y: y + dy,
+            width: *width,
+            height: *height,
+            block: *block,
+        },
+        Annotation::Text {
+            x,
+            y,
+            text,
+            size,
+            color,
+        } => Annotation::Text {
+            x: x + dx,
+            y: y + dy,
+            text: text.clone(),
+            size: *size,
+            color: color.clone(),
+        },
+        Annotation::Ellipse {
+            x,
+            y,
+            width,
+            height,
+            color,
+            stroke_width,
+        } => Annotation::Ellipse {
+            x: x + dx,
+            y: y + dy,
+            width: *width,
+            height: *height,
+            color: color.clone(),
+            stroke_width: *stroke_width,
+        },
+        Annotation::Line {
+            from,
+            to,
+            color,
+            stroke_width,
+        } => Annotation::Line {
+            from: point(from),
+            to: point(to),
+            color: color.clone(),
+            stroke_width: *stroke_width,
+        },
+        Annotation::Number {
+            x,
+            y,
+            value,
+            size,
+            color,
+        } => Annotation::Number {
+            x: x + dx,
+            y: y + dy,
+            value: *value,
+            size: *size,
+            color: color.clone(),
+        },
+        Annotation::Highlighter {
+            points: polyline,
+            color,
+            stroke_width,
+        } => Annotation::Highlighter {
+            points: points(polyline),
+            color: color.clone(),
+            stroke_width: *stroke_width,
+        },
+        Annotation::Pen {
+            points: polyline,
+            color,
+            stroke_width,
+        } => Annotation::Pen {
+            points: points(polyline),
+            color: color.clone(),
+            stroke_width: *stroke_width,
+        },
+        Annotation::Blur {
+            x,
+            y,
+            width,
+            height,
+            sigma,
+        } => Annotation::Blur {
+            x: x + dx,
+            y: y + dy,
+            width: *width,
+            height: *height,
+            sigma: *sigma,
+        },
+    }
+}
+
+pub fn translated_all(ops: &[Annotation], dx: f64, dy: f64) -> Vec<Annotation> {
+    ops.iter().map(|op| translated(op, dx, dy)).collect()
 }
 
 #[cfg(test)]

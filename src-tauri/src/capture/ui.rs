@@ -12,6 +12,7 @@ use super::buffer::{fit_display, Frame};
 use super::error::CaptureError;
 use super::geometry::MonitorGeom;
 use super::windows_list::ListedWindow;
+use crate::annotate::Annotation;
 use crate::hotkeys::CaptureMode;
 use crate::i18n;
 
@@ -210,14 +211,24 @@ pub fn overlay_payload(
     })
 }
 
-pub fn preview_payload(frame: &Frame, png: &[u8], copy: PreviewCopyState) -> PreviewPayload {
+pub fn preview_payload(
+    frame: &Frame,
+    png: &[u8],
+    copy: PreviewCopyState,
+    annotations: &[Annotation],
+) -> PreviewPayload {
     // One binary response keeps metadata and pixels bound to the same capture.
-    // Header: width/height (u32), scale (f64), copy state (u32), little-endian, then PNG.
-    let mut bytes = Vec::with_capacity(20 + png.len());
+    // Header: width/height (u32), scale (f64), copy state (u32), annotations JSON
+    // length (u32), little-endian, then the annotation JSON, then the PNG.
+    // R21:选区即时标注随帧进入预览编辑器(可继续编辑/撤销);空列表编码为 `[]`。
+    let annotations = serde_json::to_vec(annotations).unwrap_or_else(|_| b"[]".to_vec());
+    let mut bytes = Vec::with_capacity(24 + annotations.len() + png.len());
     bytes.extend_from_slice(&frame.width.to_le_bytes());
     bytes.extend_from_slice(&frame.height.to_le_bytes());
     bytes.extend_from_slice(&frame.scale.to_le_bytes());
     bytes.extend_from_slice(&copy.code().to_le_bytes());
+    bytes.extend_from_slice(&(annotations.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&annotations);
     bytes.extend_from_slice(png);
     PreviewPayload { bytes }
 }
@@ -563,17 +574,55 @@ mod tests {
     use super::*;
     use crate::capture::buffer::Frame;
 
+    /// 头部之后的 JSON 长度与 PNG 起点(测试共用)。
+    fn payload_parts(bytes: &[u8]) -> (usize, &[u8], &[u8]) {
+        let json_len = u32::from_le_bytes(bytes[20..24].try_into().unwrap()) as usize;
+        let json = &bytes[24..24 + json_len];
+        let png = &bytes[24 + json_len..];
+        (json_len, json, png)
+    }
+
     #[test]
     fn binary_preview_preserves_native_size_scale_and_original_png() {
         let frame = Frame { width: 2, height: 1, rgba: vec![1, 2, 3, 255, 4, 5, 6, 128], scale: 1.5 };
         let png = crate::capture::buffer::encode_png(&frame).unwrap();
-        let payload = preview_payload(&frame, &png, PreviewCopyState::Copied);
+        let payload = preview_payload(&frame, &png, PreviewCopyState::Copied, &[]);
         assert_eq!(u32::from_le_bytes(payload.bytes[0..4].try_into().unwrap()), 2);
         assert_eq!(u32::from_le_bytes(payload.bytes[4..8].try_into().unwrap()), 1);
         assert_eq!(f64::from_le_bytes(payload.bytes[8..16].try_into().unwrap()), 1.5);
         assert_eq!(u32::from_le_bytes(payload.bytes[16..20].try_into().unwrap()), 1);
-        assert_eq!(&payload.bytes[20..], png.as_slice());
-        assert_eq!(crate::capture::buffer::decode_png(&payload.bytes[20..]).unwrap().rgba, frame.rgba);
+        let (json_len, json, png_bytes) = payload_parts(&payload.bytes);
+        assert_eq!(json, b"[]");
+        assert!(json_len > 0);
+        assert_eq!(png_bytes, png.as_slice());
+        assert_eq!(
+            crate::capture::buffer::decode_png(png_bytes).unwrap().rgba,
+            frame.rgba
+        );
+    }
+
+    #[test]
+    fn preview_header_carries_inline_annotations_as_camel_case_json() {
+        use crate::annotate::{Annotation, Point};
+        let frame = Frame {
+            width: 1,
+            height: 1,
+            rgba: vec![1, 1, 1, 255],
+            scale: 1.0,
+        };
+        let png = crate::capture::buffer::encode_png(&frame).unwrap();
+        let annotations = vec![Annotation::Arrow {
+            from: Point { x: 1.0, y: 2.0 },
+            to: Point { x: 9.0, y: 8.0 },
+            color: "#e11d48".into(),
+            stroke_width: None,
+        }];
+        let payload = preview_payload(&frame, &png, PreviewCopyState::Copied, &annotations);
+        let (_, json, png_bytes) = payload_parts(&payload.bytes);
+        let parsed: Vec<Annotation> = serde_json::from_slice(json).unwrap();
+        assert_eq!(parsed, annotations);
+        assert!(std::str::from_utf8(json).unwrap().contains("\"type\":\"arrow\""));
+        assert_eq!(png_bytes, png.as_slice());
     }
 
     #[test]
@@ -586,16 +635,15 @@ mod tests {
         };
         let png = crate::capture::buffer::encode_png(&frame).unwrap();
         let code = |state: PreviewCopyState| {
-            let payload = preview_payload(&frame, &png, state);
+            let payload = preview_payload(&frame, &png, state, &[]);
             u32::from_le_bytes(payload.bytes[16..20].try_into().unwrap())
         };
         assert_eq!(code(PreviewCopyState::Disabled), 0);
         assert_eq!(code(PreviewCopyState::Copied), 1);
         assert_eq!(code(PreviewCopyState::Failed), 2);
-        assert_eq!(
-            &preview_payload(&frame, &png, PreviewCopyState::Disabled).bytes[20..],
-            png.as_slice()
-        );
+        let payload = preview_payload(&frame, &png, PreviewCopyState::Disabled, &[]);
+        let (_, _, png_bytes) = payload_parts(&payload.bytes);
+        assert_eq!(png_bytes, png.as_slice());
     }
 
     fn frame(width: u32, height: u32) -> Frame {
