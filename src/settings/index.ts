@@ -30,12 +30,21 @@ export interface FeatureSettings {
   toolbarPin: boolean;
 }
 
+export type FinishAction = "preview" | "quiet";
+
+export interface CaptureSettings {
+  delaySeconds: number;
+  autoCopy: boolean;
+  finishAction: FinishAction;
+}
+
 export interface UiSettings {
   hotkeys: Hotkeys;
   hotkeyErrors: HotkeyErrors;
   autostart: AutostartState;
   notice: string | null;
   features: FeatureSettings;
+  capture: CaptureSettings;
 }
 
 type FeatureKey = keyof FeatureSettings;
@@ -74,6 +83,36 @@ export function mountSettings(root: HTMLElement): void {
           <p class="hint">点击热键按钮后按下新组合，Esc 取消；改动立即生效。</p>
           <div class="rows" data-hotkeys></div>
         </section>
+        <section class="card" aria-labelledby="capture-title">
+          <h1 id="capture-title">截图</h1>
+          <div class="setting-row">
+            <div>
+              <div class="label" id="delay-label">延时秒数</div>
+              <p class="hint">0–60 秒，热键与托盘截取按此倒计时；0 为立即截取。</p>
+            </div>
+            <input type="number" class="number-input" data-capture="delay" min="0" max="60" step="1" inputmode="numeric" aria-labelledby="delay-label" />
+          </div>
+          <p class="error" data-capture-error role="alert" hidden></p>
+          <div class="setting-row">
+            <div>
+              <div class="label" id="autocopy-label">完成后自动复制</div>
+              <p class="hint">关闭后截图完成不写入剪贴板；预览内手动复制不受影响。</p>
+            </div>
+            <button type="button" class="switch" data-capture="auto-copy" role="switch" aria-checked="true" aria-labelledby="autocopy-label">
+              <span class="knob"></span>
+            </button>
+          </div>
+          <div class="setting-row">
+            <div>
+              <div class="label" id="finish-label">完成后动作</div>
+              <p class="hint">静默完成会直接复制并给出提示，不打开预览；需自动复制开启。</p>
+            </div>
+            <div class="choices" data-capture="finish" role="radiogroup" aria-labelledby="finish-label">
+              <button type="button" class="choice" role="radio" data-finish-action="preview" aria-checked="true">预览</button>
+              <button type="button" class="choice" role="radio" data-finish-action="quiet" aria-checked="false">静默完成</button>
+            </div>
+          </div>
+        </section>
         <section class="card" aria-labelledby="autostart-title">
           <h1 id="autostart-title">开机启动</h1>
           <div class="autostart-row">
@@ -106,19 +145,64 @@ export function mountSettings(root: HTMLElement): void {
   const helpEl = root.querySelector(".autostart-help");
   const switchEl = root.querySelector("[data-action=autostart]");
   const closeEl = root.querySelector("[data-action=close]");
+  const delayEl = root.querySelector("[data-capture=delay]");
+  const delayErrorEl = root.querySelector("[data-capture-error]");
+  const autoCopyEl = root.querySelector("[data-capture=auto-copy]");
+  const finishRoot = root.querySelector("[data-capture=finish]");
   if (
     !(noticeEl instanceof HTMLElement) ||
     !(hotkeyRoot instanceof HTMLElement) ||
     !(featureRoot instanceof HTMLElement) ||
     !(helpEl instanceof HTMLElement) ||
     !(switchEl instanceof HTMLButtonElement) ||
-    !(closeEl instanceof HTMLButtonElement)
+    !(closeEl instanceof HTMLButtonElement) ||
+    !(delayEl instanceof HTMLInputElement) ||
+    !(delayErrorEl instanceof HTMLElement) ||
+    !(autoCopyEl instanceof HTMLButtonElement) ||
+    !(finishRoot instanceof HTMLElement)
   ) {
     return;
   }
 
   let recording: CaptureMode | null = null;
   let applying = false;
+  let captureSettings: CaptureSettings = {
+    delaySeconds: 0,
+    autoCopy: true,
+    finishAction: "preview",
+  };
+
+  const showDelayError = (message: string): void => {
+    delayErrorEl.hidden = false;
+    delayErrorEl.textContent = message;
+    delayEl.setAttribute("aria-invalid", "true");
+  };
+
+  const clearDelayError = (): void => {
+    delayErrorEl.hidden = true;
+    delayErrorEl.textContent = "";
+    delayEl.removeAttribute("aria-invalid");
+  };
+
+  const renderCapture = (capture: CaptureSettings): void => {
+    captureSettings = capture;
+    delayEl.value = String(capture.delaySeconds);
+    clearDelayError();
+    autoCopyEl.setAttribute("aria-checked", capture.autoCopy ? "true" : "false");
+    autoCopyEl.classList.toggle("on", capture.autoCopy);
+    const finishButtons = finishRoot.querySelectorAll("[data-finish-action]");
+    for (const button of finishButtons) {
+      if (!(button instanceof HTMLButtonElement)) {
+        continue;
+      }
+      const quiet = button.dataset.finishAction === "quiet";
+      const selected = button.dataset.finishAction === capture.finishAction;
+      button.setAttribute("aria-checked", selected ? "true" : "false");
+      button.classList.toggle("selected", selected);
+      button.disabled = quiet && !capture.autoCopy;
+      button.title = button.disabled ? "需先开启完成后自动复制" : "";
+    }
+  };
 
   const render = (settings: UiSettings): void => {
     if (settings.notice) {
@@ -214,6 +298,8 @@ export function mountSettings(root: HTMLElement): void {
       settings.autostart.message,
     );
     helpEl.classList.toggle("error-text", Boolean(settings.autostart.message));
+
+    renderCapture(settings.capture);
   };
 
   const showInvokeError = (error: unknown): void => {
@@ -242,6 +328,74 @@ export function mountSettings(root: HTMLElement): void {
       applying = false;
     }
   };
+
+  const applyCapture = async (next: CaptureSettings): Promise<void> => {
+    applying = true;
+    try {
+      const settings = await invoke<UiSettings>("set_capture_settings", {
+        settings: next,
+      });
+      render(settings);
+    } catch (error) {
+      showInvokeError(error);
+    } finally {
+      applying = false;
+    }
+  };
+
+  const commitDelay = (): void => {
+    const raw = delayEl.value.trim();
+    if (!/^\d+$/.test(raw)) {
+      showDelayError("延时需为 0–60 之间的整数秒。");
+      return;
+    }
+    const seconds = Number(raw);
+    if (!Number.isSafeInteger(seconds) || seconds < 0 || seconds > 60) {
+      showDelayError("延时需为 0–60 之间的整数秒。");
+      return;
+    }
+    clearDelayError();
+    if (seconds === captureSettings.delaySeconds) {
+      return;
+    }
+    void applyCapture({ ...captureSettings, delaySeconds: seconds });
+  };
+
+  delayEl.addEventListener("change", () => {
+    if (!applying) {
+      commitDelay();
+    }
+  });
+  delayEl.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      delayEl.blur();
+    }
+  });
+
+  autoCopyEl.addEventListener("click", () => {
+    if (applying) {
+      return;
+    }
+    const next = autoCopyEl.getAttribute("aria-checked") !== "true";
+    void applyCapture({ ...captureSettings, autoCopy: next });
+  });
+
+  finishRoot.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element) || applying) {
+      return;
+    }
+    const button = target.closest("[data-finish-action]");
+    if (!(button instanceof HTMLButtonElement) || button.disabled) {
+      return;
+    }
+    const action = button.dataset.finishAction as FinishAction | undefined;
+    if (!action || action === captureSettings.finishAction) {
+      return;
+    }
+    void applyCapture({ ...captureSettings, finishAction: action });
+  });
 
   closeEl.addEventListener("click", () => {
     void getCurrentWindow().close();

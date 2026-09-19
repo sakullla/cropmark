@@ -373,7 +373,7 @@ async fn capture_region_native(app: &AppHandle) -> Result<(), CaptureError> {
     .await
     .map_err(|_| CaptureError::api("截取线程失败。"))??;
     match picked {
-        // Enter/标注:沿用 Preview 完成路径(裁剪+剪贴板+预览)。
+        // Enter/标注:走普通完成路径,按 finishAction 选择预览或静默(复制+toast)。
         RegionOutcome::Preview(rect) => {
             let handle = app.clone();
             tauri::async_runtime::spawn_blocking(move || {
@@ -479,7 +479,7 @@ async fn capture_fullscreen(app: &AppHandle) -> Result<(), CaptureError> {
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let (frame, _) = grab_pointer_screen(&handle)?;
-        finish(&handle, frame, FinishDisposition::Preview).map(|_| ())
+        finish_configured(&handle, frame).map(|_| ())
     })
     .await
     .map_err(|_| CaptureError::api("截取线程失败。"))?
@@ -644,7 +644,7 @@ pub fn confirm_region(app: &AppHandle, selection: RegionSelection) -> Result<(),
         )
     })?;
     ui::hide_window(app, ui::OVERLAY);
-    finish(app, frame, FinishDisposition::Preview).map(|_| ())
+    finish_configured(app, frame).map(|_| ())
 }
 
 pub fn confirm_logical_region(app: &AppHandle, rect: LogicalRect) -> Result<(), CaptureError> {
@@ -679,7 +679,7 @@ pub fn confirm_window(app: &AppHandle, window_id: String) -> Result<(), CaptureE
         return Err(CaptureError::cancelled());
     }
     let frame = platform::capture_window(&window_id)?;
-    finish(app, frame, FinishDisposition::Preview).map(|_| ())
+    finish_configured(app, frame).map(|_| ())
 }
 
 /// 完成路径的结果摘要(供动作反馈区分剪贴板成败)。
@@ -754,7 +754,8 @@ pub fn finish_region_quiet(
         )
     })?;
     ui::hide_window(app, ui::OVERLAY);
-    finish_with_ttl(app, frame, FinishDisposition::Quiet, ttl)
+    // 显式动作(操作条/菜单复制等)不受 autoCopy 开关影响,始终写剪贴板。
+    finish_with_ttl(app, frame, FinishDisposition::Quiet, ttl, true)
 }
 
 pub fn cancel(app: &AppHandle) -> Result<CancelOutcome, CaptureError> {
@@ -788,12 +789,37 @@ fn cancel_internal(app: &AppHandle) -> Result<CancelOutcome, CaptureError> {
     Ok(outcome)
 }
 
-fn finish(
-    app: &AppHandle,
-    frame: Frame,
-    disposition: FinishDisposition,
-) -> Result<FinishSummary, CaptureError> {
-    finish_with_ttl(app, frame, disposition, DEFAULT_FRAME_TTL)
+/// 普通捕获(区域确认/窗口/全屏)的统一完成入口:按当前设置选择预览或
+/// 静默(复制后关闭),静默完成仍给出 toast 反馈,避免用户感知为无响应(R4)。
+fn finish_configured(app: &AppHandle, frame: Frame) -> Result<FinishSummary, CaptureError> {
+    let capture = crate::settings::current_capture(app);
+    let disposition = configured_disposition(capture);
+    let summary = finish_with_ttl(
+        app,
+        frame,
+        disposition,
+        DEFAULT_FRAME_TTL,
+        capture.auto_copy,
+    )?;
+    if disposition == FinishDisposition::Quiet {
+        let message = if summary.clipboard_written {
+            "已复制到剪贴板。"
+        } else {
+            "复制失败，请重试。"
+        };
+        ui::show_toast(app, message);
+    }
+    Ok(summary)
+}
+
+/// 静默完成必须伴随自动复制(autoCopy 关闭时 sanitize 已强制回退预览,
+/// 这里对内存值再做一次兜底),避免"静默且无输出"的空动作。
+fn configured_disposition(capture: crate::settings::CaptureSettings) -> FinishDisposition {
+    if capture.auto_copy && capture.finish_action == crate::settings::FinishAction::Quiet {
+        FinishDisposition::Quiet
+    } else {
+        FinishDisposition::Preview
+    }
 }
 
 fn finish_with_ttl(
@@ -801,6 +827,7 @@ fn finish_with_ttl(
     frame: Frame,
     disposition: FinishDisposition,
     frame_ttl: Duration,
+    auto_copy: bool,
 ) -> Result<FinishSummary, CaptureError> {
     let started = Instant::now();
     if is_cancelled(app) {
@@ -811,13 +838,23 @@ fn finish_with_ttl(
     if is_cancelled(app) {
         return Err(CaptureError::cancelled());
     }
-    // Both dispositions keep today's contract: the unannotated PNG enters the clipboard.
-    let clipboard_error = clipboard::copy_frame_with_png(&frame, &png).err();
+    // autoCopy 关闭时不写剪贴板;显式复制路径不受此开关影响。
+    let clipboard_error = if auto_copy {
+        clipboard::copy_frame_with_png(&frame, &png).err()
+    } else {
+        None
+    };
     let copied_at = started.elapsed();
-    let preview = ui::preview_payload(&frame, &png, clipboard_error.is_none());
+    let clipboard_written = auto_copy && clipboard_error.is_none();
+    let copy_state = match (auto_copy, clipboard_error.is_none()) {
+        (false, _) => ui::PreviewCopyState::Disabled,
+        (true, true) => ui::PreviewCopyState::Copied,
+        (true, false) => ui::PreviewCopyState::Failed,
+    };
+    let preview = ui::preview_payload(&frame, &png, copy_state);
     with_session_mut(app, |session| {
         if let Some(current) = session.as_mut() {
-            if clipboard_error.is_none() {
+            if clipboard_written {
                 current.clipboard.commit_success();
             }
             current.freeze = Some(frame.clone());
@@ -872,9 +909,7 @@ fn finish_with_ttl(
         set_last_error(app, Some(error.clone()));
         let _ = ui::open_error(app, error);
     }
-    Ok(FinishSummary {
-        clipboard_written: clipboard_error.is_none(),
-    })
+    Ok(FinishSummary { clipboard_written })
 }
 
 /// Session state transition at the end of a finish. Split out so the quiet
@@ -1355,5 +1390,27 @@ mod tests {
             &session,
             deadline - Duration::from_secs(1)
         ));
+    }
+
+    #[test]
+    fn configured_disposition_requires_auto_copy_for_quiet() {
+        use crate::settings::{CaptureSettings, FinishAction};
+
+        let quiet = CaptureSettings {
+            delay_seconds: 0,
+            auto_copy: true,
+            finish_action: FinishAction::Quiet,
+        };
+        assert_eq!(configured_disposition(quiet), FinishDisposition::Quiet);
+        assert_eq!(
+            configured_disposition(CaptureSettings::default()),
+            FinishDisposition::Preview
+        );
+        // autoCopy 关闭时即使内存值仍为 quiet 也回退预览。
+        let off = CaptureSettings {
+            auto_copy: false,
+            ..quiet
+        };
+        assert_eq!(configured_disposition(off), FinishDisposition::Preview);
     }
 }

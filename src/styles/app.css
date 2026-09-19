@@ -264,6 +264,79 @@ h1 {
   margin-top: 2px;
 }
 
+.setting-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 12px;
+}
+
+.setting-row .label {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.setting-row .hint {
+  margin-top: 2px;
+}
+
+.number-input {
+  width: 84px;
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 7px 10px;
+  font: inherit;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--panel) 80%, transparent);
+}
+
+.number-input:focus-visible {
+  outline-offset: 1px;
+}
+
+.number-input[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+.choices {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.choice {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 7px 12px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--panel) 80%, transparent);
+  cursor: pointer;
+}
+
+.choice:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.choice.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.choice:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .switch {
   width: 44px;
   height: 26px;

@@ -1234,7 +1234,8 @@ export function mountPreview(root: HTMLElement): void {
         if (generation !== previewLoad) return;
         if (bytes.byteLength <= 20) throw new Error("预览图像数据不完整。");
         const header = new DataView(bytes);
-        const clipboardWritten = header.getUint32(16, true) === 1;
+        // 16..20:0=设置关闭自动复制,1=已复制,2=自动复制失败。
+        const copyState = header.getUint32(16, true);
         const payload: PreviewFrame = {
           width: header.getUint32(0, true),
           height: header.getUint32(4, true),
@@ -1257,8 +1258,16 @@ export function mountPreview(root: HTMLElement): void {
             return;
           }
           sourceCtx.drawImage(image, 0, 0, payload.width, payload.height);
-          copied = clipboardWritten ? "未标注图已复制" : "自动复制失败，可点击复制重试。";
-          setNote(copied, clipboardWritten ? "success" : "error");
+          if (copyState === 1) {
+            copied = "未标注图已复制";
+            setNote(copied, "success");
+          } else if (copyState === 2) {
+            copied = "自动复制失败，可点击复制重试。";
+            setNote(copied, "error");
+          } else {
+            copied = "未自动复制，可点击复制。";
+            setNote(copied);
+          }
           redraw();
         };
         image.onerror = () => {

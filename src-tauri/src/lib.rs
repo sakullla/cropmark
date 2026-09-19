@@ -13,7 +13,9 @@ use hotkeys::CaptureMode;
 use tauri::{Emitter, Manager};
 
 pub fn dispatch_capture(app: &tauri::AppHandle, mode: CaptureMode) {
-    dispatch_capture_with_delay(app, mode, 0);
+    // 热键与托盘主项读取设置中的延时(R4):0 秒立即截取。
+    let delay_ms = settings::current_capture(app).delay_ms();
+    dispatch_capture_with_delay(app, mode, delay_ms);
 }
 
 pub fn dispatch_capture_with_delay(app: &tauri::AppHandle, mode: CaptureMode, delay_ms: u64) {
@@ -49,6 +51,7 @@ pub fn run() {
             settings::set_autostart_enabled,
             settings::set_annotation_defaults,
             settings::set_feature,
+            settings::set_capture_settings,
             capture::get_overlay_frame,
             capture::get_preview_frame,
             capture::confirm_region,

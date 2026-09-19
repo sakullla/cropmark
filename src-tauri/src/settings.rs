@@ -101,6 +101,58 @@ impl FeatureSettings {
     }
 }
 
+/// 截图完成动作:进入预览,或静默完成(复制后关闭、仅 toast 反馈)。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FinishAction {
+    #[default]
+    Preview,
+    Quiet,
+}
+
+/// 延时合法上限(秒)。
+pub const MAX_DELAY_SECONDS: u32 = 60;
+
+/// 延时与截图后行为(R4)。`delay_seconds` 为 0 时热键与托盘立即截取;
+/// `auto_copy` 关闭时完成路径不写剪贴板,静默完成因无输出被强制回退预览。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CaptureSettings {
+    pub delay_seconds: u32,
+    pub auto_copy: bool,
+    pub finish_action: FinishAction,
+}
+
+impl Default for CaptureSettings {
+    fn default() -> Self {
+        Self {
+            delay_seconds: 0,
+            auto_copy: true,
+            finish_action: FinishAction::Preview,
+        }
+    }
+}
+
+impl CaptureSettings {
+    /// 延时钳制到 0–60;autoCopy 关闭时静默完成无输出,强制回退预览,
+    /// 与设置页禁用规则保持一致。
+    pub fn sanitized(self) -> Self {
+        Self {
+            delay_seconds: self.delay_seconds.min(MAX_DELAY_SECONDS),
+            auto_copy: self.auto_copy,
+            finish_action: if self.auto_copy {
+                self.finish_action
+            } else {
+                FinishAction::Preview
+            },
+        }
+    }
+
+    pub fn delay_ms(&self) -> u64 {
+        u64::from(self.delay_seconds) * 1000
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredSettings {
@@ -110,6 +162,8 @@ pub struct StoredSettings {
     pub annotation_defaults: AnnotationDefaults,
     #[serde(default)]
     pub features: FeatureSettings,
+    #[serde(default)]
+    pub capture: CaptureSettings,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -121,6 +175,7 @@ pub struct UiSettings {
     pub notice: Option<String>,
     pub annotation_defaults: AnnotationDefaults,
     pub features: FeatureSettings,
+    pub capture: CaptureSettings,
 }
 
 pub struct SessionState {
@@ -130,6 +185,7 @@ pub struct SessionState {
     pub autostart_rejection: Mutex<Option<String>>,
     pub annotation_defaults: Mutex<AnnotationDefaults>,
     pub features: Mutex<FeatureSettings>,
+    pub capture: Mutex<CaptureSettings>,
 }
 
 impl SessionState {
@@ -141,6 +197,7 @@ impl SessionState {
             autostart_rejection: Mutex::new(None),
             annotation_defaults: Mutex::new(stored.annotation_defaults.sanitized()),
             features: Mutex::new(stored.features.sanitized()),
+            capture: Mutex::new(stored.capture.sanitized()),
         }
     }
 }
@@ -148,6 +205,12 @@ impl SessionState {
 /// 供截取会话在选区引擎启动时读取当前功能开关。
 pub fn current_features(app: &AppHandle) -> FeatureSettings {
     *lock(&app.state::<SessionState>().features)
+}
+
+/// 供截取链路(热键/托盘取延时、完成路径取动作与自动复制)即时读取。
+/// 设置变更下一次截取即生效,无需重启。
+pub fn current_capture(app: &AppHandle) -> CaptureSettings {
+    *lock(&app.state::<SessionState>().capture)
 }
 
 pub fn load_from_app(app: &AppHandle) -> StoredSettings {
@@ -206,6 +269,7 @@ pub fn snapshot(app: &AppHandle) -> UiSettings {
     let autostart_rejection = lock(&state.autostart_rejection).clone();
     let annotation_defaults = lock(&state.annotation_defaults).clone();
     let features = *lock(&state.features);
+    let capture = *lock(&state.capture);
     UiSettings {
         hotkeys,
         hotkey_errors,
@@ -213,6 +277,7 @@ pub fn snapshot(app: &AppHandle) -> UiSettings {
         notice,
         annotation_defaults,
         features,
+        capture,
     }
 }
 
@@ -267,12 +332,23 @@ pub fn set_feature(
     Ok(snapshot(&app))
 }
 
+/// 设置延时/自动复制/完成后动作;内存值立即生效(下一次截取起),随
+/// persist_settings 统一写盘,并按新延时重建托盘菜单标签。
+#[tauri::command]
+pub fn set_capture_settings(app: AppHandle, settings: CaptureSettings) -> UiSettings {
+    *lock(&app.state::<SessionState>().capture) = settings.sanitized();
+    persist_settings(&app, "截图设置已应用");
+    crate::tray::refresh_delay_menu(&app);
+    snapshot(&app)
+}
+
 fn persist_settings(app: &AppHandle, applied: &str) {
     let state = app.state::<SessionState>();
     let stored = StoredSettings {
         hotkeys: lock(&state.hotkeys).clone(),
         annotation_defaults: lock(&state.annotation_defaults).clone(),
         features: *lock(&state.features),
+        capture: *lock(&state.capture),
     };
     match save_to_path(&settings_path(app), &stored) {
         Ok(()) => *lock(&state.notice) = None,
@@ -333,6 +409,11 @@ mod tests {
                 toolbar_save: false,
                 toolbar_pin: true,
             },
+            capture: CaptureSettings {
+                delay_seconds: 5,
+                auto_copy: false,
+                finish_action: FinishAction::Quiet,
+            },
         };
         save_to_path(&path, &stored).unwrap();
         let text = fs::read_to_string(&path).unwrap();
@@ -348,6 +429,9 @@ mod tests {
         assert!(loaded.features.toolbar_copy);
         assert!(!loaded.features.toolbar_save);
         assert!(loaded.features.toolbar_pin);
+        assert_eq!(loaded.capture.delay_seconds, 5);
+        assert!(!loaded.capture.auto_copy);
+        assert_eq!(loaded.capture.finish_action, FinishAction::Quiet);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -437,10 +521,85 @@ mod tests {
             notice: None,
             annotation_defaults: AnnotationDefaults::default(),
             features: FeatureSettings::default(),
+            capture: CaptureSettings::default(),
         };
         ui.autostart = result.clone();
         assert!(!ui.autostart.enabled);
         assert_eq!(ui.autostart.message, result.message);
         assert!(ui.autostart.message.as_deref().unwrap().contains("拒绝"));
+    }
+
+    #[test]
+    fn capture_defaults_are_immediate_auto_copy_preview() {
+        let capture = CaptureSettings::default();
+        assert_eq!(capture.delay_seconds, 0);
+        assert!(capture.auto_copy);
+        assert_eq!(capture.finish_action, FinishAction::Preview);
+        assert_eq!(capture.delay_ms(), 0);
+    }
+
+    #[test]
+    fn capture_sanitize_clamps_delay_and_keeps_valid_seconds() {
+        let clamped = CaptureSettings {
+            delay_seconds: 120,
+            auto_copy: true,
+            finish_action: FinishAction::Quiet,
+        }
+        .sanitized();
+        assert_eq!(clamped.delay_seconds, MAX_DELAY_SECONDS);
+        assert_eq!(clamped.delay_ms(), 60_000);
+        assert_eq!(clamped.finish_action, FinishAction::Quiet);
+
+        let exact = CaptureSettings {
+            delay_seconds: MAX_DELAY_SECONDS,
+            auto_copy: true,
+            finish_action: FinishAction::Preview,
+        }
+        .sanitized();
+        assert_eq!(exact.delay_seconds, 60);
+    }
+
+    #[test]
+    fn capture_sanitize_forces_preview_without_auto_copy() {
+        let forced = CaptureSettings {
+            delay_seconds: 5,
+            auto_copy: false,
+            finish_action: FinishAction::Quiet,
+        }
+        .sanitized();
+        assert_eq!(forced.delay_seconds, 5);
+        assert!(!forced.auto_copy);
+        assert_eq!(forced.finish_action, FinishAction::Preview);
+    }
+
+    #[test]
+    fn missing_capture_field_loads_defaults() {
+        let dir =
+            std::env::temp_dir().join(format!("cropmark-settings-capture-{}", std::process::id()));
+        let path = dir.join("settings.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            r#"{"hotkeys":{"region":"Ctrl+Alt+R","window":"Alt+Shift+W","fullscreen":"Alt+Shift+S"}}"#,
+        )
+        .unwrap();
+        let loaded = load_from_path(&path);
+        assert_eq!(loaded.capture, CaptureSettings::default());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn capture_settings_deserialize_from_camel_case_json() {
+        let parsed: StoredSettings = serde_json::from_str(
+            r#"{"capture":{"delaySeconds":7,"autoCopy":false,"finishAction":"quiet"}}"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.capture.delay_seconds, 7);
+        assert!(!parsed.capture.auto_copy);
+        assert_eq!(parsed.capture.finish_action, FinishAction::Quiet);
+        let serialized = serde_json::to_value(parsed.capture).unwrap();
+        assert_eq!(serialized["delaySeconds"], 7);
+        assert_eq!(serialized["autoCopy"], false);
+        assert_eq!(serialized["finishAction"], "quiet");
     }
 }

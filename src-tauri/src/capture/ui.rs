@@ -53,6 +53,25 @@ pub struct PreviewPayload {
     pub bytes: Vec<u8>,
 }
 
+/// 预览头部的复制状态:0=自动复制被设置关闭,1=已复制,2=自动复制失败。
+/// 三个状态分开后,预览首条提示不会把"用户主动关闭"误报为失败(R4)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreviewCopyState {
+    Disabled,
+    Copied,
+    Failed,
+}
+
+impl PreviewCopyState {
+    pub fn code(self) -> u32 {
+        match self {
+            Self::Disabled => 0,
+            Self::Copied => 1,
+            Self::Failed => 2,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DelayPayload {
@@ -130,14 +149,14 @@ pub fn overlay_payload(mode: CaptureMode, frame: &Frame, monitor: &MonitorGeom, 
     })
 }
 
-pub fn preview_payload(frame: &Frame, png: &[u8], clipboard_written: bool) -> PreviewPayload {
+pub fn preview_payload(frame: &Frame, png: &[u8], copy: PreviewCopyState) -> PreviewPayload {
     // One binary response keeps metadata and pixels bound to the same capture.
-    // Header: width/height (u32), scale (f64), copied (u32), little-endian, then PNG.
+    // Header: width/height (u32), scale (f64), copy state (u32), little-endian, then PNG.
     let mut bytes = Vec::with_capacity(20 + png.len());
     bytes.extend_from_slice(&frame.width.to_le_bytes());
     bytes.extend_from_slice(&frame.height.to_le_bytes());
     bytes.extend_from_slice(&frame.scale.to_le_bytes());
-    bytes.extend_from_slice(&u32::from(clipboard_written).to_le_bytes());
+    bytes.extend_from_slice(&copy.code().to_le_bytes());
     bytes.extend_from_slice(png);
     PreviewPayload { bytes }
 }
@@ -452,14 +471,35 @@ mod tests {
     fn binary_preview_preserves_native_size_scale_and_original_png() {
         let frame = Frame { width: 2, height: 1, rgba: vec![1, 2, 3, 255, 4, 5, 6, 128], scale: 1.5 };
         let png = crate::capture::buffer::encode_png(&frame).unwrap();
-        let payload = preview_payload(&frame, &png, true);
+        let payload = preview_payload(&frame, &png, PreviewCopyState::Copied);
         assert_eq!(u32::from_le_bytes(payload.bytes[0..4].try_into().unwrap()), 2);
         assert_eq!(u32::from_le_bytes(payload.bytes[4..8].try_into().unwrap()), 1);
         assert_eq!(f64::from_le_bytes(payload.bytes[8..16].try_into().unwrap()), 1.5);
         assert_eq!(u32::from_le_bytes(payload.bytes[16..20].try_into().unwrap()), 1);
         assert_eq!(&payload.bytes[20..], png.as_slice());
         assert_eq!(crate::capture::buffer::decode_png(&payload.bytes[20..]).unwrap().rgba, frame.rgba);
-        assert_eq!(&preview_payload(&frame, &png, false).bytes[16..20], &[0; 4]);
+    }
+
+    #[test]
+    fn preview_header_distinguishes_disabled_from_failed_auto_copy() {
+        let frame = Frame {
+            width: 1,
+            height: 1,
+            rgba: vec![9, 9, 9, 255],
+            scale: 1.0,
+        };
+        let png = crate::capture::buffer::encode_png(&frame).unwrap();
+        let code = |state: PreviewCopyState| {
+            let payload = preview_payload(&frame, &png, state);
+            u32::from_le_bytes(payload.bytes[16..20].try_into().unwrap())
+        };
+        assert_eq!(code(PreviewCopyState::Disabled), 0);
+        assert_eq!(code(PreviewCopyState::Copied), 1);
+        assert_eq!(code(PreviewCopyState::Failed), 2);
+        assert_eq!(
+            &preview_payload(&frame, &png, PreviewCopyState::Disabled).bytes[20..],
+            png.as_slice()
+        );
     }
 
     fn frame(width: u32, height: u32) -> Frame {
