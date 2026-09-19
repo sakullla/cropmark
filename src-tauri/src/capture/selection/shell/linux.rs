@@ -11,6 +11,12 @@
 //! max-request-length)。像素打包按根视觉的 R/G/B 掩码与服务器字节序生成,
 //! 常见 LSBFirst + {R<<16,G<<8,B} 布局等价于 Windows 壳的 BGRA 呈现缓冲。
 //!
+//! 光标提示(ADR-5):引擎 `cursor_for` 的提示经 "cursor" 字体字形
+//! (`XCreateFontCursor` 语义:source=glyph、mask=glyph+1)映射为 fleur/resize
+//! 箭头/默认指针/十字,输入事件后按提示变化切换(窗口属性等价 XDefineCursor;
+//! 活动抓取另经 `ChangeActivePointerGrab` 立即换光标)。字体或单个字形不可用时
+//! 该提示退回服务器默认指针,不阻断选择/确认/取消。
+//!
 //! 键盘:keycode→keysym 用核心协议 GetKeyboardMapping 的第 0 列(无修饰
 //! 键位),方向键/Enter/Esc/C 与布局无关;Shift 状态取事件 state 的
 //! KeyButMask::SHIFT 位,与 windows.rs 的 VK_SHIFT 跟踪同义。
@@ -30,8 +36,9 @@ use std::time::{Duration, Instant};
 use x11rb::connection::{Connection, RequestConnection};
 use x11rb::protocol::shm::{self, ConnectionExt as ShmExt};
 use x11rb::protocol::xproto::{
-    self, ConnectionExt as XprotoExt, CreateGCAux, CreateWindowAux, EventMask, GrabMode, GrabStatus,
-    ImageFormat, ImageOrder, KeyButMask, Screen, Setup, Visualtype, WindowClass,
+    self, ChangeWindowAttributesAux, ConnectionExt as XprotoExt, CreateGCAux, CreateWindowAux,
+    EventMask, GrabMode, GrabStatus, ImageFormat, ImageOrder, KeyButMask, Screen, Setup,
+    Visualtype, WindowClass,
 };
 use x11rb::protocol::Event as XEvent;
 use x11rb::rust_connection::RustConnection;
@@ -42,7 +49,8 @@ use crate::capture::error::CaptureError;
 use crate::capture::geometry::{MonitorGeom, PhysicalRect};
 use crate::capture::selection::composer::{self, Composer};
 use crate::capture::selection::{
-    EngineOutcome, FeatureFlags, InputEvent, LogicalKey, SelectionAction, SelectionEngine,
+    CursorHint, EngineOutcome, FeatureFlags, InputEvent, LogicalKey, SelectionAction,
+    SelectionEngine,
 };
 use crate::capture::session::QuietAction;
 
@@ -62,8 +70,44 @@ const XK_KP_DOWN: u32 = 0xff99;
 const XK_C_LOWER: u32 = 0x63;
 const XK_C_UPPER: u32 = 0x43;
 
-/// 字体 "cursor" 中的十字光标字形(XC_crosshair)。
+// "cursor" 字体中的标准字形(X11/cursorfont.h 的 XC_* 常量)。每个光标占两个
+// 字符码:source=glyph、mask=glyph+1(XCreateFontCursor 语义)。
 const XC_CROSSHAIR: u16 = 34;
+const XC_FLEUR: u16 = 52;
+const XC_LEFT_PTR: u16 = 68;
+const XC_SB_H_DOUBLE_ARROW: u16 = 108;
+const XC_SB_V_DOUBLE_ARROW: u16 = 116;
+const XC_TOP_LEFT_CORNER: u16 = 134;
+const XC_TOP_RIGHT_CORNER: u16 = 136;
+
+/// 光标槽位数:每个不同字形一槽;Pointer 与 Arrow 共用默认箭头槽。
+const CURSOR_SLOT_COUNT: usize = 7;
+
+/// 引擎光标提示 → "cursor" 字体字形。Pointer(可点击 chrome)与 Arrow
+/// (放大镜面板)在 X11 下都使用默认箭头。
+fn cursor_glyph(hint: CursorHint) -> u16 {
+    match hint {
+        CursorHint::Crosshair => XC_CROSSHAIR,
+        CursorHint::Move => XC_FLEUR,
+        CursorHint::ResizeNS => XC_SB_V_DOUBLE_ARROW,
+        CursorHint::ResizeEW => XC_SB_H_DOUBLE_ARROW,
+        CursorHint::ResizeNWSE => XC_TOP_LEFT_CORNER,
+        CursorHint::ResizeNESW => XC_TOP_RIGHT_CORNER,
+        CursorHint::Pointer | CursorHint::Arrow => XC_LEFT_PTR,
+    }
+}
+
+fn cursor_slot(hint: CursorHint) -> usize {
+    match hint {
+        CursorHint::Crosshair => 0,
+        CursorHint::Move => 1,
+        CursorHint::ResizeNS => 2,
+        CursorHint::ResizeEW => 3,
+        CursorHint::ResizeNWSE => 4,
+        CursorHint::ResizeNESW => 5,
+        CursorHint::Pointer | CursorHint::Arrow => 6,
+    }
+}
 
 /// XPutImage 回退路径的每请求上限:分带发送,避开保守的 max-request-length。
 const PUT_IMAGE_BAND_LIMIT: usize = 1 << 20;
@@ -197,8 +241,115 @@ impl PresentBuffer {
 struct ShellState {
     hooks: ShellHooks,
     canvas: Canvas,
+    /// 预建的光标集;抓取与窗口属性都从这里取当前提示的光标。
+    cursors: CursorSet,
+    /// 最近一次应用的引擎提示;未变化时不重复切换请求。
+    cursor_hint: Option<CursorHint>,
     outcome: Option<RegionOutcome>,
     timing: bool,
+}
+
+/// 一次会话预建的字体光标集。字体或单个字形创建失败时对应项为 NONE
+/// (显示服务器默认指针),任何失败都不阻断选择/确认/取消。
+struct CursorSet {
+    font: xproto::Font,
+    font_open: bool,
+    cursors: [xproto::Cursor; CURSOR_SLOT_COUNT],
+}
+
+impl CursorSet {
+    /// 打开 "cursor" 字体并预建全部字形;每一步失败都只退化对应槽位。
+    fn build(conn: &RustConnection) -> Self {
+        let mut set = Self {
+            font: NONE,
+            font_open: false,
+            cursors: [NONE; CURSOR_SLOT_COUNT],
+        };
+        let Ok(font) = conn.generate_id() else {
+            return set;
+        };
+        if conn.open_font(font, b"cursor").is_err() {
+            return set;
+        }
+        set.font = font;
+        set.font_open = true;
+        for hint in [
+            CursorHint::Crosshair,
+            CursorHint::Move,
+            CursorHint::ResizeNS,
+            CursorHint::ResizeEW,
+            CursorHint::ResizeNWSE,
+            CursorHint::ResizeNESW,
+            CursorHint::Pointer,
+        ] {
+            let slot = cursor_slot(hint);
+            if set.cursors[slot] != NONE {
+                continue; // Pointer/Arrow 共槽,已建。
+            }
+            let Ok(cursor) = conn.generate_id() else {
+                continue;
+            };
+            if build_font_cursor(conn, font, cursor, cursor_glyph(hint)) {
+                set.cursors[slot] = cursor;
+            }
+        }
+        set
+    }
+
+    fn cursor(&self, hint: CursorHint) -> xproto::Cursor {
+        self.cursors[cursor_slot(hint)]
+    }
+
+    /// 释放字形光标与字体;失败仅忽略(连接关闭后由服务器回收)。
+    fn free(&self, conn: &RustConnection) {
+        for &cursor in &self.cursors {
+            if cursor != NONE {
+                let _ = conn.free_cursor(cursor);
+            }
+        }
+        if self.font_open {
+            let _ = conn.close_font(self.font);
+        }
+    }
+}
+
+/// 建单个字体光标:`XCreateFontCursor` 语义(source=glyph、mask=glyph+1,
+/// 前景黑/背景白)。掩码字形缺失时退回同字形,再失败放弃该提示。
+fn build_font_cursor(
+    conn: &RustConnection,
+    font: xproto::Font,
+    cursor: xproto::Cursor,
+    glyph: u16,
+) -> bool {
+    create_glyph_cursor_checked(conn, font, cursor, glyph, glyph.saturating_add(1))
+        || create_glyph_cursor_checked(conn, font, cursor, glyph, glyph)
+}
+
+/// 同步校验的字形光标创建:字形未定义时服务器回 BadValue,`check` 捕获后
+/// 调用方可安全重试或退回默认指针。
+fn create_glyph_cursor_checked(
+    conn: &RustConnection,
+    font: xproto::Font,
+    cursor: xproto::Cursor,
+    source_char: u16,
+    mask_char: u16,
+) -> bool {
+    conn.create_glyph_cursor(
+        cursor,
+        font,
+        font,
+        source_char,
+        mask_char,
+        0,
+        0,
+        0,
+        0xffff,
+        0xffff,
+        0xffff,
+    )
+    .ok()
+    .and_then(|cookie| cookie.check().ok())
+    .is_some()
 }
 
 /// 一次选区会话的 X 资源与连接引用。
@@ -336,14 +487,10 @@ pub fn pick_region(
         .check()
         .map_err(|_| window_failed())?;
 
-    // 十字光标(glyph cursor);字体缺失时退回服务器默认指针。
-    // TODO(cursor-hint): 接入引擎 `cursor_for` 光标提示(手柄/边→resize 箭头,
-    // 内部→move,外部→crosshair),需要为各 resize 方向准备 glyph/主题光标;
-    // 本轮仅 Windows 壳消费,这里先固定十字。
-    let font = conn.generate_id().map_err(|_| id_failed())?;
-    let cursor = conn.generate_id().map_err(|_| id_failed())?;
-    let cursor_ready = build_cross_cursor(&conn, font, cursor);
-    let grab_cursor = if cursor_ready { cursor } else { NONE };
+    // 光标集:按引擎提示预建字形光标,抓取期间与窗口属性都使用它;
+    // 字体/字形缺失时对应提示退回服务器默认指针(不阻断交互)。
+    let cursors = CursorSet::build(&conn);
+    let grab_cursor = cursors.cursor(CursorHint::Crosshair);
 
     let mut state = ShellState {
         hooks,
@@ -358,9 +505,19 @@ pub fn pick_region(
             height,
             layout,
         },
+        cursors,
+        cursor_hint: Some(CursorHint::Crosshair),
         outcome: None,
         timing: std::env::var_os("CROPMARK_CAPTURE_TIMING").is_some(),
     };
+
+    // 窗口光标兜底:抓取失败时窗口属性仍能显示十字(与抓取光标一致)。
+    if grab_cursor != NONE {
+        let _ = conn.change_window_attributes(
+            window,
+            &ChangeWindowAttributesAux::new().cursor(grab_cursor),
+        );
+    }
 
     // 首帧先合成并写入窗口再映射,避免映射瞬间闪黑(ADR-007:合成只在
     // 引擎 Redraw 时发生,Expose 直接呈现缓存)。
@@ -377,10 +534,7 @@ pub fn pick_region(
     let _ = conn.ungrab_pointer(CURRENT_TIME);
     let _ = conn.destroy_window(window);
     let _ = conn.free_gc(gc);
-    if cursor_ready {
-        let _ = conn.free_cursor(cursor);
-        let _ = conn.close_font(font);
-    }
+    state.cursors.free(&conn);
     if let PresentBuffer::Shm(segment) = &state.canvas.present {
         let _ = conn.shm_detach(segment.seg);
     }
@@ -418,27 +572,6 @@ fn root_visual_layout(setup: &Setup, screen: &Screen) -> Option<VisualLayout> {
         blue: ChannelPack::new(visual.blue_mask),
         msb_first: setup.image_byte_order == ImageOrder::MSB_FIRST,
     })
-}
-
-/// 创建十字 glyph cursor;任何一步失败返回 false(调用方退回默认指针)。
-fn build_cross_cursor(conn: &RustConnection, font: xproto::Font, cursor: xproto::Cursor) -> bool {
-    let Ok(()) = conn.open_font(font, b"cursor").map(|_| ()) else {
-        return false;
-    };
-    conn.create_glyph_cursor(
-        cursor,
-        font,
-        NONE,
-        XC_CROSSHAIR,
-        XC_CROSSHAIR,
-        0,
-        0,
-        0,
-        0xffff,
-        0xffff,
-        0xffff,
-    )
-    .is_ok()
 }
 
 /// 抓取指针与键盘,保证选区期间独占输入;失败仅记录(鼠标路径仍可用)。
@@ -583,10 +716,39 @@ fn pump_until_done(state: &mut ShellState, surface: &Surface<'_>, keyboard: &Key
     }
 }
 
+/// 依引擎当前提示切换光标(X11 光标提示,ADR-5);提示未变时跳过。切换
+/// 全部尽力而为:字体缺失、抓取不存在(BadGrab)等错误只会显示默认指针,
+/// 不影响选择/确认/取消。
+fn sync_cursor(state: &mut ShellState, surface: &Surface<'_>) {
+    let (x, y) = state.canvas.engine.cursor();
+    let hint = state.canvas.engine.cursor_for(x, y);
+    if state.cursor_hint == Some(hint) {
+        return;
+    }
+    state.cursor_hint = Some(hint);
+    let cursor = state.cursors.cursor(hint);
+    if cursor == NONE {
+        return;
+    }
+    // 窗口属性覆盖"未抓取/抓取失败"时的指针;活动抓取(存在时)另经
+    // ChangeActivePointerGrab 立即换光标,否则服务器回 BadGrab 错误事件,
+    // 由泵内忽略。
+    let _ = surface.conn.change_window_attributes(
+        surface.window,
+        &ChangeWindowAttributesAux::new().cursor(cursor),
+    );
+    let _ = surface.conn.change_active_pointer_grab(
+        cursor,
+        CURRENT_TIME,
+        EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE | EventMask::POINTER_MOTION,
+    );
+}
+
 /// 与 Windows 壳同构的 EngineOutcome 处理:Redraw→重呈现、
 /// Confirmed→Preview、Cancelled→取消、Action→会话侧完成或复制色值。
 fn feed_event(state: &mut ShellState, surface: &Surface<'_>, event: InputEvent) -> bool {
     let outcome = state.canvas.engine.handle_event(event);
+    sync_cursor(state, surface);
     match outcome {
         EngineOutcome::Redraw => {
             present(state, surface);
@@ -855,6 +1017,69 @@ mod tests {
             keysyms: Vec::new(),
         };
         assert_eq!(map.logical_key(8), None);
+    }
+
+    #[test]
+    fn cursor_glyphs_map_hints_to_cursor_font_shapes() {
+        assert_eq!(cursor_glyph(CursorHint::Crosshair), XC_CROSSHAIR);
+        assert_eq!(cursor_glyph(CursorHint::Move), XC_FLEUR);
+        assert_eq!(cursor_glyph(CursorHint::ResizeNS), XC_SB_V_DOUBLE_ARROW);
+        assert_eq!(cursor_glyph(CursorHint::ResizeEW), XC_SB_H_DOUBLE_ARROW);
+        assert_eq!(cursor_glyph(CursorHint::ResizeNWSE), XC_TOP_LEFT_CORNER);
+        assert_eq!(cursor_glyph(CursorHint::ResizeNESW), XC_TOP_RIGHT_CORNER);
+        // 可点击 chrome 与放大镜面板都用默认箭头。
+        assert_eq!(cursor_glyph(CursorHint::Pointer), XC_LEFT_PTR);
+        assert_eq!(cursor_glyph(CursorHint::Arrow), XC_LEFT_PTR);
+    }
+
+    #[test]
+    fn cursor_slots_are_distinct_except_pointer_and_arrow() {
+        let slots = [
+            cursor_slot(CursorHint::Crosshair),
+            cursor_slot(CursorHint::Move),
+            cursor_slot(CursorHint::ResizeNS),
+            cursor_slot(CursorHint::ResizeEW),
+            cursor_slot(CursorHint::ResizeNWSE),
+            cursor_slot(CursorHint::ResizeNESW),
+        ];
+        assert_eq!(slots, [0, 1, 2, 3, 4, 5]);
+        assert_eq!(
+            cursor_slot(CursorHint::Pointer),
+            cursor_slot(CursorHint::Arrow)
+        );
+        assert!(!slots.contains(&cursor_slot(CursorHint::Pointer)));
+        for hint in [
+            CursorHint::Crosshair,
+            CursorHint::Move,
+            CursorHint::ResizeNS,
+            CursorHint::ResizeEW,
+            CursorHint::ResizeNWSE,
+            CursorHint::ResizeNESW,
+            CursorHint::Pointer,
+            CursorHint::Arrow,
+        ] {
+            assert!(cursor_slot(hint) < CURSOR_SLOT_COUNT);
+        }
+    }
+
+    /// 字体/字形不可用的槽位解析为 NONE:光标切换失败只退回默认指针,
+    /// 不产生错误路径,也不阻断交互。
+    #[test]
+    fn unavailable_cursor_slots_resolve_to_none() {
+        let mut set = CursorSet {
+            font: NONE,
+            font_open: false,
+            cursors: [NONE; CURSOR_SLOT_COUNT],
+        };
+        assert_eq!(set.cursor(CursorHint::Crosshair), NONE);
+        assert_eq!(set.cursor(CursorHint::ResizeNWSE), NONE);
+        // 部分槽位构建成功后,其余提示仍解析为 NONE。
+        set.cursors[cursor_slot(CursorHint::ResizeEW)] = 42;
+        assert_eq!(set.cursor(CursorHint::ResizeEW), 42);
+        assert_eq!(set.cursor(CursorHint::ResizeNS), NONE);
+        // Pointer/Arrow 共用槽:一个可用则两者都可用。
+        set.cursors[cursor_slot(CursorHint::Pointer)] = 43;
+        assert_eq!(set.cursor(CursorHint::Arrow), 43);
     }
 
     #[test]

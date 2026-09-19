@@ -16,6 +16,9 @@
 //! kCGBitmapByteOrder32Little|kCGImageAlphaPremultipliedFirst).
 //! 鼠标坐标用 `NSEvent.mouseLocation`(AppKit 左下原点)换到引擎左上原点;事件泵
 //! 像 Windows 壳的窗口过程一样直接转发,不把输入只交给 NSView 响应链.
+//! 光标提示按引擎 `cursor_for` 映射:选区内部→开手(拖移中闭合手)、手柄/边→
+//! resize(SF Symbol 自绘)、chrome→箭头、空白→十字;符号不可用时退回十字,
+//! 光标切换不阻断选择/确认/取消(ADR-5).
 //!
 //! 注意:本模块只能在 macOS 编译;Windows/Linux 主机上的离线核对以
 //! windows.rs 逐块对照 + `geometry::appkit_global_to_physical` 测试为准.
@@ -25,10 +28,10 @@ use std::ffi::c_void;
 use std::time::{Duration, Instant};
 
 use objc2::rc::Retained;
-use objc2::{define_class, msg_send, MainThreadMarker, MainThreadOnly};
+use objc2::{define_class, msg_send, AnyThread, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSBackingStoreType, NSCursor, NSEvent, NSEventMask, NSEventModifierFlags,
-    NSEventType, NSGraphicsContext, NSPanel, NSResponder, NSScreen, NSView, NSWindow,
+    NSEventType, NSGraphicsContext, NSImage, NSPanel, NSResponder, NSScreen, NSView, NSWindow,
     NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 use objc2_core_foundation::{CFRetained, CGPoint, CGRect, CGSize, CGFloat};
@@ -36,14 +39,15 @@ use objc2_core_graphics::{
     kCGScreenSaverWindowLevel, CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGContext,
     CGDataProvider, CGImage, CGImageAlphaInfo, CGImageByteOrderInfo,
 };
-use objc2_foundation::{NSDate, NSPoint, NSRect, NSRunLoopCommonModes, NSSize};
+use objc2_foundation::{NSDate, NSPoint, NSRect, NSRunLoopCommonModes, NSSize, NSString};
 
 use crate::capture::buffer::Frame;
 use crate::capture::error::CaptureError;
 use crate::capture::geometry::{self, MonitorGeom, PhysicalRect};
 use crate::capture::selection::composer::{self, Composer};
 use crate::capture::selection::{
-    EngineOutcome, FeatureFlags, InputEvent, LogicalKey, SelectionAction, SelectionEngine,
+    CursorHint, EngineOutcome, EngineState, FeatureFlags, InputEvent, LogicalKey, SelectionAction,
+    SelectionEngine,
 };
 use crate::capture::session::QuietAction;
 
@@ -104,6 +108,99 @@ struct ShellState {
     dirty: bool,
     outcome: Option<RegionOutcome>,
     timing: bool,
+    /// 最近一次应用的壳内光标形态;未变化时跳过 set。
+    applied_cursor: Option<CursorKind>,
+    /// resize 自绘光标缓存(懒构建;符号不可用时保持 None,显示时退回十字)。
+    resize_cursors: ResizeCursors,
+}
+
+/// 壳内光标形态:引擎提示在上层细化(移动提示拖移中变为闭合手)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CursorKind {
+    Crosshair,
+    OpenHand,
+    ClosedHand,
+    Arrow,
+    ResizeNS,
+    ResizeEW,
+    ResizeNWSE,
+    ResizeNESW,
+}
+
+/// 引擎提示 + 引擎状态 → 壳内光标形态;仅 Move 需要状态(拖移中闭合手)。
+fn cursor_kind(hint: CursorHint, state: &EngineState) -> CursorKind {
+    match hint {
+        CursorHint::Crosshair => CursorKind::Crosshair,
+        CursorHint::Move => {
+            if matches!(state, EngineState::Moving { .. }) {
+                CursorKind::ClosedHand
+            } else {
+                CursorKind::OpenHand
+            }
+        }
+        CursorHint::Pointer | CursorHint::Arrow => CursorKind::Arrow,
+        CursorHint::ResizeNS => CursorKind::ResizeNS,
+        CursorHint::ResizeEW => CursorKind::ResizeEW,
+        CursorHint::ResizeNWSE => CursorKind::ResizeNWSE,
+        CursorHint::ResizeNESW => CursorKind::ResizeNESW,
+    }
+}
+
+/// resize 提示 → SF Symbol 名(ADR-5;macOS 11+,部署下限 14);非 resize
+/// 形态返回 None(使用系统光标)。符号不可用时由调用方退回十字。
+fn resize_symbol(kind: CursorKind) -> Option<&'static str> {
+    match kind {
+        CursorKind::ResizeNS => Some("arrow.up.and.down"),
+        CursorKind::ResizeEW => Some("arrow.left.and.right"),
+        CursorKind::ResizeNWSE => Some("arrow.up.left.and.arrow.down.right"),
+        CursorKind::ResizeNESW => Some("arrow.up.right.and.arrow.down.left"),
+        _ => None,
+    }
+}
+
+/// SF Symbol 自绘 resize 光标:固定 18pt,热点取图像中心;符号不可用返回 None。
+fn build_resize_cursor(kind: CursorKind) -> Option<Retained<NSCursor>> {
+    let name = NSString::from_str(resize_symbol(kind)?);
+    let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(&name, None)?;
+    let size = NSSize {
+        width: 18.0,
+        height: 18.0,
+    };
+    image.setSize(size);
+    let hot_spot = NSPoint {
+        x: size.width / 2.0,
+        y: size.height / 2.0,
+    };
+    Some(NSCursor::initWithImage_hotSpot(
+        NSCursor::alloc(),
+        &image,
+        hot_spot,
+    ))
+}
+
+/// resize 自绘光标缓存;首次使用时构建,构建失败保持 None。
+#[derive(Default)]
+struct ResizeCursors {
+    ns: Option<Retained<NSCursor>>,
+    ew: Option<Retained<NSCursor>>,
+    nwse: Option<Retained<NSCursor>>,
+    nesw: Option<Retained<NSCursor>>,
+}
+
+impl ResizeCursors {
+    fn get(&mut self, kind: CursorKind) -> Option<Retained<NSCursor>> {
+        let slot = match kind {
+            CursorKind::ResizeNS => &mut self.ns,
+            CursorKind::ResizeEW => &mut self.ew,
+            CursorKind::ResizeNWSE => &mut self.nwse,
+            CursorKind::ResizeNESW => &mut self.nesw,
+            _ => return None,
+        };
+        if slot.is_none() {
+            *slot = build_resize_cursor(kind);
+        }
+        slot.clone()
+    }
 }
 
 thread_local! {
@@ -322,6 +419,8 @@ fn run_shell(
             dirty: false,
             outcome: None,
             timing: std::env::var_os("CROPMARK_CAPTURE_TIMING").is_some(),
+            applied_cursor: Some(CursorKind::Crosshair),
+            resize_cursors: ResizeCursors::default(),
         });
     });
     let app = NSApplication::sharedApplication(mtm);
@@ -348,8 +447,9 @@ fn run_shell(
     let content_view: &NSView = &view;
     window.setContentView(Some(content_view));
     window.setFrame_display(frame, true);
-    // TODO(cursor-hint): 接入引擎 `cursor_for` 光标提示(手柄/边→resize 箭头,
-    // 内部→move,外部→crosshair);本轮仅 Windows 壳消费,这里先固定十字。
+    // 光标提示(ADR-5):首帧前先显示十字,其后每个输入事件由 apply_cursor
+    // 按引擎 cursor_for 切换——手柄/边→resize、选区内部→开手(拖移中闭合手)、
+    // chrome→箭头、空白→十字;斜向 resize 用 SF Symbol 自绘。
     NSCursor::crosshairCursor().set();
     // 先合成首帧再上屏,避免 orderFront 到首次 drawRect 之间闪黑。
     STATE.with(|slot| {
@@ -534,6 +634,7 @@ fn dispatch_input(view: &SelectionView, event: InputEvent) {
             return false;
         };
         feed_event(state, event, view);
+        apply_cursor(state);
         state.dirty
     });
     if dirty {
@@ -545,6 +646,31 @@ fn dispatch_input(view: &SelectionView, event: InputEvent) {
             }
         });
     }
+}
+
+/// 依引擎当前提示切换系统光标;形态未变化时跳过 set。resize 提示用 SF
+/// Symbol 自绘,符号不可用时退回十字;光标切换不影响选择/确认/取消。
+fn apply_cursor(state: &mut ShellState) {
+    let kind = {
+        let engine = &state.canvas.engine;
+        let (x, y) = engine.cursor();
+        cursor_kind(engine.cursor_for(x, y), engine.state())
+    };
+    if state.applied_cursor == Some(kind) {
+        return;
+    }
+    state.applied_cursor = Some(kind);
+    let cursor = match kind {
+        CursorKind::Crosshair => NSCursor::crosshairCursor(),
+        CursorKind::OpenHand => NSCursor::openHandCursor(),
+        CursorKind::ClosedHand => NSCursor::closedHandCursor(),
+        CursorKind::Arrow => NSCursor::arrowCursor(),
+        resize => state
+            .resize_cursors
+            .get(resize)
+            .unwrap_or_else(NSCursor::crosshairCursor),
+    };
+    cursor.set();
 }
 
 /// 与 Windows 壳同构的 EngineOutcome 处理:Redraw→重呈现、
@@ -838,5 +964,103 @@ mod tests {
         assert_eq!((x, y), (80, 1200));
         let (x, y) = geometry::appkit_global_to_physical(40.0, 600.0, 0.0, 0.0, 600.0, 2.0);
         assert_eq!((x, y), (80, 0));
+    }
+
+    #[test]
+    fn cursor_kind_refines_move_and_maps_every_hint() {
+        let selected = EngineState::Selected;
+        let moving = EngineState::Moving {
+            origin: PhysicalRect {
+                x: 10,
+                y: 10,
+                width: 40,
+                height: 30,
+            },
+            grab_x: 20,
+            grab_y: 20,
+        };
+        assert_eq!(
+            cursor_kind(CursorHint::Crosshair, &selected),
+            CursorKind::Crosshair
+        );
+        assert_eq!(
+            cursor_kind(CursorHint::Move, &selected),
+            CursorKind::OpenHand
+        );
+        assert_eq!(
+            cursor_kind(CursorHint::Move, &moving),
+            CursorKind::ClosedHand
+        );
+        assert_eq!(
+            cursor_kind(CursorHint::Pointer, &selected),
+            CursorKind::Arrow
+        );
+        assert_eq!(cursor_kind(CursorHint::Arrow, &selected), CursorKind::Arrow);
+        assert_eq!(
+            cursor_kind(CursorHint::ResizeNS, &selected),
+            CursorKind::ResizeNS
+        );
+        assert_eq!(
+            cursor_kind(CursorHint::ResizeEW, &selected),
+            CursorKind::ResizeEW
+        );
+        assert_eq!(
+            cursor_kind(CursorHint::ResizeNWSE, &selected),
+            CursorKind::ResizeNWSE
+        );
+        assert_eq!(
+            cursor_kind(CursorHint::ResizeNESW, &selected),
+            CursorKind::ResizeNESW
+        );
+    }
+
+    #[test]
+    fn resize_symbols_cover_four_directions_and_nothing_else() {
+        let mut names: Vec<&str> = [
+            CursorKind::ResizeNS,
+            CursorKind::ResizeEW,
+            CursorKind::ResizeNWSE,
+            CursorKind::ResizeNESW,
+        ]
+        .into_iter()
+        .map(|kind| resize_symbol(kind).expect("resize 提示都应有符号"))
+        .collect();
+        let count = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), count);
+        // 非 resize 形态不自绘。
+        assert_eq!(resize_symbol(CursorKind::Crosshair), None);
+        assert_eq!(resize_symbol(CursorKind::OpenHand), None);
+        assert_eq!(resize_symbol(CursorKind::ClosedHand), None);
+        assert_eq!(resize_symbol(CursorKind::Arrow), None);
+    }
+
+    #[test]
+    fn engine_cursor_hints_map_to_shell_kinds_across_interactions() {
+        // 关闭放大镜:只核对选区几何→光标形态的整链路(避开面板命中)。
+        let flags = FeatureFlags {
+            magnifier: false,
+            ..FeatureFlags::default()
+        };
+        let mut engine = SelectionEngine::new(320, 200, flags);
+        let kind = |engine: &SelectionEngine, x: i32, y: i32| {
+            cursor_kind(engine.cursor_for(x, y), engine.state())
+        };
+        // 空白 → 十字。
+        assert_eq!(kind(&engine, 10, 10), CursorKind::Crosshair);
+        // 拖出选区:内部 → 开手,角/边 → resize,空白 → 十字。
+        engine.handle_event(InputEvent::LeftDown { x: 40, y: 30 });
+        engine.handle_event(InputEvent::PointerMove { x: 200, y: 120 });
+        engine.handle_event(InputEvent::LeftUp { x: 200, y: 120 });
+        assert_eq!(kind(&engine, 120, 75), CursorKind::OpenHand);
+        assert_eq!(kind(&engine, 40, 30), CursorKind::ResizeNWSE);
+        assert_eq!(kind(&engine, 120, 30), CursorKind::ResizeNS);
+        assert_eq!(kind(&engine, 10, 10), CursorKind::Crosshair);
+        // 按下选区内部拖移 → 闭合手;松开后回到开手。
+        engine.handle_event(InputEvent::LeftDown { x: 120, y: 75 });
+        assert_eq!(kind(&engine, 120, 75), CursorKind::ClosedHand);
+        engine.handle_event(InputEvent::LeftUp { x: 120, y: 75 });
+        assert_eq!(kind(&engine, 120, 75), CursorKind::OpenHand);
     }
 }
