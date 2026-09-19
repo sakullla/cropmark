@@ -641,6 +641,8 @@ fn feature_flags_from(features: crate::settings::FeatureSettings) -> super::sele
         toolbar_copy: features.toolbar_copy,
         toolbar_save: features.toolbar_save,
         toolbar_pin: features.toolbar_pin,
+        // R24:选区壳光标提示;关闭后引擎固定十字。
+        cursor_hints: features.cursor_hints,
     }
 }
 
@@ -974,12 +976,16 @@ fn store_freeze(
         }
         Ok(current.mode)
     })?;
+    // R24:Web 覆盖层能力子集随冻结帧下发;前端忽略不认识的字段。
+    let capabilities =
+        ui::OverlayCapabilities::from_features(crate::settings::current_features(app));
     let overlay = ui::overlay_payload(
         mode,
         &frame,
         &monitor,
         windows.clone(),
         overlay_reduced_capabilities(mode, region_native_shell()),
+        capabilities,
     )?;
     with_session_mut(app, |session| {
         let session = session.as_mut().ok_or_else(CaptureError::cancelled)?;
@@ -1702,6 +1708,7 @@ mod tests {
             toolbar_copy: false,
             toolbar_save: false,
             toolbar_pin: false,
+            ..crate::settings::FeatureSettings::default()
         });
         assert!(!all_off.ocr_entry);
         assert!(!all_off.pin_entry);
@@ -1709,6 +1716,13 @@ mod tests {
         assert!(!all_off.toolbar_copy);
         assert!(!all_off.toolbar_save);
         assert!(!all_off.toolbar_pin);
+        // R24:cursorHints 开关映射到选区引擎(关闭→固定十字)。
+        let hints_off = feature_flags_from(crate::settings::FeatureSettings {
+            cursor_hints: false,
+            ..crate::settings::FeatureSettings::default()
+        });
+        assert!(!hints_off.cursor_hints);
+        assert!(hints_off.ocr_entry && hints_off.toolbar_copy);
     }
 
     fn hide_before_capture_steps(mode: CaptureMode, delay_ms: u64) -> Vec<SessionStep> {

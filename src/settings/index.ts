@@ -29,6 +29,10 @@ export interface FeatureSettings {
   toolbarCopy: boolean;
   toolbarSave: boolean;
   toolbarPin: boolean;
+  cursorHints: boolean;
+  lastRegion: boolean;
+  ocrOrientation: boolean;
+  inlineAnnotation: boolean;
 }
 
 export type FinishAction = "preview" | "quiet";
@@ -96,6 +100,26 @@ const FEATURE_ITEMS: Array<{ key: FeatureKey; labelKey: CatalogKey; hintKey: Cat
     key: "toolbarPin",
     labelKey: "settings.feature.toolbar_pin_label",
     hintKey: "settings.feature.toolbar_pin_hint",
+  },
+  {
+    key: "cursorHints",
+    labelKey: "settings.feature.cursor_hints_label",
+    hintKey: "settings.feature.cursor_hints_hint",
+  },
+  {
+    key: "lastRegion",
+    labelKey: "settings.feature.last_region_label",
+    hintKey: "settings.feature.last_region_hint",
+  },
+  {
+    key: "ocrOrientation",
+    labelKey: "settings.feature.ocr_orientation_label",
+    hintKey: "settings.feature.ocr_orientation_hint",
+  },
+  {
+    key: "inlineAnnotation",
+    labelKey: "settings.feature.inline_annotation_label",
+    hintKey: "settings.feature.inline_annotation_hint",
   },
 ];
 

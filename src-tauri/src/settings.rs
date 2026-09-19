@@ -64,8 +64,10 @@ impl AnnotationDefaults {
     }
 }
 
-/// 功能入口开关(默认全开):决定选区操作条/右键菜单/预览工具条的动作集,
-/// 与 `capture::selection::FeatureFlags` 一一对应。
+/// 功能入口与能力开关(默认全开):前六项决定选区操作条/右键菜单/预览工具条
+/// 的动作集(`capture::selection::FeatureFlags` 与之对应);R24 后四项为跨链路
+/// 能力开关:光标提示(选区壳)、上次区域(托盘直取与记录)、OCR 方向纠正、
+/// 选区即时标注(选区/Web 覆盖层)。关闭只停用能力,不删除既有数据。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct FeatureSettings {
@@ -75,6 +77,14 @@ pub struct FeatureSettings {
     pub toolbar_copy: bool,
     pub toolbar_save: bool,
     pub toolbar_pin: bool,
+    /// R24:选区光标提示;关闭后壳内光标固定十字。
+    pub cursor_hints: bool,
+    /// R24:托盘"上次区域"直取与成功区域截图的自动记录。
+    pub last_region: bool,
+    /// R24:OCR 方向纠正;关闭后仅按正置识别。
+    pub ocr_orientation: bool,
+    /// R24:选区即时标注;关闭后选区无标注工具,标注仍进预览编辑器。
+    pub inline_annotation: bool,
 }
 
 impl Default for FeatureSettings {
@@ -86,6 +96,10 @@ impl Default for FeatureSettings {
             toolbar_copy: true,
             toolbar_save: true,
             toolbar_pin: true,
+            cursor_hints: true,
+            last_region: true,
+            ocr_orientation: true,
+            inline_annotation: true,
         }
     }
 }
@@ -107,6 +121,10 @@ impl FeatureSettings {
             "toolbarCopy" | "toolbar_copy" => next.toolbar_copy = enabled,
             "toolbarSave" | "toolbar_save" => next.toolbar_save = enabled,
             "toolbarPin" | "toolbar_pin" => next.toolbar_pin = enabled,
+            "cursorHints" | "cursor_hints" => next.cursor_hints = enabled,
+            "lastRegion" | "last_region" => next.last_region = enabled,
+            "ocrOrientation" | "ocr_orientation" => next.ocr_orientation = enabled,
+            "inlineAnnotation" | "inline_annotation" => next.inline_annotation = enabled,
             _ => return None,
         }
         Some(next)
@@ -524,7 +542,11 @@ pub fn current_last_region(app: &AppHandle) -> Option<LastRegion> {
 
 /// 区域截图成功后覆盖记录并重建托盘菜单(R6),"上次区域"立即直取同一区域;
 /// 写盘失败只影响 notice,不丢内存记录。
+/// R24:关闭 lastRegion 后不再记录新区域;既有记录保留,重新开启即可直取。
 pub fn remember_last_region(app: &AppHandle, region: LastRegion) {
+    if !current_features(app).last_region {
+        return;
+    }
     let Some(region) = region.sanitized() else {
         return;
     };
@@ -728,6 +750,9 @@ pub fn set_feature(
     *lock(&app.state::<SessionState>().features) = next;
     let applied = i18n::t("notice.features_applied");
     persist_settings(&app, &applied);
+    // R24:lastRegion 开关改变托盘"上次区域"项的可用状态;菜单事件按 id 分发,
+    // 重建不影响其它入口。
+    crate::tray::refresh_menu(&app);
     Ok(snapshot(&app))
 }
 
@@ -827,6 +852,10 @@ mod tests {
                 toolbar_copy: true,
                 toolbar_save: false,
                 toolbar_pin: true,
+                cursor_hints: false,
+                last_region: false,
+                ocr_orientation: false,
+                inline_annotation: true,
             },
             capture: CaptureSettings {
                 delay_seconds: 5,
@@ -865,6 +894,10 @@ mod tests {
         assert!(loaded.features.toolbar_copy);
         assert!(!loaded.features.toolbar_save);
         assert!(loaded.features.toolbar_pin);
+        assert!(!loaded.features.cursor_hints);
+        assert!(!loaded.features.last_region);
+        assert!(!loaded.features.ocr_orientation);
+        assert!(loaded.features.inline_annotation);
         assert_eq!(loaded.capture.delay_seconds, 5);
         assert!(!loaded.capture.auto_copy);
         assert_eq!(loaded.capture.finish_action, FinishAction::Quiet);
@@ -967,6 +1000,11 @@ mod tests {
         assert_eq!(loaded.features, FeatureSettings::default());
         assert!(loaded.features.ocr_entry);
         assert!(loaded.features.magnifier);
+        // R24:旧设置文件缺失新开关时按默认开启加载(不因升级被关闭)。
+        assert!(loaded.features.cursor_hints);
+        assert!(loaded.features.last_region);
+        assert!(loaded.features.ocr_orientation);
+        assert!(loaded.features.inline_annotation);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -979,8 +1017,21 @@ mod tests {
             toolbar_copy: false,
             toolbar_save: false,
             toolbar_pin: false,
+            cursor_hints: false,
+            last_region: false,
+            ocr_orientation: false,
+            inline_annotation: false,
         };
         assert_eq!(off.sanitized(), off);
+    }
+
+    #[test]
+    fn r24_capability_toggles_default_to_enabled() {
+        let defaults = FeatureSettings::default();
+        assert!(defaults.cursor_hints);
+        assert!(defaults.last_region);
+        assert!(defaults.ocr_orientation);
+        assert!(defaults.inline_annotation);
     }
 
     #[test]
@@ -990,6 +1041,48 @@ mod tests {
         assert!(!off.ocr_entry);
         let snake = base.with_key("toolbar_save", false).expect("snake_case key applies");
         assert!(!snake.toolbar_save);
+        // R24 四个能力开关:camelCase 与 snake_case 都被白名单接受。
+        let cases = [
+            (
+                "cursorHints",
+                FeatureSettings {
+                    cursor_hints: false,
+                    ..base
+                },
+            ),
+            (
+                "lastRegion",
+                FeatureSettings {
+                    last_region: false,
+                    ..base
+                },
+            ),
+            (
+                "ocrOrientation",
+                FeatureSettings {
+                    ocr_orientation: false,
+                    ..base
+                },
+            ),
+            (
+                "inlineAnnotation",
+                FeatureSettings {
+                    inline_annotation: false,
+                    ..base
+                },
+            ),
+        ];
+        for (key, expected) in cases {
+            assert_eq!(base.with_key(key, false), Some(expected), "{key}");
+        }
+        let snake_hints = base
+            .with_key("cursor_hints", false)
+            .expect("snake_case key applies");
+        assert!(!snake_hints.cursor_hints);
+        let snake_annotation = base
+            .with_key("inline_annotation", false)
+            .expect("snake_case key applies");
+        assert!(!snake_annotation.inline_annotation);
         assert_eq!(base.with_key("captureHotkey", false), None);
         assert_eq!(base.with_key("", true), None);
     }

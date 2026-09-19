@@ -22,6 +22,8 @@ pub const KEY_STEP: i32 = 1;
 pub const KEY_STEP_LARGE: i32 = 10;
 
 /// 功能入口开关(默认全开);操作条/菜单动作集由此决定。
+/// `cursor_hints` 为 R24 光标提示开关:关闭后 `cursor_for` 固定十字,
+/// 交互(选择/确认/取消)保持不变。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FeatureFlags {
     pub ocr_entry: bool,
@@ -30,6 +32,7 @@ pub struct FeatureFlags {
     pub toolbar_copy: bool,
     pub toolbar_save: bool,
     pub toolbar_pin: bool,
+    pub cursor_hints: bool,
 }
 
 impl Default for FeatureFlags {
@@ -41,6 +44,7 @@ impl Default for FeatureFlags {
             toolbar_copy: true,
             toolbar_save: true,
             toolbar_pin: true,
+            cursor_hints: true,
         }
     }
 }
@@ -255,6 +259,11 @@ impl SelectionEngine {
     /// 其后才是手柄/边→resize 箭头、选区内部→move、其他→crosshair。
     /// 拖动手柄/边/移动期间保持对应提示。
     pub fn cursor_for(&self, x: i32, y: i32) -> CursorHint {
+        // R24:关闭光标提示后所有位置(手柄/边/内部/chrome/空白)固定十字,
+        // 三种壳(Windows/macOS/X11)都从本函数取提示,无需各自分支。
+        if !self.flags.cursor_hints {
+            return CursorHint::Crosshair;
+        }
         match self.state {
             EngineState::Adjusting { handle } => CursorHint::for_handle(handle),
             EngineState::AdjustingEdge { edge } => CursorHint::for_edge(edge),
@@ -1199,6 +1208,71 @@ mod tests {
         off.flags.magnifier = false;
         off.handle_event(InputEvent::PointerMove { x: 300, y: 180 });
         assert_eq!(off.cursor_for(px, py), CursorHint::Crosshair);
+    }
+
+    #[test]
+    fn cursor_hints_disabled_pins_crosshair_across_chrome_and_selection() {
+        // 关闭放大镜避开面板对探针的覆盖,只比较手柄/内部/操作条/菜单。
+        let base = FeatureFlags {
+            magnifier: false,
+            ..FeatureFlags::default()
+        };
+        let mut on = SelectionEngine::new(320, 200, base);
+        drag(&mut on, (40, 30), (200, 120));
+        assert_eq!(on.cursor_for(40, 30), CursorHint::ResizeNWSE);
+        assert_eq!(on.cursor_for(120, 75), CursorHint::Move);
+
+        // 关闭光标提示:同样的探针全部固定十字(三种壳共用本函数取提示)。
+        let mut off = SelectionEngine::new(
+            320,
+            200,
+            FeatureFlags {
+                cursor_hints: false,
+                ..base
+            },
+        );
+        drag(&mut off, (40, 30), (200, 120));
+        assert_eq!(off.cursor_for(40, 30), CursorHint::Crosshair);
+        assert_eq!(off.cursor_for(120, 75), CursorHint::Crosshair);
+        assert_eq!(off.cursor_for(10, 10), CursorHint::Crosshair);
+        // 操作条按钮与菜单项也不切手型。
+        let buttons = composer::toolbar_buttons(off.flags());
+        let panel =
+            composer::toolbar_panel(off.metrics(), off.selection().unwrap(), off.size(), &buttons).unwrap();
+        let (_, toolbar_rect) = composer::toolbar_button_rects(off.metrics(), panel, &buttons)[0];
+        let (bx, by) = toolbar_rect.center();
+        assert_eq!(off.cursor_for(bx, by), CursorHint::Crosshair);
+        off.handle_event(InputEvent::RightDown { x: 200, y: 120 });
+        let items = composer::menu_items(off.flags());
+        let menu = composer::menu_panel(off.metrics(), off.menu_anchor(), off.size(), &items);
+        let (_, item_rect) = composer::menu_item_rects(off.metrics(), menu, &items)[0];
+        let (mx, my) = item_rect.center();
+        assert_eq!(off.cursor_for(mx, my), CursorHint::Crosshair);
+        // 固定十字不改变交互:Enter 仍确认当前选区。
+        assert!(matches!(
+            off.handle_event(InputEvent::Key {
+                key: LogicalKey::Enter,
+                shift: false
+            }),
+            EngineOutcome::Confirmed(_)
+        ));
+
+        // 放大镜面板探针:开启时箭头,关闭光标提示后固定十字。
+        let mut magnified = SelectionEngine::new(320, 200, FeatureFlags::default());
+        magnified.handle_event(InputEvent::PointerMove { x: 300, y: 180 });
+        let magnifier = composer::magnifier_rect(magnified.cursor(), magnified.size(), 1.0);
+        let (px, py) = magnifier.center();
+        assert_eq!(magnified.cursor_for(px, py), CursorHint::Arrow);
+        let mut pinned = SelectionEngine::new(
+            320,
+            200,
+            FeatureFlags {
+                cursor_hints: false,
+                ..FeatureFlags::default()
+            },
+        );
+        pinned.handle_event(InputEvent::PointerMove { x: 300, y: 180 });
+        assert_eq!(pinned.cursor_for(px, py), CursorHint::Crosshair);
     }
 
     #[test]

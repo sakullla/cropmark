@@ -91,6 +91,8 @@ pub async fn recognize_preview(app: AppHandle) -> Result<OcrDocument, String> {
 }
 
 fn recognize_blocking(app: &AppHandle, frame: &crate::capture::buffer::Frame) -> Result<OcrDocument, String> {
+    // R24:每次识别读取当前方向纠正开关;设置切换即时生效(无需重载模型)。
+    let orientation_enabled = crate::settings::current_features(app).ocr_orientation;
     let runtime = app.state::<OcrRuntime>();
     let mut inner = runtime.lock();
     if inner.engine.is_none() {
@@ -103,7 +105,7 @@ fn recognize_blocking(app: &AppHandle, frame: &crate::capture::buffer::Frame) ->
         }
     }
     let engine = inner.engine.as_mut().expect("ocr engine loaded");
-    match engine.recognize(frame) {
+    match engine.recognize(frame, orientation_enabled) {
         Ok(doc) => {
             inner.last = Some(doc.clone());
             Ok(doc)

@@ -823,6 +823,38 @@
     "zh-CN": "选区操作条上的贴图按钮。",
     "en": "The pin button on the selection toolbar."
   },
+  "settings.feature.cursor_hints_label": {
+    "zh-CN": "光标提示",
+    "en": "Cursor hints"
+  },
+  "settings.feature.cursor_hints_hint": {
+    "zh-CN": "选区时按位置切换移动/缩放光标；关闭后固定十字。",
+    "en": "Shows move/resize cursors by position during selection; when off the cursor stays a crosshair."
+  },
+  "settings.feature.last_region_label": {
+    "zh-CN": "上次区域",
+    "en": "Last region"
+  },
+  "settings.feature.last_region_hint": {
+    "zh-CN": "托盘“上次区域”直取；关闭后该项禁用且不再记录新区域，已有记录保留。",
+    "en": "Tray shortcut to capture the last region; when off the item is disabled and new regions are no longer recorded, while the existing record stays."
+  },
+  "settings.feature.ocr_orientation_label": {
+    "zh-CN": "取字方向纠正",
+    "en": "Text orientation"
+  },
+  "settings.feature.ocr_orientation_hint": {
+    "zh-CN": "倒置或旋转的截图也能识别；关闭后仅按正置识别。",
+    "en": "Recognizes upside-down or rotated screenshots; when off only upright images are recognized."
+  },
+  "settings.feature.inline_annotation_label": {
+    "zh-CN": "选区即时标注",
+    "en": "Inline annotation"
+  },
+  "settings.feature.inline_annotation_hint": {
+    "zh-CN": "选定区域后可直接标注；关闭后选区不显示标注工具，标注仍可进入预览编辑器。",
+    "en": "Annotate directly after selecting a region; when off the selection shows no annotation tools and annotation still opens in the preview editor."
+  },
   "settings.about.title": {
     "zh-CN": "关于",
     "en": "About"

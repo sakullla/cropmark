@@ -18,6 +18,11 @@ interface ListedWindow {
   ownerIsSelf: boolean;
 }
 
+/** R24:覆盖层能力子集;旧后端缺失时按默认可用处理,未知字段天然忽略。 */
+interface OverlayCapabilities {
+  inlineAnnotation?: boolean;
+}
+
 interface OverlayFrame {
   mode: CaptureMode;
   pngBase64: string;
@@ -27,6 +32,7 @@ interface OverlayFrame {
   logicalWidth: number;
   logicalHeight: number;
   reducedCapabilities: boolean;
+  capabilities?: OverlayCapabilities;
   windows: ListedWindow[];
 }
 

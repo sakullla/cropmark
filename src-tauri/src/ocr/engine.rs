@@ -137,34 +137,28 @@ impl Engine {
         Ok(Self { lite })
     }
 
-    pub fn recognize(&mut self, frame: &Frame) -> Result<OcrDocument, OcrError> {
+    /// R24:`orientation_enabled` 为 false 时仅按正置识别:不做逐行 180°
+    /// 纠正(`do_angle=false`),也不做整图旋转候选重试。
+    pub fn recognize(
+        &mut self,
+        frame: &Frame,
+        orientation_enabled: bool,
+    ) -> Result<OcrDocument, OcrError> {
         let rgb = frame_to_rgb(frame)?;
         let frame_width = rgb.width() as f64;
         let frame_height = rgb.height() as f64;
 
         // R11:先按原图(逐行 180° 纠正)识别;仅当无 span 或平均分过低时,
         // 再按 ADR-9 顺序旋转整图重试,候选坐标逆变换回原图后择优。
-        let (best, _) = select_candidate(|orientation| {
-            let rotated = rotate_rgb(&rgb, orientation);
-            let result = self
-                .lite
-                .detect(
-                    &rotated,
-                    PADDING,
-                    MAX_SIDE_LEN,
-                    BOX_SCORE_THRESH,
-                    BOX_THRESH,
-                    UN_CLIP_RATIO,
-                    true,
-                    false,
-                )
-                .map_err(|_| OcrError::Failed)?;
-            Ok(Candidate::from_result(
-                &result,
+        // R24:方向纠正关闭时只识别正置一次。
+        let (best, _) = recognize_with_policy(orientation_enabled, |orientation| {
+            self.recognize_candidate(
+                &rgb,
                 orientation,
+                orientation_enabled,
                 frame_width,
                 frame_height,
-            ))
+            )
         })?;
         let spans = expand_for_selection(&best.spans);
         if spans.is_empty() {
@@ -175,6 +169,51 @@ impl Engine {
             return Err(OcrError::NoText);
         }
         Ok(OcrDocument { spans, full_text })
+    }
+
+    /// 单次候选识别:`angle_correction` 控制逐行角度纠正(方向开关关闭时为
+    /// false),旋转候选的文本块坐标逆变换回源帧。
+    fn recognize_candidate(
+        &mut self,
+        rgb: &RgbImage,
+        orientation: Orientation,
+        angle_correction: bool,
+        frame_width: f64,
+        frame_height: f64,
+    ) -> Result<Candidate, OcrError> {
+        let rotated = rotate_rgb(rgb, orientation);
+        let result = self
+            .lite
+            .detect(
+                &rotated,
+                PADDING,
+                MAX_SIDE_LEN,
+                BOX_SCORE_THRESH,
+                BOX_THRESH,
+                UN_CLIP_RATIO,
+                angle_correction,
+                false,
+            )
+            .map_err(|_| OcrError::Failed)?;
+        Ok(Candidate::from_result(
+            &result,
+            orientation,
+            frame_width,
+            frame_height,
+        ))
+    }
+}
+
+/// R24:方向纠正策略。开启时沿用候选选择(原图可信即返回,低置信按 ADR-9
+/// 顺序整图旋转重试);关闭时只识别正置一次,不重试。
+fn recognize_with_policy(
+    orientation_enabled: bool,
+    mut recognize: impl FnMut(Orientation) -> Result<Candidate, OcrError>,
+) -> Result<(Candidate, usize), OcrError> {
+    if orientation_enabled {
+        select_candidate(recognize)
+    } else {
+        recognize(Orientation::Identity).map(|candidate| (candidate, 1))
     }
 }
 
@@ -300,9 +339,9 @@ mod tests {
         }));
     }
 
-    #[test]
-    fn select_candidate_stops_at_first_trustworthy_and_prefers_better_retry() {
-        let candidate = |count: usize, average: f32| Candidate {
+    /// 合成候选:span 数 + 平均分,便于验证选择与方向策略。
+    fn candidate(count: usize, average: f32) -> Candidate {
+        Candidate {
             spans: (0..count)
                 .map(|index| crate::ocr::hit::TextSpan {
                     text: format!("t{index}"),
@@ -316,7 +355,11 @@ mod tests {
                 spans: count,
                 average,
             },
-        };
+        }
+    }
+
+    #[test]
+    fn select_candidate_stops_at_first_trustworthy_and_prefers_better_retry() {
         let mut calls = 0;
         let (best, attempts) = select_candidate(|_| {
             calls += 1;
@@ -399,6 +442,44 @@ mod tests {
     }
 
     #[test]
+    fn orientation_policy_skips_rotation_retries_when_disabled() {
+        // 关闭方向纠正:只识别正置一次;即使候选无文字也不旋转重试。
+        let mut calls = Vec::new();
+        let (best, attempts) = recognize_with_policy(false, |orientation| {
+            calls.push(orientation);
+            Ok(candidate(0, 0.0))
+        })
+        .unwrap();
+        assert_eq!(calls, vec![Orientation::Identity]);
+        assert_eq!(attempts, 1);
+        assert_eq!(best.quality.spans, 0);
+
+        // 开启且原图可信:不重试(既有语义不变)。
+        let mut calls = Vec::new();
+        let (_, attempts) = recognize_with_policy(true, |orientation| {
+            calls.push(orientation);
+            Ok(candidate(2, 0.95))
+        })
+        .unwrap();
+        assert_eq!(attempts, 1);
+        assert_eq!(calls, vec![Orientation::Identity]);
+
+        // 开启且低置信:按 RETRY_ORDER 完整重试。
+        let mut calls = Vec::new();
+        let (_, attempts) = recognize_with_policy(true, |orientation| {
+            calls.push(orientation);
+            Ok(candidate(0, 0.0))
+        })
+        .unwrap();
+        assert_eq!(attempts, Orientation::RETRY_ORDER.len());
+        assert_eq!(calls, Orientation::RETRY_ORDER.to_vec());
+
+        // 失败照旧向上传播。
+        let error = recognize_with_policy(false, |_| Err(OcrError::Failed)).unwrap_err();
+        assert_eq!(error, OcrError::Failed);
+    }
+
+    #[test]
     fn candidate_maps_rotated_blocks_back_to_source_coordinates() {
         use paddle_ocr_rs::ocr_result::{OcrResult, Point, TextBlock};
 
@@ -456,7 +537,7 @@ mod tests {
             return;
         };
         let upright = printed_sample();
-        let Ok(base) = engine.recognize(&upright) else {
+        let Ok(base) = engine.recognize(&upright, true) else {
             return;
         };
         let base_text = base.full_text.trim().to_string();
@@ -468,7 +549,7 @@ mod tests {
         ] {
             let frame = rotate_frame(&upright, orientation);
             let doc = engine
-                .recognize(&frame)
+                .recognize(&frame, true)
                 .unwrap_or_else(|error| panic!("{orientation:?} sample not recognized: {error:?}"));
             assert_eq!(doc.full_text.trim(), base_text, "{orientation:?}");
             for span in &doc.spans {
@@ -500,7 +581,7 @@ mod tests {
             return;
         };
         let frame = printed_sample();
-        match engine.recognize(&frame) {
+        match engine.recognize(&frame, true) {
             Ok(doc) => {
                 assert!(!doc.full_text.trim().is_empty());
                 let span = &doc.spans[0];

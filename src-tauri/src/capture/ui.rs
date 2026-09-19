@@ -63,6 +63,25 @@ pub struct ToastPayload {
     pub message: String,
 }
 
+/// R24:Web 覆盖层能力子集。只携带覆盖层实际会消费的开关(Wayland 的标注
+/// 入口/提示据此渲染);新增字段不影响旧前端——前端按结构类型读取已知字段,
+/// 未知字段天然忽略,不要求与后端同版本。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OverlayCapabilities {
+    /// 选区即时标注:关闭后覆盖层不提供标注入口。
+    pub inline_annotation: bool,
+}
+
+impl OverlayCapabilities {
+    /// 从功能设置取覆盖层能力子集;后续覆盖层能力在此扩展。
+    pub fn from_features(features: crate::settings::FeatureSettings) -> Self {
+        Self {
+            inline_annotation: features.inline_annotation,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OverlayPayload {
@@ -76,6 +95,8 @@ pub struct OverlayPayload {
     /// R13:当前覆盖层缺少原生选区壳能力(操作条/放大镜/取色/微调)时为
     /// true,前端据此展示不可用能力说明与替代方式,不伪造这些功能。
     pub reduced_capabilities: bool,
+    /// R24:能力子集;旧前端忽略未知字段不受影响。
+    pub capabilities: OverlayCapabilities,
     pub windows: Vec<ListedWindow>,
 }
 
@@ -163,6 +184,7 @@ pub fn overlay_payload(
     monitor: &MonitorGeom,
     windows: Vec<ListedWindow>,
     reduced_capabilities: bool,
+    capabilities: OverlayCapabilities,
 ) -> Result<OverlayPayload, CaptureError> {
     let windows = windows
         .into_iter()
@@ -183,6 +205,7 @@ pub fn overlay_payload(
         logical_width: monitor.logical_width,
         logical_height: monitor.logical_height,
         reduced_capabilities,
+        capabilities,
         windows,
     })
 }
@@ -673,15 +696,98 @@ mod tests {
             scale: 1.0,
         };
         let monitor = MonitorGeom::from_physical("m", 0, 0, 4, 4, 1.0);
+        let capabilities =
+            OverlayCapabilities::from_features(crate::settings::FeatureSettings::default());
         // R13:前端按 `reducedCapabilities` 渲染能力说明,字段名必须是 camelCase。
-        let reduced = overlay_payload(CaptureMode::Region, &frame, &monitor, Vec::new(), true)
-            .expect("payload builds");
+        let reduced = overlay_payload(
+            CaptureMode::Region,
+            &frame,
+            &monitor,
+            Vec::new(),
+            true,
+            capabilities,
+        )
+        .expect("payload builds");
         assert!(reduced.reduced_capabilities);
         let json = serde_json::to_value(&reduced).expect("payload serializes");
         assert_eq!(json["reducedCapabilities"], serde_json::json!(true));
+        // R24:能力子集字段名同样为 camelCase。
+        assert_eq!(json["capabilities"]["inlineAnnotation"], serde_json::json!(true));
 
-        let full = overlay_payload(CaptureMode::Window, &frame, &monitor, Vec::new(), false)
-            .expect("payload builds");
+        let full = overlay_payload(
+            CaptureMode::Window,
+            &frame,
+            &monitor,
+            Vec::new(),
+            false,
+            capabilities,
+        )
+        .expect("payload builds");
         assert!(!full.reduced_capabilities);
+    }
+
+    #[test]
+    fn overlay_capabilities_track_inline_annotation_setting() {
+        let on = OverlayCapabilities::from_features(crate::settings::FeatureSettings::default());
+        assert!(on.inline_annotation);
+        let off = OverlayCapabilities::from_features(crate::settings::FeatureSettings {
+            inline_annotation: false,
+            ..crate::settings::FeatureSettings::default()
+        });
+        assert!(!off.inline_annotation);
+        let json = serde_json::to_value(off).expect("capabilities serialize");
+        assert_eq!(json["inlineAnnotation"], serde_json::json!(false));
+        // 子集只序列化已声明字段,不夹带其它设置。
+        assert_eq!(json.as_object().map(|map| map.len()), Some(1));
+    }
+
+    #[test]
+    fn overlay_payload_capability_fields_do_not_break_older_consumers() {
+        // R24:"忽略未知字段":旧覆盖层只认识能力字段之前的普通形状,
+        // 新增 capabilities 不应导致其反序列化失败。
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct LegacyOverlayFrame {
+            mode: CaptureMode,
+            png_base64: String,
+            width: u32,
+            height: u32,
+            scale: f64,
+            logical_width: u32,
+            logical_height: u32,
+            reduced_capabilities: bool,
+            windows: Vec<serde_json::Value>,
+        }
+        let frame = Frame {
+            width: 4,
+            height: 4,
+            rgba: vec![9; 64],
+            scale: 1.0,
+        };
+        let monitor = MonitorGeom::from_physical("m", 0, 0, 4, 4, 1.0);
+        let payload = overlay_payload(
+            CaptureMode::Region,
+            &frame,
+            &monitor,
+            Vec::new(),
+            true,
+            OverlayCapabilities::from_features(crate::settings::FeatureSettings {
+                inline_annotation: false,
+                ..crate::settings::FeatureSettings::default()
+            }),
+        )
+        .expect("payload builds");
+        let json = serde_json::to_value(&payload).expect("payload serializes");
+        let legacy: LegacyOverlayFrame =
+            serde_json::from_value(json).expect("older consumer ignores unknown fields");
+        assert_eq!(legacy.mode, CaptureMode::Region);
+        assert!(!legacy.png_base64.is_empty());
+        assert_eq!(legacy.width, 4);
+        assert_eq!(legacy.height, 4);
+        assert_eq!(legacy.scale, 1.0);
+        assert_eq!(legacy.logical_width, 4);
+        assert_eq!(legacy.logical_height, 4);
+        assert!(legacy.reduced_capabilities);
+        assert!(legacy.windows.is_empty());
     }
 }
