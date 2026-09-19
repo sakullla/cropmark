@@ -7,7 +7,7 @@
 
 use std::cell::RefCell;
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use windows::core::PCWSTR;
@@ -20,14 +20,14 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetCursorPos,
-    GetForegroundWindow, GetMessageW, GetWindowThreadProcessId, LoadCursorW, PostQuitMessage,
-    RegisterClassExW, SetCursor, SetForegroundWindow,
+    GetForegroundWindow, GetMessageW, GetWindowThreadProcessId, LoadCursorW, PostMessageW,
+    PostQuitMessage, RegisterClassExW, SetCursor, SetForegroundWindow,
     SetWindowPos, ShowWindow, TranslateMessage,
     CS_HREDRAW, CS_VREDRAW, HWND_TOPMOST, IDC_ARROW, IDC_CROSS, IDC_HAND, IDC_SIZEALL, IDC_SIZENESW,
-    IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, MSG, SWP_SHOWWINDOW, SW_SHOW, WM_DESTROY, WM_ERASEBKGND,
-    WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT,
-    WM_RBUTTONDOWN, WM_SETCURSOR, WM_SETFOCUS, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-    WS_POPUP,
+    IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, MSG, SWP_SHOWWINDOW, SW_SHOW, WM_CLOSE, WM_DESTROY,
+    WM_ERASEBKGND, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+    WM_PAINT, WM_RBUTTONDOWN, WM_SETCURSOR, WM_SETFOCUS, WNDCLASSEXW, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_POPUP,
 };
 
 use crate::capture::buffer::Frame;
@@ -42,6 +42,10 @@ use crate::capture::session::QuietAction;
 
 const CLASS: &str = "CropmarkRegionOverlay";
 static CLASS_SERIAL: AtomicU32 = AtomicU32::new(1);
+
+/// 当前活动壳窗口句柄(0 = 无)。会话层在 stale 重置时经
+/// `request_shell_close` 从任意线程请求关闭,泵退出后旧结果按代际丢弃。
+static ACTIVE_SHELL_HWND: AtomicIsize = AtomicIsize::new(0);
 
 // 虚拟键码(直接使用数值,不为 Shift 状态引入新的 windows crate feature)。
 const VK_SHIFT: u32 = 0x10;
@@ -116,6 +120,19 @@ pub fn pick_region(
     run_shell(frame, monitor, flags, hooks)
 }
 
+/// 请求关闭当前选区壳(线程安全,可从任意线程调用):wm_close 走默认窗口
+/// 过程销毁窗口并退出消息泵。无活动壳时为 no-op;壳返回的结果由会话层
+/// 代际校验丢弃(ADR-16)。
+pub fn request_shell_close() {
+    let value = ACTIVE_SHELL_HWND.load(Ordering::SeqCst);
+    if value == 0 {
+        return;
+    }
+    unsafe {
+        let _ = PostMessageW(Some(HWND(value as *mut c_void)), WM_CLOSE, WPARAM(0), LPARAM(0));
+    }
+}
+
 fn run_shell(
     frame: &Frame,
     monitor: &MonitorGeom,
@@ -149,10 +166,12 @@ fn run_shell(
     });
     let hwnd =
         unsafe { create_overlay_window(monitor.physical_x, monitor.physical_y, width, height)? };
+    ACTIVE_SHELL_HWND.store(hwnd.0 as isize, Ordering::SeqCst);
     unsafe {
         pump();
         let _ = DestroyWindow(hwnd);
     }
+    ACTIVE_SHELL_HWND.store(0, Ordering::SeqCst);
     let state = STATE.with(|slot| slot.borrow_mut().take());
     Ok(state
         .and_then(|state| state.outcome)
@@ -694,8 +713,9 @@ mod tests {
             assert!(!feed_event(&mut state, event, hwnd));
         }
         let items = composer::menu_items(state.canvas.engine.flags());
-        let panel = composer::menu_panel(state.canvas.engine.menu_anchor(), (320, 200), &items);
-        let (_, copy_rect) = composer::menu_item_rects(panel, &items)
+        let metrics = composer::ChromeMetrics::for_scale(1.0);
+        let panel = composer::menu_panel(metrics, state.canvas.engine.menu_anchor(), (320, 200), &items);
+        let (_, copy_rect) = composer::menu_item_rects(metrics, panel, &items)
             .into_iter()
             .find(|(action, _)| *action == SelectionAction::Copy)
             .unwrap();
@@ -729,8 +749,9 @@ mod tests {
             assert!(!feed_event(&mut state, event, hwnd));
         }
         let items = composer::menu_items(state.canvas.engine.flags());
-        let panel = composer::menu_panel(state.canvas.engine.menu_anchor(), (320, 200), &items);
-        let (_, annotate_rect) = composer::menu_item_rects(panel, &items)
+        let metrics = composer::ChromeMetrics::for_scale(1.0);
+        let panel = composer::menu_panel(metrics, state.canvas.engine.menu_anchor(), (320, 200), &items);
+        let (_, annotate_rect) = composer::menu_item_rects(metrics, panel, &items)
             .into_iter()
             .find(|(action, _)| *action == SelectionAction::Annotate)
             .unwrap();

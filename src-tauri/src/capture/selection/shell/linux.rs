@@ -31,14 +31,15 @@
 //! 后续独立工作。注意:本模块只能在 Linux 编译;Windows/macOS 主机上的
 //! 离线核对以 windows.rs 逐块对照 + probe crate 交叉 cargo check 为准。
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use x11rb::connection::{Connection, RequestConnection};
 use x11rb::protocol::shm::{self, ConnectionExt as ShmExt};
 use x11rb::protocol::xproto::{
-    self, ChangeWindowAttributesAux, ConnectionExt as XprotoExt, CreateGCAux, CreateWindowAux,
-    EventMask, GrabMode, GrabStatus, ImageFormat, ImageOrder, KeyButMask, Screen, Setup,
-    Visualtype, WindowClass,
+    self, ChangeWindowAttributesAux, ClientMessageEvent, ConnectionExt as XprotoExt, CreateGCAux,
+    CreateWindowAux, EventMask, GrabMode, GrabStatus, ImageFormat, ImageOrder, KeyButMask, Screen,
+    Setup, Visualtype, WindowClass,
 };
 use x11rb::protocol::Event as XEvent;
 use x11rb::rust_connection::RustConnection;
@@ -111,6 +112,29 @@ fn cursor_slot(hint: CursorHint) -> usize {
 
 /// XPutImage 回退路径的每请求上限:分带发送,避开保守的 max-request-length。
 const PUT_IMAGE_BAND_LIMIT: usize = 1 << 20;
+
+/// 当前活动壳窗口与取消原子(0 = 无)。会话层 stale 重置时从任意线程经
+/// `request_shell_close` 发一条 ClientMessage 唤醒 X11 事件泵,泵退出后的
+/// 旧结果按会话代际丢弃(ADR-16)。
+static ACTIVE_SHELL_WINDOW: AtomicU32 = AtomicU32::new(0);
+static ACTIVE_SHELL_CANCEL_ATOM: AtomicU32 = AtomicU32::new(0);
+
+/// 请求关闭当前选区壳(线程安全,可从任意线程调用):向壳窗口发送取消
+/// ClientMessage;无活动壳时为 no-op。壳结果由会话层代际校验丢弃(ADR-16)。
+pub fn request_shell_close() {
+    let window = ACTIVE_SHELL_WINDOW.load(Ordering::SeqCst);
+    let atom = ACTIVE_SHELL_CANCEL_ATOM.load(Ordering::SeqCst);
+    if window == 0 || atom == 0 {
+        return;
+    }
+    let Ok((conn, _screen_num)) = x11rb::connect(None) else {
+        return;
+    };
+    // event_mask=0:事件直接投递给创建窗口的客户端(override-redirect 无 WM)。
+    let event = ClientMessageEvent::new(32, window, atom, [0u8; 20]);
+    let _ = conn.send_event(false, window, EventMask::NO_EVENT, event);
+    let _ = conn.flush();
+}
 
 /// 壳的最终结果:会话层据此选择完成路径(与 Windows 壳同构)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -524,6 +548,16 @@ pub fn pick_region(
     present(&mut state, &surface);
     conn.map_window(window).map_err(|_| window_failed())?;
     let _ = conn.flush();
+    // 映射成功后注册活动壳:取消原子经服务器全局 intern,关闭请求从任意
+    // 连接发送;窗口在收尾处销毁后才清除注册。
+    let cancel_atom = conn
+        .intern_atom(false, b"CROPMARK_SHELL_CANCEL")
+        .ok()
+        .and_then(|cookie| cookie.reply().ok())
+        .map(|reply| reply.atom)
+        .unwrap_or(0);
+    ACTIVE_SHELL_WINDOW.store(window, Ordering::SeqCst);
+    ACTIVE_SHELL_CANCEL_ATOM.store(cancel_atom, Ordering::SeqCst);
     grab_inputs(&conn, window, grab_cursor);
     let _ = conn.flush();
 
@@ -533,6 +567,8 @@ pub fn pick_region(
     let _ = conn.ungrab_keyboard(CURRENT_TIME);
     let _ = conn.ungrab_pointer(CURRENT_TIME);
     let _ = conn.destroy_window(window);
+    ACTIVE_SHELL_WINDOW.store(0, Ordering::SeqCst);
+    ACTIVE_SHELL_CANCEL_ATOM.store(0, Ordering::SeqCst);
     let _ = conn.free_gc(gc);
     state.cursors.free(&conn);
     if let PresentBuffer::Shm(segment) = &state.canvas.present {
@@ -703,6 +739,15 @@ fn pump_until_done(state: &mut ShellState, surface: &Surface<'_>, keyboard: &Key
             // 无效验请求的错误回执会以事件形式送达;选区窗的绘制/抓取
             // 请求均为尽力而为,忽略错误继续泵。
             XEvent::Error(_) => false,
+            // stale 重置的关闭请求:取消本壳,结果由会话层代际校验丢弃。
+            XEvent::ClientMessage(e) => {
+                if e.type_ == ACTIVE_SHELL_CANCEL_ATOM.load(Ordering::SeqCst) {
+                    state.outcome = Some(RegionOutcome::Cancelled);
+                    true
+                } else {
+                    false
+                }
+            }
             // Expose:直接呈现缓存位图,不重合成(ADR-007)。
             XEvent::Expose(_) => {
                 put_frame(surface, &state.canvas);
@@ -1235,9 +1280,10 @@ mod tests {
         assert!(engine.scene().toolbar_visible);
 
         let buttons = composer::toolbar_buttons(engine.flags());
+        let metrics = composer::ChromeMetrics::for_scale(1.5);
         let panel =
-            composer::toolbar_panel(engine.selection().unwrap(), engine.size(), &buttons).unwrap();
-        let (expected, rect) = composer::toolbar_button_rects(panel, &buttons)
+            composer::toolbar_panel(metrics, engine.selection().unwrap(), engine.size(), &buttons).unwrap();
+        let (expected, rect) = composer::toolbar_button_rects(metrics, panel, &buttons)
             .last()
             .copied()
             .unwrap();

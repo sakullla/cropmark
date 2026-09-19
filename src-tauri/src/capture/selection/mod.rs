@@ -13,7 +13,7 @@ pub mod composer;
 mod text;
 
 use crate::capture::geometry::PhysicalRect;
-use composer::IntRect;
+use composer::{ChromeMetrics, IntRect};
 
 /// 选区最小可截尺寸(物理像素),对齐现 Windows 原生路径的 ≥2px。
 pub const MIN_SELECTION_SIZE: u32 = 2;
@@ -191,7 +191,8 @@ pub struct SelectionEngine {
     selection: Option<PhysicalRect>,
     cursor: (i32, i32),
     menu_anchor: (i32, i32),
-    /// 冻结帧 DPI 缩放(放大镜面板命中需要;默认 1.0,壳经 with_scale 注入)。
+    /// 冻结帧 DPI 缩放:全部 chrome(菜单/操作条/徽标/手柄)与放大镜面板
+    /// 尺寸/命中共用同一份派生来源(ChromeMetrics),默认 1.0。
     scale: f32,
 }
 
@@ -209,7 +210,8 @@ impl SelectionEngine {
         }
     }
 
-    /// 注入冻结帧 DPI 缩放(放大镜面板 chrome 命中用;不注入时按 1.0)。
+    /// 注入冻结帧 DPI 缩放:全部 chrome 的尺寸与命中(菜单/操作条/徽标/手柄)
+    /// 随 scale 派生;不注入时按 1.0。
     pub fn with_scale(mut self, scale: f64) -> Self {
         self.scale = if scale.is_finite() && scale > 0.25 {
             (scale as f32).min(4.0)
@@ -217,6 +219,11 @@ impl SelectionEngine {
             1.0
         };
         self
+    }
+
+    /// 当前 chrome 尺寸派生(布局/绘制/命中共用;ADR-15)。
+    fn metrics(&self) -> ChromeMetrics {
+        ChromeMetrics::for_scale(self.scale)
     }
 
     pub fn size(&self) -> (u32, u32) {
@@ -270,10 +277,10 @@ impl SelectionEngine {
                     return CursorHint::Pointer;
                 }
                 if let Some(selection) = self.selection {
-                    if let Some(handle) = composer::handle_hit(selection, x, y) {
+                    if let Some(handle) = composer::handle_hit(self.metrics(), selection, x, y) {
                         return CursorHint::for_handle(handle);
                     }
-                    if let Some(edge) = composer::edge_hit(selection, x, y) {
+                    if let Some(edge) = composer::edge_hit(self.metrics(), selection, x, y) {
                         return CursorHint::for_edge(edge);
                     }
                     if IntRect::from(selection).contains(x, y) {
@@ -403,11 +410,11 @@ impl SelectionEngine {
                     return EngineOutcome::Redraw;
                 }
                 if let Some(selection) = self.selection {
-                    if let Some(handle) = composer::handle_hit(selection, x, y) {
+                    if let Some(handle) = composer::handle_hit(self.metrics(), selection, x, y) {
                         self.state = EngineState::Adjusting { handle };
                         return EngineOutcome::Redraw;
                     }
-                    if let Some(edge) = composer::edge_hit(selection, x, y) {
+                    if let Some(edge) = composer::edge_hit(self.metrics(), selection, x, y) {
                         self.state = EngineState::AdjustingEdge { edge };
                         return EngineOutcome::Redraw;
                     }
@@ -560,8 +567,8 @@ impl SelectionEngine {
 
     fn hit_toolbar(&self, x: i32, y: i32) -> Option<SelectionAction> {
         let buttons = composer::toolbar_buttons(self.flags);
-        let panel = composer::toolbar_panel(self.selection?, self.size(), &buttons)?;
-        composer::toolbar_button_rects(panel, &buttons)
+        let panel = composer::toolbar_panel(self.metrics(), self.selection?, self.size(), &buttons)?;
+        composer::toolbar_button_rects(self.metrics(), panel, &buttons)
             .into_iter()
             .find(|(_, rect)| rect.contains(x, y))
             .map(|(action, _)| action)
@@ -569,8 +576,8 @@ impl SelectionEngine {
 
     fn hit_menu(&self, x: i32, y: i32) -> Option<SelectionAction> {
         let items = composer::menu_items(self.flags);
-        let panel = composer::menu_panel(self.menu_anchor, self.size(), &items);
-        composer::menu_item_rects(panel, &items)
+        let panel = composer::menu_panel(self.metrics(), self.menu_anchor, self.size(), &items);
+        composer::menu_item_rects(self.metrics(), panel, &items)
             .into_iter()
             .find(|(_, rect)| rect.contains(x, y))
             .map(|(action, _)| action)
@@ -895,8 +902,8 @@ mod tests {
         let flags = engine.flags();
         let buttons = composer::toolbar_buttons(flags);
         let panel =
-            composer::toolbar_panel(engine.selection().unwrap(), engine.size(), &buttons).unwrap();
-        let rects = composer::toolbar_button_rects(panel, &buttons);
+            composer::toolbar_panel(engine.metrics(), engine.selection().unwrap(), engine.size(), &buttons).unwrap();
+        let rects = composer::toolbar_button_rects(engine.metrics(), panel, &buttons);
         // 选第三个按钮(贴图),避开光标处放大镜面板。
         let (expected, rect) = rects.last().copied().unwrap();
         let (cx, cy) = rect.center();
@@ -923,9 +930,9 @@ mod tests {
         assert!(!buttons.contains(&SelectionAction::Copy));
         // 首位变为保存:按共享布局取首个按钮中心命中。
         let panel =
-            composer::toolbar_panel(restricted.selection().unwrap(), restricted.size(), &buttons)
+            composer::toolbar_panel(restricted.metrics(), restricted.selection().unwrap(), restricted.size(), &buttons)
                 .unwrap();
-        let (_, first) = composer::toolbar_button_rects(panel, &buttons)
+        let (_, first) = composer::toolbar_button_rects(restricted.metrics(), panel, &buttons)
             .first()
             .copied()
             .unwrap();
@@ -948,8 +955,8 @@ mod tests {
         assert_eq!(engine.state(), &EngineState::Menu);
         assert_eq!(engine.menu_anchor(), (150, 100));
         let items = composer::menu_items(engine.flags());
-        let panel = composer::menu_panel(engine.menu_anchor(), engine.size(), &items);
-        let rects = composer::menu_item_rects(panel, &items);
+        let panel = composer::menu_panel(engine.metrics(), engine.menu_anchor(), engine.size(), &items);
+        let rects = composer::menu_item_rects(engine.metrics(), panel, &items);
         // 点击"取字"。
         let ocr = rects
             .iter()
@@ -998,8 +1005,8 @@ mod tests {
         drag(&mut engine, (40, 30), (200, 120));
         let buttons = composer::toolbar_buttons(engine.flags());
         let panel =
-            composer::toolbar_panel(engine.selection().unwrap(), engine.size(), &buttons).unwrap();
-        let (expected, rect) = composer::toolbar_button_rects(panel, &buttons)
+            composer::toolbar_panel(engine.metrics(), engine.selection().unwrap(), engine.size(), &buttons).unwrap();
+        let (expected, rect) = composer::toolbar_button_rects(engine.metrics(), panel, &buttons)
             .last()
             .copied()
             .unwrap();
@@ -1149,8 +1156,8 @@ mod tests {
         // 图标轨按钮上 → 手型(即使该点也在选区边带/内部附近)。
         let buttons = composer::toolbar_buttons(engine.flags());
         let panel =
-            composer::toolbar_panel(engine.selection().unwrap(), engine.size(), &buttons).unwrap();
-        let (_, first) = composer::toolbar_button_rects(panel, &buttons)
+            composer::toolbar_panel(engine.metrics(), engine.selection().unwrap(), engine.size(), &buttons).unwrap();
+        let (_, first) = composer::toolbar_button_rects(engine.metrics(), panel, &buttons)
             .first()
             .copied()
             .unwrap();
@@ -1167,8 +1174,8 @@ mod tests {
         engine.handle_event(InputEvent::RightDown { x: 150, y: 100 });
         assert_eq!(engine.state(), &EngineState::Menu);
         let items = composer::menu_items(engine.flags());
-        let panel = composer::menu_panel(engine.menu_anchor(), engine.size(), &items);
-        let (_, first) = composer::menu_item_rects(panel, &items)
+        let panel = composer::menu_panel(engine.metrics(), engine.menu_anchor(), engine.size(), &items);
+        let (_, first) = composer::menu_item_rects(engine.metrics(), panel, &items)
             .first()
             .copied()
             .unwrap();
@@ -1266,5 +1273,49 @@ mod tests {
         let mut bare = SelectionEngine::new(320, 200, off);
         drag(&mut bare, (40, 30), (200, 120));
         assert!(!bare.scene().toolbar_visible);
+    }
+
+    #[test]
+    fn chrome_hits_follow_scaled_metrics() {
+        for scale in [1.5_f64, 2.0] {
+            let mut engine = SelectionEngine::new(800, 600, FeatureFlags::default()).with_scale(scale);
+            drag(&mut engine, (40, 30), (200, 120));
+            let metrics = engine.metrics();
+            let buttons = composer::toolbar_buttons(engine.flags());
+            let selection = engine.selection().unwrap();
+            let panel = composer::toolbar_panel(metrics, selection, engine.size(), &buttons).unwrap();
+            let (action, rect) = composer::toolbar_button_rects(metrics, panel, &buttons)[0];
+            let (cx, cy) = rect.center();
+            assert_eq!(engine.hit_toolbar(cx, cy), Some(action), "scale {scale}");
+            // 1.0 固定布局下命中、放大后落在新按钮矩形外的点不再命中(几何确实随 scale)。
+            let base_metrics = ChromeMetrics::for_scale(1.0);
+            let base_panel =
+                composer::toolbar_panel(base_metrics, selection, engine.size(), &buttons).unwrap();
+            let base_rect = composer::toolbar_button_rects(base_metrics, base_panel, &buttons)[0].1;
+            assert!(base_rect.contains(base_panel.x + 1, base_panel.y + 30));
+            let (px, py) = (base_panel.x + 1, base_panel.y + 30);
+            assert!(!rect.contains(px, py), "scale {scale}: 探针应在新按钮矩形外");
+            assert_ne!(engine.hit_toolbar(px, py), Some(action), "scale {scale}");
+            // 手柄命中半径随 scale 放大(1.0 基准半径外、缩放半径内仍命中)。
+            let probe = selection.x as i32 + metrics.handle_hit_radius;
+            assert_eq!(
+                engine.cursor_for(probe, selection.y as i32),
+                CursorHint::ResizeNWSE,
+                "scale {scale}"
+            );
+            assert_ne!(
+                engine.cursor_for(probe + 1, selection.y as i32),
+                CursorHint::ResizeNWSE,
+                "scale {scale}"
+            );
+            // 菜单项命中随 metrics 派生。
+            engine.handle_event(InputEvent::RightDown { x: 300, y: 300 });
+            assert_eq!(engine.state(), &EngineState::Menu);
+            let items = composer::menu_items(engine.flags());
+            let menu = composer::menu_panel(metrics, engine.menu_anchor(), engine.size(), &items);
+            let (m_action, m_rect) = composer::menu_item_rects(metrics, menu, &items)[1];
+            let (mx, my) = m_rect.center();
+            assert_eq!(engine.hit_menu(mx, my), Some(m_action), "scale {scale}");
+        }
     }
 }

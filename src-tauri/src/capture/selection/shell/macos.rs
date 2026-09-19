@@ -25,6 +25,7 @@
 
 use std::cell::RefCell;
 use std::ffi::c_void;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use objc2::rc::Retained;
@@ -319,7 +320,32 @@ extern "C" {
         context: *mut c_void,
         work: extern "C" fn(*mut c_void),
     );
+    fn dispatch_async_f(
+        queue: *mut DispatchQueueOpaque,
+        context: *mut c_void,
+        work: extern "C" fn(*mut c_void),
+    );
 }
+
+/// 当前壳的关闭请求(stale 重置):从任意线程置位,泵在下一轮迭代取消。
+static SHELL_CLOSE_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// 请求关闭当前选区壳(线程安全,可从任意线程调用):置位关闭标志并经
+/// 主队列唤醒 AppKit 事件泵;泵退出后旧结果由会话层代际校验丢弃(ADR-16)。
+pub fn request_shell_close() {
+    SHELL_CLOSE_REQUESTED.store(true, Ordering::SeqCst);
+    // 主队列回调只用于唤醒 run loop(泵会顺带服务主队列),不触碰 AppKit 状态。
+    unsafe {
+        dispatch_async_f(
+            std::ptr::addr_of!(_dispatch_main_q) as *mut DispatchQueueOpaque,
+            std::ptr::null_mut(),
+            wake_main_thread,
+        );
+    }
+}
+
+/// 主队列唤醒回调:内容由泵的下一轮迭代读取,这里只负责让 run loop 醒一次。
+extern "C" fn wake_main_thread(_context: *mut c_void) {}
 
 /// 派发到主线程所需的最小屏幕几何(Copy,供 'static 闭包携带)。
 #[derive(Debug, Clone, Copy)]
@@ -408,6 +434,8 @@ fn run_shell(
     geometry: ShellGeometry,
     hooks: ShellHooks,
 ) -> Result<RegionOutcome, CaptureError> {
+    // stale 重置可能在上一次壳退出前就置位;本次壳从干净状态开始。
+    SHELL_CLOSE_REQUESTED.store(false, Ordering::SeqCst);
     let frame = screen_frame_for(mtm, &geometry);
     STATE.with(|slot| {
         *slot.borrow_mut() = Some(ShellState {
@@ -524,20 +552,26 @@ unsafe fn create_key_window(
 }
 
 /// 手动泵事件直到引擎给出终态;阻塞等待期间 run loop 会顺带服务
-/// 窗口刷新(display/drawRect)与其它来源。
+/// 窗口刷新(display/drawRect)与其它来源。等待有界(250ms):除事件外也
+/// 周期性检查 stale 重置的关闭标志,保证旧壳及时退出;无事件时立即重入等待。
 fn pump_until_done(app: &NSApplication, view: &SelectionView) {
     loop {
         let done = STATE.with(|slot| {
-            slot.borrow()
-                .as_ref()
-                .is_some_and(|state| state.outcome.is_some())
+            let mut guard = slot.borrow_mut();
+            let Some(state) = guard.as_mut() else {
+                return false;
+            };
+            if SHELL_CLOSE_REQUESTED.load(Ordering::SeqCst) && state.outcome.is_none() {
+                state.outcome = Some(RegionOutcome::Cancelled);
+            }
+            state.outcome.is_some()
         });
         if done {
             return;
         }
         let event = app.nextEventMatchingMask_untilDate_inMode_dequeue(
             NSEventMask::Any,
-            Some(&NSDate::distantFuture()),
+            Some(&NSDate::dateWithTimeIntervalSinceNow(0.25)),
             // CommonModes 覆盖 default+tracking,拖拽时 LeftMouseDragged 不会丢.
             unsafe { NSRunLoopCommonModes },
             true,

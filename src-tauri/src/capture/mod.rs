@@ -103,6 +103,7 @@ pub async fn finish_region_with(
         &app,
         RegionSelection { x, y, width, height },
         action,
+        None,
     )
     .await
 }

@@ -347,6 +347,10 @@
     "zh-CN": "截图已过期，请重新截取。",
     "en": "The screenshot has expired. Capture again."
   },
+  "toast.cancel_in_progress": {
+    "zh-CN": "正在取消上一次截取，请稍后重试。",
+    "en": "Still cancelling the previous capture. Please try again."
+  },
   "toast.saved": {
     "zh-CN": "已保存 {name}。",
     "en": "Saved {name}."

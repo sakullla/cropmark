@@ -40,9 +40,9 @@ const HANDLE_CORE: [u8; 4] = [255, 255, 255, 255];
 /// 暗幕保留 52% 亮度,对齐现 Windows 原生路径。
 const DIM_KEEP: u16 = 52;
 
-/// 手柄命中半径(物理像素),比视觉环更宽容。
+/// 手柄命中半径(物理像素,1.0 基准),比视觉环更宽容;随 scale 放大。
 pub const HANDLE_HIT_RADIUS: i32 = 9;
-/// 边缘拉伸命中带:选区边线 ±EDGE_HIT_RADIUS 物理 px。
+/// 边缘拉伸命中带(物理像素,1.0 基准):选区边线 ±EDGE_HIT_RADIUS。
 pub const EDGE_HIT_RADIUS: i32 = 6;
 /// 手柄外环逻辑半径,× frame.scale,渲染半径保证 ≥5 物理 px。
 const HANDLE_RADIUS: f32 = 5.0;
@@ -53,7 +53,8 @@ const BADGE_PAD_X: i32 = 9;
 const BADGE_PAD_Y: i32 = 4;
 const BADGE_MARGIN: i32 = 6;
 
-// ---- 图标轨(操作条)与右键菜单几何:与引擎 hitbox 共用,固定物理尺寸。----
+// ---- 图标轨(操作条)与右键菜单几何:与引擎 hitbox 共用;以下为 1.0 基准
+// (逻辑)尺寸,实际物理尺寸统一经 `ChromeMetrics::for_scale` 按冻结帧 scale 派生。----
 /// 图标轨圆形按钮直径(触达标准 40px)。
 const RAIL_BUTTON: i32 = 40;
 /// 图标轨相邻按钮间距。
@@ -74,9 +75,94 @@ const MENU_TEXT_X: i32 = 38;
 /// 「取消」前的 1px 分隔线高度。
 const MENU_SEPARATOR_H: i32 = 1;
 const MENU_FONT: f32 = 14.0;
+/// 菜单项 hover 软底圆角(1.0 基准)。
+const MENU_HOVER_RADIUS: i32 = 8;
+/// 菜单项图标外接盒边长(1.0 基准)。
+const MENU_ICON: i32 = 14;
+/// 图标轨按钮图标外接盒边长(1.0 基准)。
+const TOOLBAR_ICON: i32 = 18;
+/// 浮层圆角逻辑半径(× scale,钳制 8..=32)。
+const PANEL_RADIUS: f32 = 10.0;
 
-// 触达几何契约:图标轨 40px 圆形按钮;菜单项高 36、min-width 168(编译期断言)。
+// 触达几何契约(1.0 基准):图标轨 40px 圆形按钮;菜单项高 36、min-width 168
+// (编译期断言)。实际 chrome 尺寸永不低于该基准(`ChromeMetrics` 钉死下限)。
 const _: () = assert!(RAIL_BUTTON >= 40 && MENU_ITEM_H >= 36 && MENU_ITEM_W >= 168);
+
+/// chrome(菜单/操作条/徽标/手柄)的统一尺寸派生(ADR-15)。
+///
+/// `scale` 取冻结帧物理/逻辑比(Windows per-monitor v2、macOS backing scale、
+/// X11 恒 1.0),钳制在 1.0–4.0:低于 1.0 保持 1.0 基准的物理下限,触达尺寸
+/// 不缩水。布局、绘制与命中判定都经同一份 metrics 计算,保证所见即可点;
+/// 高于 1.0 时所有尺寸/字号/图标/间距等比放大,文字与图标不因固定容器裁切。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ChromeMetrics {
+    /// 生效缩放(chrome 基准下限 1.0,上限 4.0)。
+    pub scale: f32,
+    /// 图标轨圆形按钮直径。
+    pub rail_button: i32,
+    pub rail_gap: i32,
+    pub rail_margin_v: i32,
+    pub rail_margin_h: i32,
+    pub menu_item_w: i32,
+    pub menu_item_h: i32,
+    pub menu_pad: i32,
+    pub menu_icon_cx: i32,
+    pub menu_text_x: i32,
+    pub menu_separator_h: i32,
+    pub menu_hover_radius: i32,
+    pub menu_font: f32,
+    pub menu_icon: i32,
+    pub toolbar_icon: i32,
+    /// 手柄视觉外环半径(≥5 物理 px)。
+    pub handle_radius: i32,
+    /// 手柄命中半径(≥现行 9 物理 px)。
+    pub handle_hit_radius: i32,
+    /// 边缘拉伸命中半径(≥现行 6 物理 px)。
+    pub edge_hit_radius: i32,
+    pub badge_font: f32,
+    pub badge_pad_x: i32,
+    pub badge_pad_y: i32,
+    pub badge_margin: i32,
+    pub panel_radius: i32,
+}
+
+impl ChromeMetrics {
+    /// 由冻结帧 scale 派生全部 chrome 尺寸;非法值按 1.0,超出范围钳制。
+    pub fn for_scale(scale: f32) -> Self {
+        let scale = if scale.is_finite() {
+            scale.clamp(1.0, 4.0)
+        } else {
+            1.0
+        };
+        // 1.0 基准值即物理下限:缩放只放大,四舍五入后不低于基准。
+        let scaled = |logical: i32| ((logical as f32) * scale).round().max(logical as f32) as i32;
+        Self {
+            scale,
+            rail_button: scaled(RAIL_BUTTON),
+            rail_gap: scaled(RAIL_GAP),
+            rail_margin_v: scaled(RAIL_MARGIN_V),
+            rail_margin_h: scaled(RAIL_MARGIN_H),
+            menu_item_w: scaled(MENU_ITEM_W),
+            menu_item_h: scaled(MENU_ITEM_H),
+            menu_pad: scaled(MENU_PAD),
+            menu_icon_cx: scaled(MENU_ICON_CX),
+            menu_text_x: scaled(MENU_TEXT_X),
+            menu_separator_h: scaled(MENU_SEPARATOR_H),
+            menu_hover_radius: scaled(MENU_HOVER_RADIUS),
+            menu_font: MENU_FONT * scale,
+            menu_icon: scaled(MENU_ICON),
+            toolbar_icon: scaled(TOOLBAR_ICON),
+            handle_radius: scaled(HANDLE_RADIUS as i32),
+            handle_hit_radius: scaled(HANDLE_HIT_RADIUS),
+            edge_hit_radius: scaled(EDGE_HIT_RADIUS),
+            badge_font: BADGE_FONT * scale,
+            badge_pad_x: scaled(BADGE_PAD_X),
+            badge_pad_y: scaled(BADGE_PAD_Y),
+            badge_margin: scaled(BADGE_MARGIN),
+            panel_radius: ((PANEL_RADIUS * scale).round() as i32).clamp(8, 32),
+        }
+    }
+}
 
 /// 放大镜:源采样窗口 (2*MAG_HALF+1)=23 物理 px 直径,MAG_ZOOM=8 倍最近邻
 /// 放大(有效倍率 ~8x,像素格清晰可辨),放大区边长 23×8=184 ≤ MAG_MAX_EDGE。
@@ -195,12 +281,14 @@ pub fn menu_items(flags: FeatureFlags) -> Vec<SelectionAction> {
 
 /// 底部横排网格:按选区宽度决定每行按钮数,折行为多行居中。
 /// 返回 (列数, 行数, 网格宽, 网格高)。
-fn rail_grid(selection_w: i32, count: i32) -> (i32, i32, i32, i32) {
-    let per_row = ((selection_w + RAIL_GAP) / (RAIL_BUTTON + RAIL_GAP)).max(1);
+fn rail_grid(metrics: ChromeMetrics, selection_w: i32, count: i32) -> (i32, i32, i32, i32) {
+    let button = metrics.rail_button;
+    let gap = metrics.rail_gap;
+    let per_row = ((selection_w + gap) / (button + gap)).max(1);
     let rows = (count + per_row - 1) / per_row;
     let cols = (count + rows - 1) / rows;
-    let grid_w = cols * RAIL_BUTTON + (cols - 1) * RAIL_GAP;
-    let grid_h = rows * RAIL_BUTTON + (rows - 1) * RAIL_GAP;
+    let grid_w = cols * button + (cols - 1) * gap;
+    let grid_h = rows * button + (rows - 1) * gap;
     (cols, rows, grid_w, grid_h)
 }
 
@@ -209,6 +297,7 @@ fn rail_grid(selection_w: i32, count: i32) -> (i32, i32, i32, i32) {
 /// 间距 8px,选区宽度不足时自动折行)→ 左侧竖排轨 → 兜底底部钳制。
 /// 任何分支都与选区边框保持间距,不压边框线。
 pub fn toolbar_panel(
+    metrics: ChromeMetrics,
     selection: PhysicalRect,
     screen: (u32, u32),
     buttons: &[SelectionAction],
@@ -218,22 +307,23 @@ pub fn toolbar_panel(
     }
     let count = buttons.len() as i32;
     let sel = IntRect::from(selection);
+    let button = metrics.rail_button;
     // 右侧竖排单列轨。
-    let rail_h = count * RAIL_BUTTON + (count - 1) * RAIL_GAP;
+    let rail_h = count * button + (count - 1) * metrics.rail_gap;
     let max_rail_y = (screen.1 as i32 - rail_h).max(0);
     let rail_y = (sel.y + sel.height / 2 - rail_h / 2).clamp(0, max_rail_y);
-    let right_x = sel.right() + RAIL_MARGIN_V;
-    if right_x + RAIL_BUTTON <= screen.0 as i32 {
+    let right_x = sel.right() + metrics.rail_margin_v;
+    if right_x + button <= screen.0 as i32 {
         return Some(IntRect {
             x: right_x,
             y: rail_y,
-            width: RAIL_BUTTON,
+            width: button,
             height: rail_h,
         });
     }
     // 底部水平排(按选区宽度折行,整体居中于选区)。
-    let (_, _, grid_w, grid_h) = rail_grid(sel.width, count);
-    let below_y = sel.bottom() + RAIL_MARGIN_H;
+    let (_, _, grid_w, grid_h) = rail_grid(metrics, sel.width, count);
+    let below_y = sel.bottom() + metrics.rail_margin_h;
     let grid_x = || (sel.x + sel.width / 2 - grid_w / 2).clamp(0, (screen.0 as i32 - grid_w).max(0));
     if below_y + grid_h <= screen.1 as i32 {
         return Some(IntRect {
@@ -244,12 +334,12 @@ pub fn toolbar_panel(
         });
     }
     // 左侧竖排单列轨。
-    let left_x = sel.x - RAIL_MARGIN_V - RAIL_BUTTON;
+    let left_x = sel.x - metrics.rail_margin_v - button;
     if left_x >= 0 {
         return Some(IntRect {
             x: left_x,
             y: rail_y,
-            width: RAIL_BUTTON,
+            width: button,
             height: rail_h,
         });
     }
@@ -265,10 +355,13 @@ pub fn toolbar_panel(
 /// 面板内逐按钮矩形,顺序与 `buttons` 一致(与绘制共用,保证 hitbox 一致)。
 /// 竖排轨为单列;水平排按面板宽度折行,每行居中(末行不足一行也居中)。
 pub fn toolbar_button_rects(
+    metrics: ChromeMetrics,
     panel: IntRect,
     buttons: &[SelectionAction],
 ) -> Vec<(SelectionAction, IntRect)> {
     let count = buttons.len() as i32;
+    let button = metrics.rail_button;
+    let gap = metrics.rail_gap;
     let mut rects = Vec::with_capacity(buttons.len());
     if panel.height > panel.width {
         // 竖排单列轨。
@@ -277,31 +370,31 @@ pub fn toolbar_button_rects(
                 *action,
                 IntRect {
                     x: panel.x,
-                    y: panel.y + index as i32 * (RAIL_BUTTON + RAIL_GAP),
-                    width: RAIL_BUTTON,
-                    height: RAIL_BUTTON,
+                    y: panel.y + index as i32 * (button + gap),
+                    width: button,
+                    height: button,
                 },
             ));
         }
         return rects;
     }
     // 水平排:由面板宽度反推列数,逐行居中。
-    let cols = ((panel.width + RAIL_GAP) / (RAIL_BUTTON + RAIL_GAP)).max(1);
+    let cols = ((panel.width + gap) / (button + gap)).max(1);
     let rows = (count + cols - 1) / cols;
     for row in 0..rows {
         let row_count = (count - row * cols).min(cols);
-        let row_w = row_count * RAIL_BUTTON + (row_count - 1) * RAIL_GAP;
+        let row_w = row_count * button + (row_count - 1) * gap;
         let x0 = panel.x + (panel.width - row_w) / 2;
-        let y = panel.y + row * (RAIL_BUTTON + RAIL_GAP);
+        let y = panel.y + row * (button + gap);
         for col in 0..row_count {
             let index = (row * cols + col) as usize;
             rects.push((
                 buttons[index],
                 IntRect {
-                    x: x0 + col * (RAIL_BUTTON + RAIL_GAP),
+                    x: x0 + col * (button + gap),
                     y,
-                    width: RAIL_BUTTON,
-                    height: RAIL_BUTTON,
+                    width: button,
+                    height: button,
                 },
             ));
         }
@@ -309,10 +402,16 @@ pub fn toolbar_button_rects(
     rects
 }
 
-pub fn menu_panel(anchor: (i32, i32), screen: (u32, u32), items: &[SelectionAction]) -> IntRect {
-    let width = MENU_ITEM_W + MENU_PAD * 2;
-    // 「取消」与其余动作之间预留 1px 分隔线。
-    let height = items.len() as i32 * MENU_ITEM_H + MENU_PAD * 2 + MENU_SEPARATOR_H;
+pub fn menu_panel(
+    metrics: ChromeMetrics,
+    anchor: (i32, i32),
+    screen: (u32, u32),
+    items: &[SelectionAction],
+) -> IntRect {
+    let width = metrics.menu_item_w + metrics.menu_pad * 2;
+    // 「取消」与其余动作之间预留分隔线。
+    let height =
+        items.len() as i32 * metrics.menu_item_h + metrics.menu_pad * 2 + metrics.menu_separator_h;
     IntRect {
         x: anchor.0.clamp(0, (screen.0 as i32 - width).max(0)),
         y: anchor.1.clamp(0, (screen.1 as i32 - height).max(0)),
@@ -322,6 +421,7 @@ pub fn menu_panel(anchor: (i32, i32), screen: (u32, u32), items: &[SelectionActi
 }
 
 pub fn menu_item_rects(
+    metrics: ChromeMetrics,
     panel: IntRect,
     items: &[SelectionAction],
 ) -> Vec<(SelectionAction, IntRect)> {
@@ -333,14 +433,18 @@ pub fn menu_item_rects(
             (
                 *action,
                 IntRect {
-                    x: panel.x + MENU_PAD,
-                    // 末项(取消)在分隔线之下,整体下移 1px。
+                    x: panel.x + metrics.menu_pad,
+                    // 末项(取消)在分隔线之下,整体下移分隔线高度。
                     y: panel.y
-                        + MENU_PAD
-                        + index as i32 * MENU_ITEM_H
-                        + if index == last { MENU_SEPARATOR_H } else { 0 },
-                    width: MENU_ITEM_W,
-                    height: MENU_ITEM_H,
+                        + metrics.menu_pad
+                        + index as i32 * metrics.menu_item_h
+                        + if index == last {
+                            metrics.menu_separator_h
+                        } else {
+                            0
+                        },
+                    width: metrics.menu_item_w,
+                    height: metrics.menu_item_h,
                 },
             )
         })
@@ -348,8 +452,12 @@ pub fn menu_item_rects(
 }
 
 /// 「取消」分隔线的 y 坐标(菜单至少含取消项时才有意义)。
-pub fn menu_separator_y(panel: IntRect, items: &[SelectionAction]) -> i32 {
-    panel.y + MENU_PAD + items.len().saturating_sub(1) as i32 * MENU_ITEM_H
+pub fn menu_separator_y(
+    metrics: ChromeMetrics,
+    panel: IntRect,
+    items: &[SelectionAction],
+) -> i32 {
+    panel.y + metrics.menu_pad + items.len().saturating_sub(1) as i32 * metrics.menu_item_h
 }
 
 /// 放大镜一次布局派生:采样窗口、放大块边长与各 chrome 尺寸(随 scale 等比)。
@@ -456,41 +564,48 @@ pub fn handle_anchor(rect: PhysicalRect, kind: HandleKind) -> (i32, i32) {
     }
 }
 
-/// 8 向手柄命中;角手柄优先于边手柄。
-pub fn handle_hit(rect: PhysicalRect, x: i32, y: i32) -> Option<HandleKind> {
+/// 8 向手柄命中(命中半径经 metrics 随 scale 派生);角手柄优先于边手柄。
+pub fn handle_hit(
+    metrics: ChromeMetrics,
+    rect: PhysicalRect,
+    x: i32,
+    y: i32,
+) -> Option<HandleKind> {
+    let radius = metrics.handle_hit_radius;
     for kind in CORNER_HANDLES {
         let (hx, hy) = handle_anchor(rect, kind);
-        if (x - hx).abs() <= HANDLE_HIT_RADIUS && (y - hy).abs() <= HANDLE_HIT_RADIUS {
+        if (x - hx).abs() <= radius && (y - hy).abs() <= radius {
             return Some(kind);
         }
     }
     for kind in EDGE_HANDLES {
         let (hx, hy) = handle_anchor(rect, kind);
-        if (x - hx).abs() <= HANDLE_HIT_RADIUS && (y - hy).abs() <= HANDLE_HIT_RADIUS {
+        if (x - hx).abs() <= radius && (y - hy).abs() <= radius {
             return Some(kind);
         }
     }
     None
 }
 
-/// 边缘拉伸命中:边线 ±EDGE_HIT_RADIUS 的整条边带(调用方保证手柄优先判定,
+/// 边缘拉伸命中:边线 ±edge_hit_radius 的整条边带(调用方保证手柄优先判定,
 /// 因此角/边中手柄区域不会落到这里)。拖动=沿该边法向轴 resize。
-pub fn edge_hit(rect: PhysicalRect, x: i32, y: i32) -> Option<EdgeKind> {
+pub fn edge_hit(metrics: ChromeMetrics, rect: PhysicalRect, x: i32, y: i32) -> Option<EdgeKind> {
+    let radius = metrics.edge_hit_radius;
     let r = IntRect::from(rect);
     let x1 = r.right() - 1;
     let y1 = r.bottom() - 1;
-    let in_x = x >= r.x - EDGE_HIT_RADIUS && x <= x1 + EDGE_HIT_RADIUS;
-    let in_y = y >= r.y - EDGE_HIT_RADIUS && y <= y1 + EDGE_HIT_RADIUS;
-    if (y - r.y).abs() <= EDGE_HIT_RADIUS && in_x {
+    let in_x = x >= r.x - radius && x <= x1 + radius;
+    let in_y = y >= r.y - radius && y <= y1 + radius;
+    if (y - r.y).abs() <= radius && in_x {
         return Some(EdgeKind::North);
     }
-    if (y - y1).abs() <= EDGE_HIT_RADIUS && in_x {
+    if (y - y1).abs() <= radius && in_x {
         return Some(EdgeKind::South);
     }
-    if (x - r.x).abs() <= EDGE_HIT_RADIUS && in_y {
+    if (x - r.x).abs() <= radius && in_y {
         return Some(EdgeKind::West);
     }
-    if (x - x1).abs() <= EDGE_HIT_RADIUS && in_y {
+    if (x - x1).abs() <= radius && in_y {
         return Some(EdgeKind::East);
     }
     None
@@ -547,6 +662,8 @@ pub struct Composer {
     width: u32,
     height: u32,
     scale: f32,
+    /// 全部 chrome 的物理尺寸(布局/绘制/命中同源,ADR-15)。
+    metrics: ChromeMetrics,
     original: Vec<u8>,
     dimmed: Vec<u8>,
 }
@@ -569,6 +686,7 @@ impl Composer {
             width: frame.width,
             height: frame.height,
             scale,
+            metrics: ChromeMetrics::for_scale(scale),
             original: frame.rgba.clone(),
             dimmed,
         })
@@ -619,14 +737,9 @@ impl Composer {
         }
     }
 
-    /// 逻辑尺寸 → 物理像素(≥1)。
-    fn spx(&self, logical: i32) -> i32 {
-        ((logical as f32) * self.scale).round().max(1.0) as i32
-    }
-
-    /// 白芯 + 青绿环双圆手柄,亮暗背景均可见;外环半径 ≥5 物理 px。
+    /// 白芯 + 青绿环双圆手柄,亮暗背景均可见;外环半径随 scale 派生。
     fn draw_handles(&self, rgba: &mut [u8], w: u32, h: u32, rect: PhysicalRect) {
-        let outer = ((HANDLE_RADIUS * self.scale).round() as i32).max(5);
+        let outer = self.metrics.handle_radius;
         let core = (outer - 2).max(2);
         for kind in ALL_HANDLES {
             let (cx, cy) = handle_anchor(rect, kind);
@@ -637,14 +750,15 @@ impl Composer {
 
     /// 亮底 pill 深字加粗徽标,位于选区上方(上方放不下时翻到下方)。
     fn draw_size_badge(&self, rgba: &mut [u8], w: u32, h: u32, rect: PhysicalRect) {
-        let font = BADGE_FONT * self.scale;
+        let metrics = self.metrics;
+        let font = metrics.badge_font;
         let label = size_readout(rect);
         let Some(text_width) = text::measure_width(&label, font) else {
             return;
         };
-        let pad_x = self.spx(BADGE_PAD_X);
-        let pad_y = self.spx(BADGE_PAD_Y);
-        let margin = self.spx(BADGE_MARGIN);
+        let pad_x = metrics.badge_pad_x;
+        let pad_y = metrics.badge_pad_y;
+        let margin = metrics.badge_margin;
         // faux bold 二次描画会向右多占约 5% 字号宽度,预留。
         let bold_slack = (font * 0.05).ceil() as i32;
         let width = text_width.ceil() as i32 + bold_slack + pad_x * 2;
@@ -673,7 +787,7 @@ impl Composer {
         );
     }
 
-    /// 图标轨:选区外侧的 40px 纯图标圆形按钮(accent 底 + 白图标,
+    /// 图标轨:选区外侧的纯图标圆形按钮(accent 底 + 白图标,
     /// hover 深 accent 底);位置由 `toolbar_panel` 按选区+屏幕动态避让。
     fn draw_toolbar(
         &self,
@@ -684,49 +798,60 @@ impl Composer {
         flags: FeatureFlags,
         cursor: (i32, i32),
     ) {
+        let metrics = self.metrics;
         let buttons = toolbar_buttons(flags);
-        let Some(panel) = toolbar_panel(selection, (w, h), &buttons) else {
+        let Some(panel) = toolbar_panel(metrics, selection, (w, h), &buttons) else {
             return;
         };
-        for (action, rect) in toolbar_button_rects(panel, &buttons) {
+        for (action, rect) in toolbar_button_rects(metrics, panel, &buttons) {
             let (cx, cy) = rect.center();
             let hover = rect.contains(cursor.0, cursor.1);
             let bg = if hover { ACCENT_DARK } else { ACCENT_DEEP };
-            fill_circle(rgba, w, h, cx, cy, RAIL_BUTTON / 2, bg);
-            draw_icon(rgba, w, h, action, cx, cy, 18, ICON_INK);
+            fill_circle(rgba, w, h, cx, cy, metrics.rail_button / 2, bg);
+            draw_icon(rgba, w, h, action, cx, cy, metrics.toolbar_icon, ICON_INK);
         }
     }
 
     /// 亮铬右键菜单:左图标 + 右文字;光标悬停项用青绿软底 + 深青绿字;
-    /// 「取消」与其余动作之间画 1px 分隔线(14% 墨)。
+    /// 「取消」与其余动作之间画分隔线(14% 墨)。全部几何经 metrics 派生。
     fn draw_menu(&self, rgba: &mut [u8], w: u32, h: u32, scene: &Scene) {
+        let metrics = self.metrics;
         let items = menu_items(scene.flags);
-        let panel = menu_panel(scene.menu_anchor, (w, h), &items);
-        draw_panel_chrome(rgba, w, h, panel, panel_radius(self.scale));
+        let panel = menu_panel(metrics, scene.menu_anchor, (w, h), &items);
+        draw_panel_chrome(rgba, w, h, panel, metrics.panel_radius);
         if items.len() > 1 {
-            let sep_y = menu_separator_y(panel, &items);
-            for x in panel.x + MENU_PAD..panel.right() - MENU_PAD {
+            let sep_y = menu_separator_y(metrics, panel, &items);
+            for x in panel.x + metrics.menu_pad..panel.right() - metrics.menu_pad {
                 blend(rgba, w, h, x, sep_y, CHROME_BORDER);
             }
         }
-        let line = text::line_height(MENU_FONT);
-        for (action, rect) in menu_item_rects(panel, &items) {
+        let line = text::line_height(metrics.menu_font);
+        for (action, rect) in menu_item_rects(metrics, panel, &items) {
             let hover = rect.contains(scene.cursor.0, scene.cursor.1);
             if hover {
-                fill_round_blend(rgba, w, h, rect, 8, ACTIVE_BG);
+                fill_round_blend(rgba, w, h, rect, metrics.menu_hover_radius, ACTIVE_BG);
             }
             let color = if hover { ACCENT_DEEP } else { CHROME_TEXT };
             let (_, cy) = rect.center();
-            draw_icon(rgba, w, h, action, rect.x + MENU_ICON_CX, cy, 14, color);
+            draw_icon(
+                rgba,
+                w,
+                h,
+                action,
+                rect.x + metrics.menu_icon_cx,
+                cy,
+                metrics.menu_icon,
+                color,
+            );
             let label = action_label(action);
             text::draw_text(
                 rgba,
                 w,
                 h,
-                (rect.x + MENU_TEXT_X) as f32,
+                (rect.x + metrics.menu_text_x) as f32,
                 rect.y as f32 + (rect.height as f32 - line).max(0.0) / 2.0,
                 &label,
-                MENU_FONT,
+                metrics.menu_font,
                 color,
             );
         }
@@ -737,7 +862,7 @@ impl Composer {
     fn draw_magnifier(&self, rgba: &mut [u8], w: u32, h: u32, cursor: (i32, i32)) {
         let layout = mag_layout(self.scale);
         let panel = magnifier_rect(cursor, (w, h), self.scale);
-        draw_panel_chrome(rgba, w, h, panel, panel_radius(self.scale));
+        draw_panel_chrome(rgba, w, h, panel, self.metrics.panel_radius);
         // 放大区在面板内水平居中,顶部留出 pad。
         let px = panel.x + (panel.width - layout.edge) / 2;
         let py = panel.y + layout.pad;
@@ -778,11 +903,6 @@ impl Composer {
         let text_y = pill.y as f32 + (pill.height as f32 - line_h).max(0.0) / 2.0;
         text::draw_text(rgba, w, h, text_x, text_y, &line, layout.font, CHROME_TEXT);
     }
-}
-
-/// 浮层圆角:逻辑 10px × scale,钳制在 8..=12。
-fn panel_radius(scale: f32) -> i32 {
-    ((10.0 * scale).round() as i32).clamp(8, 12)
 }
 
 /// 亮铬面板统一画法:底部 2px 深色 offset 模拟阴影 → 1px 细描边 → 亮暖白底。
@@ -1057,6 +1177,11 @@ mod tests {
         }
     }
 
+    /// 1.0 基准 metrics:既有固定几何断言按原值保留。
+    fn metrics_1() -> ChromeMetrics {
+        ChromeMetrics::for_scale(1.0)
+    }
+
     #[test]
     fn chrome_palette_is_bright_warm_with_dark_ink() {
         // 亮暖白底 #fffcf7 @ 97%。
@@ -1082,19 +1207,19 @@ mod tests {
             width: 120,
             height: 80,
         };
-        assert_eq!(handle_hit(rect, 100, 100), Some(HandleKind::NorthWest));
-        assert_eq!(handle_hit(rect, 219, 100), Some(HandleKind::NorthEast));
-        assert_eq!(handle_hit(rect, 219, 179), Some(HandleKind::SouthEast));
-        assert_eq!(handle_hit(rect, 100, 179), Some(HandleKind::SouthWest));
+        assert_eq!(handle_hit(metrics_1(), rect, 100, 100), Some(HandleKind::NorthWest));
+        assert_eq!(handle_hit(metrics_1(), rect, 219, 100), Some(HandleKind::NorthEast));
+        assert_eq!(handle_hit(metrics_1(), rect, 219, 179), Some(HandleKind::SouthEast));
+        assert_eq!(handle_hit(metrics_1(), rect, 100, 179), Some(HandleKind::SouthWest));
         // 命中半径(9px)内仍算命中。
-        assert_eq!(handle_hit(rect, 106, 100), Some(HandleKind::NorthWest));
-        assert_eq!(handle_hit(rect, 109, 100), Some(HandleKind::NorthWest));
-        assert_eq!(handle_hit(rect, 159, 100), Some(HandleKind::North));
-        assert_eq!(handle_hit(rect, 219, 139), Some(HandleKind::East));
+        assert_eq!(handle_hit(metrics_1(), rect, 106, 100), Some(HandleKind::NorthWest));
+        assert_eq!(handle_hit(metrics_1(), rect, 109, 100), Some(HandleKind::NorthWest));
+        assert_eq!(handle_hit(metrics_1(), rect, 159, 100), Some(HandleKind::North));
+        assert_eq!(handle_hit(metrics_1(), rect, 219, 139), Some(HandleKind::East));
         // 半径外与选区内部不命中。
-        assert_eq!(handle_hit(rect, 110, 100), None);
-        assert_eq!(handle_hit(rect, 160, 140), None);
-        assert_eq!(handle_hit(rect, 300, 300), None);
+        assert_eq!(handle_hit(metrics_1(), rect, 110, 100), None);
+        assert_eq!(handle_hit(metrics_1(), rect, 160, 140), None);
+        assert_eq!(handle_hit(metrics_1(), rect, 300, 300), None);
     }
 
     #[test]
@@ -1106,17 +1231,17 @@ mod tests {
             height: 80,
         };
         // 四边 ±6px 命中(边线内外两侧)。
-        assert_eq!(edge_hit(rect, 160, 100), Some(EdgeKind::North));
-        assert_eq!(edge_hit(rect, 160, 94), Some(EdgeKind::North));
-        assert_eq!(edge_hit(rect, 160, 106), Some(EdgeKind::North));
-        assert_eq!(edge_hit(rect, 160, 179), Some(EdgeKind::South));
-        assert_eq!(edge_hit(rect, 100, 140), Some(EdgeKind::West));
-        assert_eq!(edge_hit(rect, 219, 140), Some(EdgeKind::East));
-        assert_eq!(edge_hit(rect, 225, 140), Some(EdgeKind::East));
+        assert_eq!(edge_hit(metrics_1(), rect, 160, 100), Some(EdgeKind::North));
+        assert_eq!(edge_hit(metrics_1(), rect, 160, 94), Some(EdgeKind::North));
+        assert_eq!(edge_hit(metrics_1(), rect, 160, 106), Some(EdgeKind::North));
+        assert_eq!(edge_hit(metrics_1(), rect, 160, 179), Some(EdgeKind::South));
+        assert_eq!(edge_hit(metrics_1(), rect, 100, 140), Some(EdgeKind::West));
+        assert_eq!(edge_hit(metrics_1(), rect, 219, 140), Some(EdgeKind::East));
+        assert_eq!(edge_hit(metrics_1(), rect, 225, 140), Some(EdgeKind::East));
         // 带外不命中。
-        assert_eq!(edge_hit(rect, 160, 93), None);
-        assert_eq!(edge_hit(rect, 160, 140), None);
-        assert_eq!(edge_hit(rect, 300, 300), None);
+        assert_eq!(edge_hit(metrics_1(), rect, 160, 93), None);
+        assert_eq!(edge_hit(metrics_1(), rect, 160, 140), None);
+        assert_eq!(edge_hit(metrics_1(), rect, 300, 300), None);
     }
 
     #[test]
@@ -1331,12 +1456,12 @@ mod tests {
             width: 15,
             height: 15,
         };
-        let panel = toolbar_panel(selection, (200, 150), &buttons).unwrap();
+        let panel = toolbar_panel(metrics_1(), selection, (200, 150), &buttons).unwrap();
         assert!(panel.x >= 0 && panel.y >= 0);
         assert!(panel.right() <= 200 && panel.bottom() <= 150);
         assert!(panel.right() <= selection.x as i32);
         assert_eq!(panel.width, RAIL_BUTTON);
-        let rects = toolbar_button_rects(panel, &buttons);
+        let rects = toolbar_button_rects(metrics_1(), panel, &buttons);
         assert_eq!(rects.len(), 1);
         assert_eq!(rects[0].1.width, RAIL_BUTTON);
         assert_eq!(rects[0].1.height, RAIL_BUTTON);
@@ -1348,7 +1473,7 @@ mod tests {
             toolbar_pin: false,
             ..FeatureFlags::default()
         };
-        assert!(toolbar_panel(selection, (200, 150), &toolbar_buttons(off)).is_none());
+        assert!(toolbar_panel(metrics_1(), selection, (200, 150), &toolbar_buttons(off)).is_none());
     }
 
     #[test]
@@ -1362,13 +1487,13 @@ mod tests {
             width: 100,
             height: 80,
         };
-        let panel = toolbar_panel(selection, (400, 300), &buttons).unwrap();
+        let panel = toolbar_panel(metrics_1(), selection, (400, 300), &buttons).unwrap();
         assert_eq!(panel.x, 140 + RAIL_MARGIN_V);
         assert_eq!(panel.width, RAIL_BUTTON);
         assert_eq!(panel.height, 3 * RAIL_BUTTON + 2 * RAIL_GAP);
         let rail_center = panel.y + panel.height / 2;
         assert!((rail_center - (60 + 40)).abs() <= 1);
-        let rects = toolbar_button_rects(panel, &buttons);
+        let rects = toolbar_button_rects(metrics_1(), panel, &buttons);
         assert!(rects.windows(2).all(|pair| pair[1].1.y > pair[0].1.y));
         assert!(rects.iter().all(|(_, rect)| rect.x == panel.x));
         // ② 右缘不足 → 底部水平排;窄选区自动折行(每行 1 个,共 3 行居中)。
@@ -1378,10 +1503,10 @@ mod tests {
             width: 50,
             height: 20,
         };
-        let panel = toolbar_panel(narrow, (400, 300), &buttons).unwrap();
+        let panel = toolbar_panel(metrics_1(), narrow, (400, 300), &buttons).unwrap();
         assert_eq!(panel.y, 60 + RAIL_MARGIN_H);
         assert_eq!(panel.height, 3 * RAIL_BUTTON + 2 * RAIL_GAP);
-        let rects = toolbar_button_rects(panel, &buttons);
+        let rects = toolbar_button_rects(metrics_1(), panel, &buttons);
         assert_eq!(rects.len(), 3);
         assert!(rects.windows(2).all(|pair| pair[1].1.y > pair[0].1.y));
         // ③ 宽选区底部水平排:单行容纳全部按钮。
@@ -1391,10 +1516,10 @@ mod tests {
             width: 200,
             height: 20,
         };
-        let panel = toolbar_panel(wide, (640, 480), &buttons).unwrap();
+        let panel = toolbar_panel(metrics_1(), wide, (640, 480), &buttons).unwrap();
         assert_eq!(panel.y, 60 + RAIL_MARGIN_H);
         assert_eq!(panel.height, RAIL_BUTTON);
-        let rects = toolbar_button_rects(panel, &buttons);
+        let rects = toolbar_button_rects(metrics_1(), panel, &buttons);
         assert!(rects.windows(2).all(|pair| pair[1].1.y == pair[0].1.y));
         assert!(rects.windows(2).all(|pair| pair[1].1.x > pair[0].1.x));
         // 单行整体居中于选区。
@@ -1406,20 +1531,20 @@ mod tests {
     fn menu_geometry_has_touch_targets_and_cancel_separator() {
         let items = menu_items(FeatureFlags::default());
         assert_eq!(items.len(), 6);
-        let panel = menu_panel((50, 50), (800, 600), &items);
+        let panel = menu_panel(metrics_1(), (50, 50), (800, 600), &items);
         assert_eq!(panel.width, MENU_ITEM_W + MENU_PAD * 2);
         assert_eq!(
             panel.height,
             items.len() as i32 * MENU_ITEM_H + MENU_PAD * 2 + MENU_SEPARATOR_H
         );
-        let rects = menu_item_rects(panel, &items);
+        let rects = menu_item_rects(metrics_1(), panel, &items);
         for (_, rect) in &rects {
             assert_eq!(rect.width, MENU_ITEM_W);
             assert_eq!(rect.height, MENU_ITEM_H);
             assert_eq!(rect.x, panel.x + MENU_PAD);
         }
         // 分隔线:紧贴倒数第二项底部,末项(取消)在线下 1px。
-        let sep_y = menu_separator_y(panel, &items);
+        let sep_y = menu_separator_y(metrics_1(), panel, &items);
         assert_eq!(rects[4].1.bottom(), sep_y);
         assert_eq!(rects[5].1.y, sep_y + MENU_SEPARATOR_H);
         // 图标/文字内边距。
@@ -1475,8 +1600,8 @@ mod tests {
         assert_eq!(read(10, 190), [dimmed[0], dimmed[1], dimmed[2]]);
         // 图标轨按钮 hitbox 内是 accent 圆形按钮(避开中央白色字形取偏心点)。
         let buttons = toolbar_buttons(flags);
-        let panel = toolbar_panel(selection, (320, 200), &buttons).unwrap();
-        let (_, last) = toolbar_button_rects(panel, &buttons)
+        let panel = toolbar_panel(metrics_1(), selection, (320, 200), &buttons).unwrap();
+        let (_, last) = toolbar_button_rects(metrics_1(), panel, &buttons)
             .last()
             .copied()
             .unwrap();
@@ -1484,5 +1609,190 @@ mod tests {
         assert_eq!(read(cx + 12, cy), [0x0F, 0x76, 0x6E]);
         // 描边:选区左边框(避开手柄)为强调色。
         assert_eq!(read(41, 90), [ACCENT[0], ACCENT[1], ACCENT[2]]);
+    }
+
+    #[test]
+    fn chrome_metrics_derive_sizes_and_pinned_hit_radii_from_scale() {
+        // 125%–250%:全部 chrome 尺寸/字号由 scale 派生,命中半径钉死物理下限。
+        for scale in [1.0_f32, 1.25, 1.5, 2.0, 2.5] {
+            let metrics = ChromeMetrics::for_scale(scale);
+            assert_eq!(metrics.scale, scale);
+            assert_eq!(
+                metrics.rail_button,
+                (RAIL_BUTTON as f32 * scale).round() as i32,
+                "scale {scale}: 操作条按钮"
+            );
+            assert_eq!(metrics.menu_item_w, (MENU_ITEM_W as f32 * scale).round() as i32);
+            assert_eq!(metrics.menu_item_h, (MENU_ITEM_H as f32 * scale).round() as i32);
+            assert_eq!(metrics.menu_font, MENU_FONT * scale);
+            assert_eq!(metrics.badge_font, BADGE_FONT * scale);
+            // 命中半径随 scale 放大且不低于 1.0 基准。
+            assert!(metrics.handle_hit_radius >= HANDLE_HIT_RADIUS);
+            assert!(metrics.handle_radius >= 5);
+            assert!(metrics.edge_hit_radius >= EDGE_HIT_RADIUS);
+            assert!(metrics.rail_button >= RAIL_BUTTON);
+            assert!(metrics.menu_item_h >= MENU_ITEM_H);
+            // 文字与图标不裁切:菜单项容得下放大后的字高/文字,按钮容得下图标。
+            if text::ui_font().is_some() {
+                let label = action_label(SelectionAction::Cancel);
+                let width = text::measure_width(&label, metrics.menu_font).unwrap();
+                assert!(
+                    metrics.menu_text_x + width.ceil() as i32 <= metrics.menu_item_w,
+                    "scale {scale}: 菜单文字被裁切"
+                );
+                assert!(text::line_height(metrics.menu_font) <= metrics.menu_item_h as f32);
+            }
+            assert!(metrics.toolbar_icon <= metrics.rail_button);
+            assert!(metrics.menu_pad * 2 < metrics.menu_item_w);
+        }
+        // 低于 1.0 与非法值都回到 1.0 基准,不缩水。
+        for scale in [0.5_f32, 0.0, -2.0, f32::NAN, f32::INFINITY] {
+            let metrics = ChromeMetrics::for_scale(scale);
+            assert_eq!(metrics.rail_button, RAIL_BUTTON, "scale {scale}");
+            assert_eq!(metrics.handle_hit_radius, HANDLE_HIT_RADIUS, "scale {scale}");
+            assert_eq!(metrics.menu_font, MENU_FONT, "scale {scale}");
+        }
+        // 超过 4.0 钳制,避免 chrome 占据整屏。
+        assert_eq!(ChromeMetrics::for_scale(8.0).rail_button, RAIL_BUTTON * 4);
+    }
+
+    #[test]
+    fn chrome_layout_and_hit_share_scaled_metrics() {
+        for scale in [1.5_f32, 2.0] {
+            let metrics = ChromeMetrics::for_scale(scale);
+            let buttons = toolbar_buttons(FeatureFlags::default());
+            let selection = PhysicalRect {
+                x: 40,
+                y: 60,
+                width: 100,
+                height: 80,
+            };
+            // 布局尺寸按 metrics;命中矩形与布局同源。
+            let panel = toolbar_panel(metrics, selection, (800, 600), &buttons).unwrap();
+            assert_eq!(panel.width, metrics.rail_button);
+            assert_eq!(
+                panel.height,
+                3 * metrics.rail_button + 2 * metrics.rail_gap,
+                "scale {scale}"
+            );
+            assert_eq!(panel.x, 140 + metrics.rail_margin_v);
+            let rects = toolbar_button_rects(metrics, panel, &buttons);
+            assert_eq!(rects.len(), 3);
+            assert!(rects
+                .iter()
+                .all(|(_, rect)| rect.width == metrics.rail_button
+                    && rect.height == metrics.rail_button));
+            assert!(rects.windows(2).all(|pair| pair[1].1.y > pair[0].1.y));
+            // 菜单几何按 metrics;分隔线与项底对齐。
+            let items = menu_items(FeatureFlags::default());
+            let menu = menu_panel(metrics, (50, 50), (800, 600), &items);
+            assert_eq!(menu.width, metrics.menu_item_w + metrics.menu_pad * 2);
+            assert_eq!(
+                menu.height,
+                items.len() as i32 * metrics.menu_item_h
+                    + metrics.menu_pad * 2
+                    + metrics.menu_separator_h
+            );
+            let mrects = menu_item_rects(metrics, menu, &items);
+            for (_, rect) in &mrects {
+                assert_eq!(rect.width, metrics.menu_item_w);
+                assert_eq!(rect.height, metrics.menu_item_h);
+                assert_eq!(rect.x, menu.x + metrics.menu_pad);
+            }
+            let sep_y = menu_separator_y(metrics, menu, &items);
+            assert_eq!(mrects[4].1.bottom(), sep_y);
+            assert_eq!(mrects[5].1.y, sep_y + metrics.menu_separator_h);
+            // 手柄/边命中半径按 metrics 派生(角手柄优先)。
+            let rect = PhysicalRect {
+                x: 100,
+                y: 100,
+                width: 120,
+                height: 80,
+            };
+            let h = metrics.handle_hit_radius;
+            assert_eq!(
+                handle_hit(metrics, rect, 100 + h, 100 + h),
+                Some(HandleKind::NorthWest),
+                "scale {scale}"
+            );
+            assert_eq!(handle_hit(metrics, rect, 100 + h + 1, 100 + h + 1), None);
+            let e = metrics.edge_hit_radius;
+            assert_eq!(
+                edge_hit(metrics, rect, 160, 100 - e),
+                Some(EdgeKind::North),
+                "scale {scale}"
+            );
+            assert_eq!(edge_hit(metrics, rect, 160, 100 - e - 1), None);
+            assert_eq!(
+                edge_hit(metrics, rect, 219 + e, 140),
+                Some(EdgeKind::East),
+                "scale {scale}"
+            );
+        }
+    }
+
+    #[test]
+    fn composed_chrome_uses_scaled_metrics() {
+        let mut frame = solid_frame(640, 400, [10, 200, 90, 255]);
+        frame.scale = 1.5;
+        let composer = Composer::new(&frame).unwrap();
+        let metrics = ChromeMetrics::for_scale(1.5);
+        let flags = no_magnifier_flags();
+        let selection = PhysicalRect {
+            x: 40,
+            y: 30,
+            width: 200,
+            height: 150,
+        };
+        let scene = Scene {
+            selection: Some(selection),
+            cursor: (600, 390),
+            flags,
+            toolbar_visible: true,
+            menu_open: false,
+            menu_anchor: (0, 0),
+        };
+        let composed = composer.compose(&scene);
+        let read = |x: i32, y: i32| {
+            let i = ((y as u32 * 640 + x as u32) * 4) as usize;
+            [composed[i], composed[i + 1], composed[i + 2]]
+        };
+        // 操作条按钮中心区仍是 accent 圆(取偏心点避开白色图标)。
+        let buttons = toolbar_buttons(flags);
+        let panel = toolbar_panel(metrics, selection, (640, 400), &buttons).unwrap();
+        let (_, last) = toolbar_button_rects(metrics, panel, &buttons)
+            .last()
+            .copied()
+            .unwrap();
+        let (cx, cy) = last.center();
+        let inset = metrics.rail_button / 2 - 4;
+        assert_eq!(read(cx + inset, cy), [0x0F, 0x76, 0x6E]);
+        // 手柄视觉半径也随 scale 放大:距锚点 1.0 基准半径外、缩放半径内仍为强调色。
+        let (hx, hy) = handle_anchor(selection, HandleKind::SouthEast);
+        assert_eq!(read(hx, hy), [255, 255, 255]);
+        assert_eq!(read(hx + 7, hy), [ACCENT[0], ACCENT[1], ACCENT[2]]);
+        // 菜单:scale 派生的面板矩形上能看到亮铬底。
+        let menu_items = menu_items(flags);
+        let scene = Scene {
+            selection: Some(selection),
+            cursor: (600, 390),
+            flags,
+            toolbar_visible: false,
+            menu_open: true,
+            menu_anchor: (20, 20),
+        };
+        let composed = composer.compose(&scene);
+        let read = |x: i32, y: i32| {
+            let i = ((y as u32 * 640 + x as u32) * 4) as usize;
+            [composed[i], composed[i + 1], composed[i + 2]]
+        };
+        let panel = menu_panel(metrics, (20, 20), (640, 400), &menu_items);
+        let probe_x = panel.right() - metrics.menu_pad - 2;
+        let probe_y = panel.y + metrics.menu_pad + 2;
+        let pixel = read(probe_x, probe_y);
+        assert!(
+            pixel[0] > 230 && pixel[1] > 225 && pixel[2] > 220,
+            "scaled menu panel should be bright, got {pixel:?}"
+        );
     }
 }

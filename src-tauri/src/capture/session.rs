@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -47,6 +48,10 @@ struct ActiveSession {
     cancelled: bool,
     frame_deadline: Option<Instant>,
     started_at: Instant,
+    /// 会话代际(ADR-16):旧壳结果携带自己的代际,不符则丢弃,不作用于新会话。
+    generation: u64,
+    /// 取消受理时刻(Cancelling 阶段计时;看门狗与超时提示用)。
+    cancel_requested_at: Option<Instant>,
     /// 贴图再标注(R9):预览会话的回写目标 label;普通截取预览为 None,
     /// 会话被替换/关闭时随之失效。
     writeback: Option<String>,
@@ -70,24 +75,59 @@ impl ActiveSession {
             cancelled: false,
             frame_deadline: None,
             started_at: now,
+            generation: next_session_generation(),
+            cancel_requested_at: None,
             writeback: None,
         }
     }
+
+    /// Cancelling 阶段:取消请求已受理、清理尚未完成(会话仍占槽位)。
+    /// 期间不可完成,新触发等待清理完成而不是被静默吞掉(ADR-16)。
+    fn is_cancelling(&self) -> bool {
+        self.cancelled
+    }
+}
+
+/// 会话代际计数器:每次 `ActiveSession::new` 自增,用于丢弃旧壳/旧会话结果。
+static SESSION_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+fn next_session_generation() -> u64 {
+    SESSION_GENERATION.fetch_add(1, Ordering::SeqCst)
 }
 
 /// 看门狗:正常截取远小于 30s;busy 超时说明壳消息泵/线程卡死,
 /// 强制重置旧会话,避免"取消一次后再也无法截取"的静默死锁。
 const STALE_SESSION_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Cancelling 清理等待上限:触发落在取消清理窗口内时,等待这段时间让清理
+/// 完成后开始新截取;超时给"正在取消"提示,不静默丢弃(ADR-16)。
+const CANCEL_CLEARANCE_TIMEOUT: Duration = Duration::from_millis(500);
+/// Cancelling 等待期间的轮询间隔(清理是本进程内的短操作)。
+const CANCEL_CLEARANCE_POLL: Duration = Duration::from_millis(20);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BeginDecision {
     IgnoreBusy,
+    /// 会话正在取消清理:短时等待后重试,而不是静默忽略。
+    WaitForCancelClearance,
     ResetStaleThenBegin,
     Begin,
 }
 
 fn begin_decision(session: Option<&ActiveSession>, now: Instant) -> BeginDecision {
     match session {
+        Some(current) if current.is_cancelling() => {
+            let cancelling_for = current
+                .cancel_requested_at
+                .map(|at| now.saturating_duration_since(at))
+                .unwrap_or_default();
+            if cancelling_for > STALE_SESSION_TIMEOUT {
+                // 清理本身也卡死:看门狗兜底重置。
+                BeginDecision::ResetStaleThenBegin
+            } else {
+                BeginDecision::WaitForCancelClearance
+            }
+        }
         Some(current)
             if current.busy
                 && now.saturating_duration_since(current.started_at) > STALE_SESSION_TIMEOUT =>
@@ -101,6 +141,7 @@ fn begin_decision(session: Option<&ActiveSession>, now: Instant) -> BeginDecisio
 
 /// Occupies the session slot unless a live busy capture is still in flight.
 /// Returns false when the overlapping request must be ignored.
+#[cfg(test)]
 fn occupy_session(
     slot: &mut Option<ActiveSession>,
     mode: CaptureMode,
@@ -108,7 +149,7 @@ fn occupy_session(
     now: Instant,
 ) -> bool {
     match begin_decision(slot.as_ref(), now) {
-        BeginDecision::IgnoreBusy => false,
+        BeginDecision::IgnoreBusy | BeginDecision::WaitForCancelClearance => false,
         BeginDecision::ResetStaleThenBegin | BeginDecision::Begin => {
             *slot = Some(ActiveSession::new(mode, delay_ms, now));
             true
@@ -191,30 +232,32 @@ pub fn begin_last_region(app: &AppHandle, delay_ms: u64) {
 }
 
 async fn run(app: AppHandle, mode: CaptureMode, delay_ms: u64) -> Result<(), CaptureError> {
-    if !try_begin_with_delay(&app, mode, delay_ms) {
+    let Some(generation) = try_begin_with_delay(&app, mode, delay_ms).await else {
         return Ok(());
-    }
-    hide_product_surfaces(&app)?;
-    wait_delay_before_capture(&app, delay_ms, mode).await?;
+    };
+    hide_product_surfaces(&app, generation)?;
+    wait_delay_before_capture(&app, delay_ms, mode, generation).await?;
     match mode {
-        CaptureMode::Region => capture_region(&app).await,
-        CaptureMode::Window => capture_window_mode(&app).await,
-        CaptureMode::Fullscreen => capture_fullscreen(&app).await,
+        CaptureMode::Region => capture_region(&app, generation).await,
+        CaptureMode::Window => capture_window_mode(&app, generation).await,
+        CaptureMode::Fullscreen => capture_fullscreen(&app, generation).await,
     }
 }
 
-/// 隐藏前置完成后按延时计划展示并等待倒计时(可取消);0 秒立即返回。
+/// 隐藏前置完成后按延时计划展示并等待倒计时(可取消,代际不符即中止);
+/// 0 秒立即返回。
 async fn wait_delay_before_capture(
     app: &AppHandle,
     delay_ms: u64,
     mode: CaptureMode,
+    generation: u64,
 ) -> Result<(), CaptureError> {
     let plan = plan_delay(delay_ms);
     if plan.delay_ms > 0 && !plan.overlay_during_delay {
         show_delay(app, plan.delay_ms, mode)?;
-        if wait_delay(app, plan.delay_ms).await? {
+        if wait_delay(app, plan.delay_ms, generation).await? {
             hide_session_surface(app, ui::DELAY)?;
-            hide_product_surfaces(app)?;
+            hide_product_surfaces(app, generation)?;
         }
     }
     Ok(())
@@ -231,12 +274,12 @@ async fn run_last_region(app: AppHandle, delay_ms: u64) -> Result<(), CaptureErr
             return Ok(());
         }
     };
-    if !try_begin_with_delay(&app, CaptureMode::Region, delay_ms) {
+    let Some(generation) = try_begin_with_delay(&app, CaptureMode::Region, delay_ms).await else {
         return Ok(());
-    }
-    hide_product_surfaces(&app)?;
-    wait_delay_before_capture(&app, delay_ms, CaptureMode::Region).await?;
-    capture_last_region(&app, plan).await
+    };
+    hide_product_surfaces(&app, generation)?;
+    wait_delay_before_capture(&app, delay_ms, CaptureMode::Region, generation).await?;
+    capture_last_region(&app, plan, generation).await
 }
 
 /// 上次区域使用前的校验失败:两种都意味着该项当前不可用。
@@ -298,7 +341,11 @@ async fn plan_last_region(app: &AppHandle) -> Result<FixedRegionPlan, LastRegion
 
 /// 抓取目标显示器并按钳制后的区域裁剪;与全屏/区域完成一样走
 /// `finish_configured`,预览/静默完成、自动复制、历史与 toast 行为一致。
-async fn capture_last_region(app: &AppHandle, plan: FixedRegionPlan) -> Result<(), CaptureError> {
+async fn capture_last_region(
+    app: &AppHandle,
+    plan: FixedRegionPlan,
+    generation: u64,
+) -> Result<(), CaptureError> {
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         require_capture_ready(&handle)?;
@@ -306,7 +353,10 @@ async fn capture_last_region(app: &AppHandle, plan: FixedRegionPlan) -> Result<(
         let (x, y, width, height) = local_crop(&plan.monitor, &plan.region)
             .ok_or_else(|| CaptureError::api("error.capture.last_region_out_of_range"))?;
         let cropped = crop_rgba(&frame, x, y, width, height)?;
-        finish_configured(&handle, cropped).map(|_| ())
+        if !session_matches_generation(&handle, generation) {
+            return Ok(());
+        }
+        finish_configured(&handle, cropped, Some(generation)).map(|_| ())
     })
     .await
     .map_err(|_| CaptureError::api("error.capture.thread_failed"))?
@@ -333,27 +383,101 @@ fn local_crop(
     Some((x, y, region.width, region.height))
 }
 
-fn try_begin_with_delay(app: &AppHandle, mode: CaptureMode, delay_ms: u64) -> bool {
-    let runtime = app.state::<CaptureRuntime>();
-    let mut guard = lock(&runtime.inner);
-    let now = Instant::now();
-    if begin_decision(guard.as_ref(), now) == BeginDecision::ResetStaleThenBegin {
-        eprintln!("Cropmark: stale busy session reset after {STALE_SESSION_TIMEOUT:?}");
-        for label in ui::session_window_labels() {
-            ui::hide_window(app, label);
-        }
-    }
-    if !occupy_session(&mut guard, mode, delay_ms, now) {
-        return false;
-    }
-    // A lingering toast must not leak into the next capture (hide-before-capture);
-    // 仅隐藏——toast 窗是预创建复用的 webview,关闭会破坏复用。
-    ui::hide_window(app, ui::TOAST);
-    *lock(&runtime.last_error) = None;
-    true
+/// 触发入口的决策结果(在取消清理窗口内区分"等待重试"与"开始")。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BeginStep {
+    /// 已占用会话并分配代际,可以继续 hide/截取。
+    Begun(u64),
+    /// 另有活跃截取:维持既有静默忽略语义。
+    Ignored,
+    /// 会话处于 Cancelling:等待清理完成后重试。
+    WaitingForCancel,
 }
 
-fn hide_product_surfaces(app: &AppHandle) -> Result<(), CaptureError> {
+/// 单次触发尝试:在同一把锁内决策并占用槽位。stale/取消看门狗重置时,
+/// 旧会话被取出并在锁外收尾(关闭旧壳、恢复旧产品表面,ADR-16)。
+fn begin_capture(app: &AppHandle, mode: CaptureMode, delay_ms: u64) -> BeginStep {
+    let now = Instant::now();
+    let mut stale: Option<ActiveSession> = None;
+    let step = with_session_mut(app, |slot| match begin_decision(slot.as_ref(), now) {
+        BeginDecision::IgnoreBusy => BeginStep::Ignored,
+        BeginDecision::WaitForCancelClearance => BeginStep::WaitingForCancel,
+        BeginDecision::ResetStaleThenBegin => {
+            stale = slot.take();
+            *slot = Some(ActiveSession::new(mode, delay_ms, now));
+            BeginStep::Begun(current_generation(slot))
+        }
+        BeginDecision::Begin => {
+            *slot = Some(ActiveSession::new(mode, delay_ms, now));
+            BeginStep::Begun(current_generation(slot))
+        }
+    });
+    match step {
+        BeginStep::Begun(generation) => {
+            if let Some(stale) = stale {
+                eprintln!("Cropmark: stale busy session reset after {STALE_SESSION_TIMEOUT:?}");
+                reset_stale_session(app, &stale);
+            }
+            // A lingering toast must not leak into the next capture (hide-before-capture);
+            // 仅隐藏——toast 窗是预创建复用的 webview,关闭会破坏复用。
+            ui::hide_window(app, ui::TOAST);
+            set_last_error(app, None);
+            BeginStep::Begun(generation)
+        }
+        other => other,
+    }
+}
+
+/// 槽位内当前会话的代际(调用方保证刚占用)。
+fn current_generation(slot: &Option<ActiveSession>) -> u64 {
+    slot.as_ref().map(|current| current.generation).unwrap_or_default()
+}
+
+/// 看门狗重置:关闭旧会话记录的原生壳、隐藏会话窗、恢复旧会话隐藏前的
+/// 产品表面并广播取消,保证被替换的会话不残留窗口、旧壳结果不落到新会话。
+fn reset_stale_session(app: &AppHandle, stale: &ActiveSession) {
+    close_active_native_shell();
+    for label in ui::session_window_labels() {
+        ui::hide_window(app, label);
+    }
+    for surface in stale.hide.restore_on_cancel() {
+        ui::show_window(app, &surface.label);
+    }
+    let _ = app.emit("capture-cancelled", ());
+}
+
+/// 关闭当前原生选区壳(若有):stale 重置时让旧壳退出,其随后返回的结果
+/// 因代际不符被丢弃。非原生平台为空实现。
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+fn close_active_native_shell() {
+    super::native_overlay::request_shell_close();
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+fn close_active_native_shell() {}
+
+/// 占用会话槽位或短时等待取消清理完成;超时 toast 提示"正在取消"(ADR-16)。
+async fn try_begin_with_delay(app: &AppHandle, mode: CaptureMode, delay_ms: u64) -> Option<u64> {
+    let deadline = Instant::now() + CANCEL_CLEARANCE_TIMEOUT;
+    loop {
+        match begin_capture(app, mode, delay_ms) {
+            BeginStep::Begun(generation) => return Some(generation),
+            BeginStep::Ignored => return None,
+            BeginStep::WaitingForCancel => {
+                if Instant::now() >= deadline {
+                    ui::show_toast_key(app, "toast.cancel_in_progress");
+                    return None;
+                }
+                let _ = tauri::async_runtime::spawn_blocking(|| {
+                    std::thread::sleep(CANCEL_CLEARANCE_POLL);
+                })
+                .await;
+            }
+        }
+    }
+}
+
+fn hide_product_surfaces(app: &AppHandle, generation: u64) -> Result<(), CaptureError> {
     let mut recorded = Vec::new();
     for label in ui::product_window_labels() {
         let visible = ui::is_visible(app, label);
@@ -382,6 +506,22 @@ fn hide_product_surfaces(app: &AppHandle) -> Result<(), CaptureError> {
             ui::hide_window(app, label);
         }
     }
+    // 先落盘已隐藏记录再等待:即使随后等待超时返回错误,取消/错误路径也能
+    // 按记录恢复旧产品表面(ADR-16)。代际不符(旧会话已被替换)立即中止,
+    // 旧运行不得写入新会话的 hide 记录。
+    with_session_mut(app, |session| {
+        let Some(session) = session.as_mut() else {
+            return Err(CaptureError::cancelled());
+        };
+        if session.generation != generation || session.cancelled {
+            return Err(CaptureError::cancelled());
+        }
+        if session.hide.recorded.is_empty() {
+            session.hide = HideWait::record(recorded.clone());
+        }
+        session.hide.request_hide();
+        Ok(())
+    })?;
     let visible_labels: Vec<&str> = recorded
         .iter()
         .filter(|surface| surface.was_visible && surface.label != "tray-popup")
@@ -401,15 +541,10 @@ fn hide_product_surfaces(app: &AppHandle) -> Result<(), CaptureError> {
         let Some(session) = session.as_mut() else {
             return Err(CaptureError::cancelled());
         };
-        if session.hide.recorded.is_empty() {
-            let mut hide = HideWait::record(recorded);
-            hide.request_hide();
-            hide.commit_presented(true, true)?;
-            session.hide = hide;
-        } else {
-            session.hide.commit_presented(true, true)?;
+        if session.generation != generation || session.cancelled {
+            return Err(CaptureError::cancelled());
         }
-        Ok(())
+        session.hide.commit_presented(true, true)
     })
 }
 
@@ -429,11 +564,15 @@ fn show_delay(app: &AppHandle, delay_ms: u64, mode: CaptureMode) -> Result<(), C
     Ok(())
 }
 
-async fn wait_delay(app: &AppHandle, delay_ms: u64) -> Result<bool, CaptureError> {
+async fn wait_delay(app: &AppHandle, delay_ms: u64, generation: u64) -> Result<bool, CaptureError> {
     let steps = (delay_ms / 100).max(1);
     for _ in 0..steps {
         if is_cancelled(app) {
-            cancel_internal(app)?;
+            cancel_internal(app, None)?;
+            return Err(CaptureError::cancelled());
+        }
+        // 旧会话被看门狗替换后立即中止倒计时,不再触碰新会话(ADR-16)。
+        if !session_matches_generation(app, generation) {
             return Err(CaptureError::cancelled());
         }
         let _ = tauri::async_runtime::spawn_blocking(|| {
@@ -489,14 +628,15 @@ fn feature_flags_from(features: crate::settings::FeatureSettings) -> super::sele
 
 /// 原生壳区域路径(Windows/macOS/Linux X11):冻结指针所在屏像素并交给
 /// 平台壳,按壳结果走 Preview/Quiet/取消分发(三平台同构,ADR-008)。
+/// 结果分发前校验会话代际:被 stale 重置替换后,旧壳结果直接丢弃(ADR-16)。
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
-async fn capture_region_native(app: &AppHandle) -> Result<(), CaptureError> {
+async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), CaptureError> {
     use super::native_overlay::RegionOutcome;
 
     let handle = app.clone();
     let picked = tauri::async_runtime::spawn_blocking(move || {
         let (frame, monitor) = grab_pointer_screen(&handle)?;
-        store_pixels(&handle, frame.clone(), monitor.clone())?;
+        store_pixels(&handle, frame.clone(), monitor.clone(), generation)?;
         let flags = feature_flags_from(crate::settings::current_features(&handle));
         // 壳回调在同一线程内同步执行,经 thread-local 取回 AppHandle。
         SHELL_APP.with(|slot| *slot.borrow_mut() = Some(handle.clone()));
@@ -513,12 +653,15 @@ async fn capture_region_native(app: &AppHandle) -> Result<(), CaptureError> {
     })
     .await
     .map_err(|_| CaptureError::api("error.capture.thread_failed"))??;
+    if !session_matches_generation(app, generation) {
+        return Ok(());
+    }
     match picked {
         // Enter 确认:按 finishAction 选择预览或静默(复制+toast)。
         RegionOutcome::Preview(rect) => {
             let handle = app.clone();
             tauri::async_runtime::spawn_blocking(move || {
-                confirm_region(
+                confirm_region_from_shell(
                     &handle,
                     RegionSelection {
                         x: rect.x,
@@ -526,6 +669,7 @@ async fn capture_region_native(app: &AppHandle) -> Result<(), CaptureError> {
                         width: rect.width,
                         height: rect.height,
                     },
+                    generation,
                 )
             })
             .await
@@ -535,7 +679,7 @@ async fn capture_region_native(app: &AppHandle) -> Result<(), CaptureError> {
         RegionOutcome::Annotate(rect) => {
             let handle = app.clone();
             tauri::async_runtime::spawn_blocking(move || {
-                annotate_region(
+                annotate_region_from_shell(
                     &handle,
                     RegionSelection {
                         x: rect.x,
@@ -543,6 +687,7 @@ async fn capture_region_native(app: &AppHandle) -> Result<(), CaptureError> {
                         width: rect.width,
                         height: rect.height,
                     },
+                    generation,
                 )
             })
             .await
@@ -559,32 +704,38 @@ async fn capture_region_native(app: &AppHandle) -> Result<(), CaptureError> {
                     height: rect.height,
                 },
                 action,
+                Some(generation),
             )
             .await
         }
         RegionOutcome::Cancelled => {
-            let handle = app.clone();
-            tauri::async_runtime::spawn_blocking(move || cancel(&handle).map(|_| ()))
-                .await
-                .map_err(|_| CaptureError::api("error.capture.thread_failed"))?
+            // 立即受理取消(进入 Cancelling),窗口/表面清理在阻塞池完成;
+            // 清理完成前的新触发会短时等待而不是被静默吞掉(ADR-16)。
+            if let Some((generation, restore)) = accept_cancel(app, Some(generation)) {
+                let handle = app.clone();
+                tauri::async_runtime::spawn_blocking(move || finish_cancel(&handle, generation, restore))
+                    .await
+                    .map_err(|_| CaptureError::api("error.capture.thread_failed"))?;
+            }
+            Ok(())
         }
     }
 }
 
 #[cfg(any(windows, target_os = "macos"))]
-async fn capture_region(app: &AppHandle) -> Result<(), CaptureError> {
-    capture_region_native(app).await
+async fn capture_region(app: &AppHandle, generation: u64) -> Result<(), CaptureError> {
+    capture_region_native(app, generation).await
 }
 
 /// Linux 区域路径按会话类型分派:判定复用 `platform::linux_capture_backend`
 /// (WAYLAND_DISPLAY 非空 → portal/Wayland),并额外要求 `$DISPLAY` 可用
 /// (含 XWayland);其余情况与既有行为一致走 Web 覆盖层(portal 抓屏不变)。
 #[cfg(target_os = "linux")]
-async fn capture_region(app: &AppHandle) -> Result<(), CaptureError> {
+async fn capture_region(app: &AppHandle, generation: u64) -> Result<(), CaptureError> {
     if linux_uses_native_selection() {
-        return capture_region_native(app).await;
+        return capture_region_native(app, generation).await;
     }
-    let monitor = freeze_screen(app, Vec::new()).await?;
+    let monitor = freeze_screen(app, Vec::new(), generation).await?;
     ui::open_overlay(app, &monitor)?;
     Ok(())
 }
@@ -626,8 +777,8 @@ fn overlay_reduced_capabilities(mode: CaptureMode, native_shell: bool) -> bool {
 }
 
 #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
-async fn capture_region(app: &AppHandle) -> Result<(), CaptureError> {
-    let monitor = freeze_screen(app, Vec::new()).await?;
+async fn capture_region(app: &AppHandle, generation: u64) -> Result<(), CaptureError> {
+    let monitor = freeze_screen(app, Vec::new(), generation).await?;
     ui::open_overlay(app, &monitor)?;
     Ok(())
 }
@@ -646,22 +797,25 @@ fn windows_for_window_mode(
     Ok(windows)
 }
 
-async fn capture_window_mode(app: &AppHandle) -> Result<(), CaptureError> {
+async fn capture_window_mode(app: &AppHandle, generation: u64) -> Result<(), CaptureError> {
     let windows =
         tauri::async_runtime::spawn_blocking(move || platform::list_windows(platform::self_pid()))
             .await
             .map_err(|_| CaptureError::api("error.capture.window_list"))?;
     let windows = windows_for_window_mode(windows)?;
-    let monitor = freeze_screen(app, windows).await?;
+    let monitor = freeze_screen(app, windows, generation).await?;
     ui::open_overlay(app, &monitor)?;
     Ok(())
 }
 
-async fn capture_fullscreen(app: &AppHandle) -> Result<(), CaptureError> {
+async fn capture_fullscreen(app: &AppHandle, generation: u64) -> Result<(), CaptureError> {
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let (frame, _) = grab_pointer_screen(&handle)?;
-        finish_configured(&handle, frame).map(|_| ())
+        if !session_matches_generation(&handle, generation) {
+            return Ok(());
+        }
+        finish_configured(&handle, frame, Some(generation)).map(|_| ())
     })
     .await
     .map_err(|_| CaptureError::api("error.capture.thread_failed"))?
@@ -670,11 +824,12 @@ async fn capture_fullscreen(app: &AppHandle) -> Result<(), CaptureError> {
 async fn freeze_screen(
     app: &AppHandle,
     windows: Vec<ListedWindow>,
+    generation: u64,
 ) -> Result<MonitorGeom, CaptureError> {
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let (frame, monitor) = grab_pointer_screen(&handle)?;
-        store_freeze(&handle, frame, monitor.clone(), windows)?;
+        store_freeze(&handle, frame, monitor.clone(), windows, generation)?;
         Ok(monitor)
     })
     .await
@@ -732,10 +887,15 @@ fn tauri_pointer_monitor(app: &AppHandle) -> Option<MonitorGeom> {
         .or_else(|| geoms.into_iter().next())
 }
 
-fn store_pixels(app: &AppHandle, frame: Frame, monitor: MonitorGeom) -> Result<(), CaptureError> {
+fn store_pixels(
+    app: &AppHandle,
+    frame: Frame,
+    monitor: MonitorGeom,
+    generation: u64,
+) -> Result<(), CaptureError> {
     with_session_mut(app, |session| {
         let session = session.as_mut().ok_or_else(CaptureError::cancelled)?;
-        if session.cancelled {
+        if session.cancelled || session.generation != generation {
             return Err(CaptureError::cancelled());
         }
         session.freeze = Some(frame);
@@ -751,12 +911,14 @@ fn store_freeze(
     frame: Frame,
     monitor: MonitorGeom,
     windows: Vec<ListedWindow>,
+    generation: u64,
 ) -> Result<(), CaptureError> {
     let mode = with_session(app, |session| {
-        session
-            .as_ref()
-            .map(|current| current.mode)
-            .ok_or_else(CaptureError::cancelled)
+        let current = session.as_ref().ok_or_else(CaptureError::cancelled)?;
+        if current.cancelled || current.generation != generation {
+            return Err(CaptureError::cancelled());
+        }
+        Ok(current.mode)
     })?;
     let overlay = ui::overlay_payload(
         mode,
@@ -767,7 +929,7 @@ fn store_freeze(
     )?;
     with_session_mut(app, |session| {
         let session = session.as_mut().ok_or_else(CaptureError::cancelled)?;
-        if session.cancelled {
+        if session.cancelled || session.generation != generation {
             return Err(CaptureError::cancelled());
         }
         session.freeze = Some(frame);
@@ -863,22 +1025,41 @@ pub fn writeback_target(app: &AppHandle) -> Option<String> {
 }
 
 pub fn confirm_region(app: &AppHandle, selection: RegionSelection) -> Result<(), CaptureError> {
-    finish_selection(app, selection, FinishIntent::Configured).map(|_| ())
+    finish_selection(app, selection, FinishIntent::Configured, None).map(|_| ())
 }
 
-/// 显式「标注」请求(原生选区壳的「标注」动作/右键菜单):总是打开预览编辑器,
-/// 不受静默完成设置影响;裁剪帧与普通完成一样按 autoCopy 决定是否写剪贴板。
-fn annotate_region(app: &AppHandle, selection: RegionSelection) -> Result<(), CaptureError> {
-    finish_selection(app, selection, FinishIntent::Annotate).map(|_| ())
+/// 原生壳 Enter 确认:携带壳启动时的会话代际,旧壳结果不作用于新会话。
+fn confirm_region_from_shell(
+    app: &AppHandle,
+    selection: RegionSelection,
+    generation: u64,
+) -> Result<(), CaptureError> {
+    finish_selection(app, selection, FinishIntent::Configured, Some(generation)).map(|_| ())
+}
+
+/// 原生选区壳的「标注」动作(操作条/右键菜单):总是打开预览编辑器,不受
+/// 静默完成设置影响;裁剪帧与普通完成一样按 autoCopy 决定是否写剪贴板。
+/// 携带壳启动时的会话代际,旧壳结果不作用于新会话。
+fn annotate_region_from_shell(
+    app: &AppHandle,
+    selection: RegionSelection,
+    generation: u64,
+) -> Result<(), CaptureError> {
+    finish_selection(app, selection, FinishIntent::Annotate, Some(generation)).map(|_| ())
 }
 
 fn finish_selection(
     app: &AppHandle,
     selection: RegionSelection,
     intent: FinishIntent,
+    expected: Option<u64>,
 ) -> Result<FinishSummary, CaptureError> {
     let frame = with_session(app, |session| {
         let session = session.as_ref().ok_or_else(CaptureError::cancelled)?;
+        // 取消受理后代际不符的完成动作一律拒绝(ADR-16:停止接收完成动作)。
+        if session.cancelled || generation_mismatch(session, expected) {
+            return Err(CaptureError::cancelled());
+        }
         let freeze = session
             .freeze
             .as_ref()
@@ -892,7 +1073,7 @@ fn finish_selection(
         )
     })?;
     ui::hide_window(app, ui::OVERLAY);
-    let summary = finish_frame(app, frame, intent)?;
+    let summary = finish_frame(app, frame, intent, expected)?;
     // R6:成功完成的区域截图覆盖"上次区域",托盘直取从下一次打开菜单起可用。
     remember_selection_region(app, &selection);
     Ok(summary)
@@ -961,7 +1142,7 @@ pub fn confirm_window(app: &AppHandle, window_id: String) -> Result<(), CaptureE
         return Err(CaptureError::cancelled());
     }
     let frame = platform::capture_window(&window_id)?;
-    finish_configured(app, frame).map(|_| ())
+    finish_configured(app, frame, None).map(|_| ())
 }
 
 /// 完成路径的结果摘要(供动作反馈区分剪贴板成败)。
@@ -982,20 +1163,40 @@ fn quiet_finish_allowed(app: &AppHandle) -> bool {
     })
 }
 
-/// 带守卫的静默完成入口:命令层 `finish_region_with` 与 Windows 选区壳的
-/// 操作条/菜单动作共用。完成后按动作给出反馈;复制在剪贴板写入失败时
-/// 提示失败而非「已复制」。
+/// 代际校验:expected 为 None(命令层路径)时不做校验;不符即旧壳/旧会话结果。
+fn generation_mismatch(session: &ActiveSession, expected: Option<u64>) -> bool {
+    expected.is_some_and(|generation| session.generation != generation)
+}
+
+/// 当前会话仍是 `generation` 且未被取消:原生壳结果分发前的守卫。
+fn session_matches_generation(app: &AppHandle, generation: u64) -> bool {
+    with_session(app, |session| {
+        session.as_ref().is_some_and(|current| {
+            current.generation == generation && !current.cancelled
+        })
+    })
+}
+
+/// 完成路径的代际校验:`expected` 为 None(命令层)恒为 false。
+fn finish_generation_stale(app: &AppHandle, expected: Option<u64>) -> bool {
+    expected.is_some_and(|generation| !session_matches_generation(app, generation))
+}
+
+/// 带守卫的静默完成入口:命令层 `finish_region_with` 与原生选区壳的操作条/
+/// 菜单动作共用;`expected` 为壳启动时的会话代际(命令层为 None)。
+/// 完成后按动作给出反馈;复制在剪贴板写入失败时提示失败而非「已复制」。
 pub async fn finish_region_with(
     app: &AppHandle,
     selection: RegionSelection,
     action: QuietAction,
+    expected: Option<u64>,
 ) -> Result<(), CaptureError> {
     let handle = app.clone();
     let finish = tauri::async_runtime::spawn_blocking(move || {
         if !quiet_finish_allowed(&handle) {
             return Err(CaptureError::api("error.capture.region_missing"));
         }
-        finish_region_quiet(&handle, selection, DEFAULT_FRAME_TTL)
+        finish_region_quiet(&handle, selection, DEFAULT_FRAME_TTL, expected)
     })
     .await
     .map_err(|_| CaptureError::api("error.capture.thread_failed"))??;
@@ -1020,9 +1221,13 @@ pub fn finish_region_quiet(
     app: &AppHandle,
     selection: RegionSelection,
     ttl: Duration,
+    expected: Option<u64>,
 ) -> Result<FinishSummary, CaptureError> {
     let frame = with_session(app, |session| {
         let session = session.as_ref().ok_or_else(CaptureError::cancelled)?;
+        if session.cancelled || generation_mismatch(session, expected) {
+            return Err(CaptureError::cancelled());
+        }
         let freeze = session
             .freeze
             .as_ref()
@@ -1037,33 +1242,58 @@ pub fn finish_region_quiet(
     })?;
     ui::hide_window(app, ui::OVERLAY);
     // 显式动作(操作条/菜单复制等)不受 autoCopy 开关影响,始终写剪贴板。
-    let summary = finish_with_ttl(app, frame, FinishDisposition::Quiet, ttl, true)?;
+    let summary = finish_with_ttl(app, frame, FinishDisposition::Quiet, ttl, true, expected)?;
     // R6:静默完成同属成功完成的区域截图,同样刷新"上次区域"。
     remember_selection_region(app, &selection);
     Ok(summary)
 }
 
 pub fn cancel(app: &AppHandle) -> Result<CancelOutcome, CaptureError> {
-    cancel_internal(app)
+    cancel_internal(app, None)
 }
 
-/// Drops the session immediately. Cancel never writes the clipboard, a file,
-/// or a preview window; product surfaces recorded before hide are restored.
-fn take_cancel_plan(
+/// 取消受理(纯状态迁移):标记 Cancelling 并返回 (generation, 待恢复表面)。
+/// 已受理或代际不符(旧壳)返回 None,调用方不重复清理。
+fn take_cancel_request(
     session: &mut Option<ActiveSession>,
-) -> Option<(CancelOutcome, Vec<RecordedSurface>)> {
+    expected: Option<u64>,
+) -> Option<(u64, Vec<RecordedSurface>)> {
     let current = session.as_mut()?;
+    if current.cancelled || generation_mismatch(current, expected) {
+        return None;
+    }
     current.cancelled = true;
-    let restore = current.hide.restore_on_cancel();
-    *session = None;
-    Some((CancelOutcome::clean(), restore))
+    current.cancel_requested_at = Some(Instant::now());
+    Some((current.generation, current.hide.restore_on_cancel()))
 }
 
-fn cancel_internal(app: &AppHandle) -> Result<CancelOutcome, CaptureError> {
-    let planned = with_session_mut(app, take_cancel_plan);
-    let Some((outcome, restore)) = planned else {
-        return Ok(CancelOutcome::clean());
-    };
+/// 释放已取消会话:仅当槽位仍是同一 generation 的 Cancelling 会话时才移除,
+/// 因此旧清理任务不会删除后来占位的新会话。
+fn release_cancelled(session: &mut Option<ActiveSession>, generation: u64) -> bool {
+    if session.as_ref().is_some_and(|current| {
+        current.generation == generation && current.is_cancelling()
+    }) {
+        *session = None;
+        true
+    } else {
+        false
+    }
+}
+
+/// 取消受理(进入 Cancelling 阶段)的会话层入口。
+fn accept_cancel(
+    app: &AppHandle,
+    expected: Option<u64>,
+) -> Option<(u64, Vec<RecordedSurface>)> {
+    with_session_mut(app, |session| take_cancel_request(session, expected))
+}
+
+/// 取消清理完成:关闭可能仍在运行的原生壳、隐藏会话窗、恢复产品表面、
+/// 广播取消并释放槽位。
+fn finish_cancel(app: &AppHandle, generation: u64, restore: Vec<RecordedSurface>) {
+    // 壳自身返回 Cancelled 时已退出(重复请求为 no-op);托盘/命令取消路径
+    // 借此结束仍在运行的原生壳,避免残留窗口。
+    close_active_native_shell();
     for label in ui::session_window_labels() {
         ui::hide_window(app, label);
     }
@@ -1071,19 +1301,41 @@ fn cancel_internal(app: &AppHandle) -> Result<CancelOutcome, CaptureError> {
         ui::show_window(app, &surface.label);
     }
     let _ = app.emit("capture-cancelled", ());
-    Ok(outcome)
+    release_cancelled_session(app, generation);
+}
+
+/// 仅在槽位仍是同一 Cancelling 会话时释放它;新会话绝不被旧清理任务删除。
+fn release_cancelled_session(app: &AppHandle, generation: u64) -> bool {
+    with_session_mut(app, |session| release_cancelled(session, generation))
+}
+
+fn cancel_internal(
+    app: &AppHandle,
+    expected: Option<u64>,
+) -> Result<CancelOutcome, CaptureError> {
+    if let Some((generation, restore)) = accept_cancel(app, expected) {
+        finish_cancel(app, generation, restore);
+    }
+    // Cancel never writes the clipboard, a file, or a preview window.
+    Ok(CancelOutcome::clean())
 }
 
 /// 普通捕获(区域确认/窗口/全屏)的统一完成入口:按当前设置选择预览或
 /// 静默(复制后关闭),静默完成仍给出 toast 反馈,避免用户感知为无响应(R4)。
-fn finish_configured(app: &AppHandle, frame: Frame) -> Result<FinishSummary, CaptureError> {
-    finish_frame(app, frame, FinishIntent::Configured)
+/// `expected` 为壳启动时的会话代际(命令层为 None)。
+fn finish_configured(
+    app: &AppHandle,
+    frame: Frame,
+    expected: Option<u64>,
+) -> Result<FinishSummary, CaptureError> {
+    finish_frame(app, frame, FinishIntent::Configured, expected)
 }
 
 fn finish_frame(
     app: &AppHandle,
     frame: Frame,
     intent: FinishIntent,
+    expected: Option<u64>,
 ) -> Result<FinishSummary, CaptureError> {
     let capture = crate::settings::current_capture(app);
     let disposition = finish_disposition(intent, capture);
@@ -1093,6 +1345,7 @@ fn finish_frame(
         disposition,
         DEFAULT_FRAME_TTL,
         capture.auto_copy,
+        expected,
     )?;
     if disposition == FinishDisposition::Quiet {
         ui::show_toast_key(
@@ -1141,14 +1394,15 @@ fn finish_with_ttl(
     disposition: FinishDisposition,
     frame_ttl: Duration,
     auto_copy: bool,
+    expected: Option<u64>,
 ) -> Result<FinishSummary, CaptureError> {
     let started = Instant::now();
-    if is_cancelled(app) {
+    if is_cancelled(app) || finish_generation_stale(app, expected) {
         return Err(CaptureError::cancelled());
     }
     let png = encode_png(&frame)?;
     let encoded_at = started.elapsed();
-    if is_cancelled(app) {
+    if is_cancelled(app) || finish_generation_stale(app, expected) {
         return Err(CaptureError::cancelled());
     }
     // autoCopy 关闭时不写剪贴板;显式复制路径不受此开关影响。
@@ -1165,6 +1419,11 @@ fn finish_with_ttl(
         (true, false) => ui::PreviewCopyState::Failed,
     };
     let preview = ui::preview_payload(&frame, &png, copy_state);
+    // 编码/剪贴板写入期间会话可能已被 stale 重置替换:替换后不再提交状态、
+    // 不打开预览,旧帧不得污染新会话(ADR-16)。
+    if is_cancelled(app) || finish_generation_stale(app, expected) {
+        return Err(CaptureError::cancelled());
+    }
     with_session_mut(app, |session| {
         if let Some(current) = session.as_mut() {
             if clipboard_written {
@@ -1525,11 +1784,17 @@ mod tests {
     }
 
     #[test]
-    fn cancel_clears_session_without_clipboard_file_or_preview() {
+    fn cancelling_session_waits_then_releases_and_restores_product_surfaces() {
         let mut session = ActiveSession::new(CaptureMode::Region, 0, Instant::now());
         session.clipboard.commit_success();
         session.file_written = true;
         session.preview_opened = true;
+        session.freeze = Some(Frame {
+            width: 2,
+            height: 2,
+            rgba: vec![0; 16],
+            scale: 1.0,
+        });
         session.hide = HideWait::record(vec![
             RecordedSurface {
                 label: "preview".into(),
@@ -1548,18 +1813,90 @@ mod tests {
             },
         ]);
         session.hide.request_hide();
+        let generation = session.generation;
         let mut slot = Some(session);
-        let (outcome, restore) = take_cancel_plan(&mut slot).expect("had session");
-        assert!(slot.is_none());
-        assert!(!outcome.clipboard_written);
-        assert!(!outcome.file_written);
-        assert!(!outcome.preview_opened);
+        let (cancelled_generation, restore) =
+            take_cancel_request(&mut slot, None).expect("had session");
+        assert_eq!(cancelled_generation, generation);
+        // Cancelling 阶段:会话仍占槽位、不可完成,但恢复清单已就绪。
+        let current = slot.as_ref().expect("kept while cleaning");
+        assert!(current.is_cancelling());
+        assert!(!allows_quiet_finish(current));
         let labels: Vec<_> = restore
             .iter()
             .map(|surface| surface.label.as_str())
             .collect();
         assert_eq!(labels, ["preview", "settings"]);
-        assert!(take_cancel_plan(&mut slot).is_none());
+        // 取消本身不写剪贴板/文件/预览(clean outcome 恒为全 false)。
+        let outcome = CancelOutcome::clean();
+        assert!(!outcome.clipboard_written);
+        assert!(!outcome.file_written);
+        assert!(!outcome.preview_opened);
+        // 重复受理被忽略;清理完成后才释放,重复释放为 no-op。
+        assert!(take_cancel_request(&mut slot, None).is_none());
+        assert!(release_cancelled(&mut slot, generation));
+        assert!(slot.is_none());
+        assert!(!release_cancelled(&mut slot, generation));
+    }
+
+    #[test]
+    fn cancel_reentry_repeats_five_times_without_losing_the_trigger() {
+        // "取消→立即区域截图"连续 5 次:清理窗口内的触发短时等待,清理完成即开始。
+        let now = Instant::now();
+        let mut slot: Option<ActiveSession> = None;
+        for _ in 0..5 {
+            assert!(occupy_session(&mut slot, CaptureMode::Region, 0, now));
+            let generation = slot.as_ref().unwrap().generation;
+            assert_eq!(
+                begin_decision(slot.as_ref(), now),
+                BeginDecision::IgnoreBusy,
+                "进行中的截取仍静默忽略重叠触发"
+            );
+            let (cancelled, _restore) =
+                take_cancel_request(&mut slot, Some(generation)).expect("cancel accepted");
+            assert_eq!(cancelled, generation);
+            // 清理窗口:新触发等待而不是被吞。
+            assert_eq!(
+                begin_decision(slot.as_ref(), now + Duration::from_millis(20)),
+                BeginDecision::WaitForCancelClearance
+            );
+            // 清理完成 → 槽位释放 → 下一次触发直接开始。
+            assert!(release_cancelled(&mut slot, generation));
+            assert_eq!(begin_decision(slot.as_ref(), now), BeginDecision::Begin);
+        }
+    }
+
+    #[test]
+    fn stuck_cancelling_session_is_reset_by_the_watchdog() {
+        let now = Instant::now();
+        let mut slot = Some(ActiveSession::new(CaptureMode::Region, 0, now));
+        take_cancel_request(&mut slot, None).expect("cancel accepted");
+        let later = now + STALE_SESSION_TIMEOUT + Duration::from_secs(1);
+        assert_eq!(
+            begin_decision(slot.as_ref(), later),
+            BeginDecision::ResetStaleThenBegin
+        );
+    }
+
+    #[test]
+    fn stale_shell_cancel_and_cleanup_never_touch_the_new_session() {
+        let now = Instant::now();
+        let mut slot = Some(ActiveSession::new(CaptureMode::Region, 0, now));
+        let old_generation = slot.as_ref().unwrap().generation;
+        // 看门狗已用新会话替换旧会话。
+        let replacement = ActiveSession::new(CaptureMode::Window, 3000, now);
+        let new_generation = replacement.generation;
+        slot = Some(replacement);
+        // 旧壳的取消请求(携带旧代际)被拒绝,新会话不受影响。
+        assert!(take_cancel_request(&mut slot, Some(old_generation)).is_none());
+        assert!(!slot.as_ref().unwrap().cancelled);
+        // 旧清理任务也不能释放新会话。
+        assert!(!release_cancelled(&mut slot, old_generation));
+        assert!(slot.is_some());
+        // 新会话自己的取消可受理,并且只释放它。
+        assert!(take_cancel_request(&mut slot, Some(new_generation)).is_some());
+        assert!(release_cancelled(&mut slot, new_generation));
+        assert!(slot.is_none());
     }
 
     fn listed_window(id: &str) -> ListedWindow {
