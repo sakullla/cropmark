@@ -1,17 +1,41 @@
+use std::path::{Path, PathBuf};
+
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
 use crate::annotate::{rasterize, Annotation};
-use crate::capture::buffer::encode_png;
+use crate::capture::buffer::{encode_jpeg, encode_png, encode_webp, Frame};
 use crate::capture::error::CaptureError;
 use crate::capture::session;
 use crate::capture::ui;
 use crate::clipboard;
+use crate::settings::{self, ExportFormat, ExportQuality};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveResult {
     pub saved: bool,
+    /// 实际写入格式:由用户输入扩展名推导,供前端更新提示与记忆。
+    pub format: ExportFormat,
+    /// 已写入文件的完整路径;取消时为 None。
+    pub path: Option<String>,
+}
+
+impl SaveResult {
+    fn cancelled(format: ExportFormat) -> Self {
+        Self {
+            saved: false,
+            format,
+            path: None,
+        }
+    }
+
+    pub fn file_name(&self) -> Option<&str> {
+        self.path
+            .as_deref()
+            .and_then(|path| Path::new(path).file_name())
+            .and_then(|name| name.to_str())
+    }
 }
 
 fn fail(err: CaptureError) -> String {
@@ -23,10 +47,61 @@ fn fail(err: CaptureError) -> String {
     }
 }
 
-fn annotated_png(app: &AppHandle, annotations: &[Annotation]) -> Result<Vec<u8>, String> {
+fn annotated_frame(app: &AppHandle, annotations: &[Annotation]) -> Result<Frame, String> {
     let frame = session::current_preview_frame(app).map_err(fail)?;
-    let rendered = rasterize(&frame, annotations).map_err(fail)?;
-    encode_png(&rendered).map_err(fail)
+    rasterize(&frame, annotations).map_err(fail)
+}
+
+fn encode_for_export(frame: &Frame, format: ExportFormat, quality: u8) -> Result<Vec<u8>, String> {
+    let encoded = match format {
+        ExportFormat::Png => encode_png(frame),
+        ExportFormat::Jpeg => encode_jpeg(frame, quality),
+        ExportFormat::Webp => encode_webp(frame, quality),
+    };
+    encoded.map_err(fail)
+}
+
+/// 编码并按目标路径写盘:失败信息包含目标与系统原因,且不触碰预览会话,
+/// 保证标注内容与再次保存的机会都保留。
+fn write_export(
+    path: &Path,
+    frame: &Frame,
+    format: ExportFormat,
+    quality: u8,
+) -> Result<(), String> {
+    let bytes = encode_for_export(frame, format, quality)?;
+    std::fs::write(path, bytes).map_err(|error| {
+        format!(
+            "无法保存到「{}」：{}。预览仍保留，可继续标注、复制或换一个位置保存。",
+            path.display(),
+            error
+        )
+    })
+}
+
+/// 用户输入路径 → 实际保存路径与格式(R3):已知扩展名以用户输入为准
+/// (`jpg`/`jpeg` 都是 JPEG);缺失或未知扩展名回退上次格式并补全规范
+/// 后缀,避免写出扩展名与内容不符的文件。
+pub fn resolve_target(path: PathBuf, fallback: ExportFormat) -> (PathBuf, ExportFormat) {
+    let extension = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default();
+    if let Some(format) = ExportFormat::from_extension(extension) {
+        return (path, format);
+    }
+    if extension.is_empty() {
+        let mut adjusted = path;
+        adjusted.set_extension(fallback.extension());
+        return (adjusted, fallback);
+    }
+    let mut adjusted = path;
+    let name = adjusted
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "cropmark".into());
+    adjusted.set_file_name(format!("{name}.{}", fallback.extension()));
+    (adjusted, fallback)
 }
 
 #[tauri::command]
@@ -36,30 +111,54 @@ pub fn copy_preview_png(app: AppHandle, annotations: Vec<Annotation>) -> Result<
     clipboard::copy_frame(&rendered).map_err(fail)
 }
 
+/// 预览保存:目标格式由保存对话框返回的扩展名推导,缺失/未知回退设置的
+/// 上次格式;成功后写入格式、目录与质量档位记忆。写盘失败返回明确错误,
+/// 预览会话与标注不回滚。
 #[tauri::command]
 pub async fn save_preview_png(
     app: AppHandle,
     annotations: Vec<Annotation>,
+    quality: Option<ExportQuality>,
 ) -> Result<SaveResult, String> {
-    let png = annotated_png(&app, &annotations)?;
+    let frame = annotated_frame(&app, &annotations)?;
+    let mut export = settings::current_export(&app);
+    if let Some(quality) = quality {
+        export.quality = quality;
+    }
+    let parent = app.get_webview_window(ui::PREVIEW);
+    save_frame_with_dialog(&app, frame, export, parent.as_ref()).await
+}
+
+/// 预览保存与静默保存共用的对话框与写盘流程;静默路径无父窗口(parent=None)。
+pub async fn save_frame_with_dialog(
+    app: &AppHandle,
+    frame: Frame,
+    export: settings::ExportSettings,
+    parent: Option<&tauri::WebviewWindow>,
+) -> Result<SaveResult, String> {
+    let fallback = export.last_format;
     let mut dialog = rfd::AsyncFileDialog::new()
-        .add_filter("PNG", &["png"])
-        .set_file_name("cropmark.png")
+        .add_filter("图片", &["png", "jpg", "jpeg", "webp"])
+        .set_file_name(format!("cropmark.{}", fallback.extension()))
         .set_title("保存截图");
-    if let Some(window) = app.get_webview_window(ui::PREVIEW) {
-        dialog = dialog.set_parent(&window);
+    if let Some(directory) = export.existing_directory() {
+        dialog = dialog.set_directory(directory);
+    }
+    if let Some(window) = parent {
+        dialog = dialog.set_parent(window);
     }
     let Some(file) = dialog.save_file().await else {
-        return Ok(SaveResult { saved: false });
+        return Ok(SaveResult::cancelled(fallback));
     };
-    let mut path = file.path().to_path_buf();
-    if path.extension().is_none() {
-        path.set_extension("png");
-    }
-    std::fs::write(&path, png)
-        .map_err(|_| "无法写入 PNG 文件。预览仍保留，可继续标注、复制或再次保存。".to_string())?;
-    session::mark_preview_file_written(&app);
-    Ok(SaveResult { saved: true })
+    let (path, format) = resolve_target(file.path().to_path_buf(), fallback);
+    write_export(&path, &frame, format, export.quality.value())?;
+    session::mark_preview_file_written(app);
+    settings::remember_export(app, format, export.quality, path.parent());
+    Ok(SaveResult {
+        saved: true,
+        format,
+        path: Some(path.to_string_lossy().into_owned()),
+    })
 }
 
 #[cfg(test)]
@@ -164,6 +263,95 @@ mod tests {
         }
         let rendered = rasterize(&frame, &ops).unwrap();
         assert_ne!(rendered.rgba, frame.rgba);
+    }
+
+    #[test]
+    fn resolve_target_keeps_known_extensions_and_derives_format() {
+        let (path, format) = resolve_target(PathBuf::from("shot.png"), ExportFormat::Jpeg);
+        assert_eq!(path, PathBuf::from("shot.png"));
+        assert_eq!(format, ExportFormat::Png);
+
+        let (path, format) = resolve_target(PathBuf::from("shot.JPG"), ExportFormat::Png);
+        assert_eq!(path, PathBuf::from("shot.JPG"));
+        assert_eq!(format, ExportFormat::Jpeg);
+
+        let (path, format) = resolve_target(PathBuf::from("shot.jpeg"), ExportFormat::Png);
+        assert_eq!(path, PathBuf::from("shot.jpeg"));
+        assert_eq!(format, ExportFormat::Jpeg);
+
+        let (path, format) = resolve_target(PathBuf::from("shot.webp"), ExportFormat::Png);
+        assert_eq!(path, PathBuf::from("shot.webp"));
+        assert_eq!(format, ExportFormat::Webp);
+    }
+
+    #[test]
+    fn resolve_target_appends_fallback_extension_when_missing() {
+        let (path, format) = resolve_target(PathBuf::from("D:/shots/cropmark"), ExportFormat::Png);
+        assert_eq!(path, PathBuf::from("D:/shots/cropmark.png"));
+        assert_eq!(format, ExportFormat::Png);
+
+        let (path, format) = resolve_target(PathBuf::from("cropmark"), ExportFormat::Jpeg);
+        assert_eq!(path, PathBuf::from("cropmark.jpg"));
+        assert_eq!(format, ExportFormat::Jpeg);
+
+        let (path, format) = resolve_target(PathBuf::from("cropmark"), ExportFormat::Webp);
+        assert_eq!(path, PathBuf::from("cropmark.webp"));
+        assert_eq!(format, ExportFormat::Webp);
+    }
+
+    #[test]
+    fn resolve_target_keeps_unknown_extension_and_appends_canonical_suffix() {
+        let (path, format) = resolve_target(PathBuf::from("shot.v2"), ExportFormat::Jpeg);
+        assert_eq!(path, PathBuf::from("shot.v2.jpg"));
+        assert_eq!(format, ExportFormat::Jpeg);
+
+        let (path, format) = resolve_target(PathBuf::from("shot."), ExportFormat::Png);
+        assert_eq!(path, PathBuf::from("shot.png"));
+        assert_eq!(format, ExportFormat::Png);
+    }
+
+    #[test]
+    fn export_branches_encode_expected_containers_for_each_format() {
+        let frame = solid(24, 16, [200, 40, 60, 0]);
+        let png = encode_for_export(&frame, ExportFormat::Png, 90).unwrap();
+        assert!(png.starts_with(&[137, 80, 78, 71]));
+        let jpeg = encode_for_export(&frame, ExportFormat::Jpeg, 90).unwrap();
+        assert!(jpeg.starts_with(&[0xFF, 0xD8]));
+        let webp = encode_for_export(&frame, ExportFormat::Webp, 90).unwrap();
+        assert!(webp.starts_with(b"RIFF") && &webp[8..12] == b"WEBP");
+        assert!(!png.is_empty() && !jpeg.is_empty() && !webp.is_empty());
+    }
+
+    #[test]
+    fn write_export_writes_decodable_files_for_each_format_and_reports_failure() {
+        let dir = std::env::temp_dir().join(format!("cropmark-export-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let frame = solid(32, 24, [30, 120, 200, 255]);
+
+        let png_path = dir.join("shot.png");
+        write_export(&png_path, &frame, ExportFormat::Png, 90).unwrap();
+        let png = std::fs::read(&png_path).unwrap();
+        assert!(png.starts_with(&[137, 80, 78, 71]));
+        assert_eq!(decode_png(&png).unwrap().rgba, frame.rgba);
+
+        let jpeg_path = dir.join("shot.jpg");
+        write_export(&jpeg_path, &frame, ExportFormat::Jpeg, 80).unwrap();
+        let jpeg = std::fs::read(&jpeg_path).unwrap();
+        assert!(jpeg.starts_with(&[0xFF, 0xD8]));
+        assert!(image::load_from_memory(&jpeg).is_ok());
+
+        let webp_path = dir.join("shot.webp");
+        write_export(&webp_path, &frame, ExportFormat::Webp, 80).unwrap();
+        let webp = std::fs::read(&webp_path).unwrap();
+        assert!(webp.starts_with(b"RIFF") && &webp[8..12] == b"WEBP");
+        assert!(webp::Decoder::new(&webp).decode().is_some());
+
+        let unwritable = dir.join("missing-subdir").join("shot.png");
+        let error = write_export(&unwritable, &frame, ExportFormat::Png, 90).unwrap_err();
+        assert!(error.contains("无法保存到"), "got {error}");
+        assert!(error.contains("预览仍保留"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

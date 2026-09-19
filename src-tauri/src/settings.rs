@@ -185,6 +185,104 @@ impl HistorySettings {
     }
 }
 
+/// 导出格式(R3):保存对话框中以用户输入的扩展名推导;缺失或未知时
+/// 回退 `last_format`。PNG 为默认格式且保持无损。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExportFormat {
+    #[default]
+    Png,
+    Jpeg,
+    Webp,
+}
+
+impl ExportFormat {
+    /// 规范扩展名:无/未知扩展名时补全,不保留 jpeg 等别名。
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Png => "png",
+            Self::Jpeg => "jpg",
+            Self::Webp => "webp",
+        }
+    }
+
+    /// `jpg`/`jpeg` 一律视为 JPEG;大小写不敏感;未知扩展名返回 None。
+    pub fn from_extension(extension: &str) -> Option<Self> {
+        match extension.to_ascii_lowercase().as_str() {
+            "png" => Some(Self::Png),
+            "jpg" | "jpeg" => Some(Self::Jpeg),
+            "webp" => Some(Self::Webp),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Png => "PNG",
+            Self::Jpeg => "JPEG",
+            Self::Webp => "WebP",
+        }
+    }
+}
+
+/// 导出质量档位(R3):三档,仅 JPEG/WebP 生效,PNG 忽略。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExportQuality {
+    #[default]
+    High,
+    Medium,
+    Low,
+}
+
+impl ExportQuality {
+    /// 编码器质量值(1–100):高/中/低三档须可观察到文件大小差异。
+    pub fn value(self) -> u8 {
+        match self {
+            Self::High => 90,
+            Self::Medium => 75,
+            Self::Low => 55,
+        }
+    }
+}
+
+/// 导出记忆(R3):上次格式、上次目录与质量档位;默认 PNG 且无目录。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ExportSettings {
+    pub last_format: ExportFormat,
+    pub last_dir: Option<String>,
+    pub quality: ExportQuality,
+}
+
+impl Default for ExportSettings {
+    fn default() -> Self {
+        Self {
+            last_format: ExportFormat::Png,
+            last_dir: None,
+            quality: ExportQuality::High,
+        }
+    }
+}
+
+impl ExportSettings {
+    /// 空白目录按未记录处理;格式/档位由枚举解析保证合法。
+    pub fn sanitized(self) -> Self {
+        Self {
+            last_format: self.last_format,
+            last_dir: self.last_dir.filter(|dir| !dir.trim().is_empty()),
+            quality: self.quality,
+        }
+    }
+
+    /// 对话框起始目录:目录已不存在时忽略记忆,避免弹窗定位失败。
+    pub fn existing_directory(&self) -> Option<&std::path::Path> {
+        let dir = self.last_dir.as_deref()?;
+        let path = std::path::Path::new(dir);
+        path.is_dir().then_some(path)
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredSettings {
@@ -198,6 +296,8 @@ pub struct StoredSettings {
     pub capture: CaptureSettings,
     #[serde(default)]
     pub history: HistorySettings,
+    #[serde(default)]
+    pub export: ExportSettings,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -211,6 +311,7 @@ pub struct UiSettings {
     pub features: FeatureSettings,
     pub capture: CaptureSettings,
     pub history: HistorySettings,
+    pub export: ExportSettings,
 }
 
 pub struct SessionState {
@@ -222,6 +323,7 @@ pub struct SessionState {
     pub features: Mutex<FeatureSettings>,
     pub capture: Mutex<CaptureSettings>,
     pub history: Mutex<HistorySettings>,
+    pub export: Mutex<ExportSettings>,
 }
 
 impl SessionState {
@@ -235,6 +337,7 @@ impl SessionState {
             features: Mutex::new(stored.features.sanitized()),
             capture: Mutex::new(stored.capture.sanitized()),
             history: Mutex::new(stored.history.sanitized()),
+            export: Mutex::new(stored.export.sanitized()),
         }
     }
 }
@@ -253,6 +356,29 @@ pub fn current_capture(app: &AppHandle) -> CaptureSettings {
 /// 供完成路径判断是否写入历史记录(内存值即时生效)。
 pub fn current_history(app: &AppHandle) -> HistorySettings {
     *lock(&app.state::<SessionState>().history)
+}
+
+/// 供导出路径(预览保存/静默保存)读取上次格式、目录与质量档位。
+pub fn current_export(app: &AppHandle) -> ExportSettings {
+    lock(&app.state::<SessionState>().export).clone()
+}
+
+/// 保存成功后更新导出记忆:扩展名推导出的实际格式、目标目录与本次档位,
+/// 写盘失败只影响 notice,不影响已完成的文件写入。
+pub fn remember_export(
+    app: &AppHandle,
+    format: ExportFormat,
+    quality: ExportQuality,
+    directory: Option<&std::path::Path>,
+) {
+    let next = ExportSettings {
+        last_format: format,
+        last_dir: directory.map(|dir| dir.to_string_lossy().into_owned()),
+        quality,
+    }
+    .sanitized();
+    *lock(&app.state::<SessionState>().export) = next;
+    persist_settings(app, "导出设置已记住");
 }
 
 pub fn load_from_app(app: &AppHandle) -> StoredSettings {
@@ -313,6 +439,7 @@ pub fn snapshot(app: &AppHandle) -> UiSettings {
     let features = *lock(&state.features);
     let capture = *lock(&state.capture);
     let history = *lock(&state.history);
+    let export = lock(&state.export).clone();
     UiSettings {
         hotkeys,
         hotkey_errors,
@@ -322,6 +449,7 @@ pub fn snapshot(app: &AppHandle) -> UiSettings {
         features,
         capture,
         history,
+        export,
     }
 }
 
@@ -404,6 +532,7 @@ fn persist_settings(app: &AppHandle, applied: &str) {
         features: *lock(&state.features),
         capture: *lock(&state.capture),
         history: *lock(&state.history),
+        export: lock(&state.export).clone(),
     };
     match save_to_path(&settings_path(app), &stored) {
         Ok(()) => *lock(&state.notice) = None,
@@ -473,6 +602,11 @@ mod tests {
                 enabled: false,
                 limit: 50,
             },
+            export: ExportSettings {
+                last_format: ExportFormat::Jpeg,
+                last_dir: Some("C:/shots".into()),
+                quality: ExportQuality::Low,
+            },
         };
         save_to_path(&path, &stored).unwrap();
         let text = fs::read_to_string(&path).unwrap();
@@ -493,6 +627,9 @@ mod tests {
         assert_eq!(loaded.capture.finish_action, FinishAction::Quiet);
         assert!(!loaded.history.enabled);
         assert_eq!(loaded.history.limit, 50);
+        assert_eq!(loaded.export.last_format, ExportFormat::Jpeg);
+        assert_eq!(loaded.export.last_dir.as_deref(), Some("C:/shots"));
+        assert_eq!(loaded.export.quality, ExportQuality::Low);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -584,6 +721,7 @@ mod tests {
             features: FeatureSettings::default(),
             capture: CaptureSettings::default(),
             history: HistorySettings::default(),
+            export: ExportSettings::default(),
         };
         ui.autostart = result.clone();
         assert!(!ui.autostart.enabled);
@@ -721,5 +859,111 @@ mod tests {
         let serialized = serde_json::to_value(parsed.history).unwrap();
         assert_eq!(serialized["enabled"], false);
         assert_eq!(serialized["limit"], 80);
+    }
+
+    #[test]
+    fn export_defaults_to_png_lossless_without_directory() {
+        let export = ExportSettings::default();
+        assert_eq!(export.last_format, ExportFormat::Png);
+        assert_eq!(export.last_dir, None);
+        assert_eq!(export.quality, ExportQuality::High);
+        assert_eq!(export.clone().sanitized(), export);
+    }
+
+    #[test]
+    fn export_format_maps_known_extensions_case_insensitively() {
+        assert_eq!(ExportFormat::from_extension("png"), Some(ExportFormat::Png));
+        assert_eq!(
+            ExportFormat::from_extension("JPG"),
+            Some(ExportFormat::Jpeg)
+        );
+        assert_eq!(
+            ExportFormat::from_extension("jpeg"),
+            Some(ExportFormat::Jpeg)
+        );
+        assert_eq!(
+            ExportFormat::from_extension("WebP"),
+            Some(ExportFormat::Webp)
+        );
+        assert_eq!(ExportFormat::from_extension("bmp"), None);
+        assert_eq!(ExportFormat::Png.extension(), "png");
+        assert_eq!(ExportFormat::Jpeg.extension(), "jpg");
+        assert_eq!(ExportFormat::Webp.extension(), "webp");
+    }
+
+    #[test]
+    fn export_quality_tiers_map_to_distinct_encoder_values() {
+        let high = ExportQuality::High.value();
+        let medium = ExportQuality::Medium.value();
+        let low = ExportQuality::Low.value();
+        assert!(high > medium && medium > low);
+        assert!(low >= 1 && high <= 100);
+    }
+
+    #[test]
+    fn export_sanitize_drops_blank_directory() {
+        let blank = ExportSettings {
+            last_format: ExportFormat::Webp,
+            last_dir: Some("   ".into()),
+            quality: ExportQuality::Medium,
+        }
+        .sanitized();
+        assert_eq!(blank.last_dir, None);
+        assert_eq!(blank.last_format, ExportFormat::Webp);
+        assert_eq!(blank.quality, ExportQuality::Medium);
+        assert!(blank.existing_directory().is_none());
+    }
+
+    #[test]
+    fn missing_export_field_loads_defaults() {
+        let dir =
+            std::env::temp_dir().join(format!("cropmark-settings-export-{}", std::process::id()));
+        let path = dir.join("settings.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            r#"{"hotkeys":{"region":"Ctrl+Alt+R","window":"Alt+Shift+W","fullscreen":"Alt+Shift+S"}}"#,
+        )
+        .unwrap();
+        let loaded = load_from_path(&path);
+        assert_eq!(loaded.export, ExportSettings::default());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn export_settings_deserialize_from_camel_case_json() {
+        let parsed: StoredSettings = serde_json::from_str(
+            r#"{"export":{"lastFormat":"webp","lastDir":"D:/shots","quality":"low"}}"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.export.last_format, ExportFormat::Webp);
+        assert_eq!(parsed.export.last_dir.as_deref(), Some("D:/shots"));
+        assert_eq!(parsed.export.quality, ExportQuality::Low);
+        let serialized = serde_json::to_value(parsed.export).unwrap();
+        assert_eq!(serialized["lastFormat"], "webp");
+        assert_eq!(serialized["lastDir"], "D:/shots");
+        assert_eq!(serialized["quality"], "low");
+    }
+
+    #[test]
+    fn export_existing_directory_is_only_used_when_present() {
+        let dir = std::env::temp_dir().join(format!(
+            "cropmark-settings-export-dir-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let present = ExportSettings {
+            last_format: ExportFormat::Png,
+            last_dir: Some(dir.to_string_lossy().into_owned()),
+            quality: ExportQuality::High,
+        };
+        assert_eq!(present.existing_directory(), Some(dir.as_path()));
+        let missing = ExportSettings {
+            last_format: ExportFormat::Png,
+            last_dir: Some(dir.join("gone").to_string_lossy().into_owned()),
+            quality: ExportQuality::High,
+        };
+        assert!(missing.existing_directory().is_none());
+        let _ = fs::remove_dir_all(&dir);
     }
 }

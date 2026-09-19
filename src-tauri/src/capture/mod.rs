@@ -13,6 +13,7 @@ pub mod windows_list;
 use tauri::AppHandle;
 
 use crate::hotkeys::CaptureMode;
+use crate::settings;
 use error::CaptureError;
 use geometry::LogicalRect;
 use session::{QuietAction, RegionSelection};
@@ -97,7 +98,8 @@ async fn run_quiet_action(app: &AppHandle, action: QuietAction) {
 }
 
 /// rfd save dialog over the retained quiet frame; no preview parent exists in
-/// this path, so the dialog is unparented.
+/// this path, so the dialog is unparented. 与预览保存共用格式/质量/目录记忆
+/// (R3):静默路径只能沿用设置中的上次选择,无法在本路径单独切换格式。
 async fn save_quiet_frame(app: &AppHandle) {
     let frame = match session::current_preview_frame(app) {
         Ok(frame) => frame,
@@ -106,30 +108,14 @@ async fn save_quiet_frame(app: &AppHandle) {
             return;
         }
     };
-    let png = match buffer::encode_png(&frame) {
-        Ok(png) => png,
-        Err(_) => {
-            ui::show_toast(app, "无法生成 PNG，请重新截取。");
-            return;
+    let export = settings::current_export(app);
+    match crate::export::save_frame_with_dialog(app, frame, export, None).await {
+        Ok(result) if result.saved => {
+            let name = result.file_name().unwrap_or(result.format.label());
+            ui::show_toast(app, &format!("已保存 {name}。"));
         }
-    };
-    let dialog = rfd::AsyncFileDialog::new()
-        .add_filter("PNG", &["png"])
-        .set_file_name("cropmark.png")
-        .set_title("保存截图");
-    let Some(file) = dialog.save_file().await else {
-        return;
-    };
-    let mut path = file.path().to_path_buf();
-    if path.extension().is_none() {
-        path.set_extension("png");
-    }
-    match std::fs::write(&path, png) {
-        Ok(()) => {
-            session::mark_preview_file_written(app);
-            ui::show_toast(app, "已保存截图。");
-        }
-        Err(_) => ui::show_toast(app, "无法写入 PNG 文件，请重试。"),
+        Ok(_) => {}
+        Err(message) => ui::show_toast(app, &message),
     }
 }
 

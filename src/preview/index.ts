@@ -63,6 +63,17 @@ interface OcrDocument {
 
 type NoteKind = "success" | "feedback" | "error";
 
+// R3 导出:格式由保存对话框返回的扩展名决定,前端只负责质量档位;
+// 默认 PNG(后端 lastFormat 默认 png),质量档位仅 JPEG/WebP 生效。
+type ExportFormat = "png" | "jpeg" | "webp";
+type ExportQuality = "high" | "medium" | "low";
+
+const SAVE_QUALITIES: Array<{ value: ExportQuality; label: string; title: string }> = [
+  { value: "high", label: "高", title: "高质量（文件较大）" },
+  { value: "medium", label: "中", title: "标准质量" },
+  { value: "low", label: "低", title: "低质量（文件较小）" },
+];
+
 const FALLBACK_STROKE = "#e11d48";
 const FALLBACK_OCR_HL = "#0ea5e9";
 const FALLBACK_OCR_HL_STRONG = "#0369a1";
@@ -150,7 +161,16 @@ export function mountPreview(root: HTMLElement): void {
         <button type="button" data-tool="ocr" title="取字 (O)" data-tauri-drag-region="false">取字</button>
         <button type="button" data-action="copy-ocr-all" hidden data-tauri-drag-region="false">复制全部</button>
         <button type="button" data-action="pin" title="贴图" data-tauri-drag-region="false">贴图</button>
-        <button type="button" data-action="save" title="保存 (Ctrl+S)" data-tauri-drag-region="false">保存</button>
+        <div class="style-group" data-save-quality-root>
+          <span class="style-label">质量</span>
+          <div class="style-options" role="group" aria-label="保存质量">
+            ${SAVE_QUALITIES.map(
+              ({ value, label, title }) =>
+                `<button type="button" data-save-quality="${value}" title="${title}">${label}</button>`,
+            ).join("")}
+          </div>
+        </div>
+        <button type="button" data-action="save" title="保存 (Ctrl+S)：扩展名决定格式 PNG/JPEG/WebP" data-tauri-drag-region="false">保存</button>
         <button type="button" class="primary" data-action="copy" title="复制 (Ctrl+C)" data-tauri-drag-region="false">复制</button>
       </div>
     </div>
@@ -173,6 +193,7 @@ export function mountPreview(root: HTMLElement): void {
   const copyAllBtn = root.querySelector("[data-action=copy-ocr-all]");
   const ocrBtn = root.querySelector("[data-tool=ocr]");
   const pinBtn = root.querySelector("[data-action=pin]");
+  const saveQualityRoot = root.querySelector("[data-save-quality-root]");
   const styleRoot = root.querySelector("[data-style-root]");
   const stylePanel = root.querySelector("[data-style-panel]");
   const styleBtn = root.querySelector("[data-action=style]");
@@ -186,6 +207,7 @@ export function mountPreview(root: HTMLElement): void {
     !(copyAllBtn instanceof HTMLButtonElement) ||
     !(ocrBtn instanceof HTMLButtonElement) ||
     !(pinBtn instanceof HTMLButtonElement) ||
+    !(saveQualityRoot instanceof HTMLElement) ||
     !(styleRoot instanceof HTMLElement) ||
     !(stylePanel instanceof HTMLElement) ||
     !(styleBtn instanceof HTMLButtonElement) ||
@@ -245,6 +267,7 @@ export function mountPreview(root: HTMLElement): void {
   let styleColor = FALLBACK_STROKE;
   let styleWidth: number | null = null;
   let styleTextBase: number | null = null;
+  let saveQuality: ExportQuality = "high";
   editor.classList.remove("is-open");
 
   const mosaicBlock = (): number => Math.max(8, Math.round(12 * Math.max(frame?.scale ?? 1, 1)));
@@ -337,6 +360,12 @@ export function mountPreview(root: HTMLElement): void {
     const activeTextSize = String(styleTextBase ?? 16);
     stylePanel.querySelectorAll<HTMLButtonElement>("[data-style-text-size]").forEach((button) => {
       button.classList.toggle("active", button.dataset.styleTextSize === activeTextSize);
+    });
+  };
+
+  const syncSaveQuality = (): void => {
+    saveQualityRoot.querySelectorAll<HTMLButtonElement>("[data-save-quality]").forEach((button) => {
+      button.classList.toggle("active", button.dataset.saveQuality === saveQuality);
     });
   };
 
@@ -788,14 +817,21 @@ export function mountPreview(root: HTMLElement): void {
     commitEditor();
     busy = true;
     try {
-      const result = await invoke<{ saved: boolean }>("save_preview_png", {
+      const result = await invoke<{
+        saved: boolean;
+        format?: ExportFormat;
+        path?: string | null;
+      }>("save_preview_png", {
         annotations: exportList(),
+        quality: saveQuality,
       });
       if (result.saved) {
-        setNote("已保存 PNG。", "success");
+        const format = result.format ?? "png";
+        const name = fileNameFromPath(result.path) ?? `cropmark.${format === "jpeg" ? "jpg" : format}`;
+        setNote(`已保存 ${name}。`, "success");
       }
     } catch (error) {
-      setNote(invokeError(error, "无法保存 PNG。预览仍保留，可继续标注或复制。"), "error");
+      setNote(invokeError(error, "无法保存图片。预览仍保留，可继续标注或复制。"), "error");
     } finally {
       busy = false;
     }
@@ -1034,6 +1070,12 @@ export function mountPreview(root: HTMLElement): void {
       setTool(nextTool);
       return;
     }
+    const nextQuality = button.dataset.saveQuality;
+    if (nextQuality === "high" || nextQuality === "medium" || nextQuality === "low") {
+      saveQuality = nextQuality;
+      syncSaveQuality();
+      return;
+    }
     if (button.dataset.action === "undo") {
       if (skipUndoClick) {
         skipUndoClick = false;
@@ -1191,6 +1233,7 @@ export function mountPreview(root: HTMLElement): void {
 
   setTool("arrow");
   syncUndo();
+  syncSaveQuality();
 
   // 重读功能入口开关并同步预览 UI:ocrEntryEnabled 同时驱动工具条按钮显隐、
   // O 键映射与当前 ocr 工具的回退;pinEntryEnabled 驱动贴图按钮显隐;
@@ -1217,9 +1260,15 @@ export function mountPreview(root: HTMLElement): void {
     void invoke<{
       annotationDefaults?: { color?: string; width?: number | null; textSize?: number | null };
       features?: { ocrEntry?: boolean; pinEntry?: boolean };
+      export?: { quality?: ExportQuality };
     }>("get_ui_settings")
       .then((settings) => {
         syncFeatureFlags(settings);
+        const quality = settings?.export?.quality;
+        if (quality === "high" || quality === "medium" || quality === "low") {
+          saveQuality = quality;
+          syncSaveQuality();
+        }
         const defaults = settings?.annotationDefaults;
         if (!defaults) {
           return;
@@ -1446,6 +1495,15 @@ function paintMosaic(
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
+}
+
+function fileNameFromPath(path: string | null | undefined): string | null {
+  if (!path) {
+    return null;
+  }
+  const parts = path.split(/[\\/]/);
+  const name = parts[parts.length - 1];
+  return name.length > 0 ? name : null;
 }
 
 function distToSegment(p: Point, a: Point, b: Point): number {

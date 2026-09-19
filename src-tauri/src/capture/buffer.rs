@@ -143,26 +143,52 @@ pub fn validate_frame(frame: &Frame) -> Result<(), CaptureError> {
     Ok(())
 }
 
-pub fn encode_jpeg(frame: &Frame, quality: u8) -> Result<Vec<u8>, CaptureError> {
-    let rgba = rgba_image(frame)?;
-    let mut rgb = Vec::with_capacity((rgba.width() * rgba.height() * 3) as usize);
-    for pixel in rgba.pixels() {
-        rgb.extend_from_slice(&[pixel[0], pixel[1], pixel[2]]);
+/// RGBA 合成到白底后的 RGB 缓冲(R3):JPEG/WebP 无可用透明通道,
+/// alpha=0 的像素必须变白而不是保留原始黑/彩色像素。
+pub fn flatten_rgba_over_white(frame: &Frame) -> Result<Vec<u8>, CaptureError> {
+    validate_frame(frame)?;
+    let mut rgb = Vec::with_capacity(frame.width as usize * frame.height as usize * 3);
+    for pixel in frame.rgba.chunks_exact(4) {
+        let alpha = u32::from(pixel[3]);
+        let blend =
+            |channel: u8| ((u32::from(channel) * alpha + 255 * (255 - alpha) + 127) / 255) as u8;
+        rgb.extend_from_slice(&[blend(pixel[0]), blend(pixel[1]), blend(pixel[2])]);
     }
+    Ok(rgb)
+}
+
+pub fn encode_jpeg(frame: &Frame, quality: u8) -> Result<Vec<u8>, CaptureError> {
+    let rgb = flatten_rgba_over_white(frame)?;
     let mut jpeg = Vec::new();
-    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, quality);
+    let mut encoder =
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, quality.clamp(1, 100));
     encoder
         .encode(
             &rgb,
-            rgba.width(),
-            rgba.height(),
+            frame.width,
+            frame.height,
             image::ExtendedColorType::Rgb8,
         )
-        .map_err(|_| CaptureError::api("无法编码预览图。"))?;
+        .map_err(|_| CaptureError::api("无法编码 JPEG。"))?;
     if jpeg.is_empty() {
         return Err(CaptureError::invalid_buffer("空缓冲"));
     }
     Ok(jpeg)
+}
+
+/// 有损 WebP(R3):image/image-webp 编码器仅支持无损,质量档位无法改变
+/// 文件大小,因此走 libwebp(webp crate),与 JPEG 相同先压白 alpha。
+pub fn encode_webp(frame: &Frame, quality: u8) -> Result<Vec<u8>, CaptureError> {
+    let rgb = flatten_rgba_over_white(frame)?;
+    let encoder = webp::Encoder::from_rgb(&rgb, frame.width, frame.height);
+    let memory = encoder
+        .encode_simple(false, f32::from(quality.clamp(1, 100)))
+        .map_err(|_| CaptureError::api("无法编码 WebP。"))?;
+    let bytes: &[u8] = &memory;
+    if bytes.is_empty() {
+        return Err(CaptureError::invalid_buffer("空缓冲"));
+    }
+    Ok(bytes.to_vec())
 }
 
 pub fn fit_display(width: u32, height: u32, max_edge: u32) -> (u32, u32) {
@@ -323,6 +349,79 @@ mod tests {
         assert_eq!(resized.width, 4);
         assert_eq!(resized.height, 2);
         assert_eq!(resized.rgba.len(), 4 * 2 * 4);
+    }
+
+    fn noisy(width: u32, height: u32) -> Frame {
+        let mut bytes = Vec::with_capacity((width * height * 4) as usize);
+        for y in 0..height {
+            for x in 0..width {
+                bytes.extend_from_slice(&[
+                    ((x * 37 + y * 11) % 256) as u8,
+                    ((x * 5 + y * 83) % 256) as u8,
+                    ((x * 149 + y * 29) % 256) as u8,
+                    255,
+                ]);
+            }
+        }
+        accept_buffer(RawBuffer::ready(width, height, bytes)).unwrap()
+    }
+
+    #[test]
+    fn jpeg_encodes_alpha_over_white_instead_of_black() {
+        let frame = accept_buffer(RawBuffer::ready(4, 4, vec![0u8; 4 * 4 * 4])).unwrap();
+        let jpeg = encode_jpeg(&frame, 90).unwrap();
+        assert!(jpeg.starts_with(&[0xFF, 0xD8]));
+        let decoded = image::load_from_memory(&jpeg).unwrap().to_rgb8();
+        for pixel in decoded.pixels() {
+            assert!(
+                pixel[0] > 245 && pixel[1] > 245 && pixel[2] > 245,
+                "transparent pixel must flatten to white, got {pixel:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn jpeg_quality_tier_changes_file_size() {
+        let frame = noisy(64, 64);
+        let high = encode_jpeg(&frame, 90).unwrap();
+        let low = encode_jpeg(&frame, 30).unwrap();
+        assert!(
+            high.len() > low.len(),
+            "quality must change jpeg size: high={} low={}",
+            high.len(),
+            low.len()
+        );
+    }
+
+    #[test]
+    fn webp_quality_tier_changes_file_size_and_decodes() {
+        let frame = noisy(64, 64);
+        let high = encode_webp(&frame, 90).unwrap();
+        let low = encode_webp(&frame, 30).unwrap();
+        assert!(high.starts_with(b"RIFF") && &high[8..12] == b"WEBP");
+        assert!(
+            high.len() > low.len(),
+            "quality must change webp size: high={} low={}",
+            high.len(),
+            low.len()
+        );
+        let decoded = webp::Decoder::new(&high).decode().expect("webp decode");
+        assert_eq!((decoded.width(), decoded.height()), (64, 64));
+        assert!(!decoded.is_alpha());
+    }
+
+    #[test]
+    fn webp_encodes_alpha_over_white_instead_of_black() {
+        let frame = accept_buffer(RawBuffer::ready(4, 4, vec![0u8; 4 * 4 * 4])).unwrap();
+        let webp = encode_webp(&frame, 95).unwrap();
+        let decoded = webp::Decoder::new(&webp).decode().expect("webp decode");
+        let bytes: &[u8] = &decoded;
+        for pixel in bytes.chunks_exact(3) {
+            assert!(
+                pixel[0] > 245 && pixel[1] > 245 && pixel[2] > 245,
+                "transparent pixel must flatten to white, got {pixel:?}"
+            );
+        }
     }
 
     #[test]

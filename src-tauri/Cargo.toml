@@ -23,6 +23,8 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 rfd = "0.17.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# R3:WebP 有损导出(image-webp 编码器仅支持无损,质量档位不可观察文件大小变化)。
+webp = { version = "0.3.1", default-features = false }
 tauri = { version = "2", features = ["tray-icon", "image-png", "image-ico", "macos-private-api"] }
 tauri-plugin-global-shortcut = "2"
 paddle-ocr-rs = "0.6.1"
