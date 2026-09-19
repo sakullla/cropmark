@@ -230,6 +230,7 @@ export function mountPreview(root: HTMLElement): void {
   let editorOrigin: Point | null = null;
   let busy = false;
   let copied = "未标注图已复制";
+  let copiedKind: NoteKind = "success";
   let ocrDoc: OcrDocument | null = null;
   let ocrSelected: number[] = [];
   let ocrDragging = false;
@@ -274,6 +275,14 @@ export function mountPreview(root: HTMLElement): void {
     note.classList.toggle("is-error", kind === "error");
   };
 
+  // 「已复制」提示携带来源样式(成功/失败/未自动复制);切换工具重绘时
+  // 沿用原 kind,不让 feedback 提示被固定改写成成功色。
+  const setCopied = (text: string, kind: NoteKind): void => {
+    copied = text;
+    copiedKind = kind;
+    setNote(text, kind);
+  };
+
   // 诊断面:未捕获的脚本错误与 Promise 拒绝直接显现在提示条,避免"按钮点了没反应"无处可查。
   window.addEventListener("error", (event) => {
     setNote(`界面错误:${String(event.message ?? "未知错误").slice(0, 80)}`, "error");
@@ -307,7 +316,7 @@ export function mountPreview(root: HTMLElement): void {
     } else if (next === "text") {
       setNote("点在图上放置文字框，然后输入汉字。Enter 确认，Esc 取消。");
     } else if (!note.classList.contains("is-error")) {
-      setNote(copied, "success");
+      setNote(copied, copiedKind);
     }
     redraw();
   };
@@ -761,8 +770,10 @@ export function mountPreview(root: HTMLElement): void {
     busy = true;
     try {
       await invoke("copy_preview_png", { annotations: exportList() });
-      copied = annotations.length > 0 ? "已复制当前标注图" : "未标注图已复制";
-      setNote(copied, "success");
+      setCopied(
+        annotations.length > 0 ? "已复制当前标注图" : "未标注图已复制",
+        "success",
+      );
     } catch (error) {
       setNote(invokeError(error, "无法把截图放入剪贴板。预览仍保留。"), "error");
     } finally {
@@ -1259,14 +1270,11 @@ export function mountPreview(root: HTMLElement): void {
           }
           sourceCtx.drawImage(image, 0, 0, payload.width, payload.height);
           if (copyState === 1) {
-            copied = "未标注图已复制";
-            setNote(copied, "success");
+            setCopied("未标注图已复制", "success");
           } else if (copyState === 2) {
-            copied = "自动复制失败，可点击复制重试。";
-            setNote(copied, "error");
+            setCopied("自动复制失败，可点击复制重试。", "error");
           } else {
-            copied = "未自动复制，可点击复制。";
-            setNote(copied);
+            setCopied("未自动复制，可点击复制。", "feedback");
           }
           redraw();
         };

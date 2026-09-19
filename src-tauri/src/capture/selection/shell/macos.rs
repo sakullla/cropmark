@@ -63,8 +63,10 @@ const KC_UP: u16 = 0x7E;
 /// 壳的最终结果:会话层据此选择完成路径(与 Windows 壳同构)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegionOutcome {
-    /// Enter 或「标注」动作:rect 走 Preview 完成路径(剪贴板+预览)。
+    /// Enter 确认:rect 走普通完成路径(按 finishAction 预览或静默)。
     Preview(PhysicalRect),
+    /// 操作条/菜单的「标注」动作:rect 强制走预览编辑器,不受静默完成配置影响。
+    Annotate(PhysicalRect),
     /// 操作条/菜单的 copy/save/pin/ocr 动作:rect 走 Quiet 完成路径并执行动作。
     Quiet(PhysicalRect, QuietAction),
     /// Esc 或菜单「取消」:整个会话取消。
@@ -689,8 +691,8 @@ fn feed_event(state: &mut ShellState, event: InputEvent, view: &SelectionView) {
         }
         EngineOutcome::Action(action) => match action {
             SelectionAction::Annotate => {
-                if let Some(rect) = state.canvas.engine.selection() {
-                    state.outcome = Some(RegionOutcome::Preview(rect));
+                if let Some(outcome) = annotate_outcome(state.canvas.engine.selection()) {
+                    state.outcome = Some(outcome);
                 }
             }
             SelectionAction::Cancel => {
@@ -709,6 +711,11 @@ fn feed_event(state: &mut ShellState, event: InputEvent, view: &SelectionView) {
             }
         },
     }
+}
+
+/// 「标注」动作到壳结果的映射:引擎尚无选区时返回 None,会话继续等待。
+fn annotate_outcome(selection: Option<PhysicalRect>) -> Option<RegionOutcome> {
+    selection.map(RegionOutcome::Annotate)
 }
 
 /// 操作条/菜单动作到静默完成动作的映射;标注/取消/复制色值不在此列。
@@ -916,6 +923,21 @@ mod tests {
         assert_eq!(quiet_action_for(SelectionAction::Annotate), None);
         assert_eq!(quiet_action_for(SelectionAction::Cancel), None);
         assert_eq!(quiet_action_for(SelectionAction::CopyColor), None);
+    }
+
+    #[test]
+    fn annotate_outcome_needs_a_selection_and_keeps_rect() {
+        let rect = PhysicalRect {
+            x: 5,
+            y: 6,
+            width: 30,
+            height: 40,
+        };
+        assert_eq!(
+            annotate_outcome(Some(rect)),
+            Some(RegionOutcome::Annotate(rect))
+        );
+        assert_eq!(annotate_outcome(None), None);
     }
 
     #[test]

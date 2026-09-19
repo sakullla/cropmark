@@ -373,11 +373,28 @@ async fn capture_region_native(app: &AppHandle) -> Result<(), CaptureError> {
     .await
     .map_err(|_| CaptureError::api("截取线程失败。"))??;
     match picked {
-        // Enter/标注:走普通完成路径,按 finishAction 选择预览或静默(复制+toast)。
+        // Enter 确认:按 finishAction 选择预览或静默(复制+toast)。
         RegionOutcome::Preview(rect) => {
             let handle = app.clone();
             tauri::async_runtime::spawn_blocking(move || {
                 confirm_region(
+                    &handle,
+                    RegionSelection {
+                        x: rect.x,
+                        y: rect.y,
+                        width: rect.width,
+                        height: rect.height,
+                    },
+                )
+            })
+            .await
+            .map_err(|_| CaptureError::api("截取线程失败。"))?
+        }
+        // 「标注」动作:强制打开预览编辑器,静默完成配置不适用于显式标注(R4 review)。
+        RegionOutcome::Annotate(rect) => {
+            let handle = app.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                annotate_region(
                     &handle,
                     RegionSelection {
                         x: rect.x,
@@ -629,6 +646,20 @@ pub fn mark_preview_file_written(app: &AppHandle) {
 }
 
 pub fn confirm_region(app: &AppHandle, selection: RegionSelection) -> Result<(), CaptureError> {
+    finish_selection(app, selection, FinishIntent::Configured).map(|_| ())
+}
+
+/// 显式「标注」请求(原生选区壳的「标注」动作/右键菜单):总是打开预览编辑器,
+/// 不受静默完成设置影响;裁剪帧与普通完成一样按 autoCopy 决定是否写剪贴板。
+fn annotate_region(app: &AppHandle, selection: RegionSelection) -> Result<(), CaptureError> {
+    finish_selection(app, selection, FinishIntent::Annotate).map(|_| ())
+}
+
+fn finish_selection(
+    app: &AppHandle,
+    selection: RegionSelection,
+    intent: FinishIntent,
+) -> Result<FinishSummary, CaptureError> {
     let frame = with_session(app, |session| {
         let session = session.as_ref().ok_or_else(CaptureError::cancelled)?;
         let freeze = session
@@ -644,7 +675,7 @@ pub fn confirm_region(app: &AppHandle, selection: RegionSelection) -> Result<(),
         )
     })?;
     ui::hide_window(app, ui::OVERLAY);
-    finish_configured(app, frame).map(|_| ())
+    finish_frame(app, frame, intent)
 }
 
 pub fn confirm_logical_region(app: &AppHandle, rect: LogicalRect) -> Result<(), CaptureError> {
@@ -792,8 +823,16 @@ fn cancel_internal(app: &AppHandle) -> Result<CancelOutcome, CaptureError> {
 /// 普通捕获(区域确认/窗口/全屏)的统一完成入口:按当前设置选择预览或
 /// 静默(复制后关闭),静默完成仍给出 toast 反馈,避免用户感知为无响应(R4)。
 fn finish_configured(app: &AppHandle, frame: Frame) -> Result<FinishSummary, CaptureError> {
+    finish_frame(app, frame, FinishIntent::Configured)
+}
+
+fn finish_frame(
+    app: &AppHandle,
+    frame: Frame,
+    intent: FinishIntent,
+) -> Result<FinishSummary, CaptureError> {
     let capture = crate::settings::current_capture(app);
-    let disposition = configured_disposition(capture);
+    let disposition = finish_disposition(intent, capture);
     let summary = finish_with_ttl(
         app,
         frame,
@@ -810,6 +849,24 @@ fn finish_configured(app: &AppHandle, frame: Frame) -> Result<FinishSummary, Cap
         ui::show_toast(app, message);
     }
     Ok(summary)
+}
+
+/// 完成请求来源:普通完成(Enter/确认/窗口/全屏)套用 finishAction;显式
+/// 「标注」总是进预览编辑器——静默配置只约束默认完成动作,不能吞掉标注意图。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FinishIntent {
+    Configured,
+    Annotate,
+}
+
+fn finish_disposition(
+    intent: FinishIntent,
+    capture: crate::settings::CaptureSettings,
+) -> FinishDisposition {
+    match intent {
+        FinishIntent::Annotate => FinishDisposition::Preview,
+        FinishIntent::Configured => configured_disposition(capture),
+    }
 }
 
 /// 静默完成必须伴随自动复制(autoCopy 关闭时 sanitize 已强制回退预览,
@@ -1412,5 +1469,43 @@ mod tests {
             ..quiet
         };
         assert_eq!(configured_disposition(off), FinishDisposition::Preview);
+    }
+
+    #[test]
+    fn annotate_intent_forces_preview_while_enter_keeps_quiet() {
+        use crate::settings::{CaptureSettings, FinishAction};
+
+        let quiet = CaptureSettings {
+            delay_seconds: 0,
+            auto_copy: true,
+            finish_action: FinishAction::Quiet,
+        };
+        // Enter/确认仍按设置静默完成。
+        assert_eq!(
+            finish_disposition(FinishIntent::Configured, quiet),
+            FinishDisposition::Quiet
+        );
+        // 显式「标注」不受静默配置影响,总是打开预览编辑器。
+        assert_eq!(
+            finish_disposition(FinishIntent::Annotate, quiet),
+            FinishDisposition::Preview
+        );
+        // 默认设置与 autoCopy 关闭的回退两边都是预览。
+        assert_eq!(
+            finish_disposition(FinishIntent::Annotate, CaptureSettings::default()),
+            FinishDisposition::Preview
+        );
+        let off = CaptureSettings {
+            auto_copy: false,
+            ..quiet
+        };
+        assert_eq!(
+            finish_disposition(FinishIntent::Configured, off),
+            FinishDisposition::Preview
+        );
+        assert_eq!(
+            finish_disposition(FinishIntent::Annotate, off),
+            FinishDisposition::Preview
+        );
     }
 }

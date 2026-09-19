@@ -56,8 +56,10 @@ const VK_DOWN: u32 = 0x28;
 /// 壳的最终结果:会话层据此选择完成路径。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegionOutcome {
-    /// Enter 或「标注」动作:rect 走 Preview 完成路径(剪贴板+预览)。
+    /// Enter 确认:rect 走普通完成路径(按 finishAction 预览或静默)。
     Preview(PhysicalRect),
+    /// 操作条/菜单的「标注」动作:rect 强制走预览编辑器,不受静默完成配置影响。
+    Annotate(PhysicalRect),
     /// 操作条/菜单的 copy/save/pin/ocr 动作:rect 走 Quiet 完成路径并执行动作。
     Quiet(PhysicalRect, QuietAction),
     /// Esc 或菜单「取消」:整个会话取消。
@@ -175,8 +177,8 @@ fn feed_event(state: &mut ShellState, event: InputEvent, hwnd: HWND) -> bool {
         }
         EngineOutcome::Action(action) => match action {
             SelectionAction::Annotate => {
-                if let Some(rect) = state.canvas.engine.selection() {
-                    state.outcome = Some(RegionOutcome::Preview(rect));
+                if let Some(outcome) = annotate_outcome(state.canvas.engine.selection()) {
+                    state.outcome = Some(outcome);
                     return true;
                 }
                 false
@@ -225,6 +227,11 @@ fn foreground_belongs_to_self() -> bool {
         GetWindowThreadProcessId(fg, Some(&mut pid));
         pid == GetCurrentProcessId()
     }
+}
+
+/// 「标注」动作到壳结果的映射:引擎尚无选区时返回 None,会话继续等待。
+fn annotate_outcome(selection: Option<PhysicalRect>) -> Option<RegionOutcome> {
+    selection.map(RegionOutcome::Annotate)
 }
 
 /// 操作条/菜单动作到静默完成动作的映射;标注/取消/复制色值不在此列。
@@ -707,6 +714,54 @@ mod tests {
                 QuietAction::Copy
             ))
         );
+    }
+
+    #[test]
+    fn menu_annotate_requests_forced_preview_outcome() {
+        let mut state = test_state(320, 200);
+        let hwnd = HWND::default();
+        for event in [
+            InputEvent::LeftDown { x: 40, y: 30 },
+            InputEvent::PointerMove { x: 200, y: 120 },
+            InputEvent::LeftUp { x: 200, y: 120 },
+            InputEvent::RightDown { x: 150, y: 100 },
+        ] {
+            assert!(!feed_event(&mut state, event, hwnd));
+        }
+        let items = composer::menu_items(state.canvas.engine.flags());
+        let panel = composer::menu_panel(state.canvas.engine.menu_anchor(), (320, 200), &items);
+        let (_, annotate_rect) = composer::menu_item_rects(panel, &items)
+            .into_iter()
+            .find(|(action, _)| *action == SelectionAction::Annotate)
+            .unwrap();
+        let (cx, cy) = annotate_rect.center();
+        assert!(!feed_event(&mut state, InputEvent::LeftDown { x: cx, y: cy }, hwnd));
+        assert!(feed_event(&mut state, InputEvent::LeftUp { x: cx, y: cy }, hwnd));
+        // 「标注」必须与 Enter 确认区分:会话层据此强制打开预览编辑器。
+        assert_eq!(
+            state.outcome,
+            Some(RegionOutcome::Annotate(PhysicalRect {
+                x: 40,
+                y: 30,
+                width: 161,
+                height: 91
+            }))
+        );
+    }
+
+    #[test]
+    fn annotate_outcome_needs_a_selection_and_keeps_rect() {
+        let rect = PhysicalRect {
+            x: 5,
+            y: 6,
+            width: 30,
+            height: 40,
+        };
+        assert_eq!(
+            annotate_outcome(Some(rect)),
+            Some(RegionOutcome::Annotate(rect))
+        );
+        assert_eq!(annotate_outcome(None), None);
     }
 
     #[test]
