@@ -49,6 +49,69 @@ struct ActiveSession {
     started_at: Instant,
 }
 
+impl ActiveSession {
+    fn new(mode: CaptureMode, delay_ms: u64, now: Instant) -> Self {
+        Self {
+            mode,
+            busy: true,
+            delay_ms,
+            hide: HideWait::record(Vec::new()),
+            freeze: None,
+            overlay: None,
+            preview: None,
+            monitor: None,
+            windows: Vec::new(),
+            clipboard: ClipboardGuard::default(),
+            preview_opened: false,
+            file_written: false,
+            cancelled: false,
+            frame_deadline: None,
+            started_at: now,
+        }
+    }
+}
+
+/// 看门狗:正常截取远小于 30s;busy 超时说明壳消息泵/线程卡死,
+/// 强制重置旧会话,避免"取消一次后再也无法截取"的静默死锁。
+const STALE_SESSION_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BeginDecision {
+    IgnoreBusy,
+    ResetStaleThenBegin,
+    Begin,
+}
+
+fn begin_decision(session: Option<&ActiveSession>, now: Instant) -> BeginDecision {
+    match session {
+        Some(current)
+            if current.busy
+                && now.saturating_duration_since(current.started_at) > STALE_SESSION_TIMEOUT =>
+        {
+            BeginDecision::ResetStaleThenBegin
+        }
+        Some(current) if current.busy => BeginDecision::IgnoreBusy,
+        _ => BeginDecision::Begin,
+    }
+}
+
+/// Occupies the session slot unless a live busy capture is still in flight.
+/// Returns false when the overlapping request must be ignored.
+fn occupy_session(
+    slot: &mut Option<ActiveSession>,
+    mode: CaptureMode,
+    delay_ms: u64,
+    now: Instant,
+) -> bool {
+    match begin_decision(slot.as_ref(), now) {
+        BeginDecision::IgnoreBusy => false,
+        BeginDecision::ResetStaleThenBegin | BeginDecision::Begin => {
+            *slot = Some(ActiveSession::new(mode, delay_ms, now));
+            true
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CancelOutcome {
     pub clipboard_written: bool,
@@ -132,42 +195,19 @@ async fn run(app: AppHandle, mode: CaptureMode, delay_ms: u64) -> Result<(), Cap
 fn try_begin_with_delay(app: &AppHandle, mode: CaptureMode, delay_ms: u64) -> bool {
     let runtime = app.state::<CaptureRuntime>();
     let mut guard = lock(&runtime.inner);
-    // 看门狗:正常截取远小于 30s;busy 超时说明壳消息泵/线程卡死,
-    // 强制重置旧会话,避免"取消一次后再也无法截取"的静默死锁。
-    const STALE_SESSION_TIMEOUT: Duration = Duration::from_secs(30);
-    if guard.as_ref().is_some_and(|session| {
-        session.busy && session.started_at.elapsed() > STALE_SESSION_TIMEOUT
-    }) {
+    let now = Instant::now();
+    if begin_decision(guard.as_ref(), now) == BeginDecision::ResetStaleThenBegin {
         eprintln!("Cropmark: stale busy session reset after {STALE_SESSION_TIMEOUT:?}");
         for label in ui::session_window_labels() {
             ui::hide_window(app, label);
         }
-        *guard = None;
     }
-    if guard.as_ref().is_some_and(|session| session.busy) {
+    if !occupy_session(&mut guard, mode, delay_ms, now) {
         return false;
     }
     // A lingering toast must not leak into the next capture (hide-before-capture);
     // 仅隐藏——toast 窗是预创建复用的 webview,关闭会破坏复用。
     ui::hide_window(app, ui::TOAST);
-    // Replacing the session drops any frame retained by a previous quiet finish.
-    *guard = Some(ActiveSession {
-        mode,
-        busy: true,
-        delay_ms,
-        hide: HideWait::record(Vec::new()),
-        freeze: None,
-        overlay: None,
-        preview: None,
-        monitor: None,
-        windows: Vec::new(),
-        clipboard: ClipboardGuard::default(),
-        preview_opened: false,
-        file_written: false,
-        cancelled: false,
-        frame_deadline: None,
-        started_at: Instant::now(),
-    });
     *lock(&runtime.last_error) = None;
     true
 }
@@ -410,16 +450,26 @@ async fn capture_region(app: &AppHandle) -> Result<(), CaptureError> {
     Ok(())
 }
 
+const EMPTY_WINDOW_LIST_MESSAGE: &str =
+    "没有可截取的窗口，或当前桌面无法列出窗口。请改用区域或全屏截取。";
+
+/// Wayland/portal 列窗失败与空列表都走错误说明,不打开空白预览。
+fn windows_for_window_mode(
+    listed: Result<Vec<ListedWindow>, CaptureError>,
+) -> Result<Vec<ListedWindow>, CaptureError> {
+    let windows = listed?;
+    if windows.is_empty() {
+        return Err(CaptureError::unavailable(EMPTY_WINDOW_LIST_MESSAGE));
+    }
+    Ok(windows)
+}
+
 async fn capture_window_mode(app: &AppHandle) -> Result<(), CaptureError> {
     let windows =
         tauri::async_runtime::spawn_blocking(move || platform::list_windows(platform::self_pid()))
             .await
-            .map_err(|_| CaptureError::api("无法列出窗口。"))??;
-    if windows.is_empty() {
-        return Err(CaptureError::unavailable(
-            "没有可截取的窗口，或当前桌面无法列出窗口。请改用区域或全屏截取。",
-        ));
-    }
+            .map_err(|_| CaptureError::api("无法列出窗口。"))?;
+    let windows = windows_for_window_mode(windows)?;
     let monitor = freeze_screen(app, windows).await?;
     ui::open_overlay(app, &monitor)?;
     Ok(())
@@ -711,13 +761,21 @@ pub fn cancel(app: &AppHandle) -> Result<CancelOutcome, CaptureError> {
     cancel_internal(app)
 }
 
+/// Drops the session immediately. Cancel never writes the clipboard, a file,
+/// or a preview window; product surfaces recorded before hide are restored.
+fn take_cancel_plan(
+    session: &mut Option<ActiveSession>,
+) -> Option<(CancelOutcome, Vec<RecordedSurface>)> {
+    let current = session.as_mut()?;
+    current.cancelled = true;
+    let restore = current.hide.restore_on_cancel();
+    *session = None;
+    Some((CancelOutcome::clean(), restore))
+}
+
 fn cancel_internal(app: &AppHandle) -> Result<CancelOutcome, CaptureError> {
-    let restore = with_session_mut(app, |session| {
-        let current = session.as_mut()?;
-        current.cancelled = true;
-        Some(current.hide.restore_on_cancel())
-    });
-    let Some(restore) = restore else {
+    let planned = with_session_mut(app, take_cancel_plan);
+    let Some((outcome, restore)) = planned else {
         return Ok(CancelOutcome::clean());
     };
     for label in ui::session_window_labels() {
@@ -726,9 +784,8 @@ fn cancel_internal(app: &AppHandle) -> Result<CancelOutcome, CaptureError> {
     for surface in restore {
         ui::show_window(app, &surface.label);
     }
-    with_session_mut(app, |session| *session = None);
     let _ = app.emit("capture-cancelled", ());
-    Ok(CancelOutcome::clean())
+    Ok(outcome)
 }
 
 fn finish(
@@ -950,20 +1007,12 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 #[cfg(test)]
-pub fn cancel_without_side_effects(
-    clipboard_written: bool,
-    file_written: bool,
-    preview_opened: bool,
-) -> CancelOutcome {
-    let _ = (clipboard_written, file_written, preview_opened);
-    CancelOutcome::clean()
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::error::CaptureErrorKind;
     use crate::capture::hide::{
-        grab_allowed, session_steps, HideWait, RecordedSurface, SessionStep, SurfaceKind,
+        grab_allowed, plan_delay, session_steps, HideWait, RecordedSurface, SessionStep,
+        SurfaceKind,
     };
 
     #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
@@ -987,12 +1036,54 @@ mod tests {
         assert!(!all_off.toolbar_pin);
     }
 
+    fn hide_before_capture_steps(mode: CaptureMode, delay_ms: u64) -> Vec<SessionStep> {
+        session_steps(!matches!(mode, CaptureMode::Fullscreen), delay_ms)
+    }
+
     #[test]
-    fn cancel_has_no_clipboard_file_or_preview() {
-        let outcome = cancel_without_side_effects(true, true, true);
-        assert!(!outcome.clipboard_written);
-        assert!(!outcome.file_written);
-        assert!(!outcome.preview_opened);
+    fn region_window_fullscreen_and_tray_delay_hide_before_capture() {
+        for mode in CaptureMode::ALL {
+            for delay_ms in [0_u64, 3000] {
+                let plan = plan_delay(delay_ms);
+                assert!(plan.hide_before_delay);
+                assert!(!plan.overlay_during_delay);
+                let steps = hide_before_capture_steps(mode, delay_ms);
+                let hide = steps
+                    .iter()
+                    .position(|&step| step == SessionStep::Hide)
+                    .expect("hide-before-capture");
+                let presented = steps
+                    .iter()
+                    .position(|&step| step == SessionStep::WaitPresented)
+                    .expect("wait presented");
+                let pixels = steps
+                    .iter()
+                    .position(|&step| step == SessionStep::CapturePixels)
+                    .expect("capture pixels");
+                assert!(hide < presented);
+                assert!(presented < pixels);
+                if delay_ms > 0 {
+                    let delay = steps
+                        .iter()
+                        .position(|&step| step == SessionStep::DelayWithoutOverlay)
+                        .expect("tray delay without overlay");
+                    assert!(presented < delay);
+                    assert!(delay < pixels);
+                }
+                match mode {
+                    CaptureMode::Region | CaptureMode::Window => {
+                        assert_eq!(
+                            steps.last().copied(),
+                            Some(SessionStep::ShowOverlayOnFreeze)
+                        );
+                    }
+                    CaptureMode::Fullscreen => {
+                        assert_eq!(steps.last().copied(), Some(SessionStep::OpenPreview));
+                        assert!(!steps.contains(&SessionStep::ShowOverlayOnFreeze));
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -1018,6 +1109,140 @@ mod tests {
     }
 
     #[test]
+    fn busy_session_ignores_overlapping_capture() {
+        let now = Instant::now();
+        let mut slot = Some(ActiveSession::new(CaptureMode::Region, 3000, now));
+        let started_at = slot.as_ref().unwrap().started_at;
+        assert_eq!(
+            begin_decision(slot.as_ref(), now + Duration::from_millis(40)),
+            BeginDecision::IgnoreBusy
+        );
+        assert!(!occupy_session(
+            &mut slot,
+            CaptureMode::Fullscreen,
+            0,
+            now + Duration::from_millis(40)
+        ));
+        let session = slot.expect("busy session kept");
+        assert!(session.busy);
+        assert_eq!(session.mode, CaptureMode::Region);
+        assert_eq!(session.delay_ms, 3000);
+        assert_eq!(session.started_at, started_at);
+    }
+
+    #[test]
+    fn idle_or_absent_session_allows_new_capture() {
+        let now = Instant::now();
+        let mut slot = None;
+        assert!(occupy_session(&mut slot, CaptureMode::Window, 0, now));
+        assert_eq!(slot.as_ref().unwrap().mode, CaptureMode::Window);
+
+        let mut idle = ActiveSession::new(CaptureMode::Region, 0, now);
+        idle.busy = false;
+        idle.frame_deadline = Some(now + DEFAULT_FRAME_TTL);
+        let mut slot = Some(idle);
+        assert!(occupy_session(
+            &mut slot,
+            CaptureMode::Fullscreen,
+            3000,
+            now
+        ));
+        let session = slot.unwrap();
+        assert!(session.busy);
+        assert_eq!(session.mode, CaptureMode::Fullscreen);
+        assert_eq!(session.delay_ms, 3000);
+        assert!(session.frame_deadline.is_none());
+    }
+
+    #[test]
+    fn stale_busy_session_is_reset_so_capture_can_begin() {
+        let started = Instant::now();
+        let now = started + STALE_SESSION_TIMEOUT + Duration::from_secs(1);
+        let mut slot = Some(ActiveSession::new(CaptureMode::Region, 0, started));
+        assert_eq!(
+            begin_decision(slot.as_ref(), now),
+            BeginDecision::ResetStaleThenBegin
+        );
+        assert!(occupy_session(&mut slot, CaptureMode::Window, 3000, now));
+        let session = slot.unwrap();
+        assert!(session.busy);
+        assert_eq!(session.mode, CaptureMode::Window);
+        assert_eq!(session.delay_ms, 3000);
+        assert_eq!(session.started_at, now);
+    }
+
+    #[test]
+    fn cancel_clears_session_without_clipboard_file_or_preview() {
+        let mut session = ActiveSession::new(CaptureMode::Region, 0, Instant::now());
+        session.clipboard.commit_success();
+        session.file_written = true;
+        session.preview_opened = true;
+        session.hide = HideWait::record(vec![
+            RecordedSurface {
+                label: "preview".into(),
+                kind: SurfaceKind::Preview,
+                was_visible: true,
+            },
+            RecordedSurface {
+                label: "settings".into(),
+                kind: SurfaceKind::Settings,
+                was_visible: true,
+            },
+            RecordedSurface {
+                label: "overlay".into(),
+                kind: SurfaceKind::Overlay,
+                was_visible: true,
+            },
+        ]);
+        session.hide.request_hide();
+        let mut slot = Some(session);
+        let (outcome, restore) = take_cancel_plan(&mut slot).expect("had session");
+        assert!(slot.is_none());
+        assert!(!outcome.clipboard_written);
+        assert!(!outcome.file_written);
+        assert!(!outcome.preview_opened);
+        let labels: Vec<_> = restore
+            .iter()
+            .map(|surface| surface.label.as_str())
+            .collect();
+        assert_eq!(labels, ["preview", "settings"]);
+        assert!(take_cancel_plan(&mut slot).is_none());
+    }
+
+    fn listed_window(id: &str) -> ListedWindow {
+        ListedWindow {
+            id: id.into(),
+            title: "Notes".into(),
+            pid: 11,
+            x: 0,
+            y: 0,
+            width: 800,
+            height: 600,
+            visible: true,
+            owner_is_self: false,
+        }
+    }
+
+    #[test]
+    fn empty_or_wayland_window_list_is_unavailable_not_blank_preview() {
+        let empty = windows_for_window_mode(Ok(Vec::new())).unwrap_err();
+        assert_eq!(empty.kind, CaptureErrorKind::Unavailable);
+        assert_eq!(empty.message, EMPTY_WINDOW_LIST_MESSAGE);
+
+        let wayland = windows_for_window_mode(Err(CaptureError::unavailable(
+            "当前桌面无法列出窗口。请改用区域或全屏截取，或在 X11 会话中使用窗口模式。",
+        )))
+        .unwrap_err();
+        assert_eq!(wayland.kind, CaptureErrorKind::Unavailable);
+        assert!(wayland.message.contains("无法列出窗口"));
+        assert!(!wayland.message.is_empty());
+
+        let listed = windows_for_window_mode(Ok(vec![listed_window("w1")])).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "w1");
+    }
+
+    #[test]
     fn grab_is_blocked_until_hide_wait_commits() {
         let mut wait = HideWait::record(vec![RecordedSurface {
             label: "preview".into(),
@@ -1031,23 +1256,7 @@ mod tests {
     }
 
     fn active_session() -> ActiveSession {
-        ActiveSession {
-            mode: CaptureMode::Region,
-            busy: true,
-            delay_ms: 0,
-            hide: HideWait::record(Vec::new()),
-            freeze: None,
-            overlay: None,
-            preview: None,
-            monitor: None,
-            windows: Vec::new(),
-            clipboard: ClipboardGuard::default(),
-            preview_opened: false,
-            file_written: false,
-            cancelled: false,
-            frame_deadline: None,
-            started_at: Instant::now(),
-        }
+        ActiveSession::new(CaptureMode::Region, 0, Instant::now())
     }
 
     #[test]

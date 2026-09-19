@@ -279,6 +279,38 @@ mod tests {
     }
 
     #[test]
+    fn tray_delay_hides_before_pixels_for_overlay_and_fullscreen() {
+        for uses_overlay in [true, false] {
+            let plan = plan_delay(3000);
+            assert!(plan.hide_before_delay);
+            assert!(!plan.overlay_during_delay);
+            let steps = session_steps(uses_overlay, 3000);
+            assert_eq!(
+                &steps[..3],
+                &[
+                    SessionStep::RecordSurfaces,
+                    SessionStep::Hide,
+                    SessionStep::WaitPresented,
+                ]
+            );
+            let delay = steps
+                .iter()
+                .position(|&step| step == SessionStep::DelayWithoutOverlay)
+                .unwrap();
+            let pixels = steps
+                .iter()
+                .position(|&step| step == SessionStep::CapturePixels)
+                .unwrap();
+            assert!(delay < pixels);
+            if uses_overlay {
+                assert_eq!(steps.last().copied(), Some(SessionStep::ShowOverlayOnFreeze));
+            } else {
+                assert_eq!(steps.last().copied(), Some(SessionStep::OpenPreview));
+            }
+        }
+    }
+
+    #[test]
     fn overlay_is_drawn_after_freeze() {
         let steps = session_steps(true, 0);
         let capture = steps.iter().position(|&s| s == SessionStep::CapturePixels).unwrap();
