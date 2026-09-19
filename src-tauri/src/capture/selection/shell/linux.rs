@@ -153,8 +153,8 @@ pub fn request_shell_close() {
 }
 
 /// 壳的最终结果:会话层据此选择完成路径(与 Windows 壳同构)。
-/// R21 起携带即时标注图元;X11 文本输入由 posix 任务接入前,
-/// `AnnotationOptions::text_input` 为假,工具条不含文字工具。
+/// R21 起携带即时标注图元;X11 文本输入经 XIM(不可用时 Xlib 直输回退)
+/// 接入,`pick_region` 强制 `AnnotationOptions::text_input`,工具条含文字工具。
 #[derive(Debug, Clone, PartialEq)]
 pub enum RegionOutcome {
     /// Enter 确认:rect 走普通完成路径(按 finishAction 预览或静默)。
@@ -613,10 +613,19 @@ extern "C" {
     fn XNextEvent(dpy: *mut XDisplay, ev: *mut XEventBuf) -> c_int;
 }
 
-/// IM 回放/提交的输出;文本进引擎、按键按壳内映射继续处理。
+/// IM 回放/提交的输出;文本进引擎,`Key` 回放经 `apply_xim_output` 仅分派
+/// 按下事件(释放回放只用于 IM 按键追踪,见 `replayed_key_is_press`)。
 enum XimOutput {
     Text(String),
     Key(XKeyEvent),
+}
+
+/// 回放按键是否有引擎语义:仅按下事件。IM 的 `IMFilterEventMask` 含
+/// KeyReleaseMask,未被 IM 消费的释放事件也会经回放送回客户端;释放只在
+/// IM 内用于按键状态追踪,按按下派发会二次触发文本与快捷键(退格/删除/
+/// 撤销双执行,Enter/Esc 会意外结束编辑或选区会话)。
+fn replayed_key_is_press(key: &XKeyEvent) -> bool {
+    key.kind == X_KEY_PRESS
 }
 
 /// 打开的 XIM 文本输入通道:Xlib 独立连接 + IM/IC + 传输 fd。
@@ -794,6 +803,7 @@ impl XimSession {
                     out.push(XimOutput::Text(text));
                 }
             } else if !filtered && (key.kind == X_KEY_PRESS || key.kind == X_KEY_RELEASE) {
+                // 释放回放同样收集,但分派时按 kind 忽略(见 replayed_key_is_press)。
                 out.push(XimOutput::Key(key));
             }
         }
@@ -1305,7 +1315,7 @@ fn handle_key_press(
     done || handle_key_event(state, surface, keyboard, &key)
 }
 
-/// 释放事件只用于 IM 追踪按键状态;不产生引擎动作。
+/// 释放事件只用于 IM 追踪按键状态;其回放(含 IM 回显)不产生引擎动作。
 fn handle_key_release(
     state: &mut ShellState,
     surface: &Surface<'_>,
@@ -1338,7 +1348,8 @@ fn handle_key_release(
     done
 }
 
-/// 应用 IM 输出:提交串进引擎(仅文本编辑态),回放按键走壳内映射。
+/// 应用 IM 输出:提交串进引擎(仅文本编辑态);回放按键只有按下事件进入
+/// 壳内映射,释放事件(IM 按键追踪回放)直接忽略。
 fn apply_xim_output(
     state: &mut ShellState,
     surface: &Surface<'_>,
@@ -1347,7 +1358,13 @@ fn apply_xim_output(
 ) -> bool {
     match output {
         XimOutput::Text(text) => feed_text(state, surface, text),
-        XimOutput::Key(key) => handle_key_event(state, surface, keyboard, &key),
+        XimOutput::Key(key) => {
+            if replayed_key_is_press(&key) {
+                handle_key_event(state, surface, keyboard, &key)
+            } else {
+                false
+            }
+        }
     }
 }
 
@@ -1798,6 +1815,42 @@ mod tests {
         assert_eq!(keysym_to_char(0x0100_4e2d), Some('中'));
         // 空格与拉丁文补段。
         assert_eq!(keysym_to_char(0x20), Some(' '));
+    }
+
+    /// 构造壳内按键事件的测试样本(display 由 XIM 转发时填充)。
+    fn test_key_event(kind: c_int, keycode: u32) -> XKeyEvent {
+        XKeyEvent {
+            kind,
+            serial: 0,
+            send_event: 0,
+            display: ptr::null_mut(),
+            window: 0x1234,
+            root: 0,
+            subwindow: 0,
+            time: 0,
+            x: 0,
+            y: 0,
+            x_root: 0,
+            y_root: 0,
+            state: 0,
+            keycode,
+            same_screen: 1,
+        }
+    }
+
+    /// 回归:IM 也会回放未消费的 KeyRelease(ibus 的 IMFilterEventMask 含
+    /// KeyReleaseMask);释放回放没有引擎语义,若进入 handle_key_event 会
+    /// 二次触发文本与快捷键(Enter/Esc 意外结束编辑或选区会话)。
+    #[test]
+    fn xim_replayed_release_keys_have_no_engine_semantics() {
+        // Enter/Esc/退格/字母等代表性键:按下可派发,释放回放全部拦下。
+        for keycode in [8u32, 9, 22, 38] {
+            assert!(replayed_key_is_press(&test_key_event(X_KEY_PRESS, keycode)));
+            assert!(!replayed_key_is_press(&test_key_event(
+                X_KEY_RELEASE,
+                keycode
+            )));
+        }
     }
 
     #[test]
