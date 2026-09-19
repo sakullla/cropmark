@@ -37,6 +37,13 @@ export function mountHistory(root: HTMLElement): void {
       <main class="content history-content">
         <p class="notice" data-notice role="alert" hidden></p>
         <p class="history-status" data-status role="status" hidden></p>
+        <div class="history-confirm" data-confirm role="alertdialog" aria-label="确认操作" hidden>
+          <p class="history-confirm-text" data-confirm-text></p>
+          <div class="history-confirm-actions">
+            <button type="button" class="choice history-confirm-accept" data-confirm-accept>确认</button>
+            <button type="button" class="choice" data-confirm-cancel>取消</button>
+          </div>
+        </div>
         <div class="history-list" data-list></div>
         <p class="history-empty" data-empty hidden>暂无历史记录。截图完成后会自动出现在这里。</p>
       </main>
@@ -45,6 +52,10 @@ export function mountHistory(root: HTMLElement): void {
 
   const noticeEl = root.querySelector("[data-notice]");
   const statusEl = root.querySelector("[data-status]");
+  const confirmEl = root.querySelector("[data-confirm]");
+  const confirmTextEl = root.querySelector("[data-confirm-text]");
+  const confirmAcceptEl = root.querySelector("[data-confirm-accept]");
+  const confirmCancelEl = root.querySelector("[data-confirm-cancel]");
   const listEl = root.querySelector("[data-list]");
   const emptyEl = root.querySelector("[data-empty]");
   const clearEl = root.querySelector("[data-action=clear]");
@@ -52,6 +63,10 @@ export function mountHistory(root: HTMLElement): void {
   if (
     !(noticeEl instanceof HTMLElement) ||
     !(statusEl instanceof HTMLElement) ||
+    !(confirmEl instanceof HTMLElement) ||
+    !(confirmTextEl instanceof HTMLElement) ||
+    !(confirmAcceptEl instanceof HTMLButtonElement) ||
+    !(confirmCancelEl instanceof HTMLButtonElement) ||
     !(listEl instanceof HTMLElement) ||
     !(emptyEl instanceof HTMLElement) ||
     !(clearEl instanceof HTMLButtonElement) ||
@@ -61,6 +76,30 @@ export function mountHistory(root: HTMLElement): void {
   }
 
   let busy = false;
+  // macOS 的 WKWebView 不提供 window.confirm(wry 未实现该面板,恒按取消处理),
+  // 确认一律走窗口内确认条,三平台行为一致,也不新增插件与权限依赖。
+  type PendingConfirm = { kind: "delete"; id: string } | { kind: "clear" };
+  let pendingConfirm: PendingConfirm | null = null;
+
+  const hideConfirm = (): void => {
+    pendingConfirm = null;
+    confirmEl.hidden = true;
+    confirmTextEl.textContent = "";
+    confirmAcceptEl.textContent = "确认";
+  };
+
+  const showConfirm = (
+    pending: PendingConfirm,
+    message: string,
+    acceptLabel: string,
+  ): void => {
+    pendingConfirm = pending;
+    confirmTextEl.textContent = message;
+    confirmAcceptEl.textContent = acceptLabel;
+    confirmEl.hidden = false;
+    // 初始焦点落在取消,键盘 Enter 不会直接触发破坏性操作。
+    confirmCancelEl.focus();
+  };
 
   const setStatus = (message: string, isError = false): void => {
     statusEl.hidden = message.length === 0;
@@ -171,13 +210,41 @@ export function mountHistory(root: HTMLElement): void {
     }
   };
 
+  const performDelete = async (id: string): Promise<void> => {
+    busy = true;
+    try {
+      render(await invoke<HistoryListPayload>("delete_history_entry", { id }));
+      setStatus("已删除。");
+    } catch (error) {
+      setStatus(errorMessage(error), true);
+    } finally {
+      busy = false;
+    }
+  };
+
+  const performClear = async (): Promise<void> => {
+    busy = true;
+    setStatus("");
+    try {
+      render(await invoke<HistoryListPayload>("clear_history"));
+      setStatus("已清空。");
+    } catch (error) {
+      setStatus(errorMessage(error), true);
+    } finally {
+      busy = false;
+    }
+  };
+
   const runAction = async (action: string, id: string): Promise<void> => {
     if (busy) {
       return;
     }
-    if (action === "delete" && !window.confirm("删除这条历史记录？")) {
+    if (action === "delete") {
+      // 删除需二次确认:显示窗口内确认条,确认后再执行,不依赖 WebView 对话框。
+      showConfirm({ kind: "delete", id }, "删除这条历史记录？此操作不可撤销。", "确认删除");
       return;
     }
+    hideConfirm();
     busy = true;
     try {
       if (action === "copy") {
@@ -186,9 +253,6 @@ export function mountHistory(root: HTMLElement): void {
       } else if (action === "pin") {
         await invoke("pin_history_entry", { id });
         setStatus("已贴图。");
-      } else if (action === "delete") {
-        render(await invoke<HistoryListPayload>("delete_history_entry", { id }));
-        setStatus("已删除。");
       }
     } catch (error) {
       setStatus(errorMessage(error), true);
@@ -216,20 +280,34 @@ export function mountHistory(root: HTMLElement): void {
   });
 
   clearEl.addEventListener("click", () => {
-    if (busy || !window.confirm("清空全部历史记录？此操作不可撤销。")) {
+    if (busy) {
       return;
     }
-    busy = true;
-    setStatus("");
-    void invoke<HistoryListPayload>("clear_history")
-      .then((payload) => {
-        render(payload);
-        setStatus("已清空。");
-      })
-      .catch((error) => setStatus(errorMessage(error), true))
-      .finally(() => {
-        busy = false;
-      });
+    showConfirm({ kind: "clear" }, "清空全部历史记录？此操作不可撤销。", "确认清空");
+  });
+
+  confirmAcceptEl.addEventListener("click", () => {
+    if (busy || !pendingConfirm) {
+      return;
+    }
+    const pending = pendingConfirm;
+    hideConfirm();
+    if (pending.kind === "delete") {
+      void performDelete(pending.id);
+    } else {
+      void performClear();
+    }
+  });
+
+  confirmCancelEl.addEventListener("click", () => {
+    hideConfirm();
+  });
+
+  // Esc 等同取消,不执行删除。
+  window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && pendingConfirm && !busy) {
+      hideConfirm();
+    }
   });
 
   closeEl.addEventListener("click", () => {

@@ -24,6 +24,44 @@
   color: var(--danger);
 }
 
+/* 窗口内确认条:删除/清空不依赖 WebView 原生 confirm(macOS WKWebView 不可用)。 */
+.history-confirm {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--danger);
+  border-radius: 10px;
+  background: var(--danger-soft);
+}
+
+.history-confirm-text {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink);
+}
+
+.history-confirm-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.history-confirm .history-confirm-accept {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: var(--on-danger);
+}
+
+.history-confirm .history-confirm-accept:hover:not(:disabled) {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: var(--on-danger);
+  filter: brightness(1.08);
+}
+
 .history-list {
   display: flex;
   flex-direction: column;
