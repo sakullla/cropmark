@@ -73,6 +73,98 @@
   background: var(--accent-soft);
 }
 
+/* Wayland 网页覆盖层的能力说明入口(R13):不伪造操作条/放大镜/取色。*/
+.overlay-capabilities {
+  pointer-events: auto;
+  cursor: pointer;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 8px 12px;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  box-shadow: var(--shadow);
+}
+
+.overlay-capabilities:hover,
+.overlay-capabilities[aria-expanded="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+.capability-panel {
+  position: absolute;
+  top: 64px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 4;
+  width: min(520px, 86vw);
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--panel) 96%, transparent);
+  color: var(--ink);
+  box-shadow: var(--shadow);
+  cursor: default;
+  pointer-events: auto;
+}
+
+.capability-panel h2 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+.capability-panel .available {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.capability-panel dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 12px;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.capability-panel dt {
+  color: var(--muted);
+  font-weight: 650;
+}
+
+.capability-panel dd {
+  margin: 0;
+}
+
+.overlay-notice {
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 4;
+  max-width: min(560px, 86vw);
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel) 96%, transparent);
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.45;
+  box-shadow: var(--shadow);
+  pointer-events: none;
+}
+
+.capability-panel[hidden],
+.overlay-notice[hidden],
+.overlay-capabilities[hidden] {
+  display: none;
+}
+
 .size-badge {
   padding: 4px 8px;
   border-radius: 8px;

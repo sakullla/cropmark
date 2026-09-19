@@ -25,6 +25,7 @@ interface OverlayFrame {
   scale: number;
   logicalWidth: number;
   logicalHeight: number;
+  reducedCapabilities: boolean;
   windows: ListedWindow[];
 }
 
@@ -35,14 +36,34 @@ interface Selection {
   height: number;
 }
 
+/// R13:Wayland Web 覆盖层缺少的原生能力说明(不伪造不可用功能)。
+const REDUCED_CAPABILITIES: Array<{ name: string; detail: string }> = [
+  {
+    name: "操作条与右键菜单",
+    detail: "不可用；请用 Enter 确认后在预览中复制、保存、贴图或取字。",
+  },
+  { name: "放大镜", detail: "不可用；需要放大细节时请先调整系统缩放，再重新截取。" },
+  { name: "取色（C 键）", detail: "不可用；请使用系统或第三方取色工具。" },
+  { name: "手柄与方向键微调", detail: "不可用；请重新拖选，或按 Esc 取消后重来。" },
+];
+
+/// 触发不可用能力时的即时说明:同一事实在面板与按键反馈里保持一致。
+const TOOLBAR_NOTICE =
+  "当前覆盖层不提供操作条与右键菜单；请用 Enter 确认后在预览中复制、保存、贴图或取字。";
+const COLOR_NOTICE = "当前覆盖层不提供取色（C 键）；请使用系统或第三方取色工具。";
+const NUDGE_NOTICE = "当前覆盖层不提供方向键微调；请重新拖选，或按 Esc 取消后重来。";
+
 export function mountOverlay(root: HTMLElement): void {
   root.className = "overlay-root";
   root.innerHTML = `
     <canvas></canvas>
     <div class="overlay-chrome">
       <div class="overlay-hint"></div>
+      <button type="button" class="overlay-capabilities" aria-expanded="false" hidden>能力说明</button>
       <button type="button" class="overlay-cancel">取消 Esc</button>
     </div>
+    <aside class="capability-panel" hidden></aside>
+    <div class="overlay-notice" role="status" hidden></div>
     <div class="size-badge" hidden></div>
     <div class="window-list" hidden></div>
   `;
@@ -51,12 +72,18 @@ export function mountOverlay(root: HTMLElement): void {
   const badge = root.querySelector(".size-badge");
   const list = root.querySelector(".window-list");
   const cancelBtn = root.querySelector(".overlay-cancel");
+  const capabilityToggle = root.querySelector(".overlay-capabilities");
+  const capabilityPanel = root.querySelector(".capability-panel");
+  const notice = root.querySelector(".overlay-notice");
   if (
     !(canvas instanceof HTMLCanvasElement) ||
     !(hint instanceof HTMLElement) ||
     !(badge instanceof HTMLElement) ||
     !(list instanceof HTMLElement) ||
-    !(cancelBtn instanceof HTMLButtonElement)
+    !(cancelBtn instanceof HTMLButtonElement) ||
+    !(capabilityToggle instanceof HTMLButtonElement) ||
+    !(capabilityPanel instanceof HTMLElement) ||
+    !(notice instanceof HTMLElement)
   ) {
     return;
   }
@@ -75,6 +102,56 @@ export function mountOverlay(root: HTMLElement): void {
   let hoverId: string | null = null;
   let finishing = false;
   let raf = 0;
+  let noticeTimer = 0;
+
+  /// 与 `confirm_region` 发送的整数裁剪矩形完全一致:徽标数值、挖洞区域
+  /// 与实际裁剪结果同源,且保证 x+width/y+height 不越出冻结帧(R13)。
+  const roundedRect = (): Selection | null => {
+    if (!frame || !selection) {
+      return null;
+    }
+    const left = clamp(Math.round(selection.x), 0, frame.width);
+    const top = clamp(Math.round(selection.y), 0, frame.height);
+    const right = clamp(Math.round(selection.x + selection.width), 0, frame.width);
+    const bottom = clamp(Math.round(selection.y + selection.height), 0, frame.height);
+    return { x: left, y: top, width: right - left, height: bottom - top };
+  };
+
+  const showNotice = (message: string): void => {
+    notice.textContent = message;
+    notice.hidden = false;
+    if (noticeTimer) {
+      window.clearTimeout(noticeTimer);
+    }
+    noticeTimer = window.setTimeout(() => {
+      noticeTimer = 0;
+      notice.hidden = true;
+    }, 3600);
+  };
+
+  const setCapabilityPanel = (open: boolean): void => {
+    capabilityPanel.hidden = !open;
+    capabilityToggle.setAttribute("aria-expanded", open ? "true" : "false");
+    capabilityToggle.textContent = open ? "收起说明" : "能力说明";
+  };
+
+  const renderCapabilityPanel = (): void => {
+    const title = document.createElement("h2");
+    title.textContent = "选区能力说明（Wayland 网页覆盖层）";
+    const available = document.createElement("p");
+    available.className = "available";
+    available.textContent =
+      "可用：拖出矩形选区、Enter 确认、Esc 取消（取消不写剪贴板）；确认后在预览中复制、保存、贴图或取字。";
+    const listEl = document.createElement("dl");
+    for (const item of REDUCED_CAPABILITIES) {
+      const name = document.createElement("dt");
+      name.textContent = item.name;
+      const detail = document.createElement("dd");
+      detail.textContent = item.detail;
+      listEl.append(name, detail);
+    }
+    capabilityPanel.replaceChildren(title, available, listEl);
+  };
 
   const fitCanvas = (): void => {
     const rect = canvas.getBoundingClientRect();
@@ -148,21 +225,22 @@ export function mountOverlay(root: HTMLElement): void {
       }
       return;
     }
-    if (!selection || selection.width < 1 || selection.height < 1) {
+    const crop = roundedRect();
+    if (!crop || crop.width < 1 || crop.height < 1) {
       badge.hidden = true;
       return;
     }
-    const mapped = toCanvas(selection.x, selection.y, selection.width, selection.height);
+    const mapped = toCanvas(crop.x, crop.y, crop.width, crop.height);
     ctx.save();
     ctx.globalCompositeOperation = "destination-out";
     ctx.fillRect(mapped.x, mapped.y, mapped.width, mapped.height);
     ctx.restore();
     ctx.drawImage(
       image,
-      (selection.x / frame.width) * image.width,
-      (selection.y / frame.height) * image.height,
-      (selection.width / frame.width) * image.width,
-      (selection.height / frame.height) * image.height,
+      (crop.x / frame.width) * image.width,
+      (crop.y / frame.height) * image.height,
+      (crop.width / frame.width) * image.width,
+      (crop.height / frame.height) * image.height,
       mapped.x,
       mapped.y,
       mapped.width,
@@ -172,10 +250,10 @@ export function mountOverlay(root: HTMLElement): void {
     ctx.lineWidth = 2;
     ctx.strokeRect(mapped.x + 1, mapped.y + 1, mapped.width - 2, mapped.height - 2);
     badge.hidden = false;
-    badge.textContent = `${Math.round(selection.width)} × ${Math.round(selection.height)}`;
+    badge.textContent = `${crop.width} × ${crop.height}`;
     const rect = canvas.getBoundingClientRect();
-    const cssX = (selection.x / frame.width) * rect.width;
-    const cssY = (selection.y / frame.height) * rect.height;
+    const cssX = (crop.x / frame.width) * rect.width;
+    const cssY = (crop.y / frame.height) * rect.height;
     badge.style.left = `${Math.min(cssX + 8, rect.width - 88)}px`;
     badge.style.top = `${Math.max(cssY - 28, 12)}px`;
   };
@@ -196,8 +274,19 @@ export function mountOverlay(root: HTMLElement): void {
       fitCanvas();
       root.classList.toggle("mode-window", frame.mode === "window");
       root.classList.toggle("mode-region", frame.mode !== "window");
+      const reduced = frame.reducedCapabilities === true;
+      capabilityToggle.hidden = !reduced;
+      notice.hidden = true;
+      setCapabilityPanel(false);
+      if (reduced) {
+        renderCapabilityPanel();
+      }
       hint.textContent =
-        frame.mode === "window" ? "点击要截取的窗口" : "拖出矩形截取区域";
+        frame.mode === "window"
+          ? "点击要截取的窗口"
+          : reduced
+            ? "拖出矩形截取区域 · Enter 确认 · Esc 取消"
+            : "拖出矩形截取区域";
       void getCurrentWindow().setFocus();
       document.body.tabIndex = -1;
       document.body.focus();
@@ -220,16 +309,26 @@ export function mountOverlay(root: HTMLElement): void {
   };
 
   const finishRegion = async (): Promise<void> => {
-    if (!selection || finishing || selection.width < 2 || selection.height < 2) {
+    if (finishing || !frame || frame.mode !== "region") {
+      return;
+    }
+    const crop = roundedRect();
+    if (!crop || crop.width < 2 || crop.height < 2) {
+      // 不静默吞掉确认:给出下次能成功的具体做法(R13)。
+      if (!selection) {
+        showNotice("请先拖出要截取的区域。");
+      } else if (selection.width >= 1 || selection.height >= 1) {
+        showNotice("选区太小，请拖出至少 2 × 2 像素的区域。");
+      }
       return;
     }
     finishing = true;
     try {
       await invoke("confirm_region", {
-        x: Math.round(selection.x),
-        y: Math.round(selection.y),
-        width: Math.round(selection.width),
-        height: Math.round(selection.height),
+        x: crop.x,
+        y: crop.y,
+        width: crop.width,
+        height: crop.height,
       });
     } catch (error) {
       finishing = false;
@@ -259,6 +358,7 @@ export function mountOverlay(root: HTMLElement): void {
     startX = point.x;
     startY = point.y;
     selection = { x: point.x, y: point.y, width: 0, height: 0 };
+    notice.hidden = true;
     scheduleDraw();
   });
 
@@ -314,13 +414,27 @@ export function mountOverlay(root: HTMLElement): void {
     void invoke("cancel_capture");
   };
 
-  // 窗口模式下右键=取消(Esc 失焦卡住时的兜底);区域模式右键留给动作菜单。
+  // 窗口模式下右键=取消(Esc 失焦卡住时的兜底);区域模式右键=动作菜单,
+  // Wayland 覆盖层没有该菜单,必须说明而不是静默无响应(R13)。
   canvas.addEventListener("contextmenu", (event) => {
-    if (!frame || frame.mode !== "window") {
+    if (!frame) {
       return;
     }
+    if (frame.mode === "window") {
+      event.preventDefault();
+      cancel();
+      return;
+    }
+    if (frame.reducedCapabilities) {
+      event.preventDefault();
+      showNotice(TOOLBAR_NOTICE);
+    }
+  });
+
+  capabilityToggle.addEventListener("click", (event) => {
     event.preventDefault();
-    cancel();
+    event.stopPropagation();
+    setCapabilityPanel(capabilityPanel.hidden);
   });
 
   cancelBtn.addEventListener("click", (event) => {
@@ -340,6 +454,19 @@ export function mountOverlay(root: HTMLElement): void {
       if (event.key === "Enter") {
         event.preventDefault();
         void finishRegion();
+      }
+      if (!frame || !frame.reducedCapabilities || frame.mode !== "region") {
+        return;
+      }
+      // 原生壳的可用快捷键在 Wayland 覆盖层缺失:触发时给出说明与替代。
+      if (event.key === "c" || event.key === "C") {
+        event.preventDefault();
+        showNotice(COLOR_NOTICE);
+        return;
+      }
+      if (event.key.startsWith("Arrow") && selection) {
+        event.preventDefault();
+        showNotice(NUDGE_NOTICE);
       }
     },
     true,

@@ -12,11 +12,18 @@ use crate::capture::windows_list::{selectable_windows, ListedWindow};
 
 use super::{linux_capture_backend, LinuxCaptureBackend};
 
+/// 门户不可用时的统一提示(R13):说明原因并给出替代路径。
+const PORTAL_UNAVAILABLE_MESSAGE: &str =
+    "当前桌面没有可用的截屏接口。请安装 xdg-desktop-portal，或在 X11 会话中使用 Cropmark。";
+/// 门户/Wayland 无法枚举窗口:点名替代截取方式,不打开空白预览。
+const PORTAL_WINDOW_LIST_MESSAGE: &str =
+    "当前桌面无法列出窗口。请改用区域或全屏截取，或在 X11 会话中使用窗口模式。";
+/// 门户/Wayland 无法截取窗口:同样给出替代截取方式。
+const PORTAL_WINDOW_CAPTURE_MESSAGE: &str = "当前桌面无法截取窗口。请改用区域或全屏截取。";
+
 pub fn pointer_monitor() -> Result<MonitorGeom, CaptureError> {
     if uses_portal() {
-        return Err(CaptureError::unavailable(
-            "当前 Wayland 会话无法从 X11 读取指针所在屏。",
-        ));
+        return Err(wayland_pointer_unavailable());
     }
     if let Ok(monitor) = x11_pointer_monitor() {
         return Ok(monitor);
@@ -24,6 +31,14 @@ pub fn pointer_monitor() -> Result<MonitorGeom, CaptureError> {
     Err(CaptureError::unavailable(
         "当前桌面没有可用的显示器信息。请确认正在使用 X11，或门户可提供截屏。",
     ))
+}
+
+/// R13:Wayland 指针屏检测失败不再只报"无法从 X11 读取",而是说明失败
+/// 原因并给出替代路径,避免用户在区域截取入口看到无响应式报错。
+fn wayland_pointer_unavailable() -> CaptureError {
+    CaptureError::unavailable(
+        "当前 Wayland 会话无法读取指针所在显示器。请确认已安装并启用 xdg-desktop-portal，或在 X11 会话中使用 Cropmark。",
+    )
 }
 
 pub fn capture_monitor(monitor: &MonitorGeom) -> Result<Frame, CaptureError> {
@@ -49,18 +64,14 @@ pub fn capture_monitor(monitor: &MonitorGeom) -> Result<Frame, CaptureError> {
 
 pub fn list_windows(self_pid: u32) -> Result<Vec<ListedWindow>, CaptureError> {
     if uses_portal() {
-        return Err(CaptureError::unavailable(
-            "当前桌面无法列出窗口。请改用区域或全屏截取，或在 X11 会话中使用窗口模式。",
-        ));
+        return Err(CaptureError::unavailable(PORTAL_WINDOW_LIST_MESSAGE));
     }
     x11_list_windows(self_pid)
 }
 
 pub fn capture_window(id: &str) -> Result<Frame, CaptureError> {
     if uses_portal() {
-        return Err(CaptureError::unavailable(
-            "当前桌面无法截取窗口。请改用区域或全屏截取。",
-        ));
+        return Err(CaptureError::unavailable(PORTAL_WINDOW_CAPTURE_MESSAGE));
     }
     x11_capture_window(id)
 }
@@ -103,9 +114,7 @@ fn portal_error(error: ashpd::Error) -> CaptureError {
     if lower.contains("denied") || lower.contains("permission") || lower.contains("not allowed") {
         classify_platform_failure(PlatformFailure::PermissionDenied)
     } else if lower.contains("unknown") || lower.contains("not found") || lower.contains("no such") {
-        CaptureError::unavailable(
-            "当前桌面没有可用的截屏接口。请安装 xdg-desktop-portal，或在 X11 会话中使用 Cropmark。",
-        )
+        CaptureError::unavailable(PORTAL_UNAVAILABLE_MESSAGE)
     } else {
         classify_platform_failure(PlatformFailure::Api(text))
     }
@@ -191,9 +200,8 @@ fn x11_capture_rect(x: i32, y: i32, width: u32, height: u32, scale: f64) -> Resu
 }
 
 fn x11_list_windows(self_pid: u32) -> Result<Vec<ListedWindow>, CaptureError> {
-    let (conn, screen_num) = x11rb::connect(None).map_err(|_| {
-        CaptureError::unavailable("当前桌面无法列出窗口。请改用区域或全屏截取，或在 X11 会话中使用窗口模式。")
-    })?;
+    let (conn, screen_num) =
+        x11rb::connect(None).map_err(|_| CaptureError::unavailable(PORTAL_WINDOW_LIST_MESSAGE))?;
     let screen = &conn.setup().roots[screen_num];
     let atom = intern(&conn, b"_NET_CLIENT_LIST")?;
     let reply = conn
@@ -268,9 +276,8 @@ fn x11_capture_window(id: &str) -> Result<Frame, CaptureError> {
     let window = id
         .parse::<u32>()
         .map_err(|_| CaptureError::api("无法识别该窗口。"))?;
-    let (conn, _screen_num) = x11rb::connect(None).map_err(|_| {
-        CaptureError::unavailable("当前桌面无法截取窗口。请改用区域或全屏截取。")
-    })?;
+    let (conn, _screen_num) = x11rb::connect(None)
+        .map_err(|_| CaptureError::unavailable(PORTAL_WINDOW_CAPTURE_MESSAGE))?;
     let geom = conn
         .get_geometry(window)
         .map_err(|_| CaptureError::api("无法读取窗口。"))?
@@ -357,7 +364,37 @@ fn zpixmap_to_rgba(data: &[u8], depth: u8, width: u32, height: u32) -> Result<Ve
 }
 
 fn x11_unavailable() -> CaptureError {
-    CaptureError::unavailable(
-        "当前桌面没有可用的截屏接口。请安装 xdg-desktop-portal，或在 X11 会话中使用 Cropmark。",
-    )
+    CaptureError::unavailable(PORTAL_UNAVAILABLE_MESSAGE)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::capture::error::CaptureErrorKind;
+
+    #[test]
+    fn wayland_pointer_failure_names_cause_and_alternative() {
+        let error = wayland_pointer_unavailable();
+        assert_eq!(error.kind, CaptureErrorKind::Unavailable);
+        assert!(error.message.contains("Wayland"));
+        assert!(error.message.contains("显示器"));
+        // 必须给出替代路径,而不是只描述失败。
+        assert!(error.message.contains("xdg-desktop-portal"));
+        assert!(error.message.contains("X11"));
+        assert!(error.user_message().contains("Wayland"));
+    }
+
+    #[test]
+    fn portal_unavailable_messages_keep_alternatives() {
+        assert!(PORTAL_UNAVAILABLE_MESSAGE.contains("xdg-desktop-portal"));
+        assert!(PORTAL_UNAVAILABLE_MESSAGE.contains("X11"));
+        // 门户不可用时不提供空白窗口列表,而是点名区域/全屏替代。
+        assert!(PORTAL_WINDOW_LIST_MESSAGE.contains("区域"));
+        assert!(PORTAL_WINDOW_LIST_MESSAGE.contains("全屏"));
+        assert!(PORTAL_WINDOW_CAPTURE_MESSAGE.contains("区域"));
+        assert!(PORTAL_WINDOW_CAPTURE_MESSAGE.contains("全屏"));
+        let list = CaptureError::unavailable(PORTAL_WINDOW_LIST_MESSAGE);
+        assert_eq!(list.kind, CaptureErrorKind::Unavailable);
+        assert_eq!(x11_unavailable().message, PORTAL_UNAVAILABLE_MESSAGE);
+    }
 }

@@ -596,6 +596,30 @@ fn linux_uses_native_selection() -> bool {
         && platform::linux_capture_backend(wayland.as_deref()) == platform::LinuxCaptureBackend::X11
 }
 
+/// 区域截取是否有原生选区壳(操作条/放大镜/取色/微调):Windows/macOS 恒有,
+/// Linux 仅 X11 会话有;其余平台只有 Web 覆盖层。
+fn region_native_shell() -> bool {
+    #[cfg(any(windows, target_os = "macos"))]
+    {
+        true
+    }
+    #[cfg(target_os = "linux")]
+    {
+        linux_uses_native_selection()
+    }
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+    {
+        false
+    }
+}
+
+/// R13:Web 覆盖层区域路径是否缺少原生能力,需要向用户说明不可用能力与
+/// 替代方式。区域模式且无原生壳(即 Wayland/Linux 网页路径)时为 true;
+/// 窗口模式的 Web 覆盖层不提供原生壳能力也不展示该说明,避免误导。
+fn overlay_reduced_capabilities(mode: CaptureMode, native_shell: bool) -> bool {
+    mode == CaptureMode::Region && !native_shell
+}
+
 #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 async fn capture_region(app: &AppHandle) -> Result<(), CaptureError> {
     let monitor = freeze_screen(app, Vec::new()).await?;
@@ -729,7 +753,13 @@ fn store_freeze(
             .map(|current| current.mode)
             .ok_or_else(CaptureError::cancelled)
     })?;
-    let overlay = ui::overlay_payload(mode, &frame, &monitor, windows.clone())?;
+    let overlay = ui::overlay_payload(
+        mode,
+        &frame,
+        &monitor,
+        windows.clone(),
+        overlay_reduced_capabilities(mode, region_native_shell()),
+    )?;
     with_session_mut(app, |session| {
         let session = session.as_mut().ok_or_else(CaptureError::cancelled)?;
         if session.cancelled {
@@ -1540,6 +1570,9 @@ mod tests {
         let empty = windows_for_window_mode(Ok(Vec::new())).unwrap_err();
         assert_eq!(empty.kind, CaptureErrorKind::Unavailable);
         assert_eq!(empty.message, EMPTY_WINDOW_LIST_MESSAGE);
+        // 提示必须给出替代路径,而不是只报"没有窗口"(R13 保持明确)。
+        assert!(empty.message.contains("区域"));
+        assert!(empty.message.contains("全屏"));
 
         let wayland = windows_for_window_mode(Err(CaptureError::unavailable(
             "当前桌面无法列出窗口。请改用区域或全屏截取，或在 X11 会话中使用窗口模式。",
@@ -1547,11 +1580,29 @@ mod tests {
         .unwrap_err();
         assert_eq!(wayland.kind, CaptureErrorKind::Unavailable);
         assert!(wayland.message.contains("无法列出窗口"));
+        assert!(wayland.message.contains("区域"));
+        assert!(wayland.message.contains("全屏"));
         assert!(!wayland.message.is_empty());
 
         let listed = windows_for_window_mode(Ok(vec![listed_window("w1")])).unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, "w1");
+    }
+
+    #[test]
+    fn wayland_web_overlay_reports_reduced_capabilities() {
+        // 区域模式 + 无原生壳(Wayland/Linux 网页路径):需要能力说明。
+        assert!(overlay_reduced_capabilities(CaptureMode::Region, false));
+        // 区域模式 + 原生壳(Windows/macOS/X11):原生能力可用,不展示说明。
+        assert!(!overlay_reduced_capabilities(CaptureMode::Region, true));
+        // 窗口模式的 Web 覆盖层不提供这些能力,但不得把 Wayland 说明误报给用户。
+        assert!(!overlay_reduced_capabilities(CaptureMode::Window, false));
+        assert!(!overlay_reduced_capabilities(CaptureMode::Window, true));
+        assert!(!overlay_reduced_capabilities(
+            CaptureMode::Fullscreen,
+            false
+        ));
+        assert!(!overlay_reduced_capabilities(CaptureMode::Fullscreen, true));
     }
 
     #[test]

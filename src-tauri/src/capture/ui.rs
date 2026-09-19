@@ -46,6 +46,9 @@ pub struct OverlayPayload {
     pub scale: f64,
     pub logical_width: u32,
     pub logical_height: u32,
+    /// R13:当前覆盖层缺少原生选区壳能力(操作条/放大镜/取色/微调)时为
+    /// true,前端据此展示不可用能力说明与替代方式,不伪造这些功能。
+    pub reduced_capabilities: bool,
     pub windows: Vec<ListedWindow>,
 }
 
@@ -127,7 +130,13 @@ pub fn any_visible(app: &AppHandle, labels: &[&str]) -> bool {
     labels.iter().any(|label| is_visible(app, label))
 }
 
-pub fn overlay_payload(mode: CaptureMode, frame: &Frame, monitor: &MonitorGeom, windows: Vec<ListedWindow>) -> Result<OverlayPayload, CaptureError> {
+pub fn overlay_payload(
+    mode: CaptureMode,
+    frame: &Frame,
+    monitor: &MonitorGeom,
+    windows: Vec<ListedWindow>,
+    reduced_capabilities: bool,
+) -> Result<OverlayPayload, CaptureError> {
     let windows = windows
         .into_iter()
         .map(|mut window| {
@@ -146,6 +155,7 @@ pub fn overlay_payload(mode: CaptureMode, frame: &Frame, monitor: &MonitorGeom, 
         scale: frame.scale,
         logical_width: monitor.logical_width,
         logical_height: monitor.logical_height,
+        reduced_capabilities,
         windows,
     })
 }
@@ -604,5 +614,26 @@ mod tests {
         assert!(pos.y <= -10000.0);
         assert_eq!(size.width, 1.0);
         assert_eq!(size.height, 1.0);
+    }
+
+    #[test]
+    fn overlay_payload_serializes_reduced_capability_flag_for_frontend() {
+        let frame = Frame {
+            width: 4,
+            height: 4,
+            rgba: vec![9; 64],
+            scale: 1.0,
+        };
+        let monitor = MonitorGeom::from_physical("m", 0, 0, 4, 4, 1.0);
+        // R13:前端按 `reducedCapabilities` 渲染能力说明,字段名必须是 camelCase。
+        let reduced = overlay_payload(CaptureMode::Region, &frame, &monitor, Vec::new(), true)
+            .expect("payload builds");
+        assert!(reduced.reduced_capabilities);
+        let json = serde_json::to_value(&reduced).expect("payload serializes");
+        assert_eq!(json["reducedCapabilities"], serde_json::json!(true));
+
+        let full = overlay_payload(CaptureMode::Window, &frame, &monitor, Vec::new(), false)
+            .expect("payload builds");
+        assert!(!full.reduced_capabilities);
     }
 }

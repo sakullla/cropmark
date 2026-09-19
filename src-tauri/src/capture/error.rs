@@ -167,6 +167,19 @@ mod tests {
         assert!(error.user_message().contains("屏幕录制"));
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_permission_hint_points_to_portal() {
+        // R13:门户未安装或被拒时沿用明确文案:说明去向并给出安装建议。
+        let hint = permission_hint();
+        assert!(hint.contains("门户"));
+        assert!(hint.contains("xdg-desktop-portal"));
+        let error = classify_platform_failure(PlatformFailure::PermissionDenied);
+        let user = error.user_message();
+        assert!(user.contains("权限"));
+        assert!(user.contains("xdg-desktop-portal"));
+    }
+
     #[test]
     fn buffer_failures_do_not_mention_black_pixels() {
         for failure in [
