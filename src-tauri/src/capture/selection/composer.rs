@@ -896,12 +896,38 @@ impl Composer {
     }
 
     /// 就地合成;`out` 长度必须与冻结帧一致(先整体写为暗幕)。
-    /// 合成顺序:暗幕→开洞→描边→手柄→徽标→操作条/菜单→放大镜→标注/工具条。
+    /// 合成顺序:暗幕→开洞→标注内容→描边→手柄→徽标→操作条/菜单→放大镜
+    /// →标注工具条。
     pub fn compose_into(&self, scene: &Scene, out: &mut [u8]) {
+        self.compose_into_inner(scene, None, out);
+    }
+
+    /// 叠加标注层版本的就地合成;标注层先于全部 chrome 绘制(见 `compose_into`)。
+    pub fn compose_into_with_overlay(
+        &self,
+        scene: &Scene,
+        overlay: &AnnotationOverlay,
+        out: &mut [u8],
+    ) {
+        self.compose_into_inner(scene, Some(overlay), out);
+    }
+
+    /// 合成实现:标注是选区**内容**,在开洞后、全部 chrome 之前绘制——
+    /// 整块选区重贴(原件 + 标注)不得擦掉描边/手柄/徽标/操作条/菜单/放大镜
+    /// (ADR-14:所见即可点)。其余 chrome 的相对次序保持不变。
+    fn compose_into_inner(
+        &self,
+        scene: &Scene,
+        overlay: Option<&AnnotationOverlay>,
+        out: &mut [u8],
+    ) {
         out.copy_from_slice(&self.dimmed);
         let (w, h) = (self.width, self.height);
         if let Some(selection) = scene.selection {
             punch_hole(out, &self.original, w as usize, selection);
+            if let Some(overlay) = overlay {
+                self.draw_annotations(out, selection, overlay);
+            }
             outline_selection(out, w, h, selection);
             self.draw_handles(out, w, h, selection);
             self.draw_size_badge(out, w, h, selection);
@@ -915,24 +941,12 @@ impl Composer {
         if scene.flags.magnifier {
             self.draw_magnifier(out, w, h, scene.cursor);
         }
-    }
-
-    /// 叠加标注层版本的就地合成(在 `compose_into` 之上绘制)。
-    pub fn compose_into_with_overlay(
-        &self,
-        scene: &Scene,
-        overlay: &AnnotationOverlay,
-        out: &mut [u8],
-    ) {
-        self.compose_into(scene, out);
-        let (w, h) = (self.width, self.height);
-        let Some(selection) = scene.selection else {
-            return;
-        };
-        self.draw_annotations(out, selection, overlay);
-        if scene.flags.inline_annotation && !annotation_buttons(scene.flags, overlay.text_input).is_empty()
-        {
-            self.draw_annotation_toolbar(out, w, h, selection, scene, overlay);
+        if let (Some(selection), Some(overlay)) = (scene.selection, overlay) {
+            if scene.flags.inline_annotation
+                && !annotation_buttons(scene.flags, overlay.text_input).is_empty()
+            {
+                self.draw_annotation_toolbar(out, w, h, selection, scene, overlay);
+            }
         }
     }
 
@@ -1824,6 +1838,88 @@ mod tests {
         // 选区外仍为暗幕(未被标注污染)。
         let outside = (10 * width as usize + 10) * 4;
         assert_eq!(composed[outside], (40u16 * 52 / 100) as u8);
+    }
+
+    /// R21 review P1 回归:标注层是选区**内容**,不得擦掉选区 chrome。
+    /// 标注先画、描边/手柄/放大镜/菜单后画,任一已确认标注存在时 chrome
+    /// 仍可见(且命中几何不变,不会出现"隐形但可点"的菜单)。
+    #[test]
+    fn annotation_layer_never_covers_selection_chrome() {
+        let (w, h) = (800u32, 600u32);
+        let frame = solid_frame(w, h, [30, 30, 30, 255]);
+        let composer = Composer::new(&frame).unwrap();
+        let selection = PhysicalRect {
+            x: 40,
+            y: 30,
+            width: 720,
+            height: 530,
+        };
+        // 图元放在选区下半部:避开顶部标注工具条与右侧操作条。
+        let annotations = vec![Annotation::Rect {
+            x: 100.0,
+            y: 400.0,
+            width: 200.0,
+            height: 100.0,
+            color: "#e11d48".into(),
+            stroke_width: Some(4.0),
+        }];
+        let read = |bytes: &[u8], x: i32, y: i32| {
+            let i = ((y as u32 * w + x as u32) * 4) as usize;
+            [bytes[i], bytes[i + 1], bytes[i + 2]]
+        };
+        let overlay = annotation_overlay(&annotations, None, None, 1);
+
+        // 标注本身可见(非空断言):图元上边框在选区内落玫红像素。
+        let flags = no_magnifier_flags();
+        let composed = composer.compose_with_overlay(&annotation_scene(selection, flags), &overlay);
+        assert_eq!(read(&composed, 200, 400), [225, 29, 72]);
+
+        // 1) 描边与手柄:第一条标注产生后仍在最上层。
+        assert_eq!(read(&composed, 41, 300), [ACCENT[0], ACCENT[1], ACCENT[2]]);
+        let (hx, hy) = handle_anchor(selection, HandleKind::SouthEast);
+        assert_eq!(read(&composed, hx, hy), [255, 255, 255]);
+        assert_eq!(
+            read(&composed, hx + 4, hy),
+            [ACCENT[0], ACCENT[1], ACCENT[2]]
+        );
+
+        // 2) 放大镜:光标在选区内(每次绘制标注时)面板与十字准星不被重贴擦除。
+        let cursor = (400, 300);
+        let scene = Scene {
+            selection: Some(selection),
+            cursor,
+            flags: FeatureFlags::default(),
+            toolbar_visible: false,
+            menu_open: false,
+            menu_anchor: (0, 0),
+        };
+        let composed = composer.compose_with_overlay(&scene, &overlay);
+        let panel = magnifier_rect(cursor, (w, h), 1.0);
+        let layout = mag_layout(1.0);
+        let cross_y = panel.y + layout.pad + layout.half * layout.block + layout.block / 2;
+        assert_eq!(
+            read(&composed, panel.x + layout.pad + 10, cross_y),
+            [ACCENT[0], ACCENT[1], ACCENT[2]],
+            "magnifier crosshair must survive the annotation layer"
+        );
+
+        // 3) 右键菜单:面板像素不被擦除(菜单命中与绘制同源,不允许隐形可点)。
+        let scene = Scene {
+            selection: Some(selection),
+            cursor,
+            flags,
+            toolbar_visible: false,
+            menu_open: true,
+            menu_anchor: cursor,
+        };
+        let composed = composer.compose_with_overlay(&scene, &overlay);
+        let items = menu_items(flags);
+        let menu = menu_panel(metrics_1(), cursor, (w, h), &items);
+        let probe = read(&composed, menu.x + 10, menu.y + 8);
+        assert!(
+            probe[0] > 200 && probe[1] > 200 && probe[2] > 200,
+            "menu panel must stay visible over annotations, got {probe:?}"
+        );
     }
 
     /// 草稿即使未达导出下限也要可见(拖动过程中的即时反馈)。

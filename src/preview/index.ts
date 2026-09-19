@@ -339,6 +339,9 @@ export function mountPreview(root: HTMLElement): () => void {
   let copiedSource: { key: CatalogKey | null; params?: Record<string, string | number>; text: string } =
     { key: "preview.copied_clean", text: "" };
   let copiedKind: NoteKind = "success";
+  // R21:选区即时标注随帧带入时,提示条以「携带说明 + 复制状态」合并显示;
+  // 二者共用同一元素,分两次写入会互相覆盖(review P3)。
+  let carriedNoteSource: { key: CatalogKey; params?: Record<string, string | number> } | null = null;
   let ocrDoc: OcrDocument | null = null;
   let ocrSelected: number[] = [];
   let ocrDragging = false;
@@ -393,7 +396,11 @@ export function mountPreview(root: HTMLElement): () => void {
     if (!noteSource) {
       return;
     }
-    note.textContent = noteText(noteSource);
+    // 携带说明只装饰「已复制」状态提示(它是帧级信息,与工具提示无关)。
+    const carried = carriedNoteSource;
+    const prefix =
+      carried !== null && noteSource === copiedSource ? `${t(carried.key, carried.params)} ` : "";
+    note.textContent = `${prefix}${noteText(noteSource)}`;
     note.classList.toggle("is-success", noteKind === "success");
     note.classList.toggle("is-feedback", noteKind === "feedback");
     note.classList.toggle("is-error", noteKind === "error");
@@ -421,7 +428,8 @@ export function mountPreview(root: HTMLElement): () => void {
   };
 
   // 「已复制」提示携带来源样式(成功/失败/未自动复制);切换工具重绘时
-  // 沿用原 kind,不让 feedback 提示被固定改写成成功色。
+  // 沿用原 kind,不让 feedback 提示被固定改写成成功色。携带标注说明
+  // (`carriedNoteSource`)只跟随复制状态提示,不覆盖其它提示。
   const setCopied = (
     source: { key: CatalogKey | null; params?: Record<string, string | number>; text: string },
     kind: NoteKind,
@@ -1652,9 +1660,10 @@ export function mountPreview(root: HTMLElement): () => void {
         redoStack.length = 0;
         selected = null;
         numberPlaced = annotations.filter((op) => op.type === "number").length;
-        if (annotations.length > 0) {
-          setNoteKey("preview.note.inline_annotations", undefined, "feedback");
-        }
+        // 携带说明与复制状态共用同一提示条:先登记携带前缀,再写复制状态,
+        // 二者合并可见(review P3:分别写入会互相覆盖)。
+        carriedNoteSource =
+          annotations.length > 0 ? { key: "preview.note.inline_annotations" } : null;
         if (activeWriteback) {
           setCopied({ key: "preview.copied_writeback", text: "" }, "feedback");
         } else if (copyState === 1) {
@@ -1689,6 +1698,8 @@ export function mountPreview(root: HTMLElement): () => void {
     freehand = [];
     // 新帧的序号从携带图元之后继续递增(image.onload 中重算)。
     numberPlaced = 0;
+    // 携带说明随新帧重算(image.onload);先清空,避免加载失败时残留旧前缀。
+    carriedNoteSource = null;
     // 新帧不带旧编辑态:收掉文字编辑器,清掉 editorOrigin,防旧文本误入新帧。
     hideEditor();
     syncUndo();
