@@ -231,11 +231,29 @@ pub fn begin_last_region(app: &AppHandle, delay_ms: u64) {
     });
 }
 
+/// R23 阶段日志门控(与壳/平台侧同源):触发→hide→抓屏→壳→错误窗,
+/// 足以区分"未进壳/挂起/阻塞/错误未显示"。
+fn capture_timing_enabled() -> bool {
+    std::env::var_os("CROPMARK_CAPTURE_TIMING").is_some()
+}
+
 async fn run(app: AppHandle, mode: CaptureMode, delay_ms: u64) -> Result<(), CaptureError> {
     let Some(generation) = try_begin_with_delay(&app, mode, delay_ms).await else {
         return Ok(());
     };
+    if capture_timing_enabled() {
+        eprintln!(
+            "Cropmark capture: trigger mode={mode:?} delay_ms={delay_ms} generation={generation}"
+        );
+    }
+    let hide_started = Instant::now();
     hide_product_surfaces(&app, generation)?;
+    if capture_timing_enabled() {
+        eprintln!(
+            "Cropmark capture: hide done generation={generation} elapsed={:?}",
+            hide_started.elapsed()
+        );
+    }
     wait_delay_before_capture(&app, delay_ms, mode, generation).await?;
     match mode {
         CaptureMode::Region => capture_region(&app, generation).await,
@@ -594,14 +612,14 @@ thread_local! {
 /// C 键取色回调:复制 HEX+RGB 文本并 toast 反馈;剪贴板失败提示失败。
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 fn copy_color_feedback(text: &str, hex: &str) {
-    if std::env::var_os("CROPMARK_CAPTURE_TIMING").is_some() {
+    if capture_timing_enabled() {
         eprintln!("Cropmark color copy: hook ran, hex={hex}");
     }
     let toast_key = |key: &str, params: &[(&str, &str)]| {
         SHELL_APP.with(|slot| {
             if let Some(app) = slot.borrow().as_ref() {
                 ui::show_toast_key_params(app, key, params);
-            } else if std::env::var_os("CROPMARK_CAPTURE_TIMING").is_some() {
+            } else if capture_timing_enabled() {
                 eprintln!("Cropmark color copy: no app in thread-local");
             }
         });
@@ -653,7 +671,13 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
     })
     .await
     .map_err(|_| CaptureError::api("error.capture.thread_failed"))??;
+    if capture_timing_enabled() {
+        eprintln!("Cropmark capture: region shell outcome={picked:?} generation={generation}");
+    }
     if !session_matches_generation(app, generation) {
+        if capture_timing_enabled() {
+            eprintln!("Cropmark capture: region shell result discarded (stale generation)");
+        }
         return Ok(());
     }
     match picked {
@@ -838,10 +862,40 @@ async fn freeze_screen(
 
 fn grab_pointer_screen(app: &AppHandle) -> Result<(Frame, MonitorGeom), CaptureError> {
     require_capture_ready(app)?;
+    announce_screen_permission_wait(app);
+    if capture_timing_enabled() {
+        eprintln!("Cropmark capture: grab start");
+    }
+    let started = Instant::now();
     let monitor = tauri_pointer_monitor(app).unwrap_or(platform::pointer_monitor()?);
     let frame = platform::capture_monitor(&monitor)?;
+    if capture_timing_enabled() {
+        eprintln!(
+            "Cropmark capture: grab done {}x{} scale={} elapsed={:?}",
+            frame.width,
+            frame.height,
+            monitor.scale,
+            started.elapsed()
+        );
+    }
     Ok((frame, monitor))
 }
+
+/// R23:macOS 首次触发且尚未授权时,在系统授权弹窗出现前后给出过渡反馈,
+/// 避免"毫无反应";已授权或已请求过不打扰(错误窗/正常流程自会反馈)。
+#[cfg(target_os = "macos")]
+fn announce_screen_permission_wait(app: &AppHandle) {
+    use super::platform::{screen_permission_state, ScreenPermissionState};
+    if screen_permission_state() == ScreenPermissionState::NotRequested {
+        if capture_timing_enabled() {
+            eprintln!("Cropmark capture: permission not requested; showing waiting toast");
+        }
+        ui::show_toast_key(app, "toast.screen_permission_waiting");
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn announce_screen_permission_wait(_app: &AppHandle) {}
 
 fn require_capture_ready(app: &AppHandle) -> Result<(), CaptureError> {
     with_session(app, |session| {
@@ -1466,7 +1520,7 @@ fn finish_with_ttl(
     if let Some(deadline) = quiet_deadline {
         spawn_frame_ttl_cleanup(app.clone(), deadline);
     }
-    if std::env::var_os("CROPMARK_CAPTURE_TIMING").is_some() {
+    if capture_timing_enabled() {
         eprintln!(
             "Cropmark capture {}x{}: PNG={:?}, clipboard={:?}, preview={:?}, total={:?}",
             frame.width,
@@ -1571,8 +1625,17 @@ fn finish_error(app: &AppHandle, error: CaptureError) -> Result<(), CaptureError
     }
     with_session_mut(app, |session| *session = None);
     set_last_error(app, Some(error.clone()));
-    ui::open_error(app, &error)?;
-    Ok(())
+    let opened = ui::open_error(app, &error);
+    if capture_timing_enabled() {
+        match &opened {
+            Ok(()) => eprintln!("Cropmark capture: error window shown kind={:?}", error.kind),
+            Err(open_error) => eprintln!(
+                "Cropmark capture: error window failed kind={:?} error={open_error:?}",
+                error.kind
+            ),
+        }
+    }
+    opened
 }
 
 fn is_cancelled(app: &AppHandle) -> bool {

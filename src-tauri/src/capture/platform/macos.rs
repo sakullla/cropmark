@@ -46,6 +46,33 @@ extern "C" {
     fn cropmark_sck_capture_at_point(px: i32, py: i32, out: *mut CropmarkSckResult) -> i32;
     fn cropmark_sck_capture_window(window_id: u32, out: *mut CropmarkSckResult) -> i32;
     fn cropmark_sck_list_windows(out: *mut CropmarkSckWindow, cap: i32, count: *mut i32) -> i32;
+    fn cropmark_sck_permission_state() -> i32;
+}
+
+/// 屏幕录制权限状态(R23):由 C 桥的 preflight + 每进程请求记录派生。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScreenPermissionState {
+    Authorized,
+    /// 未授权且本进程尚未请求:首次请求会弹系统授权。
+    NotRequested,
+    /// 未授权且已请求过:不会再弹窗,需系统设置开启后重启。
+    Denied,
+}
+
+pub fn screen_permission_state() -> ScreenPermissionState {
+    permission_state_from(unsafe { cropmark_sck_permission_state() })
+}
+
+fn permission_state_from(code: i32) -> ScreenPermissionState {
+    match code {
+        0 => ScreenPermissionState::Authorized,
+        1 => ScreenPermissionState::NotRequested,
+        _ => ScreenPermissionState::Denied,
+    }
+}
+
+fn timing_enabled() -> bool {
+    std::env::var_os("CROPMARK_CAPTURE_TIMING").is_some()
 }
 
 pub fn pointer_monitor() -> Result<MonitorGeom, CaptureError> {
@@ -84,7 +111,37 @@ pub fn capture_monitor(monitor: &MonitorGeom) -> Result<Frame, CaptureError> {
     unsafe {
         let _ = cropmark_sck_pointer(&mut px, &mut py);
     }
-    take_result(|out| unsafe { cropmark_sck_capture_at_point(px, py, out) }, monitor.scale)
+    if timing_enabled() {
+        eprintln!(
+            "Cropmark macos sck: capture start point=({px},{py}) logical={}x{} scale={} permission={:?}",
+            monitor.logical_width,
+            monitor.logical_height,
+            monitor.scale,
+            screen_permission_state()
+        );
+    }
+    let started = std::time::Instant::now();
+    let result = take_result(
+        |out| unsafe { cropmark_sck_capture_at_point(px, py, out) },
+        monitor.scale,
+    );
+    if timing_enabled() {
+        match &result {
+            Ok(frame) => eprintln!(
+                "Cropmark macos sck: capture done {}x{} elapsed={:?}",
+                frame.width,
+                frame.height,
+                started.elapsed()
+            ),
+            Err(error) => eprintln!(
+                "Cropmark macos sck: capture failed kind={:?} message={} elapsed={:?}",
+                error.kind,
+                error.message,
+                started.elapsed()
+            ),
+        }
+    }
+    result
 }
 
 pub fn list_windows(self_pid: u32) -> Result<Vec<ListedWindow>, CaptureError> {
@@ -103,6 +160,12 @@ pub fn list_windows(self_pid: u32) -> Result<Vec<ListedWindow>, CaptureError> {
     let status = unsafe { cropmark_sck_list_windows(raw.as_mut_ptr(), raw.len() as i32, &mut count) };
     if status == 1 {
         return Err(classify_platform_failure(PlatformFailure::PermissionDenied));
+    }
+    if status == 3 {
+        return Err(CaptureError::timeout(
+            "error.capture.sck_timeout",
+            "error.capture.timeout_hint",
+        ));
     }
     if status != 0 {
         return Err(CaptureError::unavailable("error.capture.screencapturekit_windows"));
@@ -176,6 +239,8 @@ fn map_kind(kind: i32, message: Option<String>) -> CaptureError {
             Some(detail) if !detail.trim().is_empty() => CaptureError::platform_message(detail),
             _ => CaptureError::unavailable("error.capture.no_interface"),
         },
+        // 5=获取可共享内容超时、6=截取超时(ADR-17):可重试的明确错误。
+        5 | 6 => CaptureError::timeout("error.capture.sck_timeout", "error.capture.timeout_hint"),
         _ => classify_platform_failure(PlatformFailure::Api(message.unwrap_or_default())),
     }
 }
@@ -185,5 +250,34 @@ unsafe fn cstring(ptr: *mut c_char) -> Option<String> {
         None
     } else {
         Some(CStr::from_ptr(ptr).to_string_lossy().into_owned())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::capture::error::CaptureErrorKind;
+
+    #[test]
+    fn permission_state_maps_all_three_codes() {
+        assert_eq!(permission_state_from(0), ScreenPermissionState::Authorized);
+        assert_eq!(
+            permission_state_from(1),
+            ScreenPermissionState::NotRequested
+        );
+        assert_eq!(permission_state_from(2), ScreenPermissionState::Denied);
+        // 未知代码按已拒绝处理,不误报"会弹授权"。
+        assert_eq!(permission_state_from(-1), ScreenPermissionState::Denied);
+        assert_eq!(permission_state_from(99), ScreenPermissionState::Denied);
+    }
+
+    #[test]
+    fn sck_timeout_kinds_map_to_retryable_errors() {
+        for kind in [5, 6] {
+            let error = map_kind(kind, None);
+            assert_eq!(error.kind, CaptureErrorKind::Timeout);
+            assert!(error.message.contains("超时"), "message={}", error.message);
+            assert!(error.hint.is_some());
+        }
     }
 }

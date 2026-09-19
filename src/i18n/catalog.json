@@ -231,6 +231,22 @@
     "zh-CN": "选区窗无法在主线程运行。",
     "en": "The selection window could not run on the main thread."
   },
+  "error.capture.sck_timeout": {
+    "zh-CN": "屏幕捕获组件响应超时，未能截取。",
+    "en": "The screen capture component timed out; nothing was captured."
+  },
+  "error.capture.shell_entry_timeout": {
+    "zh-CN": "选区界面未能及时出现，未能截取。",
+    "en": "The selection overlay did not appear in time; nothing was captured."
+  },
+  "error.capture.shell_panic": {
+    "zh-CN": "选区界面异常终止，未能截取。",
+    "en": "The selection overlay terminated unexpectedly; nothing was captured."
+  },
+  "error.capture.timeout_hint": {
+    "zh-CN": "请重试；若持续出现，退出并重新打开 Cropmark。",
+    "en": "Try again; if it keeps happening, quit and reopen Cropmark."
+  },
   "error.capture.no_monitor": {
     "zh-CN": "没有可用的显示器。",
     "en": "No monitor is available."
@@ -350,6 +366,10 @@
   "toast.cancel_in_progress": {
     "zh-CN": "正在取消上一次截取，请稍后重试。",
     "en": "Still cancelling the previous capture. Please try again."
+  },
+  "toast.screen_permission_waiting": {
+    "zh-CN": "正在等待屏幕录制授权…授权后需退出并重新打开 Cropmark。",
+    "en": "Waiting for Screen Recording permission… after granting it, quit and reopen Cropmark."
   },
   "toast.saved": {
     "zh-CN": "已保存 {name}。",

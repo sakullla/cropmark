@@ -25,6 +25,10 @@ mod macos;
 #[cfg(target_os = "linux")]
 mod linux;
 
+/// macOS 屏幕录制权限状态(R23):触发前快速判定,首次请求给出过渡提示。
+#[cfg(target_os = "macos")]
+pub use macos::{screen_permission_state, ScreenPermissionState};
+
 #[cfg(windows)]
 use win as backend;
 #[cfg(target_os = "macos")]

@@ -28,6 +28,8 @@ pub enum CaptureErrorKind {
     Api,
     InvalidBuffer,
     Unavailable,
+    /// 平台组件在有界等待内未响应(ADR-17):明确报错而不是永久挂起,可重试。
+    Timeout,
     Cancelled,
 }
 
@@ -97,6 +99,11 @@ impl CaptureError {
 
     pub fn unavailable(key: &str) -> Self {
         Self::from_parts(CaptureErrorKind::Unavailable, key, &[], None)
+    }
+
+    /// 有界等待超时(ADR-17):message/hint 都走词条,语言切换后可重解析。
+    pub fn timeout(key: &str, hint_key: &str) -> Self {
+        Self::from_parts(CaptureErrorKind::Timeout, key, &[], Some(hint_key))
     }
 
     /// 平台层返回的原始系统文案(如 C 层错误串):系统级文案不纳入词条覆盖,
@@ -266,5 +273,29 @@ mod tests {
             assert!(!error.message.contains("黑"));
             assert!(!error.message.to_ascii_lowercase().contains("black"));
         }
+    }
+
+    #[test]
+    fn timeout_errors_keep_kind_message_and_hint() {
+        let error =
+            CaptureError::timeout("error.capture.sck_timeout", "error.capture.timeout_hint");
+        assert_eq!(error.kind, CaptureErrorKind::Timeout);
+        assert!(error.message.contains("超时"), "message={}", error.message);
+        let hint = error
+            .hint
+            .as_deref()
+            .expect("timeout errors include a hint");
+        assert!(hint.contains("重试"), "hint={hint}");
+        assert!(error.user_message().contains(hint));
+
+        // 语言切换后按模板重解析:kind 与模板都必须保留。
+        let localized = error.localized();
+        assert_eq!(localized.kind, CaptureErrorKind::Timeout);
+        assert!(localized.message.contains("超时"));
+        assert!(localized.hint.is_some());
+
+        // 序列化面给前端:kind 名为 timeout。
+        let json = serde_json::to_string(&error).expect("CaptureError serializes");
+        assert!(json.contains("\"kind\":\"timeout\""), "json={json}");
     }
 }

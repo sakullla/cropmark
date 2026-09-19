@@ -25,7 +25,10 @@
 
 use std::cell::RefCell;
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use objc2::rc::Retained;
@@ -115,6 +118,10 @@ struct ShellState {
     applied_cursor: Option<CursorKind>,
     /// resize 自绘光标缓存(懒构建;符号不可用时保持 None,显示时退回十字)。
     resize_cursors: ResizeCursors,
+    /// 本次壳启动时的关闭代际基线;泵检测到代际变化即取消(ADR-16/17)。
+    close_baseline: u64,
+    /// 派发方主线程进入超时后置位:迟到的壳在泵内自行退出,不悬挂在屏幕上。
+    abandoned: Arc<AtomicBool>,
 }
 
 /// 壳内光标形态:引擎提示在上层细化(移动提示拖移中变为闭合手)。
@@ -305,8 +312,8 @@ define_class!(
     }
 );
 
-/// libdispatch 主队列:AppKit 对象只能活在主线程,Windows 壳在阻塞线程
-/// 泵消息的调用形态在这里经 dispatch_sync_f 整体切到主线程执行。
+/// libdispatch 主队列:AppKit 对象只能活在主线程,阻塞线程上的调用形态在这里
+/// 经主队列派发整体切到主线程执行(有界等待,ADR-17)。
 #[repr(C)]
 struct DispatchQueueOpaque {
     _private: [u8; 0],
@@ -315,11 +322,6 @@ struct DispatchQueueOpaque {
 #[link(name = "System", kind = "dylib")]
 extern "C" {
     static _dispatch_main_q: DispatchQueueOpaque;
-    fn dispatch_sync_f(
-        queue: *mut DispatchQueueOpaque,
-        context: *mut c_void,
-        work: extern "C" fn(*mut c_void),
-    );
     fn dispatch_async_f(
         queue: *mut DispatchQueueOpaque,
         context: *mut c_void,
@@ -327,13 +329,18 @@ extern "C" {
     );
 }
 
-/// 当前壳的关闭请求(stale 重置):从任意线程置位,泵在下一轮迭代取消。
-static SHELL_CLOSE_REQUESTED: AtomicBool = AtomicBool::new(false);
+/// 主线程进入上限(ADR-17):主队列长时间不执行派发任务时返回明确错误,
+/// 由会话层进入错误窗并可重试,而不是永久挂起。
+const MAIN_THREAD_ENTRY_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// 请求关闭当前选区壳(线程安全,可从任意线程调用):置位关闭标志并经
+/// 当前壳的关闭代际(stale 重置/超时兜底):从任意线程递增,泵在下一轮迭代取消。
+/// 用代际而不是布尔标志:旧壳的收尾不会清除新壳的待关闭状态(评审 P3)。
+static SHELL_CLOSE_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+/// 请求关闭当前选区壳(线程安全,可从任意线程调用):递增关闭代际并经
 /// 主队列唤醒 AppKit 事件泵;泵退出后旧结果由会话层代际校验丢弃(ADR-16)。
 pub fn request_shell_close() {
-    SHELL_CLOSE_REQUESTED.store(true, Ordering::SeqCst);
+    SHELL_CLOSE_EPOCH.fetch_add(1, Ordering::SeqCst);
     // 主队列回调只用于唤醒 run loop(泵会顺带服务主队列),不触碰 AppKit 状态。
     unsafe {
         dispatch_async_f(
@@ -358,7 +365,7 @@ struct ShellGeometry {
 }
 
 /// 驱动一次区域选区:在指针所在屏创建无边框置顶窗并泵事件直到终态。
-/// 可在任意线程调用;非主线程时整体派发到主线程同步执行。
+/// 可在任意线程调用;非主线程时整体派发到主线程执行,进入主线程有界超时。
 pub fn pick_region(
     frame: &Frame,
     monitor: &MonitorGeom,
@@ -390,42 +397,124 @@ pub fn pick_region(
         },
     };
     if let Some(mtm) = MainThreadMarker::new() {
-        run_shell(mtm, canvas, geometry, hooks)
+        run_shell(
+            mtm,
+            canvas,
+            geometry,
+            hooks,
+            Arc::new(AtomicBool::new(false)),
+        )
     } else {
-        run_on_main_thread(move || {
-            let mtm = MainThreadMarker::new().expect("dispatch_sync_f 已切到主线程");
-            run_shell(mtm, canvas, geometry, hooks)
-        })
+        run_on_main_thread(canvas, geometry, hooks)
     }
 }
 
-/// 经 libdispatch 主队列同步执行;调用方已在主线程时由 pick_region 直接短路。
+fn timing_enabled() -> bool {
+    std::env::var_os("CROPMARK_CAPTURE_TIMING").is_some()
+}
+
+/// 主线程任务:画布/几何/回调经主队列移交,结果经 mpsc 回传,Box 由入口释放。
+struct MainThreadJob {
+    canvas: Option<Canvas>,
+    geometry: ShellGeometry,
+    hooks: ShellHooks,
+    abandoned: Arc<AtomicBool>,
+    started: Sender<()>,
+    done: Sender<Result<RegionOutcome, CaptureError>>,
+}
+
+/// 经主队列异步派发并有界等待"已进入主线程"(ADR-17);壳的真正执行时间由
+/// 用户交互决定,只有进入这一跳受 `MAIN_THREAD_ENTRY_TIMEOUT` 限制。
+/// 超时返回明确错误;迟到的任务据 `abandoned` 跳过,已开始的壳由泵自行退出。
 fn run_on_main_thread(
-    run: impl FnOnce() -> Result<RegionOutcome, CaptureError> + Send + 'static,
+    canvas: Canvas,
+    geometry: ShellGeometry,
+    hooks: ShellHooks,
 ) -> Result<RegionOutcome, CaptureError> {
-    struct MainThreadJob {
-        run: Option<Box<dyn FnOnce() -> Result<RegionOutcome, CaptureError> + Send>>,
-        result: Option<Result<RegionOutcome, CaptureError>>,
-    }
-    extern "C" fn main_thread_entry(context: *mut c_void) {
-        let mut job = unsafe { Box::from_raw(context as *mut MainThreadJob) };
-        if let Some(run) = job.run.take() {
-            job.result = Some(run());
-        }
-    }
-    let mut job = MainThreadJob {
-        run: Some(Box::new(run)),
-        result: None,
-    };
+    let abandoned = Arc::new(AtomicBool::new(false));
+    let (started_tx, started_rx) = mpsc::channel::<()>();
+    let (done_tx, done_rx) = mpsc::channel::<Result<RegionOutcome, CaptureError>>();
+    let job = Box::new(MainThreadJob {
+        canvas: Some(canvas),
+        geometry,
+        hooks,
+        abandoned: abandoned.clone(),
+        started: started_tx,
+        done: done_tx,
+    });
     unsafe {
-        dispatch_sync_f(
+        dispatch_async_f(
             std::ptr::addr_of!(_dispatch_main_q) as *mut DispatchQueueOpaque,
-            std::ptr::addr_of_mut!(job).cast::<c_void>(),
+            Box::into_raw(job).cast::<c_void>(),
             main_thread_entry,
         );
     }
-    job.result
-        .unwrap_or_else(|| Err(CaptureError::api("error.capture.shell_main_thread")))
+    if timing_enabled() {
+        eprintln!("Cropmark macos shell: dispatched to main thread");
+    }
+    match started_rx.recv_timeout(MAIN_THREAD_ENTRY_TIMEOUT) {
+        Ok(()) => {}
+        Err(RecvTimeoutError::Timeout) => {
+            abandoned.store(true, Ordering::SeqCst);
+            // 若任务恰已开始执行,递增代际让泵在下一轮退出,不把面板留在屏幕上。
+            request_shell_close();
+            if timing_enabled() {
+                eprintln!(
+                    "Cropmark macos shell: main-thread entry timeout after {MAIN_THREAD_ENTRY_TIMEOUT:?}"
+                );
+            }
+            return Err(CaptureError::timeout(
+                "error.capture.shell_entry_timeout",
+                "error.capture.timeout_hint",
+            ));
+        }
+        Err(RecvTimeoutError::Disconnected) => {
+            return Err(CaptureError::api("error.capture.shell_main_thread"));
+        }
+    }
+    match done_rx.recv() {
+        Ok(result) => result,
+        Err(_) => Err(CaptureError::api("error.capture.shell_main_thread")),
+    }
+}
+
+/// 壳退出清理:正常返回与 unwind(panic)都收起面板并恢复系统光标,
+/// 避免裸 panic 留下全屏遮挡窗(ADR-17 失败边界)。
+struct ShellExitGuard<'a> {
+    window: &'a NSWindow,
+}
+
+impl Drop for ShellExitGuard<'_> {
+    fn drop(&mut self) {
+        self.window.orderOut(None);
+        NSCursor::arrowCursor().set();
+    }
+}
+
+/// 主队列入口:裸 panic 在此收敛为错误而不是静默丢帧(ADR-17)。
+extern "C" fn main_thread_entry(context: *mut c_void) {
+    let mut job = unsafe { Box::from_raw(context as *mut MainThreadJob) };
+    let done = job.done.clone();
+    let abandoned = job.abandoned.clone();
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if abandoned.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
+        // 等待方已超时放弃(started 接收端已丢弃):不进入壳。
+        if job.started.send(()).is_err() {
+            return Ok(None);
+        }
+        let canvas = job.canvas.take().expect("main thread job canvas");
+        let mtm = MainThreadMarker::new().expect("main queue 任务应在主线程运行");
+        run_shell(mtm, canvas, job.geometry, job.hooks, job.abandoned.clone()).map(Some)
+    }));
+    let outcome = match result {
+        Ok(Ok(Some(outcome))) => Ok(outcome),
+        Ok(Ok(None)) => return,
+        Ok(Err(error)) => Err(error),
+        Err(_) => Err(CaptureError::api("error.capture.shell_panic")),
+    };
+    let _ = done.send(outcome);
 }
 
 fn run_shell(
@@ -433,9 +522,25 @@ fn run_shell(
     canvas: Canvas,
     geometry: ShellGeometry,
     hooks: ShellHooks,
+    abandoned: Arc<AtomicBool>,
 ) -> Result<RegionOutcome, CaptureError> {
-    // stale 重置可能在上一次壳退出前就置位;本次壳从干净状态开始。
-    SHELL_CLOSE_REQUESTED.store(false, Ordering::SeqCst);
+    // 本次壳的关闭基线:基线之前的关闭请求属于旧壳,不再影响本次(评审 P3)。
+    let close_baseline = SHELL_CLOSE_EPOCH.load(Ordering::SeqCst);
+    let timing = timing_enabled();
+    let started = Instant::now();
+    if timing {
+        eprintln!(
+            "Cropmark macos shell: entered main thread logical={}x{} scale={} epoch={close_baseline}",
+            geometry.logical_width, geometry.logical_height, geometry.scale
+        );
+    }
+    if abandoned.load(Ordering::SeqCst) {
+        // 派发方已超时:不再建窗,结果会被会话层丢弃。
+        if timing {
+            eprintln!("Cropmark macos shell: abandoned before window creation");
+        }
+        return Ok(RegionOutcome::Cancelled);
+    }
     let frame = screen_frame_for(mtm, &geometry);
     STATE.with(|slot| {
         *slot.borrow_mut() = Some(ShellState {
@@ -448,9 +553,11 @@ fn run_shell(
             image: None,
             dirty: false,
             outcome: None,
-            timing: std::env::var_os("CROPMARK_CAPTURE_TIMING").is_some(),
+            timing,
             applied_cursor: Some(CursorKind::Crosshair),
             resize_cursors: ResizeCursors::default(),
+            close_baseline,
+            abandoned,
         });
     });
     let app = NSApplication::sharedApplication(mtm);
@@ -461,6 +568,8 @@ fn run_shell(
     app.activateIgnoringOtherApps(true);
     let view = unsafe { create_selection_view(mtm, frame.size) };
     let window = unsafe { create_key_window(mtm, frame)? };
+    // 退出清理守卫:任何后续 panic 都不会把全屏面板留在屏幕上(ADR-17)。
+    let exit_guard = ShellExitGuard { window: &window };
     window.setLevel(kCGScreenSaverWindowLevel as isize);
     window.setCollectionBehavior(
         NSWindowCollectionBehavior::CanJoinAllSpaces
@@ -493,13 +602,22 @@ fn run_shell(
     let responder: &NSResponder = &view;
     window.makeFirstResponder(Some(responder));
     view.display();
+    if timing {
+        eprintln!("Cropmark macos shell: panel presented");
+    }
     pump_until_done(&app, &view);
-    window.orderOut(None);
-    NSCursor::arrowCursor().set();
+    drop(exit_guard);
     let state = STATE.with(|slot| slot.borrow_mut().take());
-    Ok(state
+    let outcome = state
         .and_then(|state| state.outcome)
-        .unwrap_or(RegionOutcome::Cancelled))
+        .unwrap_or(RegionOutcome::Cancelled);
+    if timing {
+        eprintln!(
+            "Cropmark macos shell: outcome={outcome:?} elapsed={:?}",
+            started.elapsed()
+        );
+    }
+    Ok(outcome)
 }
 
 /// 按捕获时的逻辑几何匹配 NSScreen;不一致时按 monitor 逻辑值直接构造
@@ -553,7 +671,8 @@ unsafe fn create_key_window(
 
 /// 手动泵事件直到引擎给出终态;阻塞等待期间 run loop 会顺带服务
 /// 窗口刷新(display/drawRect)与其它来源。等待有界(250ms):除事件外也
-/// 周期性检查 stale 重置的关闭标志,保证旧壳及时退出;无事件时立即重入等待。
+/// 周期性检查关闭代际与派发方放弃标志,保证旧壳/迟到壳及时退出;无事件时
+/// 立即重入等待。
 fn pump_until_done(app: &NSApplication, view: &SelectionView) {
     loop {
         let done = STATE.with(|slot| {
@@ -561,7 +680,15 @@ fn pump_until_done(app: &NSApplication, view: &SelectionView) {
             let Some(state) = guard.as_mut() else {
                 return false;
             };
-            if SHELL_CLOSE_REQUESTED.load(Ordering::SeqCst) && state.outcome.is_none() {
+            if should_cancel(
+                state.outcome.is_some(),
+                state.abandoned.load(Ordering::SeqCst),
+                state.close_baseline,
+                SHELL_CLOSE_EPOCH.load(Ordering::SeqCst),
+            ) {
+                if state.timing {
+                    eprintln!("Cropmark macos shell: close requested (epoch/abandoned)");
+                }
                 state.outcome = Some(RegionOutcome::Cancelled);
             }
             state.outcome.is_some()
@@ -585,6 +712,13 @@ fn pump_until_done(app: &NSApplication, view: &SelectionView) {
             app.updateWindows();
         }
     }
+}
+
+/// 泵的取消判定:已有终态不覆盖;派发方放弃(主线程进入超时)或关闭代际
+/// 相对启动基线发生变化即取消。基线在壳启动时记录,旧壳退出不会清除新壳的
+/// 待关闭状态(评审 P3);两种来源都可从任意线程置位。
+fn should_cancel(outcome_set: bool, abandoned: bool, baseline: u64, current_epoch: u64) -> bool {
+    !outcome_set && (abandoned || current_epoch != baseline)
 }
 
 /// 消费鼠标/键盘并交给引擎;返回 true 表示已处理,调用方不再 sendEvent(避免双分发).
@@ -1118,5 +1252,38 @@ mod tests {
         assert_eq!(kind(&engine, 120, 75), CursorKind::ClosedHand);
         engine.handle_event(InputEvent::LeftUp { x: 120, y: 75 });
         assert_eq!(kind(&engine, 120, 75), CursorKind::OpenHand);
+    }
+
+    #[test]
+    fn should_cancel_covers_epoch_and_abandoned_without_overriding_outcome() {
+        // 无终态且基线未变、未放弃 → 不取消。
+        assert!(!should_cancel(false, false, 7, 7));
+        // 关闭代际变化(stale 重置/超时兜底)→ 取消。
+        assert!(should_cancel(false, false, 7, 8));
+        // 派发方放弃(主线程进入超时)→ 取消。
+        assert!(should_cancel(false, true, 7, 7));
+        assert!(should_cancel(false, true, 7, 8));
+        // 已有终态:任何新信号都不覆盖。
+        assert!(!should_cancel(true, false, 7, 7));
+        assert!(!should_cancel(true, false, 7, 8));
+        assert!(!should_cancel(true, true, 7, 7));
+    }
+
+    #[test]
+    fn timeout_and_panic_errors_are_localized_retryable_messages() {
+        let timeout = CaptureError::timeout(
+            "error.capture.shell_entry_timeout",
+            "error.capture.timeout_hint",
+        );
+        assert_eq!(
+            timeout.kind,
+            crate::capture::error::CaptureErrorKind::Timeout
+        );
+        assert!(!timeout.message.contains("error.capture"));
+        assert!(timeout.hint.is_some());
+
+        let panic = CaptureError::api("error.capture.shell_panic");
+        assert!(!panic.message.contains("error.capture"));
+        assert!(!panic.user_message().is_empty());
     }
 }

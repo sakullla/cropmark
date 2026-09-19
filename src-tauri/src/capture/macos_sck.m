@@ -3,9 +3,14 @@
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 #import <dispatch/dispatch.h>
 #include <stdatomic.h>
+#include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+// ADR-17:SCK 回调等待上限。超时返回可读错误,不永久挂起。
+#define CROPMARK_SCK_WAIT_SECONDS 10
 
 typedef struct CropmarkSckResult {
   uint8_t *rgba;
@@ -42,8 +47,24 @@ static void cropmark_set_error(CropmarkSckResult *out, int32_t kind, const char 
   out->error = msg ? strdup(msg) : NULL;
 }
 
+// 阶段日志与 SCK 等待都受 CROPMARK_CAPTURE_TIMING 门控(ADR-17):
+// 日志足以区分"未进壳/权限挂起/SCK 回调不触发"。
+static bool cropmark_timing_enabled(void) {
+  return getenv("CROPMARK_CAPTURE_TIMING") != NULL;
+}
+
+static dispatch_time_t cropmark_wait_deadline(void) {
+  return dispatch_time(DISPATCH_TIME_NOW, (int64_t)CROPMARK_SCK_WAIT_SECONDS * NSEC_PER_SEC);
+}
+
+// 超时放弃后置位:迟到的 SCK 回调不再保留像素/不再信号空等信号量。
+static atomic_bool g_sck_wait_abandoned = false;
+
 // 未授权后同一进程内不再走 getShareableContent，避免热键连按反复弹 TCC。
 static atomic_int g_sck_content_denied = 0;
+
+// 权限请求每进程只发起一次(CGRequest 的弹窗系统也只在首次出现)。
+static atomic_int g_sck_permission_requested = 0;
 
 static void cropmark_mark_shareable_content_denied(void) {
   atomic_store(&g_sck_content_denied, 1);
@@ -71,8 +92,36 @@ static int cropmark_classify_error(NSError *error) {
   return 2;
 }
 
+// 权限请求的限界派发:CGRequestScreenCaptureAccess 自身立即返回(弹窗由系统进程
+// 展示),这里只对"主队列何时执行请求块"设上限,避免主线程被占用时永久挂起。
+static bool cropmark_request_permission_bounded(void) {
+  if (atomic_exchange(&g_sck_permission_requested, 1) != 0) {
+    return false;
+  }
+  void (^request)(void) = ^{
+    (void)CGRequestScreenCaptureAccess();
+  };
+  if ([NSThread isMainThread]) {
+    request();
+    return true;
+  }
+  dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+  dispatch_async(dispatch_get_main_queue(), ^{
+    request();
+    dispatch_semaphore_signal(sema);
+  });
+  if (dispatch_semaphore_wait(sema, cropmark_wait_deadline()) != 0) {
+    if (cropmark_timing_enabled()) {
+      fprintf(stderr, "Cropmark macos sck: permission request dispatch timeout after %ds\n",
+              CROPMARK_SCK_WAIT_SECONDS);
+    }
+    return false;
+  }
+  return true;
+}
+
 // ScreenCaptureKit 的 getShareableContent 在 TCC 未真正绑定时每次都会弹系统授权。
-// 先用 CGPreflight 判断；未授权时每进程只调用一次 CGRequest，避免热键连弹。
+// 先用 CGPreflight 判断；未授权时每进程只请求一次，避免热键连弹。
 static int32_t cropmark_sck_ensure_permission(void) {
   if (cropmark_shareable_content_denied()) {
     return 1;
@@ -80,22 +129,27 @@ static int32_t cropmark_sck_ensure_permission(void) {
   if (CGPreflightScreenCaptureAccess()) {
     return 0;
   }
-  static dispatch_once_t onceToken;
-  dispatch_once(&onceToken, ^{
-    void (^request)(void) = ^{
-      (void)CGRequestScreenCaptureAccess();
-    };
-    if ([NSThread isMainThread]) {
-      request();
-    } else {
-      dispatch_sync(dispatch_get_main_queue(), request);
-    }
-  });
+  if (cropmark_timing_enabled()) {
+    fprintf(stderr, "Cropmark macos sck: permission preflight denied, requesting access\n");
+  }
+  (void)cropmark_request_permission_bounded();
   if (CGPreflightScreenCaptureAccess()) {
     return 0;
   }
+  if (cropmark_timing_enabled()) {
+    fprintf(stderr, "Cropmark macos sck: permission still denied after request\n");
+  }
   cropmark_mark_shareable_content_denied();
   return 1;
+}
+
+// 权限状态(R23):0 已授权;1 未授权且本进程尚未请求(首次会弹系统授权);
+// 2 未授权且已请求过(不会再弹窗,需到系统设置开启后重启)。
+int32_t cropmark_sck_permission_state(void) {
+  if (CGPreflightScreenCaptureAccess()) {
+    return 0;
+  }
+  return atomic_load(&g_sck_permission_requested) != 0 ? 2 : 1;
 }
 
 static bool cropmark_cgimage_to_rgba(CGImageRef image, CropmarkSckResult *out) {
@@ -134,47 +188,84 @@ static bool cropmark_cgimage_to_rgba(CGImageRef image, CropmarkSckResult *out) {
   return true;
 }
 
-static SCShareableContent *cropmark_content(NSError **errorOut) {
+// 获取可共享内容:0 成功;1 超时(回调未在限界内触发);2 失败(权限或其它错误)。
+static int32_t cropmark_content(SCShareableContent **outContent, NSError **errorOut) {
+  if (outContent) {
+    *outContent = nil;
+  }
+  if (errorOut) {
+    *errorOut = nil;
+  }
   if (cropmark_shareable_content_denied()) {
     if (errorOut) {
       *errorOut = [NSError errorWithDomain:@"CropmarkScreenCapture"
                                       code:1
                                   userInfo:@{NSLocalizedDescriptionKey : @"not authorized"}];
     }
-    return nil;
+    return 2;
   }
   dispatch_semaphore_t sema = dispatch_semaphore_create(0);
   __block SCShareableContent *content = nil;
   __block NSError *contentError = nil;
+  atomic_store(&g_sck_wait_abandoned, false);
   [SCShareableContent getShareableContentWithCompletionHandler:^(SCShareableContent *c, NSError *e) {
+    if (atomic_load(&g_sck_wait_abandoned)) {
+      return;
+    }
     content = c;
     contentError = e;
     dispatch_semaphore_signal(sema);
   }];
-  dispatch_semaphore_wait(sema, DISPATCH_TIME_FOREVER);
+  if (dispatch_semaphore_wait(sema, cropmark_wait_deadline()) != 0) {
+    atomic_store(&g_sck_wait_abandoned, true);
+    if (cropmark_timing_enabled()) {
+      fprintf(stderr, "Cropmark macos sck: getShareableContent timeout after %ds\n",
+              CROPMARK_SCK_WAIT_SECONDS);
+    }
+    return 1;
+  }
   if (!content) {
     (void)cropmark_classify_error(contentError);
+    if (errorOut) {
+      *errorOut = contentError;
+    }
+    return 2;
+  }
+  if (outContent) {
+    *outContent = content;
   }
   if (errorOut) {
     *errorOut = contentError;
   }
-  return content;
+  return 0;
 }
 
 static bool cropmark_capture_filter(SCContentFilter *filter, SCStreamConfiguration *config, CropmarkSckResult *out) {
   dispatch_semaphore_t sema = dispatch_semaphore_create(0);
   __block CGImageRef captured = NULL;
   __block NSError *capError = nil;
+  atomic_store(&g_sck_wait_abandoned, false);
   [SCScreenshotManager captureImageWithFilter:filter
                                 configuration:config
                             completionHandler:^(CGImageRef image, NSError *error) {
+                              if (atomic_load(&g_sck_wait_abandoned)) {
+                                return;
+                              }
                               if (image) {
                                 captured = CGImageRetain(image);
                               }
                               capError = error;
                               dispatch_semaphore_signal(sema);
                             }];
-  dispatch_semaphore_wait(sema, DISPATCH_TIME_FOREVER);
+  if (dispatch_semaphore_wait(sema, cropmark_wait_deadline()) != 0) {
+    atomic_store(&g_sck_wait_abandoned, true);
+    if (cropmark_timing_enabled()) {
+      fprintf(stderr, "Cropmark macos sck: captureImage timeout after %ds\n",
+              CROPMARK_SCK_WAIT_SECONDS);
+    }
+    cropmark_set_error(out, 6, "ScreenCaptureKit 截取超时。");
+    return false;
+  }
   if (capError || !captured) {
     int kind = cropmark_classify_error(capError);
     cropmark_set_error(out, kind,
@@ -253,8 +344,13 @@ int32_t cropmark_sck_capture_at_point(int32_t px, int32_t py, CropmarkSckResult 
     return -1;
   }
   NSError *contentError = nil;
-  SCShareableContent *content = cropmark_content(&contentError);
-  if (!content) {
+  SCShareableContent *content = nil;
+  int32_t contentStatus = cropmark_content(&content, &contentError);
+  if (contentStatus == 1) {
+    cropmark_set_error(out, 5, "ScreenCaptureKit 获取可共享内容超时。");
+    return -1;
+  }
+  if (contentStatus != 0) {
     int kind = cropmark_classify_error(contentError);
     cropmark_set_error(out, kind,
                        kind == 1 ? "没有屏幕录制权限，未能截取。"
@@ -306,8 +402,13 @@ int32_t cropmark_sck_capture_window(uint32_t window_id, CropmarkSckResult *out) 
     return -1;
   }
   NSError *contentError = nil;
-  SCShareableContent *content = cropmark_content(&contentError);
-  if (!content) {
+  SCShareableContent *content = nil;
+  int32_t contentStatus = cropmark_content(&content, &contentError);
+  if (contentStatus == 1) {
+    cropmark_set_error(out, 5, "ScreenCaptureKit 获取可共享内容超时。");
+    return -1;
+  }
+  if (contentStatus != 0) {
     int kind = cropmark_classify_error(contentError);
     cropmark_set_error(out, kind,
                        kind == 1 ? "没有屏幕录制权限，未能截取。"
@@ -349,8 +450,12 @@ int32_t cropmark_sck_list_windows(CropmarkSckWindow *out, int32_t cap, int32_t *
     return 1;
   }
   NSError *contentError = nil;
-  SCShareableContent *content = cropmark_content(&contentError);
-  if (!content) {
+  SCShareableContent *content = nil;
+  int32_t contentStatus = cropmark_content(&content, &contentError);
+  if (contentStatus == 1) {
+    return 3;
+  }
+  if (contentStatus != 0) {
     return cropmark_classify_error(contentError) == 1 ? 1 : 2;
   }
   pid_t selfPid = [[NSRunningApplication currentApplication] processIdentifier];
