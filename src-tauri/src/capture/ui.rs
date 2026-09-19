@@ -154,7 +154,7 @@ pub fn precreate(app: &AppHandle) {
     // toast/error 预创建复用:这两个窗每次 close+create 重建时,新 webview
     // 偶发导航失败显示"无法访问此页面"(协议宿主竞态);预创建后仅 show/hide。
     let _ = ensure_window(app, TOAST, "toast", TOAST_WIDTH, TOAST_HEIGHT, true, true);
-    let _ = ensure_window(app, ERROR, "error", 420.0, 220.0, true, true);
+    let _ = ensure_window(app, ERROR, "error", 420.0, 268.0, true, true);
 }
 
 pub fn open_overlay(app: &AppHandle, monitor: &MonitorGeom) -> Result<WebviewWindow, CaptureError> {
@@ -211,7 +211,7 @@ pub fn open_delay(app: &AppHandle, delay_ms: u64) -> Result<WebviewWindow, Captu
 
 pub fn open_error(app: &AppHandle, error: &CaptureError) -> Result<(), CaptureError> {
     // 复用预创建的 error 窗,避免重建 webview 的偶发导航失败。
-    let window = ensure_window(app, ERROR, "error", 420.0, 220.0, true, true)?;
+    let window = ensure_window(app, ERROR, "error", 420.0, 268.0, true, true)?;
     let _ = window.center();
     let _ = window.show();
     let _ = window.set_focus();

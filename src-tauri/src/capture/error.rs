@@ -106,7 +106,7 @@ pub fn classify_platform_failure(failure: PlatformFailure) -> CaptureError {
 
 pub fn permission_hint() -> String {
     #[cfg(target_os = "macos")]
-    let hint = "请在系统设置 › 隐私与安全性 › 屏幕录制中打开 Cropmark，然后重新截取。";
+    let hint = "请在系统设置 › 隐私与安全性 › 屏幕录制中打开 Cropmark。打开后必须从菜单栏图标完全退出再打开，权限才会生效。若开关已打开仍弹出授权，先点减号移除 Cropmark，完全退出后再截取。";
     #[cfg(windows)]
     let hint = "请在 Windows 设置 › 隐私和安全性 › 屏幕截图和屏幕录制中允许 Cropmark，然后重新截取。";
     #[cfg(target_os = "linux")]
@@ -128,6 +128,15 @@ mod tests {
         let api = classify_platform_failure(PlatformFailure::Api("BitBlt".into()));
         assert_eq!(api.kind, CaptureErrorKind::Api);
         assert!(api.message.contains("接口"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_permission_hint_requires_full_quit() {
+        let hint = permission_hint();
+        assert!(hint.contains("屏幕录制"));
+        assert!(hint.contains("菜单栏"));
+        assert!(hint.contains("退出"));
     }
 
     #[test]

@@ -58,6 +58,26 @@ static int cropmark_classify_error(NSError *error) {
   return 2;
 }
 
+// ScreenCaptureKit 的 getShareableContent 在 TCC 未真正绑定时每次都会弹系统授权。
+// 先用 CGPreflight 判断；未授权时每进程只调用一次 CGRequest，避免热键连弹。
+static int32_t cropmark_sck_ensure_permission(void) {
+  if (CGPreflightScreenCaptureAccess()) {
+    return 0;
+  }
+  static dispatch_once_t onceToken;
+  dispatch_once(&onceToken, ^{
+    void (^request)(void) = ^{
+      (void)CGRequestScreenCaptureAccess();
+    };
+    if ([NSThread isMainThread]) {
+      request();
+    } else {
+      dispatch_sync(dispatch_get_main_queue(), request);
+    }
+  });
+  return CGPreflightScreenCaptureAccess() ? 0 : 1;
+}
+
 static bool cropmark_cgimage_to_rgba(CGImageRef image, CropmarkSckResult *out) {
   if (!image) {
     cropmark_set_error(out, 3, "截屏缓冲未初始化。");
@@ -197,6 +217,10 @@ int32_t cropmark_sck_monitor_at_pointer(CropmarkSckMonitor *out) {
 
 int32_t cropmark_sck_capture_at_point(int32_t px, int32_t py, CropmarkSckResult *out) {
   memset(out, 0, sizeof(*out));
+  if (cropmark_sck_ensure_permission() != 0) {
+    cropmark_set_error(out, 1, "没有屏幕录制权限，未能截取。");
+    return -1;
+  }
   NSError *contentError = nil;
   SCShareableContent *content = cropmark_content(&contentError);
   if (!content) {
@@ -246,6 +270,10 @@ int32_t cropmark_sck_capture_at_point(int32_t px, int32_t py, CropmarkSckResult 
 
 int32_t cropmark_sck_capture_window(uint32_t window_id, CropmarkSckResult *out) {
   memset(out, 0, sizeof(*out));
+  if (cropmark_sck_ensure_permission() != 0) {
+    cropmark_set_error(out, 1, "没有屏幕录制权限，未能截取。");
+    return -1;
+  }
   NSError *contentError = nil;
   SCShareableContent *content = cropmark_content(&contentError);
   if (!content) {
@@ -285,6 +313,9 @@ int32_t cropmark_sck_capture_window(uint32_t window_id, CropmarkSckResult *out) 
 int32_t cropmark_sck_list_windows(CropmarkSckWindow *out, int32_t cap, int32_t *count) {
   if (count) {
     *count = 0;
+  }
+  if (cropmark_sck_ensure_permission() != 0) {
+    return 1;
   }
   NSError *contentError = nil;
   SCShareableContent *content = cropmark_content(&contentError);
