@@ -439,14 +439,12 @@ pub fn pick_region(
         .pixmap_formats
         .iter()
         .find(|format| format.depth == depth)
-        .ok_or_else(|| CaptureError::api("无法识别当前显示的像素格式。"))?;
+        .ok_or_else(|| CaptureError::api("error.capture.x11_pixel_format"))?;
     if format.bits_per_pixel != 32 || format.scanline_pad != 32 {
-        return Err(CaptureError::api(
-            "暂不支持的显示像素格式(需要 32bpp/32bit 对齐)。",
-        ));
+        return Err(CaptureError::api("error.capture.x11_pixel_format_unsupported"));
     }
     let layout = root_visual_layout(conn.setup(), screen)
-        .ok_or_else(|| CaptureError::api("无法识别当前显示的视觉格式。"))?;
+        .ok_or_else(|| CaptureError::api("error.capture.x11_visual_format"))?;
     let keyboard = KeyboardMap::new(&conn)?;
 
     let window = conn.generate_id().map_err(|_| id_failed())?;
@@ -545,15 +543,15 @@ pub fn pick_region(
 }
 
 fn shell_unavailable() -> CaptureError {
-    CaptureError::unavailable("当前会话无法连接 X11 服务器,无法打开原生选区窗。")
+    CaptureError::unavailable("error.capture.x11_connect")
 }
 
 fn id_failed() -> CaptureError {
-    CaptureError::api("无法分配 X11 资源。")
+    CaptureError::api("error.capture.x11_alloc")
 }
 
 fn window_failed() -> CaptureError {
-    CaptureError::api("无法打开截取窗。")
+    CaptureError::api("error.capture.window_open")
 }
 
 /// 从 allowed_depths 找根视觉的掩码,生成像素打包布局。

@@ -13,6 +13,7 @@ use super::error::CaptureError;
 use super::geometry::MonitorGeom;
 use super::windows_list::ListedWindow;
 use crate::hotkeys::CaptureMode;
+use crate::i18n;
 
 pub const OVERLAY: &str = "overlay";
 pub const PREVIEW: &str = "preview";
@@ -27,7 +28,33 @@ const TOAST_HEIGHT: f64 = 48.0;
 const TOAST_MARGIN: f64 = 24.0;
 const TOAST_DURATION: Duration = Duration::from_millis(1800);
 
-static LAST_TOAST: Mutex<Option<String>> = Mutex::new(None);
+/// 最近一次 toast 的来源:词条键+参数可按当前语言重新解析(语言切换后
+/// 前端重拉仍显示正确文案);不透明系统文案按原样保留。
+#[derive(Debug, Clone)]
+enum ToastSource {
+    Key {
+        key: String,
+        params: Vec<(String, String)>,
+    },
+    Text(String),
+}
+
+impl ToastSource {
+    fn resolve(&self) -> String {
+        match self {
+            Self::Key { key, params } => {
+                let borrowed: Vec<(&str, &str)> = params
+                    .iter()
+                    .map(|(name, value)| (name.as_str(), value.as_str()))
+                    .collect();
+                i18n::tp(key, &borrowed)
+            }
+            Self::Text(text) => text.clone(),
+        }
+    }
+}
+
+static LAST_TOAST: Mutex<Option<ToastSource>> = Mutex::new(None);
 static TOAST_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Serialize)]
@@ -234,7 +261,7 @@ pub fn open_delay(app: &AppHandle, delay_ms: u64) -> Result<WebviewWindow, Captu
         .visible(true)
         .center()
         .build()
-        .map_err(|error| CaptureError::api(error.to_string()))?;
+        .map_err(|error| CaptureError::api_detail("error.capture.window_build", &error.to_string()))?;
     let _ = window.emit("capture-delay", DelayPayload { delay_ms, mode: CaptureMode::Region });
     Ok(window)
 }
@@ -250,35 +277,56 @@ pub fn open_error(app: &AppHandle, error: &CaptureError) -> Result<(), CaptureEr
 }
 
 /// Latest toast text, so a freshly created toast view can catch up even if it
-/// missed the live event (same pattern as delay/error views).
+/// missed the live event (same pattern as delay/error views). 词条键按当前
+/// 语言重新解析,语言切换后重拉不会残留旧语言。
 pub fn toast_message() -> Option<String> {
     LAST_TOAST
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clone()
+        .as_ref()
+        .map(ToastSource::resolve)
 }
 
 /// Transient result feedback: one borderless topmost window, replaced on every
 /// call, auto-closed after ~2s. Never steals focus.
 pub fn show_toast(app: &AppHandle, message: &str) {
-    show_toast_inner(app, message, Some(TOAST_DURATION));
+    show_toast_source(app, ToastSource::Text(message.to_string()), Some(TOAST_DURATION));
 }
 
-/// Long-running feedback (R11 静默取字首次加载模型): stays visible until the
-/// next toast replaces it, so the in-progress hint never expires before the
-/// result arrives.
-pub fn show_progress_toast(app: &AppHandle, message: &str) {
-    show_toast_inner(app, message, None);
+/// 词条键形式的结果反馈:语言切换后重拉 toast 时按新语言解析。
+pub fn show_toast_key(app: &AppHandle, key: &str) {
+    show_toast_source(app, ToastSource::Key { key: key.into(), params: Vec::new() }, Some(TOAST_DURATION));
 }
 
-fn show_toast_inner(app: &AppHandle, message: &str, auto_hide: Option<Duration>) {
-    let message = message.trim().to_string();
+/// 带 `{name}` 占位符参数的词条 toast。
+pub fn show_toast_key_params(app: &AppHandle, key: &str, params: &[(&str, &str)]) {
+    show_toast_source(
+        app,
+        ToastSource::Key {
+            key: key.into(),
+            params: params
+                .iter()
+                .map(|(name, value)| ((*name).to_string(), (*value).to_string()))
+                .collect(),
+        },
+        Some(TOAST_DURATION),
+    );
+}
+
+/// 词条键形式的进行中提示(不自动消失):静默取字首次加载模型时保持可见,
+/// 直到结果到达被下一条 toast 替换(R11)。
+pub fn show_progress_toast_key(app: &AppHandle, key: &str) {
+    show_toast_source(app, ToastSource::Key { key: key.into(), params: Vec::new() }, None);
+}
+
+fn show_toast_source(app: &AppHandle, source: ToastSource, auto_hide: Option<Duration>) {
+    let message = source.resolve().trim().to_string();
     if message.is_empty() {
         return;
     }
     *LAST_TOAST
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(message.clone());
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(source);
     // Only the newest toast may hide the window; older timers become no-ops.
     let generation = TOAST_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     // 复用预创建的 toast 窗:仅重定位+显示+发消息,不重建 webview。
@@ -424,7 +472,7 @@ fn ensure_window(
         .always_on_top(true)
         .visible_on_all_workspaces(label == OVERLAY)
         .build()
-        .map_err(|error| CaptureError::api(error.to_string()))
+        .map_err(|error| CaptureError::api_detail("error.capture.window_build", &error.to_string()))
 }
 
 fn builder<'a>(

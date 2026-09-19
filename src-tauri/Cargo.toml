@@ -36,6 +36,7 @@ clipboard-win = "5.4"
 winreg = "0.55"
 windows = { version = "0.61", features = [
   "Win32_Foundation",
+  "Win32_Globalization",
   "Win32_Graphics_Dwm",
   "Win32_Graphics_Gdi",
   "Win32_Security",
@@ -75,8 +76,10 @@ objc2-core-graphics = { version = "0.3.2", features = [
   "CGWindowLevel",
 ] }
 objc2-foundation = { version = "0.3.2", features = [
+  "NSArray",
   "NSDate",
   "NSGeometry",
+  "NSLocale",
   "NSObjCRuntime",
   "NSRunLoop",
   "NSString",

@@ -14,11 +14,11 @@ const LINE_HEIGHT: f32 = 1.25;
 
 pub fn rasterize(frame: &Frame, annotations: &[Annotation]) -> Result<Frame, CaptureError> {
     if frame.rgba.is_empty() || frame.width == 0 || frame.height == 0 {
-        return Err(CaptureError::invalid_buffer("空缓冲"));
+        return Err(CaptureError::invalid_buffer("error.capture.buffer_empty"));
     }
     let expected = frame.width as usize * frame.height as usize * 4;
     if frame.rgba.len() != expected {
-        return Err(CaptureError::invalid_buffer("空缓冲"));
+        return Err(CaptureError::invalid_buffer("error.capture.buffer_empty"));
     }
     let mut out = frame.clone();
     for op in exportable(annotations) {
@@ -681,7 +681,7 @@ fn draw_text(
     color: [u8; 4],
 ) -> Result<(), CaptureError> {
     let Some(font) = ui_font() else {
-        return Err(CaptureError::api("无法绘制文字：系统未找到可用字体。"));
+        return Err(CaptureError::api("error.capture.text_font_missing"));
     };
     let scale = PxScale::from(size);
     let scaled = font.as_scaled(scale);

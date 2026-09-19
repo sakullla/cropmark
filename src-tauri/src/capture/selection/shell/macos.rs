@@ -399,7 +399,7 @@ fn run_on_main_thread(
         );
     }
     job.result
-        .unwrap_or_else(|| Err(CaptureError::api("选区窗无法在主线程运行。")))
+        .unwrap_or_else(|| Err(CaptureError::api("error.capture.shell_main_thread")))
 }
 
 fn run_shell(

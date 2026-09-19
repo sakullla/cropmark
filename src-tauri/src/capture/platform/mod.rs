@@ -37,19 +37,19 @@ mod backend {
     use super::*;
 
     pub fn pointer_monitor() -> Result<MonitorGeom, CaptureError> {
-        Err(CaptureError::unavailable("当前系统没有可用的截屏接口。"))
+        Err(CaptureError::unavailable("error.capture.platform_no_interface"))
     }
 
     pub fn capture_monitor(_monitor: &MonitorGeom) -> Result<Frame, CaptureError> {
-        Err(CaptureError::unavailable("当前系统没有可用的截屏接口。"))
+        Err(CaptureError::unavailable("error.capture.platform_no_interface"))
     }
 
     pub fn list_windows(_self_pid: u32) -> Result<Vec<ListedWindow>, CaptureError> {
-        Err(CaptureError::unavailable("当前系统无法列出窗口。"))
+        Err(CaptureError::unavailable("error.capture.platform_no_window_list"))
     }
 
     pub fn capture_window(_id: &str) -> Result<Frame, CaptureError> {
-        Err(CaptureError::unavailable("当前系统无法截取窗口。"))
+        Err(CaptureError::unavailable("error.capture.platform_no_window_capture"))
     }
 
     pub fn dismiss_tray_popup() {}

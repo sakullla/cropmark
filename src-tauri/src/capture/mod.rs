@@ -56,7 +56,7 @@ pub fn open_pin_edit_preview(
 pub async fn confirm_region(app: AppHandle, x: u32, y: u32, width: u32, height: u32) -> Result<(), CaptureError> {
     tauri::async_runtime::spawn_blocking(move || {
         session::confirm_region(&app, RegionSelection { x, y, width, height })
-    }).await.map_err(|_| CaptureError::api("截取线程失败。"))?
+    }).await.map_err(|_| CaptureError::api("error.capture.thread_failed"))?
 }
 
 #[tauri::command]
@@ -75,13 +75,13 @@ pub async fn confirm_logical_region(
             width,
             height,
         },
-    )).await.map_err(|_| CaptureError::api("截取线程失败。"))?
+    )).await.map_err(|_| CaptureError::api("error.capture.thread_failed"))?
 }
 
 #[tauri::command]
 pub async fn confirm_window(app: AppHandle, window_id: String) -> Result<(), CaptureError> {
     tauri::async_runtime::spawn_blocking(move || session::confirm_window(&app, window_id))
-        .await.map_err(|_| CaptureError::api("截取线程失败。"))?
+        .await.map_err(|_| CaptureError::api("error.capture.thread_failed"))?
 }
 
 /// Quiet completion with an immediate action on the cropped region (R3):
@@ -109,7 +109,7 @@ pub async fn finish_region_with(
 
 async fn run_quiet_action(app: &AppHandle, action: QuietAction) {
     match action {
-        QuietAction::Copy => ui::show_toast(app, "已复制到剪贴板。"),
+        QuietAction::Copy => ui::show_toast_key(app, "toast.copied"),
         // 选区操作条贴图:不经前端、不带标注;成功无提示(贴图窗即反馈),失败 toast。
         QuietAction::Pin => crate::pin::pin_retained(app),
         QuietAction::Save => save_quiet_frame(app).await,
@@ -124,7 +124,7 @@ async fn save_quiet_frame(app: &AppHandle) {
     let frame = match session::current_preview_frame(app) {
         Ok(frame) => frame,
         Err(_) => {
-            ui::show_toast(app, "截图已过期，请重新截取。");
+            ui::show_toast_key(app, "toast.capture_expired");
             return;
         }
     };
@@ -132,7 +132,7 @@ async fn save_quiet_frame(app: &AppHandle) {
     match crate::export::save_frame_with_dialog(app, frame, export, None).await {
         Ok(result) if result.saved => {
             let name = result.file_name().unwrap_or(result.format.label());
-            ui::show_toast(app, &format!("已保存 {name}。"));
+            ui::show_toast_key_params(app, "toast.saved", &[("name", name)]);
         }
         Ok(_) => {}
         Err(message) => ui::show_toast(app, &message),
@@ -143,12 +143,12 @@ async fn save_quiet_frame(app: &AppHandle) {
 /// clipboard with toast feedback (empty results included). 首次取字要加载模型,
 /// 先给不自动消失的进行中提示(R11);识别结果与失败提示替换该 toast。
 async fn ocr_quiet_frame(app: &AppHandle) {
-    ui::show_progress_toast(app, "正在识别…");
+    ui::show_progress_toast_key(app, "toast.ocr_progress");
     match crate::ocr::recognize_preview(app.clone()).await {
         Ok(_) => match crate::ocr::copy_ocr_all(app.clone()) {
             Ok(text) => {
                 let chars = text.chars().count();
-                ui::show_toast(app, &format!("已复制 {chars} 字。"));
+                ui::show_toast_key_params(app, "toast.ocr_copied", &[("chars", &chars.to_string())]);
             }
             Err(message) => ui::show_toast(app, &message),
         },

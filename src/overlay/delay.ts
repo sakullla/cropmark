@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { t } from "../i18n";
 import "./overlay.css";
 
 interface DelayPayload {
@@ -7,24 +8,24 @@ interface DelayPayload {
   mode: string;
 }
 
-export function mountDelay(root: HTMLElement): void {
+export function mountDelay(root: HTMLElement): () => void {
   root.className = "delay-root";
   root.innerHTML = `
     <div>
-      <div class="count">准备截取</div>
-      <p class="hint">倒计时期间可操作其它应用，到期截取当时屏幕。</p>
+      <div class="count" data-i18n="delay.preparing">准备截取</div>
+      <p class="hint" data-i18n="delay.hint">倒计时期间可操作其它应用，到期截取当时屏幕。</p>
     </div>
-    <button type="button" data-action="cancel">取消</button>
+    <button type="button" data-action="cancel" data-i18n="delay.cancel">取消</button>
   `;
   const count = root.querySelector(".count");
   const cancel = root.querySelector("[data-action=cancel]");
   if (!(count instanceof HTMLElement) || !(cancel instanceof HTMLButtonElement)) {
-    return;
+    return () => undefined;
   }
 
   let remaining = 3;
   const render = (): void => {
-    count.textContent = `${remaining} 秒后截取`;
+    count.textContent = t("delay.countdown", { seconds: remaining });
   };
 
   const tick = window.setInterval(() => {
@@ -54,4 +55,6 @@ export function mountDelay(root: HTMLElement): void {
   void invoke<DelayPayload>("get_delay_state").then(apply);
   void listen<DelayPayload>("capture-delay", (event) => apply(event.payload));
   render();
+
+  return render;
 }

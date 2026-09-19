@@ -5,6 +5,7 @@ mod clipboard;
 mod export;
 mod history;
 mod hotkeys;
+mod i18n;
 mod ocr;
 mod pin;
 mod settings;
@@ -111,6 +112,8 @@ pub fn run() {
             let stored = settings::load_from_app(app.handle());
             let hotkeys = stored.hotkeys.clone();
             app.manage(settings::SessionState::from_stored(stored));
+            // R12:托盘安装前先解析界面语言,保证首帧托盘菜单即为当前语言。
+            settings::apply_language(app.handle());
             app.manage(capture::session::CaptureRuntime::default());
             app.manage(ocr::OcrRuntime::default());
             // R16:托盘构建失败(典型为缺少 AppIndicator 的 Linux 桌面)不再
@@ -137,6 +140,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             settings::get_ui_settings,
+            settings::get_language,
+            settings::set_language,
             settings::set_hotkey,
             settings::set_autostart_enabled,
             settings::set_annotation_defaults,

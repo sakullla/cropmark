@@ -53,17 +53,17 @@ impl RawBuffer {
 
 pub fn accept_buffer(raw: RawBuffer) -> Result<Frame, CaptureError> {
     if raw.init == FrameInit::Uninitialized {
-        return Err(CaptureError::invalid_buffer("未初始化"));
+        return Err(CaptureError::invalid_buffer("error.capture.buffer_uninitialized"));
     }
     if raw.width == 0 || raw.height == 0 {
-        return Err(CaptureError::invalid_buffer("尺寸为 0"));
+        return Err(CaptureError::invalid_buffer("error.capture.buffer_zero_size"));
     }
     if raw.bytes.is_empty() {
-        return Err(CaptureError::invalid_buffer("空缓冲"));
+        return Err(CaptureError::invalid_buffer("error.capture.buffer_empty"));
     }
     let expected = raw.width as usize * raw.height as usize * 4;
     if raw.bytes.len() != expected {
-        return Err(CaptureError::invalid_buffer("空缓冲"));
+        return Err(CaptureError::invalid_buffer("error.capture.buffer_empty"));
     }
     Ok(Frame {
         width: raw.width,
@@ -75,10 +75,10 @@ pub fn accept_buffer(raw: RawBuffer) -> Result<Frame, CaptureError> {
 
 pub fn crop_rgba(frame: &Frame, x: u32, y: u32, width: u32, height: u32) -> Result<Frame, CaptureError> {
     if width == 0 || height == 0 {
-        return Err(CaptureError::invalid_buffer("尺寸为 0"));
+        return Err(CaptureError::invalid_buffer("error.capture.buffer_zero_size"));
     }
     if x.saturating_add(width) > frame.width || y.saturating_add(height) > frame.height {
-        return Err(CaptureError::api("选区超出截取画面。"));
+        return Err(CaptureError::api("error.capture.region_out_of_bounds"));
     }
     let mut rgba = vec![0u8; width as usize * height as usize * 4];
     for row in 0..height as usize {
@@ -110,7 +110,7 @@ pub fn crop_desktop_to_monitor(
     let x = monitor.physical_x - desktop_origin_x;
     let y = monitor.physical_y - desktop_origin_y;
     if x < 0 || y < 0 {
-        return Err(CaptureError::api("无法按指针所在屏裁剪截屏。"));
+        return Err(CaptureError::api("error.capture.crop_pointer_monitor"));
     }
     let mut cropped = crop_rgba(
         &frame,
@@ -129,7 +129,7 @@ pub fn encode_png(frame: &Frame) -> Result<Vec<u8>, CaptureError> {
     let mut bytes = Vec::new();
     image::codecs::png::PngEncoder::new(&mut bytes)
         .write_image(&frame.rgba, frame.width, frame.height, image::ExtendedColorType::Rgba8)
-        .map_err(|_| CaptureError::api("无法编码 PNG。"))?;
+        .map_err(|_| CaptureError::api("error.capture.encode_png"))?;
     Ok(bytes)
 }
 
@@ -138,7 +138,7 @@ pub fn validate_frame(frame: &Frame) -> Result<(), CaptureError> {
         .checked_mul(frame.height as usize)
         .and_then(|pixels| pixels.checked_mul(4));
     if frame.width == 0 || frame.height == 0 || expected != Some(frame.rgba.len()) {
-        return Err(CaptureError::invalid_buffer("尺寸或像素长度不匹配"));
+        return Err(CaptureError::invalid_buffer("error.capture.buffer_mismatch"));
     }
     Ok(())
 }
@@ -169,9 +169,9 @@ pub fn encode_jpeg(frame: &Frame, quality: u8) -> Result<Vec<u8>, CaptureError> 
             frame.height,
             image::ExtendedColorType::Rgb8,
         )
-        .map_err(|_| CaptureError::api("无法编码 JPEG。"))?;
+        .map_err(|_| CaptureError::api("error.capture.encode_jpeg"))?;
     if jpeg.is_empty() {
-        return Err(CaptureError::invalid_buffer("空缓冲"));
+        return Err(CaptureError::invalid_buffer("error.capture.buffer_empty"));
     }
     Ok(jpeg)
 }
@@ -183,10 +183,10 @@ pub fn encode_webp(frame: &Frame, quality: u8) -> Result<Vec<u8>, CaptureError> 
     let encoder = webp::Encoder::from_rgb(&rgb, frame.width, frame.height);
     let memory = encoder
         .encode_simple(false, f32::from(quality.clamp(1, 100)))
-        .map_err(|_| CaptureError::api("无法编码 WebP。"))?;
+        .map_err(|_| CaptureError::api("error.capture.encode_webp"))?;
     let bytes: &[u8] = &memory;
     if bytes.is_empty() {
-        return Err(CaptureError::invalid_buffer("空缓冲"));
+        return Err(CaptureError::invalid_buffer("error.capture.buffer_empty"));
     }
     Ok(bytes.to_vec())
 }
@@ -207,7 +207,7 @@ pub fn fit_display(width: u32, height: u32, max_edge: u32) -> (u32, u32) {
 
 pub fn resize_rgba(frame: &Frame, width: u32, height: u32) -> Result<Frame, CaptureError> {
     if width == 0 || height == 0 {
-        return Err(CaptureError::invalid_buffer("尺寸为 0"));
+        return Err(CaptureError::invalid_buffer("error.capture.buffer_zero_size"));
     }
     if frame.width == width && frame.height == height {
         return Ok(frame.clone());
@@ -228,16 +228,16 @@ pub fn resize_rgba(frame: &Frame, width: u32, height: u32) -> Result<Frame, Capt
 
 fn rgba_image(frame: &Frame) -> Result<image::RgbaImage, CaptureError> {
     image::RgbaImage::from_raw(frame.width, frame.height, frame.rgba.clone())
-        .ok_or_else(|| CaptureError::invalid_buffer("未初始化"))
+        .ok_or_else(|| CaptureError::invalid_buffer("error.capture.buffer_uninitialized"))
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn decode_png(bytes: &[u8]) -> Result<Frame, CaptureError> {
     if bytes.is_empty() {
-        return Err(CaptureError::invalid_buffer("空缓冲"));
+        return Err(CaptureError::invalid_buffer("error.capture.buffer_empty"));
     }
     let image = image::load_from_memory(bytes)
-        .map_err(|_| CaptureError::api("无法解码截屏图像。"))?
+        .map_err(|_| CaptureError::api("error.capture.decode"))?
         .to_rgba8();
     let width = image.width();
     let height = image.height();

@@ -9,17 +9,16 @@ use crate::capture::buffer::{accept_buffer, crop_desktop_to_monitor, decode_png,
 use crate::capture::error::{classify_platform_failure, CaptureError, PlatformFailure};
 use crate::capture::geometry::{monitor_at_physical, MonitorGeom};
 use crate::capture::windows_list::{selectable_windows, ListedWindow};
+use crate::i18n;
 
 use super::{linux_capture_backend, LinuxCaptureBackend};
 
 /// 门户不可用时的统一提示(R13):说明原因并给出替代路径。
-const PORTAL_UNAVAILABLE_MESSAGE: &str =
-    "当前桌面没有可用的截屏接口。请安装 xdg-desktop-portal，或在 X11 会话中使用 Cropmark。";
+const PORTAL_UNAVAILABLE_KEY: &str = "error.linux.portal_missing";
 /// 门户/Wayland 无法枚举窗口:点名替代截取方式,不打开空白预览。
-const PORTAL_WINDOW_LIST_MESSAGE: &str =
-    "当前桌面无法列出窗口。请改用区域或全屏截取，或在 X11 会话中使用窗口模式。";
+const PORTAL_WINDOW_LIST_KEY: &str = "error.linux.portal_window_list";
 /// 门户/Wayland 无法截取窗口:同样给出替代截取方式。
-const PORTAL_WINDOW_CAPTURE_MESSAGE: &str = "当前桌面无法截取窗口。请改用区域或全屏截取。";
+const PORTAL_WINDOW_CAPTURE_KEY: &str = "error.linux.portal_window_capture";
 
 pub fn pointer_monitor() -> Result<MonitorGeom, CaptureError> {
     if uses_portal() {
@@ -28,17 +27,13 @@ pub fn pointer_monitor() -> Result<MonitorGeom, CaptureError> {
     if let Ok(monitor) = x11_pointer_monitor() {
         return Ok(monitor);
     }
-    Err(CaptureError::unavailable(
-        "当前桌面没有可用的显示器信息。请确认正在使用 X11，或门户可提供截屏。",
-    ))
+    Err(CaptureError::unavailable("error.linux.no_monitor"))
 }
 
 /// R13:Wayland 指针屏检测失败不再只报"无法从 X11 读取",而是说明失败
 /// 原因并给出替代路径,避免用户在区域截取入口看到无响应式报错。
 fn wayland_pointer_unavailable() -> CaptureError {
-    CaptureError::unavailable(
-        "当前 Wayland 会话无法读取指针所在显示器。请确认已安装并启用 xdg-desktop-portal，或在 X11 会话中使用 Cropmark。",
-    )
+    CaptureError::unavailable("error.linux.wayland_pointer")
 }
 
 pub fn capture_monitor(monitor: &MonitorGeom) -> Result<Frame, CaptureError> {
@@ -64,14 +59,14 @@ pub fn capture_monitor(monitor: &MonitorGeom) -> Result<Frame, CaptureError> {
 
 pub fn list_windows(self_pid: u32) -> Result<Vec<ListedWindow>, CaptureError> {
     if uses_portal() {
-        return Err(CaptureError::unavailable(PORTAL_WINDOW_LIST_MESSAGE));
+        return Err(CaptureError::unavailable(PORTAL_WINDOW_LIST_KEY));
     }
     x11_list_windows(self_pid)
 }
 
 pub fn capture_window(id: &str) -> Result<Frame, CaptureError> {
     if uses_portal() {
-        return Err(CaptureError::unavailable(PORTAL_WINDOW_CAPTURE_MESSAGE));
+        return Err(CaptureError::unavailable(PORTAL_WINDOW_CAPTURE_KEY));
     }
     x11_capture_window(id)
 }
@@ -103,7 +98,7 @@ async fn portal_fullscreen_async() -> Result<Frame, CaptureError> {
     let response = request.send().await.map_err(portal_error)?.response().map_err(portal_error)?;
     let uri = response.uri().to_string();
     let path = file_uri_to_path(&uri)?;
-    let bytes = fs::read(&path).map_err(|_| CaptureError::invalid_buffer("空缓冲"))?;
+    let bytes = fs::read(&path).map_err(|_| CaptureError::invalid_buffer("error.capture.buffer_empty"))?;
     let _ = fs::remove_file(&path);
     decode_png(&bytes)
 }
@@ -114,17 +109,17 @@ fn portal_error(error: ashpd::Error) -> CaptureError {
     if lower.contains("denied") || lower.contains("permission") || lower.contains("not allowed") {
         classify_platform_failure(PlatformFailure::PermissionDenied)
     } else if lower.contains("unknown") || lower.contains("not found") || lower.contains("no such") {
-        CaptureError::unavailable(PORTAL_UNAVAILABLE_MESSAGE)
+        CaptureError::unavailable(PORTAL_UNAVAILABLE_KEY)
     } else {
         classify_platform_failure(PlatformFailure::Api(text))
     }
 }
 
 fn file_uri_to_path(uri: &str) -> Result<PathBuf, CaptureError> {
-    let parsed = url::Url::parse(uri).map_err(|_| CaptureError::api("门户返回的截屏路径无效。"))?;
+    let parsed = url::Url::parse(uri).map_err(|_| CaptureError::api("error.capture.portal_path_invalid"))?;
     parsed
         .to_file_path()
-        .map_err(|_| CaptureError::api("门户返回的截屏路径无效。"))
+        .map_err(|_| CaptureError::api("error.capture.portal_path_invalid"))
 }
 
 fn x11_pointer_monitor() -> Result<MonitorGeom, CaptureError> {
@@ -201,14 +196,14 @@ fn x11_capture_rect(x: i32, y: i32, width: u32, height: u32, scale: f64) -> Resu
 
 fn x11_list_windows(self_pid: u32) -> Result<Vec<ListedWindow>, CaptureError> {
     let (conn, screen_num) =
-        x11rb::connect(None).map_err(|_| CaptureError::unavailable(PORTAL_WINDOW_LIST_MESSAGE))?;
+        x11rb::connect(None).map_err(|_| CaptureError::unavailable(PORTAL_WINDOW_LIST_KEY))?;
     let screen = &conn.setup().roots[screen_num];
     let atom = intern(&conn, b"_NET_CLIENT_LIST")?;
     let reply = conn
         .get_property(false, screen.root, atom, xproto::AtomEnum::WINDOW, 0, 4096)
-        .map_err(|_| CaptureError::api("无法列出窗口。"))?
+        .map_err(|_| CaptureError::api("error.capture.window_list"))?
         .reply()
-        .map_err(|_| CaptureError::api("无法列出窗口。"))?;
+        .map_err(|_| CaptureError::api("error.capture.window_list"))?;
     let ids: Vec<u32> = reply.value32().into_iter().flatten().collect();
     let mut listed = Vec::new();
     for id in ids {
@@ -275,14 +270,14 @@ fn frame_extents(conn: &impl Connection, id: u32) -> (i32, i32, i32, i32) {
 fn x11_capture_window(id: &str) -> Result<Frame, CaptureError> {
     let window = id
         .parse::<u32>()
-        .map_err(|_| CaptureError::api("无法识别该窗口。"))?;
+        .map_err(|_| CaptureError::api("error.capture.window_unknown"))?;
     let (conn, _screen_num) = x11rb::connect(None)
-        .map_err(|_| CaptureError::unavailable(PORTAL_WINDOW_CAPTURE_MESSAGE))?;
+        .map_err(|_| CaptureError::unavailable(PORTAL_WINDOW_CAPTURE_KEY))?;
     let geom = conn
         .get_geometry(window)
-        .map_err(|_| CaptureError::api("无法读取窗口。"))?
+        .map_err(|_| CaptureError::api("error.capture.window_read"))?
         .reply()
-        .map_err(|_| CaptureError::api("无法读取窗口。"))?;
+        .map_err(|_| CaptureError::api("error.capture.window_read"))?;
     let image = conn
         .get_image(
             ImageFormat::Z_PIXMAP,
@@ -303,9 +298,9 @@ fn x11_capture_window(id: &str) -> Result<Frame, CaptureError> {
 fn intern(conn: &impl Connection, name: &[u8]) -> Result<xproto::Atom, CaptureError> {
     Ok(conn
         .intern_atom(false, name)
-        .map_err(|_| CaptureError::api("无法列出窗口。"))?
+        .map_err(|_| CaptureError::api("error.capture.window_list"))?
         .reply()
-        .map_err(|_| CaptureError::api("无法列出窗口。"))?
+        .map_err(|_| CaptureError::api("error.capture.window_list"))?
         .atom)
 }
 
@@ -364,7 +359,7 @@ fn zpixmap_to_rgba(data: &[u8], depth: u8, width: u32, height: u32) -> Result<Ve
 }
 
 fn x11_unavailable() -> CaptureError {
-    CaptureError::unavailable(PORTAL_UNAVAILABLE_MESSAGE)
+    CaptureError::unavailable(PORTAL_UNAVAILABLE_KEY)
 }
 
 #[cfg(test)]
@@ -386,15 +381,15 @@ mod tests {
 
     #[test]
     fn portal_unavailable_messages_keep_alternatives() {
-        assert!(PORTAL_UNAVAILABLE_MESSAGE.contains("xdg-desktop-portal"));
-        assert!(PORTAL_UNAVAILABLE_MESSAGE.contains("X11"));
+        assert!(i18n::t(PORTAL_UNAVAILABLE_KEY).contains("xdg-desktop-portal"));
+        assert!(i18n::t(PORTAL_UNAVAILABLE_KEY).contains("X11"));
         // 门户不可用时不提供空白窗口列表,而是点名区域/全屏替代。
-        assert!(PORTAL_WINDOW_LIST_MESSAGE.contains("区域"));
-        assert!(PORTAL_WINDOW_LIST_MESSAGE.contains("全屏"));
-        assert!(PORTAL_WINDOW_CAPTURE_MESSAGE.contains("区域"));
-        assert!(PORTAL_WINDOW_CAPTURE_MESSAGE.contains("全屏"));
-        let list = CaptureError::unavailable(PORTAL_WINDOW_LIST_MESSAGE);
+        assert!(i18n::t(PORTAL_WINDOW_LIST_KEY).contains("区域"));
+        assert!(i18n::t(PORTAL_WINDOW_LIST_KEY).contains("全屏"));
+        assert!(i18n::t(PORTAL_WINDOW_CAPTURE_KEY).contains("区域"));
+        assert!(i18n::t(PORTAL_WINDOW_CAPTURE_KEY).contains("全屏"));
+        let list = CaptureError::unavailable(PORTAL_WINDOW_LIST_KEY);
         assert_eq!(list.kind, CaptureErrorKind::Unavailable);
-        assert_eq!(x11_unavailable().message, PORTAL_UNAVAILABLE_MESSAGE);
+        assert_eq!(x11_unavailable().message, i18n::t(PORTAL_UNAVAILABLE_KEY));
     }
 }

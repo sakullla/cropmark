@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
+use crate::i18n;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlatformStatus {
     Enabled,
@@ -13,11 +15,34 @@ pub enum PlatformStatus {
     Denied(String),
 }
 
+/// 拒绝原因:保存原因而不是成品文案,语言切换后消息按新语言重解析。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AutostartRejection {
+    RequiresApproval,
+    NotFound,
+    Denied(String),
+    Rejected,
+}
+
+impl AutostartRejection {
+    pub fn message(&self) -> String {
+        match self {
+            Self::RequiresApproval => i18n::t("autostart.requires_approval"),
+            Self::NotFound => i18n::t("autostart.not_found"),
+            Self::Denied(reason) => i18n::tp("autostart.denied", &[("reason", reason)]),
+            Self::Rejected => i18n::t("autostart.rejected"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AutostartState {
     pub enabled: bool,
     pub message: Option<String>,
+    /// 拒绝原因(不序列化):设置页据此在语言切换后重解析消息。
+    #[serde(skip)]
+    pub rejection: Option<AutostartRejection>,
 }
 
 pub fn current_state() -> AutostartState {
@@ -30,19 +55,25 @@ pub fn set_enabled(enabled: bool) -> AutostartState {
     }
     let state = map_platform_status(platform_status());
     if enabled && !state.enabled && state.message.is_none() {
+        let rejection = AutostartRejection::Rejected;
         return AutostartState {
             enabled: false,
-            message: Some("系统拒绝了开机启动。开关已关闭。".to_string()),
+            message: Some(rejection.message()),
+            rejection: Some(rejection),
         };
     }
     state
 }
 
-pub fn merge_autostart_ui(live: AutostartState, last_rejection: Option<String>) -> AutostartState {
+pub fn merge_autostart_ui(
+    live: AutostartState,
+    last_rejection: Option<AutostartRejection>,
+) -> AutostartState {
     if live.enabled {
         return AutostartState {
             enabled: true,
             message: None,
+            rejection: None,
         };
     }
     if live.message.is_some() {
@@ -50,43 +81,49 @@ pub fn merge_autostart_ui(live: AutostartState, last_rejection: Option<String>) 
     }
     AutostartState {
         enabled: false,
-        message: last_rejection,
+        message: last_rejection.as_ref().map(AutostartRejection::message),
+        rejection: last_rejection,
     }
 }
 
-pub fn remember_autostart_result(result: &AutostartState) -> Option<String> {
+pub fn remember_autostart_result(result: &AutostartState) -> Option<AutostartRejection> {
     if result.enabled {
         None
     } else {
-        result.message.clone()
+        result.rejection.clone()
     }
 }
 
 pub fn map_platform_status(status: PlatformStatus) -> AutostartState {
+    let rejection = rejection_for(&status);
+    let message = rejection.as_ref().map(AutostartRejection::message);
     match status {
         PlatformStatus::Enabled => AutostartState {
             enabled: true,
             message: None,
+            rejection: None,
         },
         PlatformStatus::NotRegistered => AutostartState {
             enabled: false,
             message: None,
+            rejection: None,
         },
-        PlatformStatus::RequiresApproval => AutostartState {
+        PlatformStatus::RequiresApproval
+        | PlatformStatus::NotFound
+        | PlatformStatus::Denied(_) => AutostartState {
             enabled: false,
-            message: Some(
-                "系统需要批准登录项后才会开机启动。当前未生效，开关已回到关闭。请在系统设置的登录项中批准 Cropmark。"
-                    .to_string(),
-            ),
+            message,
+            rejection,
         },
-        PlatformStatus::NotFound => AutostartState {
-            enabled: false,
-            message: Some("系统找不到可注册的登录项。请使用已安装的 Cropmark；开关已关闭。".to_string()),
-        },
-        PlatformStatus::Denied(reason) => AutostartState {
-            enabled: false,
-            message: Some(format!("系统拒绝了开机启动（{reason}）。开关已关闭。")),
-        },
+    }
+}
+
+fn rejection_for(status: &PlatformStatus) -> Option<AutostartRejection> {
+    match status {
+        PlatformStatus::RequiresApproval => Some(AutostartRejection::RequiresApproval),
+        PlatformStatus::NotFound => Some(AutostartRejection::NotFound),
+        PlatformStatus::Denied(reason) => Some(AutostartRejection::Denied(reason.clone())),
+        PlatformStatus::Enabled | PlatformStatus::NotRegistered => None,
     }
 }
 
@@ -510,7 +547,7 @@ mod tests {
     fn successful_toggle_clears_stored_rejection() {
         let enabled = map_platform_status(PlatformStatus::Enabled);
         assert_eq!(remember_autostart_result(&enabled), None);
-        let ui = merge_autostart_ui(enabled, Some("系统拒绝了开机启动。".into()));
+        let ui = merge_autostart_ui(enabled, Some(AutostartRejection::Rejected));
         assert!(ui.enabled);
         assert_eq!(ui.message, None);
 

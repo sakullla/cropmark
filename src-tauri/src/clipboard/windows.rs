@@ -9,7 +9,7 @@ fn dib_v5(frame: &Frame) -> Result<Vec<u8>, CaptureError> {
         || frame.height > i32::MAX as u32
         || frame.rgba.len() > u32::MAX as usize
     {
-        return Err(CaptureError::invalid_buffer("图像尺寸过大"));
+        return Err(CaptureError::invalid_buffer("error.capture.image_too_large"));
     }
     const HEADER: usize = 124;
     let mut dib = vec![0; HEADER + frame.rgba.len()];
@@ -50,14 +50,14 @@ pub(super) fn copy_frame_with_png(frame: &Frame, png: &[u8]) -> Result<(), Captu
     let dib = dib_v5(frame)?;
     let prepared_at = started.elapsed();
     if !png.starts_with(b"\x89PNG\r\n\x1a\n") {
-        return Err(CaptureError::invalid_buffer("PNG 数据无效"));
+        return Err(CaptureError::invalid_buffer("error.capture.png_invalid"));
     }
     let fail = |error| {
         eprintln!("Cropmark clipboard write failed: {error}");
-        CaptureError::api("无法把截图放入剪贴板。")
+        CaptureError::api("error.capture.clipboard_image")
     };
     let format = clipboard_win::register_format("PNG")
-        .ok_or_else(|| CaptureError::api("无法注册剪贴板图像格式。"))?;
+        .ok_or_else(|| CaptureError::api("error.capture.clipboard_register"))?;
     // Match arboard/Chromium's bounded retry for other applications temporarily
     // holding the clipboard. Sleep(0) retries exhaust before its owner releases it.
     let mut attempts = 0;

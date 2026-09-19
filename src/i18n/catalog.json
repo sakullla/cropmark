@@ -1,0 +1,1538 @@
+{
+  "tray.capture": {
+    "zh-CN": "截取",
+    "en": "Capture"
+  },
+  "tray.region": {
+    "zh-CN": "区域",
+    "en": "Region"
+  },
+  "tray.window": {
+    "zh-CN": "窗口",
+    "en": "Window"
+  },
+  "tray.fullscreen": {
+    "zh-CN": "全屏",
+    "en": "Fullscreen"
+  },
+  "tray.last_region": {
+    "zh-CN": "上次区域",
+    "en": "Last region"
+  },
+  "tray.last_region_empty": {
+    "zh-CN": "上次区域（暂无记录）",
+    "en": "Last region (no record)"
+  },
+  "tray.delay_seconds": {
+    "zh-CN": "延时 {seconds} 秒",
+    "en": "Delay {seconds}s"
+  },
+  "tray.delay_configured": {
+    "zh-CN": "使用设置的延时（{seconds} 秒）",
+    "en": "Configured delay ({seconds}s)"
+  },
+  "tray.settings": {
+    "zh-CN": "设置",
+    "en": "Settings"
+  },
+  "tray.history": {
+    "zh-CN": "历史记录",
+    "en": "History"
+  },
+  "tray.quit": {
+    "zh-CN": "退出",
+    "en": "Quit"
+  },
+  "tray.unavailable": {
+    "zh-CN": "当前桌面环境未提供托盘，热键仍可用；可再次启动 Cropmark 打开设置，或在此退出应用。",
+    "en": "The current desktop does not provide a tray. Hotkeys still work; start Cropmark again to open Settings, or quit from here."
+  },
+  "selection.action.copy": {
+    "zh-CN": "复制",
+    "en": "Copy"
+  },
+  "selection.action.save": {
+    "zh-CN": "保存",
+    "en": "Save"
+  },
+  "selection.action.pin": {
+    "zh-CN": "贴图",
+    "en": "Pin"
+  },
+  "selection.action.annotate": {
+    "zh-CN": "标注",
+    "en": "Annotate"
+  },
+  "selection.action.ocr": {
+    "zh-CN": "取字",
+    "en": "Text"
+  },
+  "selection.action.cancel": {
+    "zh-CN": "取消",
+    "en": "Cancel"
+  },
+  "selection.action.copy_color": {
+    "zh-CN": "复制色值",
+    "en": "Copy color"
+  },
+  "error.capture.no_permission": {
+    "zh-CN": "没有截屏权限，未能截取。",
+    "en": "No screen capture permission; nothing was captured."
+  },
+  "error.capture.permission_hint_macos": {
+    "zh-CN": "请在系统设置 › 隐私与安全性 › 屏幕录制中打开 Cropmark。打开后必须从菜单栏图标完全退出再打开，权限才会生效。若开关已打开仍弹出授权，先点减号移除 Cropmark，完全退出后再截取。",
+    "en": "Enable Cropmark under System Settings › Privacy & Security › Screen Recording. After enabling it, fully quit Cropmark from the menu bar icon and open it again for the permission to take effect. If the toggle is already on but you are still asked to authorize, remove Cropmark with the minus button, quit completely, and capture again."
+  },
+  "error.capture.permission_hint_windows": {
+    "zh-CN": "请在 Windows 设置 › 隐私和安全性 › 屏幕截图和屏幕录制中允许 Cropmark，然后重新截取。",
+    "en": "Allow Cropmark under Windows Settings › Privacy & security › Screenshots and screen recording, then capture again."
+  },
+  "error.capture.permission_hint_linux": {
+    "zh-CN": "请在系统门户提示中允许截屏，并确认已安装 xdg-desktop-portal。",
+    "en": "Allow screen capture in the system portal prompt, and make sure xdg-desktop-portal is installed."
+  },
+  "error.capture.permission_hint_other": {
+    "zh-CN": "当前系统没有可用的截屏接口。",
+    "en": "No screen capture interface is available on this system."
+  },
+  "error.capture.api": {
+    "zh-CN": "截屏接口调用失败。",
+    "en": "The screen capture API call failed."
+  },
+  "error.capture.api_detail": {
+    "zh-CN": "截屏接口调用失败：{detail}",
+    "en": "The screen capture API call failed: {detail}"
+  },
+  "error.capture.invalid_buffer": {
+    "zh-CN": "截屏缓冲无效：{reason}。",
+    "en": "Invalid capture buffer: {reason}."
+  },
+  "error.capture.buffer_empty": {
+    "zh-CN": "空缓冲",
+    "en": "empty buffer"
+  },
+  "error.capture.buffer_zero_size": {
+    "zh-CN": "尺寸为 0",
+    "en": "zero size"
+  },
+  "error.capture.buffer_uninitialized": {
+    "zh-CN": "未初始化",
+    "en": "uninitialized"
+  },
+  "error.capture.buffer_mismatch": {
+    "zh-CN": "尺寸或像素长度不匹配",
+    "en": "size or pixel length mismatch"
+  },
+  "error.capture.region_out_of_bounds": {
+    "zh-CN": "选区超出截取画面。",
+    "en": "The selection exceeds the captured frame."
+  },
+  "error.capture.crop_pointer_monitor": {
+    "zh-CN": "无法按指针所在屏裁剪截屏。",
+    "en": "Could not crop the capture to the screen under the pointer."
+  },
+  "error.capture.encode_png": {
+    "zh-CN": "无法编码 PNG。",
+    "en": "Could not encode PNG."
+  },
+  "error.capture.encode_jpeg": {
+    "zh-CN": "无法编码 JPEG。",
+    "en": "Could not encode JPEG."
+  },
+  "error.capture.encode_webp": {
+    "zh-CN": "无法编码 WebP。",
+    "en": "Could not encode WebP."
+  },
+  "error.capture.decode": {
+    "zh-CN": "无法解码截屏图像。",
+    "en": "Could not decode the captured image."
+  },
+  "error.capture.hide_failed": {
+    "zh-CN": "界面尚未隐藏完成，未能截取。",
+    "en": "The interface was not fully hidden; capture was skipped."
+  },
+  "error.capture.thread_failed": {
+    "zh-CN": "截取线程失败。",
+    "en": "The capture worker failed."
+  },
+  "error.capture.last_region_out_of_range": {
+    "zh-CN": "上次区域超出显示器范围。",
+    "en": "The last region is outside the monitor bounds."
+  },
+  "error.capture.window_unknown": {
+    "zh-CN": "无法识别该窗口。",
+    "en": "Could not identify that window."
+  },
+  "error.capture.window_read": {
+    "zh-CN": "无法读取窗口。",
+    "en": "Could not read the window."
+  },
+  "error.capture.window_list": {
+    "zh-CN": "无法列出窗口。",
+    "en": "Could not list windows."
+  },
+  "error.capture.window_gone": {
+    "zh-CN": "窗口已不存在。",
+    "en": "The window no longer exists."
+  },
+  "error.capture.window_rect": {
+    "zh-CN": "无法读取窗口位置。",
+    "en": "Could not read the window position."
+  },
+  "error.capture.window_create": {
+    "zh-CN": "无法创建截取窗。",
+    "en": "Could not create the capture window."
+  },
+  "error.capture.window_register": {
+    "zh-CN": "无法注册截取窗。",
+    "en": "Could not register the capture window."
+  },
+  "error.capture.window_open": {
+    "zh-CN": "无法打开截取窗。",
+    "en": "Could not open the capture window."
+  },
+  "error.capture.window_build": {
+    "zh-CN": "无法创建窗口：{detail}",
+    "en": "Could not create the window: {detail}"
+  },
+  "error.capture.pointer": {
+    "zh-CN": "无法读取指针位置。",
+    "en": "Could not read the pointer position."
+  },
+  "error.capture.monitor_info": {
+    "zh-CN": "无法读取显示器信息。",
+    "en": "Could not read monitor information."
+  },
+  "error.capture.portal_path_invalid": {
+    "zh-CN": "门户返回的截屏路径无效。",
+    "en": "The portal returned an invalid screenshot path."
+  },
+  "error.capture.x11_pixel_format": {
+    "zh-CN": "无法识别当前显示的像素格式。",
+    "en": "Could not identify the current display pixel format."
+  },
+  "error.capture.x11_pixel_format_unsupported": {
+    "zh-CN": "暂不支持的显示像素格式（需要 32bpp/32bit 对齐）。",
+    "en": "Unsupported display pixel format (32bpp/32-bit alignment required)."
+  },
+  "error.capture.x11_visual_format": {
+    "zh-CN": "无法识别当前显示的视觉格式。",
+    "en": "Could not identify the current display visual format."
+  },
+  "error.capture.x11_connect": {
+    "zh-CN": "当前会话无法连接 X11 服务器，无法打开原生选区窗。",
+    "en": "Cannot connect to the X11 server in this session, so the native selection window cannot open."
+  },
+  "error.capture.x11_alloc": {
+    "zh-CN": "无法分配 X11 资源。",
+    "en": "Could not allocate X11 resources."
+  },
+  "error.capture.shell_main_thread": {
+    "zh-CN": "选区窗无法在主线程运行。",
+    "en": "The selection window could not run on the main thread."
+  },
+  "error.capture.no_monitor": {
+    "zh-CN": "没有可用的显示器。",
+    "en": "No monitor is available."
+  },
+  "error.capture.screencapturekit_windows": {
+    "zh-CN": "ScreenCaptureKit 无法列出窗口。",
+    "en": "ScreenCaptureKit could not list windows."
+  },
+  "error.capture.no_interface": {
+    "zh-CN": "没有可用的截屏接口。",
+    "en": "No capture interface is available."
+  },
+  "error.capture.platform_no_interface": {
+    "zh-CN": "当前系统没有可用的截屏接口。",
+    "en": "No capture interface is available on this system."
+  },
+  "error.capture.platform_no_window_list": {
+    "zh-CN": "当前系统无法列出窗口。",
+    "en": "Cannot list windows on this system."
+  },
+  "error.capture.platform_no_window_capture": {
+    "zh-CN": "当前系统无法截取窗口。",
+    "en": "Cannot capture windows on this system."
+  },
+  "error.capture.empty_window_list": {
+    "zh-CN": "没有可截取的窗口，或当前桌面无法列出窗口。请改用区域或全屏截取。",
+    "en": "No capturable windows, or this desktop cannot list windows. Use region or fullscreen capture instead."
+  },
+  "error.capture.clipboard_write": {
+    "zh-CN": "无法写入剪贴板。",
+    "en": "Could not write to the clipboard."
+  },
+  "error.capture.clipboard_image": {
+    "zh-CN": "无法把截图放入剪贴板。",
+    "en": "Could not put the screenshot on the clipboard."
+  },
+  "error.capture.clipboard_text": {
+    "zh-CN": "无法把文字放入剪贴板。截图仍保留。",
+    "en": "Could not put the text on the clipboard. The screenshot is still available."
+  },
+  "error.capture.clipboard_register": {
+    "zh-CN": "无法注册剪贴板图像格式。",
+    "en": "Could not register the clipboard image format."
+  },
+  "error.capture.image_too_large": {
+    "zh-CN": "图像尺寸过大",
+    "en": "image is too large"
+  },
+  "error.capture.png_invalid": {
+    "zh-CN": "PNG 数据无效",
+    "en": "invalid PNG data"
+  },
+  "error.capture.text_font_missing": {
+    "zh-CN": "无法绘制文字：系统未找到可用字体。",
+    "en": "Cannot draw text: no usable system font was found."
+  },
+  "error.capture.preview_missing": {
+    "zh-CN": "没有可预览的截图。",
+    "en": "No preview screenshot is available."
+  },
+  "error.capture.region_missing": {
+    "zh-CN": "当前没有进行中的区域截取。",
+    "en": "No region capture is in progress."
+  },
+  "error.capture.pin_busy": {
+    "zh-CN": "正在截取，无法进入贴图再标注。",
+    "en": "A capture is in progress; cannot enter pin re-annotation."
+  },
+  "error.capture.export": {
+    "zh-CN": "无法导出当前截图。",
+    "en": "Could not export the current screenshot."
+  },
+  "error.capture.save_to_path": {
+    "zh-CN": "无法保存到「{path}」：{error}。预览仍保留，可继续标注、复制或换一个位置保存。",
+    "en": "Could not save to \"{path}\": {error}. The preview is kept; keep annotating, copy, or save elsewhere."
+  },
+  "error.linux.portal_missing": {
+    "zh-CN": "当前桌面没有可用的截屏接口。请安装 xdg-desktop-portal，或在 X11 会话中使用 Cropmark。",
+    "en": "No screenshot interface is available on this desktop. Install xdg-desktop-portal, or use Cropmark in an X11 session."
+  },
+  "error.linux.portal_window_list": {
+    "zh-CN": "当前桌面无法列出窗口。请改用区域或全屏截取，或在 X11 会话中使用窗口模式。",
+    "en": "This desktop cannot list windows. Use region or fullscreen capture, or use window mode in an X11 session."
+  },
+  "error.linux.portal_window_capture": {
+    "zh-CN": "当前桌面无法截取窗口。请改用区域或全屏截取。",
+    "en": "This desktop cannot capture windows. Use region or fullscreen capture instead."
+  },
+  "error.linux.no_monitor": {
+    "zh-CN": "当前桌面没有可用的显示器信息。请确认正在使用 X11，或门户可提供截屏。",
+    "en": "No monitor information is available on this desktop. Make sure you are on X11, or that the portal provides screenshots."
+  },
+  "error.linux.wayland_pointer": {
+    "zh-CN": "当前 Wayland 会话无法读取指针所在显示器。请确认已安装并启用 xdg-desktop-portal，或在 X11 会话中使用 Cropmark。",
+    "en": "The pointer's monitor cannot be read in this Wayland session. Make sure xdg-desktop-portal is installed and enabled, or use Cropmark in an X11 session."
+  },
+  "toast.copied": {
+    "zh-CN": "已复制到剪贴板。",
+    "en": "Copied to clipboard."
+  },
+  "toast.copy_failed": {
+    "zh-CN": "复制失败，请重试。",
+    "en": "Copy failed. Try again."
+  },
+  "toast.color_copied": {
+    "zh-CN": "已复制色值 {hex}。",
+    "en": "Copied color {hex}."
+  },
+  "toast.color_copy_failed": {
+    "zh-CN": "复制色值失败，请重试。",
+    "en": "Could not copy the color value. Try again."
+  },
+  "toast.capture_expired": {
+    "zh-CN": "截图已过期，请重新截取。",
+    "en": "The screenshot has expired. Capture again."
+  },
+  "toast.saved": {
+    "zh-CN": "已保存 {name}。",
+    "en": "Saved {name}."
+  },
+  "toast.ocr_progress": {
+    "zh-CN": "正在识别…",
+    "en": "Recognizing…"
+  },
+  "toast.ocr_copied": {
+    "zh-CN": "已复制 {chars} 字。",
+    "en": "Copied {chars} characters."
+  },
+  "toast.last_region_missing": {
+    "zh-CN": "暂无上次区域，请先完成一次区域截取。",
+    "en": "No last region yet. Complete a region capture first."
+  },
+  "toast.last_region_out_of_range": {
+    "zh-CN": "上次区域已不在当前显示范围内，请重新截取。",
+    "en": "The last region is no longer on the current displays. Capture a region again."
+  },
+  "error.ocr.no_text": {
+    "zh-CN": "没有识别到文字。",
+    "en": "No text was recognized."
+  },
+  "error.ocr.no_selection": {
+    "zh-CN": "没有选中文字。",
+    "en": "No text selected."
+  },
+  "error.ocr.failed": {
+    "zh-CN": "无法识别图上的文字。",
+    "en": "Could not recognize text in the image."
+  },
+  "error.ocr.missing_models": {
+    "zh-CN": "本机缺少识别模型，无法取字。",
+    "en": "OCR models are missing; text recognition is unavailable."
+  },
+  "error.ocr.copy": {
+    "zh-CN": "无法把文字放入剪贴板。截图仍保留。",
+    "en": "Could not put the text on the clipboard. The screenshot is still available."
+  },
+  "error.ocr.no_preview": {
+    "zh-CN": "没有可预览的截图。",
+    "en": "No preview screenshot is available."
+  },
+  "error.hotkey.invalid": {
+    "zh-CN": "无法识别该热键。",
+    "en": "Unrecognized hotkey."
+  },
+  "error.hotkey.system": {
+    "zh-CN": "这是系统截图快捷键，Cropmark 不会占用它。",
+    "en": "This is a system screenshot shortcut; Cropmark will not take it over."
+  },
+  "error.hotkey.modifier": {
+    "zh-CN": "全局热键需要包含 Ctrl、Alt、Shift 或 Super。",
+    "en": "A global hotkey must include Ctrl, Alt, Shift, or Super."
+  },
+  "error.hotkey.conflict": {
+    "zh-CN": "与其它截取热键冲突，未注册该组合。Cropmark 仍在运行。",
+    "en": "Conflicts with another capture hotkey; this combination was not registered. Cropmark is still running."
+  },
+  "error.hotkey.register": {
+    "zh-CN": "热键无法注册，可能已被其它程序占用。Cropmark 仍在运行。",
+    "en": "The hotkey could not be registered; it may be taken by another program. Cropmark is still running."
+  },
+  "autostart.requires_approval": {
+    "zh-CN": "系统需要批准登录项后才会开机启动。当前未生效，开关已回到关闭。请在系统设置的登录项中批准 Cropmark。",
+    "en": "The system requires approval of the login item before it can launch at login. It is not active yet and the switch has returned to off. Approve Cropmark in the system login items settings."
+  },
+  "autostart.not_found": {
+    "zh-CN": "系统找不到可注册的登录项。请使用已安装的 Cropmark；开关已关闭。",
+    "en": "The system cannot find a login item to register. Use an installed copy of Cropmark; the switch has been turned off."
+  },
+  "autostart.denied": {
+    "zh-CN": "系统拒绝了开机启动（{reason}）。开关已关闭。",
+    "en": "The system refused to enable launch at login ({reason}). The switch has been turned off."
+  },
+  "autostart.rejected": {
+    "zh-CN": "系统拒绝了开机启动。开关已关闭。",
+    "en": "The system refused to enable launch at login. The switch has been turned off."
+  },
+  "autostart.help_enabled": {
+    "zh-CN": "下次登录只会在托盘出现 Cropmark，不会打开主窗口。",
+    "en": "At the next sign-in Cropmark will only appear in the tray and will not open the main window."
+  },
+  "autostart.help_disabled": {
+    "zh-CN": "新安装默认关闭。打开后由系统在登录时拉起托盘。",
+    "en": "Off by default for new installations. When on, the system starts the tray at login."
+  },
+  "pin.full": {
+    "zh-CN": "贴图最多同时 8 张，请先关闭部分贴图。",
+    "en": "Up to 8 pins at a time. Close some pins first."
+  },
+  "pin.retry": {
+    "zh-CN": "贴图失败，请重试。",
+    "en": "Pinning failed. Try again."
+  },
+  "pin.save_default_name": {
+    "zh-CN": "cropmark-pin.png",
+    "en": "cropmark-pin.png"
+  },
+  "dialog.images_filter": {
+    "zh-CN": "图片",
+    "en": "Images"
+  },
+  "dialog.save_capture_title": {
+    "zh-CN": "保存截图",
+    "en": "Save Screenshot"
+  },
+  "dialog.png_filter": {
+    "zh-CN": "PNG 图片",
+    "en": "PNG image"
+  },
+  "dialog.save_pin_title": {
+    "zh-CN": "保存贴图",
+    "en": "Save Pin"
+  },
+  "error.pin.failed": {
+    "zh-CN": "无法完成贴图。",
+    "en": "Could not create the pin."
+  },
+  "error.pin.window_create": {
+    "zh-CN": "无法创建贴图窗口：{error}",
+    "en": "Could not create the pin window: {error}"
+  },
+  "error.pin.window_unknown": {
+    "zh-CN": "未知贴图窗口。",
+    "en": "Unknown pin window."
+  },
+  "error.pin.source_gone": {
+    "zh-CN": "贴图图像已失效，请重新贴图。",
+    "en": "The pin image is no longer available. Pin again."
+  },
+  "error.pin.window_closed": {
+    "zh-CN": "贴图窗口已关闭。",
+    "en": "The pin window is closed."
+  },
+  "error.pin.thread_copy": {
+    "zh-CN": "复制线程失败。",
+    "en": "The copy worker failed."
+  },
+  "error.pin.thread_save": {
+    "zh-CN": "保存线程失败。",
+    "en": "The save worker failed."
+  },
+  "error.pin.thread_pin": {
+    "zh-CN": "贴图线程失败。",
+    "en": "The pin worker failed."
+  },
+  "error.pin.closed": {
+    "zh-CN": "贴图已关闭。",
+    "en": "The pin is closed."
+  },
+  "error.pin.not_editing": {
+    "zh-CN": "当前预览不在贴图再标注模式。",
+    "en": "The preview is not in pin re-annotation mode."
+  },
+  "error.pin.save_to_path": {
+    "zh-CN": "无法保存贴图到「{path}」：{error}",
+    "en": "Could not save the pin to \"{path}\": {error}"
+  },
+  "error.history.write_index": {
+    "zh-CN": "无法写入历史索引：{error}",
+    "en": "Could not write the history index: {error}"
+  },
+  "error.history.rename_index": {
+    "zh-CN": "无法更新历史索引：{error}",
+    "en": "Could not update the history index: {error}"
+  },
+  "error.history.corrupted": {
+    "zh-CN": "历史索引已损坏，旧记录暂不可用；新的截图仍会继续记录。",
+    "en": "The history index is corrupted; older records are unavailable, but new screenshots will keep being recorded."
+  },
+  "error.history.unsupported": {
+    "zh-CN": "历史索引版本不受支持，当前无法读取旧记录。",
+    "en": "The history index version is unsupported; older records cannot be read."
+  },
+  "error.history.create_dir": {
+    "zh-CN": "无法创建历史目录：{error}",
+    "en": "Could not create the history directory: {error}"
+  },
+  "error.history.write_image": {
+    "zh-CN": "无法写入历史图片：{error}",
+    "en": "Could not write the history image: {error}"
+  },
+  "error.history.write_thumb": {
+    "zh-CN": "无法写入历史缩略图：{error}",
+    "en": "Could not write the history thumbnail: {error}"
+  },
+  "error.history.missing": {
+    "zh-CN": "历史记录不存在或已被删除。",
+    "en": "The history entry does not exist or was deleted."
+  },
+  "error.history.image_missing": {
+    "zh-CN": "历史图片文件缺失，无法复制或贴图。",
+    "en": "The history image file is missing; it cannot be copied or pinned."
+  },
+  "error.history.thumb_missing": {
+    "zh-CN": "历史缩略图缺失。",
+    "en": "The history thumbnail is missing."
+  },
+  "error.history.clear": {
+    "zh-CN": "无法清空历史记录：{error}",
+    "en": "Could not clear the history: {error}"
+  },
+  "error.history.failed": {
+    "zh-CN": "无法完成历史操作。",
+    "en": "Could not complete the history operation."
+  },
+  "notice.hotkey_applied": {
+    "zh-CN": "热键已应用",
+    "en": "Hotkeys applied"
+  },
+  "notice.style_applied": {
+    "zh-CN": "标注样式已应用",
+    "en": "Annotation style applied"
+  },
+  "notice.features_applied": {
+    "zh-CN": "功能入口已应用",
+    "en": "Feature entries applied"
+  },
+  "notice.capture_applied": {
+    "zh-CN": "截图设置已应用",
+    "en": "Capture settings applied"
+  },
+  "notice.history_applied": {
+    "zh-CN": "历史记录设置已应用",
+    "en": "History settings applied"
+  },
+  "notice.export_remembered": {
+    "zh-CN": "导出设置已记住",
+    "en": "Export settings remembered"
+  },
+  "notice.last_region_saved": {
+    "zh-CN": "上次区域已记录",
+    "en": "Last region recorded"
+  },
+  "notice.last_region_cleared": {
+    "zh-CN": "上次区域已清除",
+    "en": "Last region cleared"
+  },
+  "notice.language_applied": {
+    "zh-CN": "语言已切换",
+    "en": "Language switched"
+  },
+  "notice.persist_failed": {
+    "zh-CN": "{applied}，但未能写入本机设置：{error}",
+    "en": "{applied}, but the local settings could not be written: {error}"
+  },
+  "error.feature.unknown": {
+    "zh-CN": "未知的功能开关：{key}",
+    "en": "Unknown feature switch: {key}"
+  },
+  "language.system": {
+    "zh-CN": "跟随系统",
+    "en": "Follow system"
+  },
+  "language.zh_cn": {
+    "zh-CN": "简体中文",
+    "en": "简体中文"
+  },
+  "language.en": {
+    "zh-CN": "English",
+    "en": "English"
+  },
+  "settings.close": {
+    "zh-CN": "关闭",
+    "en": "Close"
+  },
+  "settings.hotkeys.title": {
+    "zh-CN": "热键",
+    "en": "Hotkeys"
+  },
+  "settings.hotkeys.hint": {
+    "zh-CN": "点击热键按钮后按下新组合，Esc 取消；改动立即生效。",
+    "en": "Click a hotkey button, then press the new combination; press Esc to cancel. Changes take effect immediately."
+  },
+  "settings.mode.region": {
+    "zh-CN": "区域截取",
+    "en": "Region capture"
+  },
+  "settings.mode.window": {
+    "zh-CN": "窗口截取",
+    "en": "Window capture"
+  },
+  "settings.mode.fullscreen": {
+    "zh-CN": "全屏截取",
+    "en": "Fullscreen capture"
+  },
+  "settings.hotkey.recording": {
+    "zh-CN": "按下新热键…",
+    "en": "Press new hotkey…"
+  },
+  "settings.hotkey.title": {
+    "zh-CN": "点击后按下新组合，Esc 取消",
+    "en": "Click, then press the new combination; Esc to cancel"
+  },
+  "settings.hotkey.aria_recording": {
+    "zh-CN": "{mode}热键：正在录制，请按下新组合，Esc 取消",
+    "en": "{mode} hotkey: recording; press the new combination, Esc to cancel"
+  },
+  "settings.hotkey.aria_current": {
+    "zh-CN": "{mode}热键：当前为 {accelerator}，点击修改",
+    "en": "{mode} hotkey: currently {accelerator}; click to change"
+  },
+  "settings.capture.title": {
+    "zh-CN": "截图",
+    "en": "Capture"
+  },
+  "settings.capture.delay_label": {
+    "zh-CN": "延时秒数",
+    "en": "Delay (seconds)"
+  },
+  "settings.capture.delay_hint": {
+    "zh-CN": "0–60 秒，热键与托盘截取按此倒计时；0 为立即截取。",
+    "en": "0–60 seconds. Hotkey and tray captures count down by this delay; 0 captures immediately."
+  },
+  "settings.capture.autocopy_label": {
+    "zh-CN": "完成后自动复制",
+    "en": "Copy automatically when done"
+  },
+  "settings.capture.autocopy_hint": {
+    "zh-CN": "关闭后截图完成不写入剪贴板；预览内手动复制不受影响。",
+    "en": "When off, finished captures are not written to the clipboard; manual copy in the preview is unaffected."
+  },
+  "settings.capture.finish_label": {
+    "zh-CN": "完成后动作",
+    "en": "When finished"
+  },
+  "settings.capture.finish_hint": {
+    "zh-CN": "静默完成会直接复制并给出提示，不打开预览；需自动复制开启。",
+    "en": "Quiet finish copies right away with a toast and does not open the preview; requires automatic copy."
+  },
+  "settings.capture.finish_preview": {
+    "zh-CN": "预览",
+    "en": "Preview"
+  },
+  "settings.capture.finish_quiet": {
+    "zh-CN": "静默完成",
+    "en": "Quiet"
+  },
+  "settings.capture.quiet_locked": {
+    "zh-CN": "需先开启完成后自动复制",
+    "en": "Enable automatic copy first"
+  },
+  "settings.capture.delay_error": {
+    "zh-CN": "延时需为 0–60 之间的整数秒。",
+    "en": "Delay must be a whole number of seconds from 0 to 60."
+  },
+  "settings.history.title": {
+    "zh-CN": "历史记录",
+    "en": "History"
+  },
+  "settings.history.hint": {
+    "zh-CN": "截图完成后在本机保留最近记录，可重新复制、贴图或删除；数据只保存在本机。",
+    "en": "Finished captures are kept locally as recent records that can be copied, pinned, or deleted again; data stays on this machine."
+  },
+  "settings.history.enabled_label": {
+    "zh-CN": "保留截图历史",
+    "en": "Keep screenshot history"
+  },
+  "settings.history.enabled_hint": {
+    "zh-CN": "关闭后不再新增记录；已有记录保留，可在历史窗口清空。",
+    "en": "When off, no new records are added; existing records remain and can be cleared in the history window."
+  },
+  "settings.history.limit_label": {
+    "zh-CN": "记录上限",
+    "en": "Record limit"
+  },
+  "settings.history.limit_hint": {
+    "zh-CN": "5–200 条，超出上限时自动淘汰最旧记录。",
+    "en": "5–200 entries; the oldest records are removed when the limit is exceeded."
+  },
+  "settings.history.limit_error": {
+    "zh-CN": "记录上限需为 5–200 之间的整数。",
+    "en": "The limit must be a whole number from 5 to 200."
+  },
+  "settings.history.open_label": {
+    "zh-CN": "浏览历史",
+    "en": "Browse history"
+  },
+  "settings.history.open_hint": {
+    "zh-CN": "打开历史窗口，按时间查看缩略图并重新复制、贴图或删除。",
+    "en": "Open the history window to browse thumbnails by time and copy, pin, or delete again."
+  },
+  "settings.history.open_button": {
+    "zh-CN": "打开历史记录",
+    "en": "Open history"
+  },
+  "settings.autostart.title": {
+    "zh-CN": "开机启动",
+    "en": "Launch at login"
+  },
+  "settings.autostart.label": {
+    "zh-CN": "登录时运行",
+    "en": "Run at login"
+  },
+  "settings.features.title": {
+    "zh-CN": "功能入口",
+    "en": "Feature entries"
+  },
+  "settings.features.hint": {
+    "zh-CN": "关闭的入口即刻生效，从下一次截取起消失；截取热键与复制/保存能力始终保留。",
+    "en": "Disabled entries take effect immediately and disappear from the next capture; capture hotkeys and copy/save stay available."
+  },
+  "settings.feature.ocr_label": {
+    "zh-CN": "取字",
+    "en": "Text"
+  },
+  "settings.feature.ocr_hint": {
+    "zh-CN": "关闭后选区菜单与预览工具条不再显示取字，O 键停用。",
+    "en": "When off, the selection menu and preview toolbar hide text recognition, and the O key is disabled."
+  },
+  "settings.feature.pin_label": {
+    "zh-CN": "贴图",
+    "en": "Pin"
+  },
+  "settings.feature.pin_hint": {
+    "zh-CN": "关闭后选区菜单不再显示贴图入口。",
+    "en": "When off, the selection menu no longer shows the pin entry."
+  },
+  "settings.feature.magnifier_label": {
+    "zh-CN": "放大镜",
+    "en": "Magnifier"
+  },
+  "settings.feature.magnifier_hint": {
+    "zh-CN": "选区时跟随指针的像素放大镜；关闭后选区内 C 键取色同时停用。",
+    "en": "Pixel magnifier that follows the pointer during selection; turning it off also disables color picking with the C key."
+  },
+  "settings.feature.toolbar_copy_label": {
+    "zh-CN": "操作条·复制",
+    "en": "Toolbar · Copy"
+  },
+  "settings.feature.toolbar_copy_hint": {
+    "zh-CN": "选区操作条上的复制按钮。",
+    "en": "The copy button on the selection toolbar."
+  },
+  "settings.feature.toolbar_save_label": {
+    "zh-CN": "操作条·保存",
+    "en": "Toolbar · Save"
+  },
+  "settings.feature.toolbar_save_hint": {
+    "zh-CN": "选区操作条上的保存按钮。",
+    "en": "The save button on the selection toolbar."
+  },
+  "settings.feature.toolbar_pin_label": {
+    "zh-CN": "操作条·贴图",
+    "en": "Toolbar · Pin"
+  },
+  "settings.feature.toolbar_pin_hint": {
+    "zh-CN": "选区操作条上的贴图按钮。",
+    "en": "The pin button on the selection toolbar."
+  },
+  "settings.about.title": {
+    "zh-CN": "关于",
+    "en": "About"
+  },
+  "settings.about.hint": {
+    "zh-CN": "独立系统截图工具，界面与托盘只使用 Cropmark 名称与图标。",
+    "en": "A standalone screenshot utility; the interface and tray use only the Cropmark name and icon."
+  },
+  "settings.about.quit_label": {
+    "zh-CN": "退出 Cropmark",
+    "en": "Quit Cropmark"
+  },
+  "settings.about.quit_hint": {
+    "zh-CN": "结束应用并停止热键；有托盘时也可从托盘菜单退出。",
+    "en": "Ends the app and stops hotkeys; with a tray you can also quit from the tray menu."
+  },
+  "settings.about.quit_button": {
+    "zh-CN": "退出",
+    "en": "Quit"
+  },
+  "settings.language.title": {
+    "zh-CN": "语言",
+    "en": "Language"
+  },
+  "settings.language.label": {
+    "zh-CN": "界面语言",
+    "en": "Interface language"
+  },
+  "settings.language.hint": {
+    "zh-CN": "切换后界面立即更新，无需重启；选择会跨会话保留。",
+    "en": "The interface updates immediately after switching, no restart needed; the choice is kept across sessions."
+  },
+  "settings.tray.unavailable_fallback": {
+    "zh-CN": "当前桌面环境未提供托盘，热键仍可用。",
+    "en": "The current desktop does not provide a tray; hotkeys still work."
+  },
+  "preview.close": {
+    "zh-CN": "关闭",
+    "en": "Close"
+  },
+  "preview.toolbar_group": {
+    "zh-CN": "标注",
+    "en": "Annotation"
+  },
+  "preview.tool.arrow_title": {
+    "zh-CN": "箭头 (A)",
+    "en": "Arrow (A)"
+  },
+  "preview.tool.arrow": {
+    "zh-CN": "箭头",
+    "en": "Arrow"
+  },
+  "preview.tool.rect_title": {
+    "zh-CN": "框 (R)",
+    "en": "Rectangle (R)"
+  },
+  "preview.tool.rect": {
+    "zh-CN": "框",
+    "en": "Rectangle"
+  },
+  "preview.tool.ellipse_title": {
+    "zh-CN": "椭圆 (E)",
+    "en": "Ellipse (E)"
+  },
+  "preview.tool.ellipse": {
+    "zh-CN": "椭圆",
+    "en": "Ellipse"
+  },
+  "preview.tool.line_title": {
+    "zh-CN": "直线 (L)",
+    "en": "Line (L)"
+  },
+  "preview.tool.line": {
+    "zh-CN": "直线",
+    "en": "Line"
+  },
+  "preview.tool.mosaic_title": {
+    "zh-CN": "马赛克 (M)",
+    "en": "Mosaic (M)"
+  },
+  "preview.tool.mosaic": {
+    "zh-CN": "马赛克",
+    "en": "Mosaic"
+  },
+  "preview.tool.blur_title": {
+    "zh-CN": "高斯模糊 (B)",
+    "en": "Gaussian blur (B)"
+  },
+  "preview.tool.blur": {
+    "zh-CN": "高斯模糊",
+    "en": "Gaussian blur"
+  },
+  "preview.tool.highlighter_title": {
+    "zh-CN": "荧光笔 (H)",
+    "en": "Highlighter (H)"
+  },
+  "preview.tool.highlighter": {
+    "zh-CN": "荧光笔",
+    "en": "Highlighter"
+  },
+  "preview.tool.pen_title": {
+    "zh-CN": "画笔 (P)",
+    "en": "Pen (P)"
+  },
+  "preview.tool.pen": {
+    "zh-CN": "画笔",
+    "en": "Pen"
+  },
+  "preview.tool.number_title": {
+    "zh-CN": "序号 (N)",
+    "en": "Number (N)"
+  },
+  "preview.tool.number": {
+    "zh-CN": "序号",
+    "en": "Number"
+  },
+  "preview.tool.text_title": {
+    "zh-CN": "文字框 (T)",
+    "en": "Text box (T)"
+  },
+  "preview.tool.text": {
+    "zh-CN": "文字框",
+    "en": "Text box"
+  },
+  "preview.tool.text_short": {
+    "zh-CN": "文字",
+    "en": "Text"
+  },
+  "preview.tool.undo_title": {
+    "zh-CN": "撤销 (Ctrl+Z)",
+    "en": "Undo (Ctrl+Z)"
+  },
+  "preview.tool.undo": {
+    "zh-CN": "撤销",
+    "en": "Undo"
+  },
+  "preview.tool.style_title": {
+    "zh-CN": "标注样式",
+    "en": "Annotation style"
+  },
+  "preview.style.color": {
+    "zh-CN": "颜色",
+    "en": "Color"
+  },
+  "preview.style.color_group": {
+    "zh-CN": "标注颜色",
+    "en": "Annotation color"
+  },
+  "preview.style.color_aria": {
+    "zh-CN": "颜色 {color}",
+    "en": "Color {color}"
+  },
+  "preview.style.width": {
+    "zh-CN": "线宽",
+    "en": "Stroke width"
+  },
+  "preview.style.text_size": {
+    "zh-CN": "字号",
+    "en": "Font size"
+  },
+  "preview.style.text_size_group": {
+    "zh-CN": "文字字号",
+    "en": "Text size"
+  },
+  "preview.style.number": {
+    "zh-CN": "序号",
+    "en": "Number"
+  },
+  "preview.style.number_group": {
+    "zh-CN": "序号起始值",
+    "en": "Number start"
+  },
+  "preview.style.number_title": {
+    "zh-CN": "序号起始值 (1–999)",
+    "en": "Number start (1–999)"
+  },
+  "preview.style.width_thin": {
+    "zh-CN": "细",
+    "en": "Thin"
+  },
+  "preview.style.width_normal": {
+    "zh-CN": "标准",
+    "en": "Normal"
+  },
+  "preview.style.width_thick": {
+    "zh-CN": "粗",
+    "en": "Thick"
+  },
+  "preview.style.text_small": {
+    "zh-CN": "小",
+    "en": "Small"
+  },
+  "preview.style.text_medium": {
+    "zh-CN": "中",
+    "en": "Medium"
+  },
+  "preview.style.text_large": {
+    "zh-CN": "大",
+    "en": "Large"
+  },
+  "preview.style.option_title": {
+    "zh-CN": "{label} ({value})",
+    "en": "{label} ({value})"
+  },
+  "preview.quality.label": {
+    "zh-CN": "质量",
+    "en": "Quality"
+  },
+  "preview.quality.group": {
+    "zh-CN": "保存质量",
+    "en": "Save quality"
+  },
+  "preview.quality.high": {
+    "zh-CN": "高",
+    "en": "High"
+  },
+  "preview.quality.high_title": {
+    "zh-CN": "高质量（文件较大）",
+    "en": "High quality (larger file)"
+  },
+  "preview.quality.medium": {
+    "zh-CN": "中",
+    "en": "Medium"
+  },
+  "preview.quality.medium_title": {
+    "zh-CN": "标准质量",
+    "en": "Standard quality"
+  },
+  "preview.quality.low": {
+    "zh-CN": "低",
+    "en": "Low"
+  },
+  "preview.quality.low_title": {
+    "zh-CN": "低质量（文件较小）",
+    "en": "Low quality (smaller file)"
+  },
+  "preview.action.ocr_title": {
+    "zh-CN": "取字 (O)",
+    "en": "Text recognition (O)"
+  },
+  "preview.action.ocr": {
+    "zh-CN": "取字",
+    "en": "Text"
+  },
+  "preview.action.copy_all": {
+    "zh-CN": "复制全部",
+    "en": "Copy all"
+  },
+  "preview.action.pin_title": {
+    "zh-CN": "贴图",
+    "en": "Pin"
+  },
+  "preview.action.pin": {
+    "zh-CN": "贴图",
+    "en": "Pin"
+  },
+  "preview.action.update_pin_title": {
+    "zh-CN": "更新贴图：确认后写回来源贴图",
+    "en": "Update pin: confirm to write back to the source pin"
+  },
+  "preview.action.update_pin": {
+    "zh-CN": "更新贴图",
+    "en": "Update pin"
+  },
+  "preview.action.save_title": {
+    "zh-CN": "保存 (Ctrl+S)：扩展名决定格式 PNG/JPEG/WebP",
+    "en": "Save (Ctrl+S): the extension determines PNG/JPEG/WebP"
+  },
+  "preview.action.save": {
+    "zh-CN": "保存",
+    "en": "Save"
+  },
+  "preview.action.copy_title": {
+    "zh-CN": "复制 (Ctrl+C)",
+    "en": "Copy (Ctrl+C)"
+  },
+  "preview.action.copy": {
+    "zh-CN": "复制",
+    "en": "Copy"
+  },
+  "preview.action.delete_annotation": {
+    "zh-CN": "删除标注",
+    "en": "Delete annotation"
+  },
+  "preview.text_placeholder": {
+    "zh-CN": "在此输入汉字",
+    "en": "Type here"
+  },
+  "preview.copied_clean": {
+    "zh-CN": "未标注图已复制",
+    "en": "Screenshot copied"
+  },
+  "preview.copied_annotated": {
+    "zh-CN": "已复制当前标注图",
+    "en": "Annotated image copied"
+  },
+  "preview.copied_manual_failed": {
+    "zh-CN": "自动复制失败，可点击复制重试。",
+    "en": "Automatic copy failed; click Copy to try again."
+  },
+  "preview.copied_disabled": {
+    "zh-CN": "未自动复制，可点击复制。",
+    "en": "Not copied automatically; click Copy."
+  },
+  "preview.copied_writeback": {
+    "zh-CN": "贴图再标注：确认后更新贴图，取消不改动。",
+    "en": "Pin re-annotation: confirm to update the pin; cancel leaves it unchanged."
+  },
+  "preview.note.ocr_hint": {
+    "zh-CN": "点选或划选文字，也可复制全部。",
+    "en": "Click or drag to select text, or copy everything."
+  },
+  "preview.note.text_hint": {
+    "zh-CN": "点在图上放置文字框，然后输入汉字。Enter 确认，Esc 取消。",
+    "en": "Click the image to place a text box, then type. Enter confirms, Esc cancels."
+  },
+  "preview.note.number_hint": {
+    "zh-CN": "点在图上放置序号，从 {start} 起自动递增。",
+    "en": "Click the image to place numbers, incrementing from {start}."
+  },
+  "preview.note.pen_hint": {
+    "zh-CN": "按住拖动自由绘制。",
+    "en": "Press and drag to draw freely."
+  },
+  "preview.note.highlighter_hint": {
+    "zh-CN": "按住拖动高亮；半透明覆盖文字仍可见。",
+    "en": "Press and drag to highlight; text underneath stays visible."
+  },
+  "preview.note.blur_hint": {
+    "zh-CN": "按住拖出高斯模糊区域，保存后不可还原原始内容。",
+    "en": "Press and drag to blur an area; the original content cannot be recovered after saving."
+  },
+  "preview.note.ocr_running": {
+    "zh-CN": "正在识别…",
+    "en": "Recognizing…"
+  },
+  "preview.note.ocr_copied": {
+    "zh-CN": "已复制「{snippet}」",
+    "en": "Copied \"{snippet}\""
+  },
+  "preview.note.ocr_all_copied": {
+    "zh-CN": "已复制全部识别文本。",
+    "en": "All recognized text copied."
+  },
+  "preview.note.saved": {
+    "zh-CN": "已保存 {name}。",
+    "en": "Saved {name}."
+  },
+  "preview.note.busy": {
+    "zh-CN": "正在处理，请稍候。",
+    "en": "Working, please wait."
+  },
+  "preview.note.pinning": {
+    "zh-CN": "正在贴图…",
+    "en": "Pinning…"
+  },
+  "preview.note.pinned": {
+    "zh-CN": "已贴图。",
+    "en": "Pinned."
+  },
+  "preview.note.updating_pin": {
+    "zh-CN": "正在更新贴图…",
+    "en": "Updating pin…"
+  },
+  "preview.note.style_not_saved": {
+    "zh-CN": "标注样式本次可用，但未能记住。",
+    "en": "The annotation style works for now but could not be remembered."
+  },
+  "preview.note.image_incomplete": {
+    "zh-CN": "预览图像数据不完整。",
+    "en": "The preview image data is incomplete."
+  },
+  "preview.note.image_failed": {
+    "zh-CN": "无法显示预览图像。",
+    "en": "Could not display the preview image."
+  },
+  "preview.error.ui": {
+    "zh-CN": "界面错误：{message}",
+    "en": "Interface error: {message}"
+  },
+  "preview.error.action": {
+    "zh-CN": "操作失败：{message}",
+    "en": "Action failed: {message}"
+  },
+  "preview.error.unknown": {
+    "zh-CN": "未知错误",
+    "en": "unknown error"
+  },
+  "preview.error.copy_fallback": {
+    "zh-CN": "无法把截图放入剪贴板。预览仍保留。",
+    "en": "Could not put the screenshot on the clipboard. The preview is still available."
+  },
+  "preview.error.save_fallback": {
+    "zh-CN": "无法保存图片。预览仍保留，可继续标注或复制。",
+    "en": "Could not save the image. The preview is still available; keep annotating or copy."
+  },
+  "preview.error.pin_fallback": {
+    "zh-CN": "无法创建贴图。",
+    "en": "Could not create the pin."
+  },
+  "preview.error.update_pin_fallback": {
+    "zh-CN": "无法更新贴图。",
+    "en": "Could not update the pin."
+  },
+  "preview.error.close_fallback": {
+    "zh-CN": "无法关闭预览。",
+    "en": "Could not close the preview."
+  },
+  "preview.error.ocr_fallback": {
+    "zh-CN": "无法识别图上的文字。",
+    "en": "Could not recognize text in the image."
+  },
+  "preview.error.no_selection": {
+    "zh-CN": "没有选中文字。",
+    "en": "No text selected."
+  },
+  "preview.error.no_text": {
+    "zh-CN": "没有识别到文字。",
+    "en": "No text was recognized."
+  },
+  "preview.error.preview_missing": {
+    "zh-CN": "没有可预览的截图。",
+    "en": "No preview screenshot is available."
+  },
+  "overlay.capabilities": {
+    "zh-CN": "能力说明",
+    "en": "Capabilities"
+  },
+  "overlay.capabilities_collapse": {
+    "zh-CN": "收起说明",
+    "en": "Hide"
+  },
+  "overlay.cancel": {
+    "zh-CN": "取消 Esc",
+    "en": "Cancel Esc"
+  },
+  "overlay.hint.window": {
+    "zh-CN": "点击要截取的窗口",
+    "en": "Click the window to capture"
+  },
+  "overlay.hint.reduced": {
+    "zh-CN": "拖出矩形截取区域 · Enter 确认 · Esc 取消",
+    "en": "Drag to select a region · Enter to confirm · Esc to cancel"
+  },
+  "overlay.hint.region": {
+    "zh-CN": "拖出矩形截取区域",
+    "en": "Drag to select a region"
+  },
+  "overlay.notice.select_first": {
+    "zh-CN": "请先拖出要截取的区域。",
+    "en": "Drag out a region first."
+  },
+  "overlay.notice.too_small": {
+    "zh-CN": "选区太小，请拖出至少 2 × 2 像素的区域。",
+    "en": "The selection is too small; drag at least 2 × 2 pixels."
+  },
+  "overlay.notice.toolbar": {
+    "zh-CN": "当前覆盖层不提供操作条与右键菜单；请用 Enter 确认后在预览中复制、保存、贴图或取字。",
+    "en": "This overlay does not provide the action bar or context menu; press Enter to confirm, then copy, save, pin, or extract text in the preview."
+  },
+  "overlay.notice.color": {
+    "zh-CN": "当前覆盖层不提供取色（C 键）；请使用系统或第三方取色工具。",
+    "en": "This overlay does not provide color picking (C key); use a system or third-party color picker."
+  },
+  "overlay.notice.nudge": {
+    "zh-CN": "当前覆盖层不提供方向键微调；请重新拖选，或按 Esc 取消后重来。",
+    "en": "This overlay does not provide arrow-key nudging; drag again, or press Esc and start over."
+  },
+  "overlay.panel.title": {
+    "zh-CN": "选区能力说明（Wayland 网页覆盖层）",
+    "en": "Selection capabilities (Wayland web overlay)"
+  },
+  "overlay.panel.available": {
+    "zh-CN": "可用：拖出矩形选区、Enter 确认、Esc 取消（取消不写剪贴板）；确认后在预览中复制、保存、贴图或取字。",
+    "en": "Available: drag a rectangular selection, Enter to confirm, Esc to cancel (cancel does not write the clipboard); after confirming, copy, save, pin, or extract text in the preview."
+  },
+  "overlay.caps.toolbar_name": {
+    "zh-CN": "操作条与右键菜单",
+    "en": "Action bar and context menu"
+  },
+  "overlay.caps.toolbar_detail": {
+    "zh-CN": "不可用；请用 Enter 确认后在预览中复制、保存、贴图或取字。",
+    "en": "Unavailable; press Enter to confirm, then copy, save, pin, or extract text in the preview."
+  },
+  "overlay.caps.magnifier_name": {
+    "zh-CN": "放大镜",
+    "en": "Magnifier"
+  },
+  "overlay.caps.magnifier_detail": {
+    "zh-CN": "不可用；需要放大细节时请先调整系统缩放，再重新截取。",
+    "en": "Unavailable; to inspect details, adjust the system scale and capture again."
+  },
+  "overlay.caps.color_name": {
+    "zh-CN": "取色（C 键）",
+    "en": "Color picking (C key)"
+  },
+  "overlay.caps.color_detail": {
+    "zh-CN": "不可用；请使用系统或第三方取色工具。",
+    "en": "Unavailable; use a system or third-party color picker."
+  },
+  "overlay.caps.nudge_name": {
+    "zh-CN": "手柄与方向键微调",
+    "en": "Handles and arrow-key nudging"
+  },
+  "overlay.caps.nudge_detail": {
+    "zh-CN": "不可用；请重新拖选，或按 Esc 取消后重来。",
+    "en": "Unavailable; drag again, or press Esc and start over."
+  },
+  "overlay.error.capture_failed": {
+    "zh-CN": "截取失败。",
+    "en": "Capture failed."
+  },
+  "delay.preparing": {
+    "zh-CN": "准备截取",
+    "en": "Preparing"
+  },
+  "delay.hint": {
+    "zh-CN": "倒计时期间可操作其它应用，到期截取当时屏幕。",
+    "en": "You can use other apps during the countdown; the screen is captured when it ends."
+  },
+  "delay.cancel": {
+    "zh-CN": "取消",
+    "en": "Cancel"
+  },
+  "delay.countdown": {
+    "zh-CN": "{seconds} 秒后截取",
+    "en": "Capturing in {seconds}s"
+  },
+  "error.title": {
+    "zh-CN": "无法截取",
+    "en": "Capture failed"
+  },
+  "error.close": {
+    "zh-CN": "关闭",
+    "en": "Close"
+  },
+  "error.fallback": {
+    "zh-CN": "截取失败。",
+    "en": "Capture failed."
+  },
+  "pin.toolbar.copy_title": {
+    "zh-CN": "复制图片（无损 PNG）",
+    "en": "Copy image (lossless PNG)"
+  },
+  "pin.toolbar.copy": {
+    "zh-CN": "复制",
+    "en": "Copy"
+  },
+  "pin.toolbar.save_title": {
+    "zh-CN": "保存 PNG",
+    "en": "Save PNG"
+  },
+  "pin.toolbar.save": {
+    "zh-CN": "保存",
+    "en": "Save"
+  },
+  "pin.toolbar.rotate_title": {
+    "zh-CN": "顺时针旋转 90°",
+    "en": "Rotate 90° clockwise"
+  },
+  "pin.toolbar.rotate": {
+    "zh-CN": "旋转 90°",
+    "en": "Rotate 90°"
+  },
+  "pin.toolbar.opacity_title": {
+    "zh-CN": "调整透明度",
+    "en": "Adjust opacity"
+  },
+  "pin.toolbar.opacity": {
+    "zh-CN": "透明度",
+    "en": "Opacity"
+  },
+  "pin.toolbar.annotate_title": {
+    "zh-CN": "再标注（确认后更新贴图）",
+    "en": "Re-annotate (updates the pin on confirm)"
+  },
+  "pin.toolbar.annotate": {
+    "zh-CN": "再标注",
+    "en": "Re-annotate"
+  },
+  "pin.toolbar.close_title": {
+    "zh-CN": "关闭贴图",
+    "en": "Close pin"
+  },
+  "pin.toolbar.close": {
+    "zh-CN": "关闭贴图",
+    "en": "Close pin"
+  },
+  "pin.menu.copy": {
+    "zh-CN": "复制图片",
+    "en": "Copy image"
+  },
+  "pin.menu.save": {
+    "zh-CN": "保存 PNG…",
+    "en": "Save PNG…"
+  },
+  "pin.menu.rotate": {
+    "zh-CN": "顺时针旋转 90°",
+    "en": "Rotate 90° clockwise"
+  },
+  "pin.menu.opacity": {
+    "zh-CN": "透明度",
+    "en": "Opacity"
+  },
+  "pin.menu.opacity_option_title": {
+    "zh-CN": "透明度 {percent}%",
+    "en": "Opacity {percent}%"
+  },
+  "pin.menu.annotate": {
+    "zh-CN": "再标注…",
+    "en": "Re-annotate…"
+  },
+  "pin.menu.reset": {
+    "zh-CN": "缩放重置",
+    "en": "Reset zoom"
+  },
+  "pin.menu.close": {
+    "zh-CN": "关闭贴图",
+    "en": "Close pin"
+  },
+  "pin.note.copied": {
+    "zh-CN": "已复制当前内容（无损 PNG）。",
+    "en": "Current content copied (lossless PNG)."
+  },
+  "pin.note.saved": {
+    "zh-CN": "已保存 {name}。",
+    "en": "Saved {name}."
+  },
+  "pin.note.updated": {
+    "zh-CN": "贴图已更新。",
+    "en": "Pin updated."
+  },
+  "pin.note.reload_failed": {
+    "zh-CN": "贴图更新失败，请重新贴图。",
+    "en": "The pin could not be updated. Pin again."
+  },
+  "pin.error.copy": {
+    "zh-CN": "无法复制贴图。",
+    "en": "Could not copy the pin."
+  },
+  "pin.error.save": {
+    "zh-CN": "无法保存贴图。",
+    "en": "Could not save the pin."
+  },
+  "pin.error.annotate": {
+    "zh-CN": "无法进入再标注。",
+    "en": "Could not start re-annotation."
+  },
+  "history.title": {
+    "zh-CN": "历史记录",
+    "en": "History"
+  },
+  "history.clear": {
+    "zh-CN": "清空全部",
+    "en": "Clear all"
+  },
+  "history.close": {
+    "zh-CN": "关闭",
+    "en": "Close"
+  },
+  "history.confirm_group": {
+    "zh-CN": "确认操作",
+    "en": "Confirm action"
+  },
+  "history.accept": {
+    "zh-CN": "确认",
+    "en": "Confirm"
+  },
+  "history.cancel": {
+    "zh-CN": "取消",
+    "en": "Cancel"
+  },
+  "history.empty": {
+    "zh-CN": "暂无历史记录。截图完成后会自动出现在这里。",
+    "en": "No history yet. Screenshots will appear here automatically."
+  },
+  "history.unknown_time": {
+    "zh-CN": "未知时间",
+    "en": "Unknown time"
+  },
+  "history.thumb_missing": {
+    "zh-CN": "缩略图缺失",
+    "en": "Thumbnail missing"
+  },
+  "history.image_missing": {
+    "zh-CN": "原始图片缺失，无法复制或贴图",
+    "en": "Original image missing; cannot copy or pin"
+  },
+  "history.image_missing_title": {
+    "zh-CN": "原始图片缺失",
+    "en": "Original image missing"
+  },
+  "history.copy": {
+    "zh-CN": "复制",
+    "en": "Copy"
+  },
+  "history.pin": {
+    "zh-CN": "贴图",
+    "en": "Pin"
+  },
+  "history.delete": {
+    "zh-CN": "删除",
+    "en": "Delete"
+  },
+  "history.deleted": {
+    "zh-CN": "已删除。",
+    "en": "Deleted."
+  },
+  "history.cleared": {
+    "zh-CN": "已清空。",
+    "en": "Cleared."
+  },
+  "history.copied": {
+    "zh-CN": "已复制到剪贴板。",
+    "en": "Copied to clipboard."
+  },
+  "history.pinned": {
+    "zh-CN": "已贴图。",
+    "en": "Pinned."
+  },
+  "history.confirm_delete": {
+    "zh-CN": "删除这条历史记录？此操作不可撤销。",
+    "en": "Delete this history record? This cannot be undone."
+  },
+  "history.confirm_delete_accept": {
+    "zh-CN": "确认删除",
+    "en": "Delete"
+  },
+  "history.confirm_clear": {
+    "zh-CN": "清空全部历史记录？此操作不可撤销。",
+    "en": "Clear all history? This cannot be undone."
+  },
+  "history.confirm_clear_accept": {
+    "zh-CN": "确认清空",
+    "en": "Clear all"
+  }
+}

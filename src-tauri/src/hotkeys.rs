@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
+use crate::i18n;
 use crate::settings::SessionState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -69,6 +70,16 @@ impl HotkeyErrors {
             CaptureMode::Region => self.region = message,
             CaptureMode::Window => self.window = message,
             CaptureMode::Fullscreen => self.fullscreen = message,
+        }
+    }
+
+    /// 存储的是词条键(见 `plan_bindings`):按当前语言解析为展示文案,
+    /// 语言切换后已解析文案不会残留旧语言。
+    pub fn localized(&self) -> Self {
+        Self {
+            region: self.region.as_deref().map(i18n::t),
+            window: self.window.as_deref().map(i18n::t),
+            fullscreen: self.fullscreen.as_deref().map(i18n::t),
         }
     }
 }
@@ -139,7 +150,7 @@ pub fn parse_hotkey(input: &str) -> Result<ParsedHotkey, String> {
         .filter(|token| !token.is_empty())
         .collect();
     if tokens.is_empty() {
-        return Err("无法识别该热键。".to_string());
+        return Err("error.hotkey.invalid".to_string());
     }
 
     let mut parsed = ParsedHotkey {
@@ -158,7 +169,7 @@ pub fn parse_hotkey(input: &str) -> Result<ParsedHotkey, String> {
             Token::Meta => parsed.meta = true,
             Token::Key(key) => {
                 if !parsed.key.is_empty() {
-                    return Err("无法识别该热键。".to_string());
+                    return Err("error.hotkey.invalid".to_string());
                 }
                 parsed.key = key;
             }
@@ -166,7 +177,7 @@ pub fn parse_hotkey(input: &str) -> Result<ParsedHotkey, String> {
     }
 
     if parsed.key.is_empty() {
-        return Err("无法识别该热键。".to_string());
+        return Err("error.hotkey.invalid".to_string());
     }
     Ok(parsed)
 }
@@ -200,13 +211,13 @@ pub fn plan_bindings(hotkeys: &Hotkeys) -> Vec<PlannedBinding> {
                 mode,
                 display,
                 plugin_shortcut: None,
-                error: Some("这是系统截图快捷键，Cropmark 不会占用它。".to_string()),
+                error: Some("error.hotkey.system".to_string()),
             }),
             Ok(parsed) if !parsed.has_modifier() => planned.push(PlannedBinding {
                 mode,
                 display,
                 plugin_shortcut: None,
-                error: Some("全局热键需要包含 Ctrl、Alt、Shift 或 Super。".to_string()),
+                error: Some("error.hotkey.modifier".to_string()),
             }),
             Ok(parsed) => {
                 if let Some(_owner) = seen.get(&parsed) {
@@ -214,7 +225,7 @@ pub fn plan_bindings(hotkeys: &Hotkeys) -> Vec<PlannedBinding> {
                         mode,
                         display,
                         plugin_shortcut: None,
-                        error: Some("与其它截取热键冲突，未注册该组合。Cropmark 仍在运行。".to_string()),
+                        error: Some("error.hotkey.conflict".to_string()),
                     });
                     continue;
                 }
@@ -254,7 +265,7 @@ pub fn finalize_plan(
         if let Err(_error) = register(shortcut) {
             errors.set(
                 item.mode,
-                Some("热键无法注册，可能已被其它程序占用。Cropmark 仍在运行。".to_string()),
+                Some("error.hotkey.register".to_string()),
             );
         }
     }
@@ -465,7 +476,7 @@ mod tests {
         };
         let plan = plan_bindings(&hotkeys);
         let window = plan.iter().find(|item| item.mode == CaptureMode::Window).unwrap();
-        assert!(window.error.as_deref().unwrap().contains("冲突"));
+        assert!(i18n::t(window.error.as_deref().unwrap()).contains("冲突"));
         assert!(window.plugin_shortcut.is_none());
         let region = plan.iter().find(|item| item.mode == CaptureMode::Region).unwrap();
         assert!(region.error.is_none());
@@ -481,7 +492,7 @@ mod tests {
                 Ok(())
             }
         });
-        assert!(errors.region.as_deref().unwrap().contains("无法注册"));
+        assert!(i18n::t(errors.region.as_deref().unwrap()).contains("无法注册"));
         assert!(errors.window.is_none());
         assert!(errors.fullscreen.is_none());
     }
@@ -504,7 +515,7 @@ mod tests {
         };
         let plan = plan_bindings(&hotkeys);
         let region = plan.iter().find(|item| item.mode == CaptureMode::Region).unwrap();
-        assert!(region.error.as_deref().unwrap().contains("系统截图"));
+        assert!(i18n::t(region.error.as_deref().unwrap()).contains("系统截图"));
         assert!(region.plugin_shortcut.is_none());
     }
 }

@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::capture::buffer::{decode_png, encode_png, fit_display, resize_rgba, Frame};
+use crate::i18n;
 
 /// 历史窗口标签:与 capabilities 的 windows 清单和隐藏清单保持同源。
 pub const HISTORY_WINDOW: &str = crate::capture::ui::HISTORY;
@@ -130,17 +131,17 @@ fn write_index(dir: &Path, entries: &[HistoryEntry]) -> Result<(), String> {
     };
     let text = serde_json::to_string_pretty(&index).map_err(|error| error.to_string())?;
     let tmp = dir.join(INDEX_TMP_FILE);
-    fs::write(&tmp, text).map_err(|error| format!("无法写入历史索引：{error}"))?;
-    fs::rename(&tmp, dir.join(INDEX_FILE)).map_err(|error| format!("无法更新历史索引：{error}"))
+    fs::write(&tmp, text).map_err(|error| i18n::tp("error.history.write_index", &[("error", &error.to_string())]))?;
+    fs::rename(&tmp, dir.join(INDEX_FILE)).map_err(|error| i18n::tp("error.history.rename_index", &[("error", &error.to_string())]))
 }
 
 fn index_notice(state: IndexState) -> Option<String> {
     match state {
         IndexState::Ready | IndexState::Missing => None,
         IndexState::Corrupted => {
-            Some("历史索引已损坏，旧记录暂不可用；新的截图仍会继续记录。".into())
+            Some(i18n::t("error.history.corrupted"))
         }
-        IndexState::Unsupported => Some("历史索引版本不受支持，当前无法读取旧记录。".into()),
+        IndexState::Unsupported => Some(i18n::t("error.history.unsupported")),
     }
 }
 
@@ -187,7 +188,7 @@ pub fn record_frame(
     let png = encode_png(frame).map_err(|error| error.user_message())?;
     let thumb = thumbnail_png(frame)?;
     let _guard = lock_store();
-    fs::create_dir_all(dir).map_err(|error| format!("无法创建历史目录：{error}"))?;
+    fs::create_dir_all(dir).map_err(|error| i18n::tp("error.history.create_dir", &[("error", &error.to_string())]))?;
     let (mut entries, _) = load_index(dir);
     let id = next_entry_id(dir, created_at);
     let entry = HistoryEntry {
@@ -200,9 +201,9 @@ pub fn record_frame(
         thumb_name: format!("{id}{THUMB_SUFFIX}"),
     };
     fs::write(dir.join(&entry.file_name), &png)
-        .map_err(|error| format!("无法写入历史图片：{error}"))?;
+        .map_err(|error| i18n::tp("error.history.write_image", &[("error", &error.to_string())]))?;
     fs::write(dir.join(&entry.thumb_name), &thumb)
-        .map_err(|error| format!("无法写入历史缩略图：{error}"))?;
+        .map_err(|error| i18n::tp("error.history.write_thumb", &[("error", &error.to_string())]))?;
     entries.insert(0, entry.clone());
     // 系统时间回拨也不破坏"淘汰最旧"语义。
     sort_entries(&mut entries);
@@ -254,7 +255,7 @@ fn find_entry(dir: &Path, id: &str) -> Result<HistoryEntry, String> {
     entries
         .into_iter()
         .find(|entry| entry.id == id)
-        .ok_or_else(|| "历史记录不存在或已被删除。".to_string())
+        .ok_or_else(|| i18n::t("error.history.missing"))
 }
 
 /// 读取一条记录的原图(复制/贴图共用);文件缺失时报可理解错误。
@@ -262,14 +263,14 @@ pub fn read_entry(dir: &Path, id: &str) -> Result<(HistoryEntry, Vec<u8>), Strin
     let _guard = lock_store();
     let entry = find_entry(dir, id)?;
     let png = fs::read(dir.join(&entry.file_name))
-        .map_err(|_| "历史图片文件缺失，无法复制或贴图。".to_string())?;
+        .map_err(|_| i18n::t("error.history.image_missing"))?;
     Ok((entry, png))
 }
 
 pub fn read_thumbnail(dir: &Path, id: &str) -> Result<Vec<u8>, String> {
     let _guard = lock_store();
     let entry = find_entry(dir, id)?;
-    fs::read(dir.join(&entry.thumb_name)).map_err(|_| "历史缩略图缺失。".to_string())
+    fs::read(dir.join(&entry.thumb_name)).map_err(|_| i18n::t("error.history.thumb_missing"))
 }
 
 /// 删除单条;记录已不存在时视作成功(幂等),便于重复点击。
@@ -298,7 +299,7 @@ pub fn clear_entries(dir: &Path) -> Result<(), String> {
             }
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(format!("无法清空历史记录：{error}")),
+        Err(error) => return Err(i18n::tp("error.history.clear", &[("error", &error.to_string())])),
     }
     Ok(())
 }
@@ -336,7 +337,7 @@ fn list_payload(app: &AppHandle) -> HistoryListPayload {
 fn friendly(error: crate::capture::error::CaptureError) -> String {
     let message = error.user_message();
     if message.is_empty() {
-        "无法完成历史操作。".into()
+        i18n::t("error.history.failed")
     } else {
         message
     }
@@ -366,7 +367,7 @@ pub async fn pin_history_entry(app: AppHandle, id: String) -> Result<(), String>
         move || read_entry(&history_dir(&app), &id)
     })
     .await
-    .map_err(|_| "贴图线程失败。".to_string())??;
+    .map_err(|_| i18n::t("error.pin.thread_pin"))??;
     crate::pin::open_pin_from_frame(&app, png, entry.width, entry.height, entry.scale)
 }
 

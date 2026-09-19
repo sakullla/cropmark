@@ -33,10 +33,10 @@ pub fn copy_frame_with_png(frame: &Frame, png: &[u8]) -> Result<(), CaptureError
 #[cfg(not(windows))]
 fn copy_frame_native(frame: &Frame) -> Result<(), CaptureError> {
     if frame.rgba.is_empty() || frame.width == 0 || frame.height == 0 {
-        return Err(CaptureError::invalid_buffer("空缓冲"));
+        return Err(CaptureError::invalid_buffer("error.capture.buffer_empty"));
     }
     let mut clipboard = Clipboard::new().map_err(|_| {
-        CaptureError::api("无法写入剪贴板。")
+        CaptureError::api("error.capture.clipboard_write")
     })?;
     clipboard
         .set_image(ImageData {
@@ -44,14 +44,14 @@ fn copy_frame_native(frame: &Frame) -> Result<(), CaptureError> {
             height: frame.height as usize,
             bytes: std::borrow::Cow::Borrowed(&frame.rgba),
         })
-        .map_err(|_| CaptureError::api("无法把截图放入剪贴板。"))
+        .map_err(|_| CaptureError::api("error.capture.clipboard_image"))
 }
 
 pub fn copy_text(text: &str) -> Result<(), CaptureError> {
-    let mut clipboard = Clipboard::new().map_err(|_| CaptureError::api("无法写入剪贴板。"))?;
+    let mut clipboard = Clipboard::new().map_err(|_| CaptureError::api("error.capture.clipboard_write"))?;
     clipboard
         .set_text(text)
-        .map_err(|_| CaptureError::api("无法把文字放入剪贴板。截图仍保留。"))
+        .map_err(|_| CaptureError::api("error.capture.clipboard_text"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

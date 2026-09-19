@@ -367,7 +367,7 @@ unsafe fn blit(hwnd: HWND, width: i32, height: i32, bgra: &[u8]) {
 }
 
 unsafe fn create_overlay_window(x: i32, y: i32, w: i32, h: i32) -> Result<HWND, CaptureError> {
-    let instance = GetModuleHandleW(None).map_err(|_| CaptureError::api("无法创建截取窗。"))?;
+    let instance = GetModuleHandleW(None).map_err(|_| CaptureError::api("error.capture.window_create"))?;
     let serial = CLASS_SERIAL.fetch_add(1, Ordering::Relaxed);
     let class_name: Vec<u16> = format!("{CLASS}{serial}\0").encode_utf16().collect();
     let class = WNDCLASSEXW {
@@ -380,7 +380,7 @@ unsafe fn create_overlay_window(x: i32, y: i32, w: i32, h: i32) -> Result<HWND, 
         ..Default::default()
     };
     if RegisterClassExW(&class) == 0 {
-        return Err(CaptureError::api("无法注册截取窗。"));
+        return Err(CaptureError::api("error.capture.window_register"));
     }
     let hwnd = CreateWindowExW(
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
@@ -396,7 +396,7 @@ unsafe fn create_overlay_window(x: i32, y: i32, w: i32, h: i32) -> Result<HWND, 
         Some(instance.into()),
         None,
     )
-    .map_err(|_| CaptureError::api("无法打开截取窗。"))?;
+    .map_err(|_| CaptureError::api("error.capture.window_open"))?;
     let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), x, y, w, h, SWP_SHOWWINDOW);
     let _ = ShowWindow(hwnd, SW_SHOW);
     let _ = SetForegroundWindow(hwnd);

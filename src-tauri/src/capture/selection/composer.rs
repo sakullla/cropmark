@@ -12,6 +12,7 @@ use super::{EdgeKind, FeatureFlags, HandleKind, Scene, SelectionAction};
 use crate::capture::buffer::{validate_frame, Frame};
 use crate::capture::error::CaptureError;
 use crate::capture::geometry::PhysicalRect;
+use crate::i18n;
 
 // ---- 配色单一 authority:亮铬浮层体系(暗 scrim 上的亮面板)。----
 
@@ -151,16 +152,16 @@ impl From<PhysicalRect> for IntRect {
     }
 }
 
-pub fn action_label(action: SelectionAction) -> &'static str {
-    match action {
-        SelectionAction::Copy => "复制",
-        SelectionAction::Save => "保存",
-        SelectionAction::Pin => "贴图",
-        SelectionAction::Annotate => "标注",
-        SelectionAction::Ocr => "取字",
-        SelectionAction::Cancel => "取消",
-        SelectionAction::CopyColor => "复制色值",
-    }
+pub fn action_label(action: SelectionAction) -> String {
+    i18n::t(match action {
+        SelectionAction::Copy => "selection.action.copy",
+        SelectionAction::Save => "selection.action.save",
+        SelectionAction::Pin => "selection.action.pin",
+        SelectionAction::Annotate => "selection.action.annotate",
+        SelectionAction::Ocr => "selection.action.ocr",
+        SelectionAction::Cancel => "selection.action.cancel",
+        SelectionAction::CopyColor => "selection.action.copy_color",
+    })
 }
 
 /// 操作条按钮集(随 FeatureFlags 变化;复制/保存/贴图对应三个开关)。
@@ -724,7 +725,7 @@ impl Composer {
                 h,
                 (rect.x + MENU_TEXT_X) as f32,
                 rect.y as f32 + (rect.height as f32 - line).max(0.0) / 2.0,
-                label,
+                &label,
                 MENU_FONT,
                 color,
             );

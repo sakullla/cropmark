@@ -6,12 +6,12 @@ interface ToastPayload {
   message: string;
 }
 
-export function mountToast(root: HTMLElement): void {
+export function mountToast(root: HTMLElement): () => void {
   root.className = "toast-root";
   root.innerHTML = '<p class="toast-message"></p>';
   const message = root.querySelector(".toast-message");
   if (!(message instanceof HTMLElement)) {
-    return;
+    return () => undefined;
   }
 
   const render = (payload: ToastPayload | null): void => {
@@ -20,4 +20,9 @@ export function mountToast(root: HTMLElement): void {
 
   void invoke<ToastPayload | null>("get_toast_message").then(render);
   void listen<ToastPayload>("capture-toast", (event) => render(event.payload));
+
+  // 语言切换:Rust 侧 toast 按词条重新解析,重新拉取最新文案。
+  return () => {
+    void invoke<ToastPayload | null>("get_toast_message").then(render);
+  };
 }

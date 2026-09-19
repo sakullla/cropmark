@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { t, type CatalogKey } from "../i18n";
 import "./overlay.css";
 
 type CaptureMode = "region" | "window" | "fullscreen";
@@ -37,30 +38,29 @@ interface Selection {
 }
 
 /// R13:Wayland Web 覆盖层缺少的原生能力说明(不伪造不可用功能)。
-const REDUCED_CAPABILITIES: Array<{ name: string; detail: string }> = [
+const REDUCED_CAPABILITIES: Array<{ nameKey: CatalogKey; detailKey: CatalogKey }> = [
   {
-    name: "操作条与右键菜单",
-    detail: "不可用；请用 Enter 确认后在预览中复制、保存、贴图或取字。",
+    nameKey: "overlay.caps.toolbar_name",
+    detailKey: "overlay.caps.toolbar_detail",
   },
-  { name: "放大镜", detail: "不可用；需要放大细节时请先调整系统缩放，再重新截取。" },
-  { name: "取色（C 键）", detail: "不可用；请使用系统或第三方取色工具。" },
-  { name: "手柄与方向键微调", detail: "不可用；请重新拖选，或按 Esc 取消后重来。" },
+  { nameKey: "overlay.caps.magnifier_name", detailKey: "overlay.caps.magnifier_detail" },
+  { nameKey: "overlay.caps.color_name", detailKey: "overlay.caps.color_detail" },
+  { nameKey: "overlay.caps.nudge_name", detailKey: "overlay.caps.nudge_detail" },
 ];
 
 /// 触发不可用能力时的即时说明:同一事实在面板与按键反馈里保持一致。
-const TOOLBAR_NOTICE =
-  "当前覆盖层不提供操作条与右键菜单；请用 Enter 确认后在预览中复制、保存、贴图或取字。";
-const COLOR_NOTICE = "当前覆盖层不提供取色（C 键）；请使用系统或第三方取色工具。";
-const NUDGE_NOTICE = "当前覆盖层不提供方向键微调；请重新拖选，或按 Esc 取消后重来。";
+const TOOLBAR_NOTICE_KEY: CatalogKey = "overlay.notice.toolbar";
+const COLOR_NOTICE_KEY: CatalogKey = "overlay.notice.color";
+const NUDGE_NOTICE_KEY: CatalogKey = "overlay.notice.nudge";
 
-export function mountOverlay(root: HTMLElement): void {
+export function mountOverlay(root: HTMLElement): () => void {
   root.className = "overlay-root";
   root.innerHTML = `
     <canvas></canvas>
     <div class="overlay-chrome">
       <div class="overlay-hint"></div>
-      <button type="button" class="overlay-capabilities" aria-expanded="false" hidden>能力说明</button>
-      <button type="button" class="overlay-cancel">取消 Esc</button>
+      <button type="button" class="overlay-capabilities" aria-expanded="false" data-i18n="overlay.capabilities" hidden>能力说明</button>
+      <button type="button" class="overlay-cancel" data-i18n="overlay.cancel">取消 Esc</button>
     </div>
     <aside class="capability-panel" hidden></aside>
     <div class="overlay-notice" role="status" hidden></div>
@@ -85,12 +85,12 @@ export function mountOverlay(root: HTMLElement): void {
     !(capabilityPanel instanceof HTMLElement) ||
     !(notice instanceof HTMLElement)
   ) {
-    return;
+    return () => undefined;
   }
 
   const ctx = canvas.getContext("2d", { alpha: false });
   if (!ctx) {
-    return;
+    return () => undefined;
   }
 
   let frame: OverlayFrame | null = null;
@@ -132,25 +132,39 @@ export function mountOverlay(root: HTMLElement): void {
   const setCapabilityPanel = (open: boolean): void => {
     capabilityPanel.hidden = !open;
     capabilityToggle.setAttribute("aria-expanded", open ? "true" : "false");
-    capabilityToggle.textContent = open ? "收起说明" : "能力说明";
+    capabilityToggle.textContent = t(
+      open ? "overlay.capabilities_collapse" : "overlay.capabilities",
+    );
   };
 
   const renderCapabilityPanel = (): void => {
     const title = document.createElement("h2");
-    title.textContent = "选区能力说明（Wayland 网页覆盖层）";
+    title.textContent = t("overlay.panel.title");
     const available = document.createElement("p");
     available.className = "available";
-    available.textContent =
-      "可用：拖出矩形选区、Enter 确认、Esc 取消（取消不写剪贴板）；确认后在预览中复制、保存、贴图或取字。";
+    available.textContent = t("overlay.panel.available");
     const listEl = document.createElement("dl");
     for (const item of REDUCED_CAPABILITIES) {
       const name = document.createElement("dt");
-      name.textContent = item.name;
+      name.textContent = t(item.nameKey);
       const detail = document.createElement("dd");
-      detail.textContent = item.detail;
+      detail.textContent = t(item.detailKey);
       listEl.append(name, detail);
     }
     capabilityPanel.replaceChildren(title, available, listEl);
+  };
+
+  const renderHint = (): void => {
+    if (!frame) {
+      return;
+    }
+    const reduced = frame.reducedCapabilities === true;
+    hint.textContent =
+      frame.mode === "window"
+        ? t("overlay.hint.window")
+        : reduced
+          ? t("overlay.hint.reduced")
+          : t("overlay.hint.region");
   };
 
   const fitCanvas = (): void => {
@@ -281,12 +295,7 @@ export function mountOverlay(root: HTMLElement): void {
       if (reduced) {
         renderCapabilityPanel();
       }
-      hint.textContent =
-        frame.mode === "window"
-          ? "点击要截取的窗口"
-          : reduced
-            ? "拖出矩形截取区域 · Enter 确认 · Esc 取消"
-            : "拖出矩形截取区域";
+      renderHint();
       void getCurrentWindow().setFocus();
       document.body.tabIndex = -1;
       document.body.focus();
@@ -300,11 +309,11 @@ export function mountOverlay(root: HTMLElement): void {
       image.onload = () => scheduleDraw();
       image.src = `data:image/jpeg;base64,${frame.pngBase64}`;
     } catch (error) {
-      const message = invokeError(error);
-      if (message.includes("没有正在进行")) {
+      // 无进行中的会话(cancelled)是预创建/隐藏时的正常路径,静默返回。
+      if (isCancelledError(error)) {
         return;
       }
-      hint.textContent = message;
+      hint.textContent = invokeError(error, t("overlay.error.capture_failed"));
     }
   };
 
@@ -316,9 +325,9 @@ export function mountOverlay(root: HTMLElement): void {
     if (!crop || crop.width < 2 || crop.height < 2) {
       // 不静默吞掉确认:给出下次能成功的具体做法(R13)。
       if (!selection) {
-        showNotice("请先拖出要截取的区域。");
+        showNotice(t("overlay.notice.select_first"));
       } else if (selection.width >= 1 || selection.height >= 1) {
-        showNotice("选区太小，请拖出至少 2 × 2 像素的区域。");
+        showNotice(t("overlay.notice.too_small"));
       }
       return;
     }
@@ -332,7 +341,7 @@ export function mountOverlay(root: HTMLElement): void {
       });
     } catch (error) {
       finishing = false;
-      hint.textContent = invokeError(error);
+      hint.textContent = invokeError(error, t("overlay.error.capture_failed"));
     }
   };
 
@@ -345,7 +354,7 @@ export function mountOverlay(root: HTMLElement): void {
       await invoke("confirm_window", { windowId });
     } catch (error) {
       finishing = false;
-      hint.textContent = invokeError(error);
+      hint.textContent = invokeError(error, t("overlay.error.capture_failed"));
     }
   };
 
@@ -427,7 +436,7 @@ export function mountOverlay(root: HTMLElement): void {
     }
     if (frame.reducedCapabilities) {
       event.preventDefault();
-      showNotice(TOOLBAR_NOTICE);
+      showNotice(t(TOOLBAR_NOTICE_KEY));
     }
   });
 
@@ -461,12 +470,12 @@ export function mountOverlay(root: HTMLElement): void {
       // 原生壳的可用快捷键在 Wayland 覆盖层缺失:触发时给出说明与替代。
       if (event.key === "c" || event.key === "C") {
         event.preventDefault();
-        showNotice(COLOR_NOTICE);
+        showNotice(t(COLOR_NOTICE_KEY));
         return;
       }
       if (event.key.startsWith("Arrow") && selection) {
         event.preventDefault();
-        showNotice(NUDGE_NOTICE);
+        showNotice(t(NUDGE_NOTICE_KEY));
       }
     },
     true,
@@ -476,6 +485,15 @@ export function mountOverlay(root: HTMLElement): void {
     void load();
   });
   void load();
+
+  // 语言切换:提示条、能力面板与开关文案即时更新;静态标签由 main 应用。
+  return () => {
+    renderHint();
+    setCapabilityPanel(!capabilityPanel.hidden);
+    if (!capabilityPanel.hidden) {
+      renderCapabilityPanel();
+    }
+  };
 }
 
 function markActiveWindow(root: HTMLElement, activeId: string | null): void {
@@ -554,12 +572,20 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
-function invokeError(error: unknown): string {
+function isCancelledError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { kind?: unknown }).kind === "cancelled"
+  );
+}
+
+function invokeError(error: unknown, fallback: string): string {
   if (typeof error === "string") {
     return error;
   }
   if (error && typeof error === "object" && "message" in error) {
     return String((error as { message: unknown }).message);
   }
-  return "截取失败。";
+  return fallback;
 }

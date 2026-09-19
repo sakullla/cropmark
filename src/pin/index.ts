@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, LogicalPosition, LogicalSize } from "@tauri-apps/api/window";
+import { t, type CatalogKey } from "../i18n";
 import "./pin.css";
 
 const MIN_ZOOM = 0.2;
@@ -19,36 +20,36 @@ const ICONS = {
 // 滚轮以光标为中心缩放(调整窗口尺寸+画布铺满,显示比例与原始分辨率
 // 解耦),整窗拖移;悬停工具条/右键菜单提供复制、保存、旋转 90°、
 // 透明度、再标注与关闭。旋转与透明度是窗口局部状态,关闭重开恢复默认。
-export function mountPin(root: HTMLElement): void {
+export function mountPin(root: HTMLElement): () => void {
   root.className = "pin-root";
   root.innerHTML = `
     <div class="pin-stage" data-tauri-drag-region>
       <canvas class="pin-canvas"></canvas>
     </div>
     <div class="pin-toolbar">
-      <button type="button" data-action="copy" title="复制图片（无损 PNG）" aria-label="复制">${ICONS.copy}</button>
-      <button type="button" data-action="save" title="保存 PNG" aria-label="保存">${ICONS.save}</button>
-      <button type="button" data-action="rotate" title="顺时针旋转 90°" aria-label="旋转 90°">${ICONS.rotate}</button>
-      <button type="button" data-action="opacity" class="pin-opacity" title="调整透明度" aria-label="透明度">100%</button>
-      <button type="button" data-action="annotate" title="再标注（确认后更新贴图）" aria-label="再标注">${ICONS.annotate}</button>
-      <button type="button" data-action="close" class="pin-close" title="关闭贴图" aria-label="关闭贴图">×</button>
+      <button type="button" data-action="copy" data-i18n-title="pin.toolbar.copy_title" data-i18n-aria-label="pin.toolbar.copy" title="复制图片（无损 PNG）" aria-label="复制">${ICONS.copy}</button>
+      <button type="button" data-action="save" data-i18n-title="pin.toolbar.save_title" data-i18n-aria-label="pin.toolbar.save" title="保存 PNG" aria-label="保存">${ICONS.save}</button>
+      <button type="button" data-action="rotate" data-i18n-title="pin.toolbar.rotate_title" data-i18n-aria-label="pin.toolbar.rotate" title="顺时针旋转 90°" aria-label="旋转 90°">${ICONS.rotate}</button>
+      <button type="button" data-action="opacity" class="pin-opacity" data-i18n-title="pin.toolbar.opacity_title" data-i18n-aria-label="pin.toolbar.opacity" title="调整透明度" aria-label="透明度">100%</button>
+      <button type="button" data-action="annotate" data-i18n-title="pin.toolbar.annotate_title" data-i18n-aria-label="pin.toolbar.annotate" title="再标注（确认后更新贴图）" aria-label="再标注">${ICONS.annotate}</button>
+      <button type="button" data-action="close" class="pin-close" data-i18n-title="pin.toolbar.close_title" data-i18n-aria-label="pin.toolbar.close" title="关闭贴图" aria-label="关闭贴图">×</button>
     </div>
     <div class="pin-menu" data-menu hidden>
-      <button type="button" data-menu-action="copy">复制图片</button>
-      <button type="button" data-menu-action="save">保存 PNG…</button>
-      <button type="button" data-menu-action="rotate">顺时针旋转 90°</button>
+      <button type="button" data-menu-action="copy" data-i18n="pin.menu.copy">复制图片</button>
+      <button type="button" data-menu-action="save" data-i18n="pin.menu.save">保存 PNG…</button>
+      <button type="button" data-menu-action="rotate" data-i18n="pin.menu.rotate">顺时针旋转 90°</button>
       <div class="pin-menu-row">
-        <span>透明度</span>
+        <span data-i18n="pin.menu.opacity">透明度</span>
         <div class="pin-menu-opacity">
           ${OPACITY_STEPS.map(
             (value) =>
-              `<button type="button" data-menu-opacity="${value}" title="透明度 ${Math.round(value * 100)}%">${Math.round(value * 100)}%</button>`,
+              `<button type="button" data-menu-opacity="${value}" data-i18n-title="pin.menu.opacity_option_title" data-i18n-title-params='{"percent":${Math.round(value * 100)}}' title="透明度 ${Math.round(value * 100)}%">${Math.round(value * 100)}%</button>`,
           ).join("")}
         </div>
       </div>
-      <button type="button" data-menu-action="annotate">再标注…</button>
-      <button type="button" data-menu-action="reset">缩放重置</button>
-      <button type="button" data-menu-action="close">关闭贴图</button>
+      <button type="button" data-menu-action="annotate" data-i18n="pin.menu.annotate">再标注…</button>
+      <button type="button" data-menu-action="reset" data-i18n="pin.menu.reset">缩放重置</button>
+      <button type="button" data-menu-action="close" data-i18n="pin.menu.close">关闭贴图</button>
     </div>
     <div class="pin-note" data-note hidden></div>
   `;
@@ -65,11 +66,11 @@ export function mountPin(root: HTMLElement): void {
     !(note instanceof HTMLElement) ||
     !(opacityBtn instanceof HTMLButtonElement)
   ) {
-    return;
+    return () => undefined;
   }
   const ctx = canvas.getContext("2d");
   if (!ctx) {
-    return;
+    return () => undefined;
   }
 
   const win = getCurrentWindow();
@@ -82,17 +83,51 @@ export function mountPin(root: HTMLElement): void {
   let image: HTMLImageElement | null = null;
   let busy = false;
   let noteTimer = 0;
+  let noteState: {
+    key: CatalogKey | null;
+    params?: Record<string, string | number>;
+    text: string;
+    isError: boolean;
+  } | null = null;
 
   const clampZoom = (value: number): number => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value));
 
-  const showNote = (text: string, isError = false): void => {
-    note.textContent = text;
-    note.classList.toggle("is-error", isError);
+  const noteText = (): string =>
+    noteState
+      ? noteState.key
+        ? t(noteState.key, noteState.params)
+        : noteState.text
+      : "";
+
+  const renderNote = (): void => {
+    if (!noteState || note.hidden) {
+      return;
+    }
+    note.textContent = noteText();
+    note.classList.toggle("is-error", noteState.isError);
+  };
+
+  const showNoteSource = (state: NonNullable<typeof noteState>): void => {
+    noteState = state;
+    note.textContent = noteText();
+    note.classList.toggle("is-error", state.isError);
     note.hidden = false;
     window.clearTimeout(noteTimer);
     noteTimer = window.setTimeout(() => {
       note.hidden = true;
     }, 2200);
+  };
+
+  const showNote = (text: string, isError = false): void => {
+    showNoteSource({ key: null, text, isError });
+  };
+
+  const showNoteKey = (
+    key: CatalogKey,
+    params?: Record<string, string | number>,
+    isError = false,
+  ): void => {
+    showNoteSource({ key, params, text: "", isError });
   };
 
   const syncUi = (): void => {
@@ -218,9 +253,9 @@ export function mountPin(root: HTMLElement): void {
     busy = true;
     try {
       await invoke("copy_pin", { label: win.label, rotation, opacity });
-      showNote("已复制当前内容（无损 PNG）。");
+      showNoteKey("pin.note.copied");
     } catch (error) {
-      showNote(invokeError(error, "无法复制贴图。"), true);
+      showNote(invokeError(error, t("pin.error.copy")), true);
     } finally {
       busy = false;
     }
@@ -238,10 +273,12 @@ export function mountPin(root: HTMLElement): void {
         opacity,
       });
       if (result?.saved) {
-        showNote(`已保存 ${fileNameFromPath(result.path) ?? "cropmark-pin.png"}。`);
+        showNoteKey("pin.note.saved", {
+          name: fileNameFromPath(result.path) ?? "cropmark-pin.png",
+        });
       }
     } catch (error) {
-      showNote(invokeError(error, "无法保存贴图。"), true);
+      showNote(invokeError(error, t("pin.error.save")), true);
     } finally {
       busy = false;
     }
@@ -256,7 +293,7 @@ export function mountPin(root: HTMLElement): void {
     try {
       await invoke("begin_pin_edit", { label: win.label, rotation, opacity });
     } catch (error) {
-      showNote(invokeError(error, "无法进入再标注。"), true);
+      showNote(invokeError(error, t("pin.error.annotate")), true);
     } finally {
       busy = false;
     }
@@ -378,14 +415,14 @@ export function mountPin(root: HTMLElement): void {
     try {
       const ok = await loadImage();
       if (!ok) {
-        showNote("贴图更新失败，请重新贴图。", true);
+        showNoteKey("pin.note.reload_failed", undefined, true);
         return;
       }
       rotation = 0;
       opacity = 1;
       render();
       syncUi();
-      showNote("贴图已更新。");
+      showNoteKey("pin.note.updated");
     } finally {
       busy = false;
     }
@@ -404,6 +441,11 @@ export function mountPin(root: HTMLElement): void {
     render();
     syncUi();
   })();
+
+  // 语言切换:重渲染进行中的提示文案;静态标签由 main 应用。
+  return () => {
+    renderNote();
+  };
 }
 
 function fileNameFromPath(path: string | null | undefined): string | null {

@@ -227,7 +227,7 @@ async fn run_last_region(app: AppHandle, delay_ms: u64) -> Result<(), CaptureErr
             // 记录缺失或与当前显示环境无交集:清除记录并提示,菜单变为
             // "暂无记录"禁用态;不隐藏任何产品界面。
             crate::settings::forget_last_region(&app);
-            ui::show_toast(&app, reason.toast());
+            ui::show_toast_key(&app, reason.key());
             return Ok(());
         }
     };
@@ -247,11 +247,16 @@ enum LastRegionPlanError {
 }
 
 impl LastRegionPlanError {
-    fn toast(self) -> &'static str {
+    fn key(self) -> &'static str {
         match self {
-            Self::Missing => "暂无上次区域，请先完成一次区域截取。",
-            Self::OutOfRange => "上次区域已不在当前显示范围内，请重新截取。",
+            Self::Missing => "toast.last_region_missing",
+            Self::OutOfRange => "toast.last_region_out_of_range",
         }
+    }
+
+    #[cfg(test)]
+    fn toast(self) -> String {
+        crate::i18n::t(self.key())
     }
 }
 
@@ -299,12 +304,12 @@ async fn capture_last_region(app: &AppHandle, plan: FixedRegionPlan) -> Result<(
         require_capture_ready(&handle)?;
         let frame = platform::capture_monitor(&plan.monitor)?;
         let (x, y, width, height) = local_crop(&plan.monitor, &plan.region)
-            .ok_or_else(|| CaptureError::api("上次区域超出显示器范围。"))?;
+            .ok_or_else(|| CaptureError::api("error.capture.last_region_out_of_range"))?;
         let cropped = crop_rgba(&frame, x, y, width, height)?;
         finish_configured(&handle, cropped).map(|_| ())
     })
     .await
-    .map_err(|_| CaptureError::api("截取线程失败。"))?
+    .map_err(|_| CaptureError::api("error.capture.thread_failed"))?
 }
 
 /// 全局物理区域 → 显示器帧内局部裁剪坐标;计划已钳制,正常必成功,
@@ -453,18 +458,18 @@ fn copy_color_feedback(text: &str, hex: &str) {
     if std::env::var_os("CROPMARK_CAPTURE_TIMING").is_some() {
         eprintln!("Cropmark color copy: hook ran, hex={hex}");
     }
-    let toast = |message: String| {
+    let toast_key = |key: &str, params: &[(&str, &str)]| {
         SHELL_APP.with(|slot| {
             if let Some(app) = slot.borrow().as_ref() {
-                ui::show_toast(app, &message);
+                ui::show_toast_key_params(app, key, params);
             } else if std::env::var_os("CROPMARK_CAPTURE_TIMING").is_some() {
                 eprintln!("Cropmark color copy: no app in thread-local");
             }
         });
     };
     match clipboard::copy_text(text) {
-        Ok(()) => toast(format!("已复制色值 {hex}。")),
-        Err(_) => toast("复制色值失败，请重试。".to_string()),
+        Ok(()) => toast_key("toast.color_copied", &[("hex", hex)]),
+        Err(_) => toast_key("toast.color_copy_failed", &[]),
     }
 }
 
@@ -507,7 +512,7 @@ async fn capture_region_native(app: &AppHandle) -> Result<(), CaptureError> {
         picked
     })
     .await
-    .map_err(|_| CaptureError::api("截取线程失败。"))??;
+    .map_err(|_| CaptureError::api("error.capture.thread_failed"))??;
     match picked {
         // Enter 确认:按 finishAction 选择预览或静默(复制+toast)。
         RegionOutcome::Preview(rect) => {
@@ -524,7 +529,7 @@ async fn capture_region_native(app: &AppHandle) -> Result<(), CaptureError> {
                 )
             })
             .await
-            .map_err(|_| CaptureError::api("截取线程失败。"))?
+            .map_err(|_| CaptureError::api("error.capture.thread_failed"))?
         }
         // 「标注」动作:强制打开预览编辑器,静默完成配置不适用于显式标注(R4 review)。
         RegionOutcome::Annotate(rect) => {
@@ -541,7 +546,7 @@ async fn capture_region_native(app: &AppHandle) -> Result<(), CaptureError> {
                 )
             })
             .await
-            .map_err(|_| CaptureError::api("截取线程失败。"))?
+            .map_err(|_| CaptureError::api("error.capture.thread_failed"))?
         }
         // 操作条/菜单动作:静默完成并执行动作(不开预览)。
         RegionOutcome::Quiet(rect, action) => {
@@ -561,7 +566,7 @@ async fn capture_region_native(app: &AppHandle) -> Result<(), CaptureError> {
             let handle = app.clone();
             tauri::async_runtime::spawn_blocking(move || cancel(&handle).map(|_| ()))
                 .await
-                .map_err(|_| CaptureError::api("截取线程失败。"))?
+                .map_err(|_| CaptureError::api("error.capture.thread_failed"))?
         }
     }
 }
@@ -627,8 +632,8 @@ async fn capture_region(app: &AppHandle) -> Result<(), CaptureError> {
     Ok(())
 }
 
-const EMPTY_WINDOW_LIST_MESSAGE: &str =
-    "没有可截取的窗口，或当前桌面无法列出窗口。请改用区域或全屏截取。";
+/// 空/不可用窗口列表的错误词条键(R13:提示必须给出替代路径)。
+const EMPTY_WINDOW_LIST_KEY: &str = "error.capture.empty_window_list";
 
 /// Wayland/portal 列窗失败与空列表都走错误说明,不打开空白预览。
 fn windows_for_window_mode(
@@ -636,7 +641,7 @@ fn windows_for_window_mode(
 ) -> Result<Vec<ListedWindow>, CaptureError> {
     let windows = listed?;
     if windows.is_empty() {
-        return Err(CaptureError::unavailable(EMPTY_WINDOW_LIST_MESSAGE));
+        return Err(CaptureError::unavailable(EMPTY_WINDOW_LIST_KEY));
     }
     Ok(windows)
 }
@@ -645,7 +650,7 @@ async fn capture_window_mode(app: &AppHandle) -> Result<(), CaptureError> {
     let windows =
         tauri::async_runtime::spawn_blocking(move || platform::list_windows(platform::self_pid()))
             .await
-            .map_err(|_| CaptureError::api("无法列出窗口。"))?;
+            .map_err(|_| CaptureError::api("error.capture.window_list"))?;
     let windows = windows_for_window_mode(windows)?;
     let monitor = freeze_screen(app, windows).await?;
     ui::open_overlay(app, &monitor)?;
@@ -659,7 +664,7 @@ async fn capture_fullscreen(app: &AppHandle) -> Result<(), CaptureError> {
         finish_configured(&handle, frame).map(|_| ())
     })
     .await
-    .map_err(|_| CaptureError::api("截取线程失败。"))?
+    .map_err(|_| CaptureError::api("error.capture.thread_failed"))?
 }
 
 async fn freeze_screen(
@@ -673,7 +678,7 @@ async fn freeze_screen(
         Ok(monitor)
     })
     .await
-    .map_err(|_| CaptureError::api("截取线程失败。"))?
+    .map_err(|_| CaptureError::api("error.capture.thread_failed"))?
 }
 
 fn grab_pointer_screen(app: &AppHandle) -> Result<(Frame, MonitorGeom), CaptureError> {
@@ -778,7 +783,9 @@ pub fn overlay_frame(app: &AppHandle) -> Result<OverlayPayload, CaptureError> {
         session
             .as_ref()
             .and_then(|current| current.overlay.clone())
-            .ok_or_else(|| CaptureError::api("没有正在进行的截取。"))
+            // 覆盖层预创建/隐藏时无会话属正常路径:用 cancelled 让前端静默返回,
+            // 不依赖文案文本(语言切换后仍稳定)。
+            .ok_or_else(CaptureError::cancelled)
     })
 }
 
@@ -787,7 +794,7 @@ pub fn preview_frame(app: &AppHandle) -> Result<PreviewPayload, CaptureError> {
         session
             .as_ref()
             .and_then(|item| item.preview.clone())
-            .ok_or_else(|| CaptureError::api("没有可预览的截图。"))
+            .ok_or_else(|| CaptureError::api("error.capture.preview_missing"))
     })
 }
 
@@ -795,7 +802,7 @@ pub fn current_preview_frame(app: &AppHandle) -> Result<Frame, CaptureError> {
     let now = Instant::now();
     with_session_mut(app, |session| {
         let Some(current) = session.as_mut() else {
-            return Err(CaptureError::api("没有可预览的截图。"));
+            return Err(CaptureError::api("error.capture.preview_missing"));
         };
         // A quiet-finish frame past its TTL is treated as gone, even before
         // the cleanup task runs.
@@ -806,7 +813,7 @@ pub fn current_preview_frame(app: &AppHandle) -> Result<Frame, CaptureError> {
         current
             .freeze
             .clone()
-            .ok_or_else(|| CaptureError::api("没有可预览的截图。"))
+            .ok_or_else(|| CaptureError::api("error.capture.preview_missing"))
     })
 }
 
@@ -830,7 +837,7 @@ pub fn adopt_external_frame(
         session.as_ref().is_some_and(|current| current.busy)
     });
     if busy {
-        return Err(CaptureError::api("正在截取，无法进入贴图再标注。"));
+        return Err(CaptureError::api("error.capture.pin_busy"));
     }
     let png = encode_png(&frame)?;
     let preview = ui::preview_payload(&frame, &png, ui::PreviewCopyState::Disabled);
@@ -875,7 +882,7 @@ fn finish_selection(
         let freeze = session
             .freeze
             .as_ref()
-            .ok_or_else(|| CaptureError::invalid_buffer("未初始化"))?;
+            .ok_or_else(|| CaptureError::invalid_buffer("error.capture.buffer_uninitialized"))?;
         crop_rgba(
             freeze,
             selection.x,
@@ -928,7 +935,7 @@ pub fn confirm_logical_region(app: &AppHandle, rect: LogicalRect) -> Result<(), 
         let frame = session
             .freeze
             .as_ref()
-            .ok_or_else(|| CaptureError::invalid_buffer("未初始化"))?;
+            .ok_or_else(|| CaptureError::invalid_buffer("error.capture.buffer_uninitialized"))?;
         Ok(crop_from_logical(
             frame.scale,
             rect,
@@ -986,18 +993,18 @@ pub async fn finish_region_with(
     let handle = app.clone();
     let finish = tauri::async_runtime::spawn_blocking(move || {
         if !quiet_finish_allowed(&handle) {
-            return Err(CaptureError::api("当前没有进行中的区域截取。"));
+            return Err(CaptureError::api("error.capture.region_missing"));
         }
         finish_region_quiet(&handle, selection, DEFAULT_FRAME_TTL)
     })
     .await
-    .map_err(|_| CaptureError::api("截取线程失败。"))??;
+    .map_err(|_| CaptureError::api("error.capture.thread_failed"))??;
     match action {
         QuietAction::Copy => {
             if finish.clipboard_written {
-                ui::show_toast(app, "已复制到剪贴板。");
+                ui::show_toast_key(app, "toast.copied");
             } else {
-                ui::show_toast(app, "复制失败，请重试。");
+                ui::show_toast_key(app, "toast.copy_failed");
             }
         }
         // 保存/取字/贴图沿用命令层的统一动作分发(保存对话框、离线 OCR、toast)。
@@ -1019,7 +1026,7 @@ pub fn finish_region_quiet(
         let freeze = session
             .freeze
             .as_ref()
-            .ok_or_else(|| CaptureError::invalid_buffer("未初始化"))?;
+            .ok_or_else(|| CaptureError::invalid_buffer("error.capture.buffer_uninitialized"))?;
         crop_rgba(
             freeze,
             selection.x,
@@ -1088,12 +1095,14 @@ fn finish_frame(
         capture.auto_copy,
     )?;
     if disposition == FinishDisposition::Quiet {
-        let message = if summary.clipboard_written {
-            "已复制到剪贴板。"
-        } else {
-            "复制失败，请重试。"
-        };
-        ui::show_toast(app, message);
+        ui::show_toast_key(
+            app,
+            if summary.clipboard_written {
+                "toast.copied"
+            } else {
+                "toast.copy_failed"
+            },
+        );
     }
     Ok(summary)
 }
@@ -1284,7 +1293,8 @@ pub fn delay_state(app: &AppHandle) -> DelayPayload {
 pub fn last_error(app: &AppHandle) -> Option<CaptureError> {
     let runtime = app.state::<CaptureRuntime>();
     let error = lock(&runtime.last_error).clone();
-    error
+    // 按当前语言重解析(语言切换后已打开的错误窗显示新语言)。
+    error.map(|error| error.localized())
 }
 
 fn finish_error(app: &AppHandle, error: CaptureError) -> Result<(), CaptureError> {
@@ -1356,6 +1366,7 @@ mod tests {
         grab_allowed, plan_delay, session_steps, HideWait, RecordedSurface, SessionStep,
         SurfaceKind,
     };
+    use crate::i18n;
 
     #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
     #[test]
@@ -1569,13 +1580,13 @@ mod tests {
     fn empty_or_wayland_window_list_is_unavailable_not_blank_preview() {
         let empty = windows_for_window_mode(Ok(Vec::new())).unwrap_err();
         assert_eq!(empty.kind, CaptureErrorKind::Unavailable);
-        assert_eq!(empty.message, EMPTY_WINDOW_LIST_MESSAGE);
+        assert_eq!(empty.message, i18n::t(EMPTY_WINDOW_LIST_KEY));
         // 提示必须给出替代路径,而不是只报"没有窗口"(R13 保持明确)。
         assert!(empty.message.contains("区域"));
         assert!(empty.message.contains("全屏"));
 
         let wayland = windows_for_window_mode(Err(CaptureError::unavailable(
-            "当前桌面无法列出窗口。请改用区域或全屏截取，或在 X11 会话中使用窗口模式。",
+            "error.linux.portal_window_list",
         )))
         .unwrap_err();
         assert_eq!(wayland.kind, CaptureErrorKind::Unavailable);

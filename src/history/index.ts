@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { localeTag, t, type CatalogKey } from "../i18n";
 import "./history.css";
 
 interface HistoryEntryView {
@@ -20,32 +21,32 @@ interface HistoryListPayload {
 // 历史视图:按时间展示本机保存的截图缩略图,每条可重新复制、重新贴图或
 // 删除,也可清空全部。缩略图经 Rust 命令拉取为二进制,转 blob URL 显示;
 // 索引损坏或缩略图/原图缺失时给出可理解状态,列表仍可用。
-export function mountHistory(root: HTMLElement): void {
+export function mountHistory(root: HTMLElement): () => void {
   root.className = "history-root";
   root.innerHTML = `
     <div class="shell">
       <header class="titlebar" data-tauri-drag-region>
         <div class="brand" data-tauri-drag-region>
           <span class="mark" aria-hidden="true"></span>
-          <span class="name">历史记录</span>
+          <span class="name" data-i18n="history.title">历史记录</span>
         </div>
         <div class="history-toolbar">
-          <button type="button" class="choice" data-action="clear">清空全部</button>
-          <button type="button" class="icon-btn" data-action="close" aria-label="关闭">×</button>
+          <button type="button" class="choice" data-action="clear" data-i18n="history.clear">清空全部</button>
+          <button type="button" class="icon-btn" data-action="close" data-i18n-aria-label="history.close" aria-label="关闭">×</button>
         </div>
       </header>
       <main class="content history-content">
         <p class="notice" data-notice role="alert" hidden></p>
         <p class="history-status" data-status role="status" hidden></p>
-        <div class="history-confirm" data-confirm role="alertdialog" aria-label="确认操作" hidden>
+        <div class="history-confirm" data-confirm role="alertdialog" data-i18n-aria-label="history.confirm_group" aria-label="确认操作" hidden>
           <p class="history-confirm-text" data-confirm-text></p>
           <div class="history-confirm-actions">
-            <button type="button" class="choice history-confirm-accept" data-confirm-accept>确认</button>
-            <button type="button" class="choice" data-confirm-cancel>取消</button>
+            <button type="button" class="choice history-confirm-accept" data-confirm-accept data-i18n="history.accept">确认</button>
+            <button type="button" class="choice" data-confirm-cancel data-i18n="history.cancel">取消</button>
           </div>
         </div>
         <div class="history-list" data-list></div>
-        <p class="history-empty" data-empty hidden>暂无历史记录。截图完成后会自动出现在这里。</p>
+        <p class="history-empty" data-empty hidden data-i18n="history.empty">暂无历史记录。截图完成后会自动出现在这里。</p>
       </main>
     </div>
   `;
@@ -72,39 +73,57 @@ export function mountHistory(root: HTMLElement): void {
     !(clearEl instanceof HTMLButtonElement) ||
     !(closeEl instanceof HTMLButtonElement)
   ) {
-    return;
+    return () => undefined;
   }
 
   let busy = false;
+  let lastPayload: HistoryListPayload | null = null;
+  let statusState: { key: CatalogKey | null; text: string; isError: boolean } = {
+    key: null,
+    text: "",
+    isError: false,
+  };
   // macOS 的 WKWebView 不提供 window.confirm(wry 未实现该面板,恒按取消处理),
   // 确认一律走窗口内确认条,三平台行为一致,也不新增插件与权限依赖。
   type PendingConfirm = { kind: "delete"; id: string } | { kind: "clear" };
   let pendingConfirm: PendingConfirm | null = null;
 
+  const confirmMessage = (pending: PendingConfirm): string =>
+    pending.kind === "delete" ? t("history.confirm_delete") : t("history.confirm_clear");
+  const confirmAcceptLabel = (pending: PendingConfirm): string =>
+    pending.kind === "delete" ? t("history.confirm_delete_accept") : t("history.confirm_clear_accept");
+
   const hideConfirm = (): void => {
     pendingConfirm = null;
     confirmEl.hidden = true;
     confirmTextEl.textContent = "";
-    confirmAcceptEl.textContent = "确认";
+    confirmAcceptEl.textContent = t("history.accept");
   };
 
-  const showConfirm = (
-    pending: PendingConfirm,
-    message: string,
-    acceptLabel: string,
-  ): void => {
+  const showConfirm = (pending: PendingConfirm): void => {
     pendingConfirm = pending;
-    confirmTextEl.textContent = message;
-    confirmAcceptEl.textContent = acceptLabel;
+    confirmTextEl.textContent = confirmMessage(pending);
+    confirmAcceptEl.textContent = confirmAcceptLabel(pending);
     confirmEl.hidden = false;
     // 初始焦点落在取消,键盘 Enter 不会直接触发破坏性操作。
     confirmCancelEl.focus();
   };
 
-  const setStatus = (message: string, isError = false): void => {
+  const renderStatus = (): void => {
+    const message = statusState.key ? t(statusState.key) : statusState.text;
     statusEl.hidden = message.length === 0;
     statusEl.textContent = message;
-    statusEl.classList.toggle("is-error", isError);
+    statusEl.classList.toggle("is-error", statusState.isError);
+  };
+
+  const setStatusKey = (key: CatalogKey, isError = false): void => {
+    statusState = { key, text: "", isError };
+    renderStatus();
+  };
+
+  const setStatusText = (text: string, isError = false): void => {
+    statusState = { key: null, text, isError };
+    renderStatus();
   };
 
   const errorMessage = (error: unknown): string =>
@@ -113,9 +132,9 @@ export function mountHistory(root: HTMLElement): void {
   const formatTime = (createdAt: number): string => {
     const date = new Date(createdAt);
     if (Number.isNaN(date.getTime())) {
-      return "未知时间";
+      return t("history.unknown_time");
     }
-    return date.toLocaleString();
+    return date.toLocaleString(localeTag());
   };
 
   const loadThumbnail = (id: string, holder: HTMLElement): void => {
@@ -135,7 +154,7 @@ export function mountHistory(root: HTMLElement): void {
       })
       .catch(() => {
         holder.classList.add("missing");
-        holder.textContent = "缩略图缺失";
+        holder.textContent = t("history.thumb_missing");
       });
   };
 
@@ -148,7 +167,7 @@ export function mountHistory(root: HTMLElement): void {
     holder.className = "history-thumb";
     if (entry.thumbMissing) {
       holder.classList.add("missing");
-      holder.textContent = "缩略图缺失";
+      holder.textContent = t("history.thumb_missing");
     } else {
       loadThumbnail(entry.id, holder);
     }
@@ -165,25 +184,26 @@ export function mountHistory(root: HTMLElement): void {
     if (entry.imageMissing) {
       const missing = document.createElement("div");
       missing.className = "history-missing-note";
-      missing.textContent = "原始图片缺失，无法复制或贴图";
+      missing.textContent = t("history.image_missing");
       meta.append(missing);
     }
 
     const actions = document.createElement("div");
     actions.className = "history-actions";
-    for (const [action, label] of [
-      ["copy", "复制"],
-      ["pin", "贴图"],
-      ["delete", "删除"],
-    ] as const) {
+    const actionLabels: Array<[string, CatalogKey]> = [
+      ["copy", "history.copy"],
+      ["pin", "history.pin"],
+      ["delete", "history.delete"],
+    ];
+    for (const [action, labelKey] of actionLabels) {
       const button = document.createElement("button");
       button.type = "button";
       button.className = action === "delete" ? "choice history-delete" : "choice";
       button.dataset.entryAction = action;
-      button.textContent = label;
+      button.textContent = t(labelKey);
       if (entry.imageMissing && action !== "delete") {
         button.disabled = true;
-        button.title = "原始图片缺失";
+        button.title = t("history.image_missing_title");
       }
       actions.append(button);
     }
@@ -193,6 +213,7 @@ export function mountHistory(root: HTMLElement): void {
   };
 
   const render = (payload: HistoryListPayload): void => {
+    lastPayload = payload;
     noticeEl.hidden = !payload.notice;
     noticeEl.textContent = payload.notice ?? "";
     listEl.replaceChildren();
@@ -206,7 +227,7 @@ export function mountHistory(root: HTMLElement): void {
     try {
       render(await invoke<HistoryListPayload>("get_history"));
     } catch (error) {
-      setStatus(errorMessage(error), true);
+      setStatusText(errorMessage(error), true);
     }
   };
 
@@ -214,9 +235,9 @@ export function mountHistory(root: HTMLElement): void {
     busy = true;
     try {
       render(await invoke<HistoryListPayload>("delete_history_entry", { id }));
-      setStatus("已删除。");
+      setStatusKey("history.deleted");
     } catch (error) {
-      setStatus(errorMessage(error), true);
+      setStatusText(errorMessage(error), true);
     } finally {
       busy = false;
     }
@@ -224,12 +245,13 @@ export function mountHistory(root: HTMLElement): void {
 
   const performClear = async (): Promise<void> => {
     busy = true;
-    setStatus("");
+    statusState = { key: null, text: "", isError: false };
+    renderStatus();
     try {
       render(await invoke<HistoryListPayload>("clear_history"));
-      setStatus("已清空。");
+      setStatusKey("history.cleared");
     } catch (error) {
-      setStatus(errorMessage(error), true);
+      setStatusText(errorMessage(error), true);
     } finally {
       busy = false;
     }
@@ -241,7 +263,7 @@ export function mountHistory(root: HTMLElement): void {
     }
     if (action === "delete") {
       // 删除需二次确认:显示窗口内确认条,确认后再执行,不依赖 WebView 对话框。
-      showConfirm({ kind: "delete", id }, "删除这条历史记录？此操作不可撤销。", "确认删除");
+      showConfirm({ kind: "delete", id });
       return;
     }
     hideConfirm();
@@ -249,13 +271,13 @@ export function mountHistory(root: HTMLElement): void {
     try {
       if (action === "copy") {
         await invoke("copy_history_entry", { id });
-        setStatus("已复制到剪贴板。");
+        setStatusKey("history.copied");
       } else if (action === "pin") {
         await invoke("pin_history_entry", { id });
-        setStatus("已贴图。");
+        setStatusKey("history.pinned");
       }
     } catch (error) {
-      setStatus(errorMessage(error), true);
+      setStatusText(errorMessage(error), true);
     } finally {
       busy = false;
     }
@@ -283,7 +305,7 @@ export function mountHistory(root: HTMLElement): void {
     if (busy) {
       return;
     }
-    showConfirm({ kind: "clear" }, "清空全部历史记录？此操作不可撤销。", "确认清空");
+    showConfirm({ kind: "clear" });
   });
 
   confirmAcceptEl.addEventListener("click", () => {
@@ -320,4 +342,16 @@ export function mountHistory(root: HTMLElement): void {
   });
 
   void refresh();
+
+  // 语言切换:重建动态文案(状态、确认条、列表时间/动作),静态标签由 main 应用。
+  return () => {
+    renderStatus();
+    if (lastPayload) {
+      render(lastPayload);
+    }
+    if (pendingConfirm) {
+      confirmTextEl.textContent = confirmMessage(pendingConfirm);
+      confirmAcceptEl.textContent = confirmAcceptLabel(pendingConfirm);
+    }
+  };
 }

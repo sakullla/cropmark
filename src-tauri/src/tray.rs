@@ -9,6 +9,7 @@ use tauri::tray::TrayIconBuilder;
 use tauri::AppHandle;
 
 use crate::hotkeys::CaptureMode;
+use crate::i18n;
 use crate::settings;
 
 pub const TRAY_ID: &str = "cropmark-tray";
@@ -20,19 +21,19 @@ pub const LAST_REGION_ID: &str = "capture-last-region";
 pub const FIXED_DELAY_SECONDS: [u64; 3] = [3, 5, 10];
 
 /// 无记录时菜单项禁用且标签即提示(禁用项无法点击,提示只能靠文案承载)。
-pub fn last_region_label(has_region: bool) -> &'static str {
-    if has_region {
-        "上次区域"
+pub fn last_region_label(has_region: bool) -> String {
+    i18n::t(if has_region {
+        "tray.last_region"
     } else {
-        "上次区域（暂无记录）"
-    }
+        "tray.last_region_empty"
+    })
 }
 
 /// R16:托盘构建失败(Err 或构建期 panic)时的用户可见提示。以安装路径的
 /// 实际结果为唯一判据,不做 AppIndicator/StatusNotifier 探测(DE 图标不可见
 /// 属不可检测场景);提示需给出仍可用能力与替代入口。
 pub fn unavailable_message() -> String {
-    "当前桌面环境未提供托盘，热键仍可用；可再次启动 Cropmark 打开设置，或在此退出应用。".into()
+    i18n::t("tray.unavailable")
 }
 
 /// R16:托盘安装入口,把构建期 panic 与 `Err` 一视同仁地归一为错误。
@@ -166,11 +167,11 @@ fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
 }
 
 pub fn configured_delay_label(seconds: u32) -> String {
-    format!("使用设置的延时（{seconds} 秒）")
+    i18n::tp("tray.delay_configured", &[("seconds", &seconds.to_string())])
 }
 
 fn build_menu(app: &AppHandle, configured_seconds: u32) -> tauri::Result<Menu<tauri::Wry>> {
-    let region = MenuItem::with_id(app, "capture-region", "区域", true, None::<&str>)?;
+    let region = MenuItem::with_id(app, "capture-region", i18n::t("tray.region"), true, None::<&str>)?;
     let has_last_region = crate::settings::current_last_region(app).is_some();
     let last_region = MenuItem::with_id(
         app,
@@ -179,8 +180,14 @@ fn build_menu(app: &AppHandle, configured_seconds: u32) -> tauri::Result<Menu<ta
         has_last_region,
         None::<&str>,
     )?;
-    let window = MenuItem::with_id(app, "capture-window", "窗口", true, None::<&str>)?;
-    let fullscreen = MenuItem::with_id(app, "capture-fullscreen", "全屏", true, None::<&str>)?;
+    let window = MenuItem::with_id(app, "capture-window", i18n::t("tray.window"), true, None::<&str>)?;
+    let fullscreen = MenuItem::with_id(
+        app,
+        "capture-fullscreen",
+        i18n::t("tray.fullscreen"),
+        true,
+        None::<&str>,
+    )?;
 
     let mut fixed_delays = Vec::new();
     for seconds in FIXED_DELAY_SECONDS {
@@ -194,10 +201,10 @@ fn build_menu(app: &AppHandle, configured_seconds: u32) -> tauri::Result<Menu<ta
         capture_items.push(submenu);
     }
     capture_items.push(&delay_configured);
-    let capture = Submenu::with_items(app, "截取", true, &capture_items)?;
-    let settings_item = MenuItem::with_id(app, "settings", "设置", true, None::<&str>)?;
-    let history_item = MenuItem::with_id(app, "history", "历史记录", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+    let capture = Submenu::with_items(app, i18n::t("tray.capture"), true, &capture_items)?;
+    let settings_item = MenuItem::with_id(app, "settings", i18n::t("tray.settings"), true, None::<&str>)?;
+    let history_item = MenuItem::with_id(app, "history", i18n::t("tray.history"), true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", i18n::t("tray.quit"), true, None::<&str>)?;
     Menu::with_items(
         app,
         &[
@@ -215,27 +222,27 @@ fn fixed_delay_submenu(app: &AppHandle, seconds: u64) -> tauri::Result<Submenu<t
     let region = MenuItem::with_id(
         app,
         format!("capture-region-delay-{seconds}"),
-        "区域",
+        i18n::t("tray.region"),
         true,
         None::<&str>,
     )?;
     let window = MenuItem::with_id(
         app,
         format!("capture-window-delay-{seconds}"),
-        "窗口",
+        i18n::t("tray.window"),
         true,
         None::<&str>,
     )?;
     let fullscreen = MenuItem::with_id(
         app,
         format!("capture-fullscreen-delay-{seconds}"),
-        "全屏",
+        i18n::t("tray.fullscreen"),
         true,
         None::<&str>,
     )?;
     Submenu::with_items(
         app,
-        format!("延时 {seconds} 秒"),
+        i18n::tp("tray.delay_seconds", &[("seconds", &seconds.to_string())]),
         true,
         &[&region, &window, &fullscreen],
     )
@@ -245,21 +252,21 @@ fn configured_delay_submenu(app: &AppHandle, seconds: u32) -> tauri::Result<Subm
     let region = MenuItem::with_id(
         app,
         "capture-region-delay-setting",
-        "区域",
+        i18n::t("tray.region"),
         true,
         None::<&str>,
     )?;
     let window = MenuItem::with_id(
         app,
         "capture-window-delay-setting",
-        "窗口",
+        i18n::t("tray.window"),
         true,
         None::<&str>,
     )?;
     let fullscreen = MenuItem::with_id(
         app,
         "capture-fullscreen-delay-setting",
-        "全屏",
+        i18n::t("tray.fullscreen"),
         true,
         None::<&str>,
     )?;

@@ -6,8 +6,9 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::annotate::{parse_hex_color, DEFAULT_COLOR};
-use crate::autostart::{self, AutostartState};
+use crate::autostart::{self, AutostartRejection, AutostartState};
 use crate::hotkeys::{self, CaptureMode, HotkeyErrors, Hotkeys};
+use crate::i18n::{self, Language};
 
 /// 序号工具起始值允许范围；超出时钳制。
 pub const MIN_NUMBER_START: u32 = 1;
@@ -380,6 +381,30 @@ pub struct StoredSettings {
     pub export: ExportSettings,
     #[serde(default)]
     pub last_region: Option<LastRegion>,
+    /// 界面语言(R12):`system | zh-CN | en`;未知值按 system 处理。
+    #[serde(default = "default_language_setting")]
+    pub language: String,
+}
+
+pub fn default_language_setting() -> String {
+    i18n::SYSTEM_LANGUAGE.to_string()
+}
+
+/// 语言设置值的合法化:只接受三种取值,其余(含空值)回退 system。
+pub fn sanitize_language(value: &str) -> String {
+    match value.trim() {
+        "zh-CN" => "zh-CN".to_string(),
+        "en" => "en".to_string(),
+        _ => i18n::SYSTEM_LANGUAGE.to_string(),
+    }
+}
+
+/// 设置值 + 解析结果:前端据此显示选项并作为切换后的重渲染输入。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LanguageInfo {
+    pub language: String,
+    pub resolved_language: Language,
 }
 
 /// R16:托盘可用性状态。托盘构建失败(Linux 桌面缺少 AppIndicator 等)时应用
@@ -414,13 +439,15 @@ pub struct UiSettings {
     pub history: HistorySettings,
     pub export: ExportSettings,
     pub tray: TrayState,
+    pub language: String,
+    pub resolved_language: Language,
 }
 
 pub struct SessionState {
     pub hotkeys: Mutex<Hotkeys>,
     pub hotkey_errors: Mutex<HotkeyErrors>,
     pub notice: Mutex<Option<String>>,
-    pub autostart_rejection: Mutex<Option<String>>,
+    pub autostart_rejection: Mutex<Option<AutostartRejection>>,
     pub annotation_defaults: Mutex<AnnotationDefaults>,
     pub features: Mutex<FeatureSettings>,
     pub capture: Mutex<CaptureSettings>,
@@ -428,6 +455,7 @@ pub struct SessionState {
     pub export: Mutex<ExportSettings>,
     pub last_region: Mutex<Option<LastRegion>>,
     pub tray: Mutex<TrayState>,
+    pub language: Mutex<String>,
 }
 
 impl SessionState {
@@ -444,6 +472,7 @@ impl SessionState {
             export: Mutex::new(stored.export.sanitized()),
             last_region: Mutex::new(stored.last_region.and_then(LastRegion::sanitized)),
             tray: Mutex::new(TrayState::available()),
+            language: Mutex::new(sanitize_language(&stored.language)),
         }
     }
 }
@@ -484,7 +513,8 @@ pub fn remember_export(
     }
     .sanitized();
     *lock(&app.state::<SessionState>().export) = next;
-    persist_settings(app, "导出设置已记住");
+    let applied = i18n::t("notice.export_remembered");
+    persist_settings(app, &applied);
 }
 
 /// 供托盘读取"上次区域"是否存在:决定菜单项可用状态与标签。
@@ -499,7 +529,8 @@ pub fn remember_last_region(app: &AppHandle, region: LastRegion) {
         return;
     };
     *lock(&app.state::<SessionState>().last_region) = Some(region);
-    persist_settings(app, "上次区域已记录");
+    let applied = i18n::t("notice.last_region_saved");
+    persist_settings(app, &applied);
     crate::tray::refresh_menu(app);
 }
 
@@ -510,7 +541,8 @@ pub fn forget_last_region(app: &AppHandle) {
     if lock(&state.last_region).take().is_none() {
         return;
     }
-    persist_settings(app, "上次区域已清除");
+    let applied = i18n::t("notice.last_region_cleared");
+    persist_settings(app, &applied);
     crate::tray::refresh_menu(app);
 }
 
@@ -571,10 +603,54 @@ pub fn open_settings(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// 供启动与语言切换调用:读取设置值、解析系统语言并写入进程级当前语言。
+pub fn apply_language(app: &AppHandle) -> Language {
+    let setting = lock(&app.state::<SessionState>().language).clone();
+    let resolved = i18n::resolve_setting(&setting);
+    i18n::set_language(resolved);
+    resolved
+}
+
+/// 语言设置值 + 解析结果;各 webview 启动时据此初始化词条语言。
+#[tauri::command]
+pub fn get_language(app: AppHandle) -> LanguageInfo {
+    let state = app.state::<SessionState>();
+    let language = lock(&state.language).clone();
+    LanguageInfo {
+        resolved_language: i18n::resolve_setting(&language),
+        language,
+    }
+}
+
+/// 切换界面语言(R12):写设置并持久化,更新进程级语言,重建托盘菜单,
+/// 广播 `language-changed` 让所有已打开窗口即时重渲染;无需重启。
+#[tauri::command]
+pub fn set_language(app: AppHandle, language: String) -> UiSettings {
+    let sanitized = sanitize_language(&language);
+    *lock(&app.state::<SessionState>().language) = sanitized;
+    // 先切换进程级语言,持久化提示与托盘菜单再按新语言生成。
+    apply_language(&app);
+    let applied = i18n::t("notice.language_applied");
+    persist_settings(&app, &applied);
+    // 无托盘提示按新语言刷新(提示在启动时生成,语言切换后不能残留旧语言)。
+    {
+        let state = app.state::<SessionState>();
+        let mut tray = lock(&state.tray);
+        if !tray.available {
+            tray.message = Some(crate::tray::unavailable_message());
+        }
+    }
+    crate::tray::refresh_menu(&app);
+    let info = get_language(app.clone());
+    let _ = tauri::Emitter::emit(&app, "language-changed", info);
+    snapshot(&app)
+}
+
 pub fn snapshot(app: &AppHandle) -> UiSettings {
     let state = app.state::<SessionState>();
     let hotkeys = lock(&state.hotkeys).clone();
-    let hotkey_errors = lock(&state.hotkey_errors).clone();
+    // 热键错误按当前语言解析(存储为词条键,语言切换后不残留旧语言)。
+    let hotkey_errors = lock(&state.hotkey_errors).clone().localized();
     let notice = lock(&state.notice).clone();
     let autostart_rejection = lock(&state.autostart_rejection).clone();
     let annotation_defaults = lock(&state.annotation_defaults).clone();
@@ -583,6 +659,8 @@ pub fn snapshot(app: &AppHandle) -> UiSettings {
     let history = *lock(&state.history);
     let export = lock(&state.export).clone();
     let tray = lock(&state.tray).clone();
+    let language = lock(&state.language).clone();
+    let resolved_language = i18n::resolve_setting(&language);
     UiSettings {
         hotkeys,
         hotkey_errors,
@@ -594,6 +672,8 @@ pub fn snapshot(app: &AppHandle) -> UiSettings {
         history,
         export,
         tray,
+        language,
+        resolved_language,
     }
 }
 
@@ -606,7 +686,8 @@ pub fn get_ui_settings(app: AppHandle) -> UiSettings {
 pub fn set_hotkey(app: AppHandle, mode: CaptureMode, accelerator: String) -> UiSettings {
     let mut hotkeys = lock(&app.state::<SessionState>().hotkeys).clone();
     hotkeys.set(mode, accelerator);
-    persist_settings(&app, "热键已应用");
+    let applied = i18n::t("notice.hotkey_applied");
+    persist_settings(&app, &applied);
     hotkeys::apply_to_app(&app, &hotkeys);
     snapshot(&app)
 }
@@ -624,7 +705,8 @@ pub fn set_autostart_enabled(app: AppHandle, enabled: bool) -> UiSettings {
 #[tauri::command]
 pub fn set_annotation_defaults(app: AppHandle, defaults: AnnotationDefaults) -> UiSettings {
     *lock(&app.state::<SessionState>().annotation_defaults) = defaults.sanitized();
-    persist_settings(&app, "标注样式已应用");
+    let applied = i18n::t("notice.style_applied");
+    persist_settings(&app, &applied);
     snapshot(&app)
 }
 
@@ -641,10 +723,11 @@ pub fn set_feature(
         let current = *lock(&state.features);
         current
             .with_key(&key, enabled)
-            .ok_or_else(|| format!("未知的功能开关：{key}"))?
+            .ok_or_else(|| i18n::tp("error.feature.unknown", &[("key", &key)]))?
     };
     *lock(&app.state::<SessionState>().features) = next;
-    persist_settings(&app, "功能入口已应用");
+    let applied = i18n::t("notice.features_applied");
+    persist_settings(&app, &applied);
     Ok(snapshot(&app))
 }
 
@@ -653,7 +736,8 @@ pub fn set_feature(
 #[tauri::command]
 pub fn set_capture_settings(app: AppHandle, settings: CaptureSettings) -> UiSettings {
     *lock(&app.state::<SessionState>().capture) = settings.sanitized();
-    persist_settings(&app, "截图设置已应用");
+    let applied = i18n::t("notice.capture_applied");
+    persist_settings(&app, &applied);
     crate::tray::refresh_menu(&app);
     snapshot(&app)
 }
@@ -663,7 +747,8 @@ pub fn set_capture_settings(app: AppHandle, settings: CaptureSettings) -> UiSett
 pub fn set_history_settings(app: AppHandle, settings: HistorySettings) -> UiSettings {
     let next = settings.sanitized();
     *lock(&app.state::<SessionState>().history) = next;
-    persist_settings(&app, "历史记录设置已应用");
+    let applied = i18n::t("notice.history_applied");
+    persist_settings(&app, &applied);
     crate::history::prune_async(&app, next.limit);
     snapshot(&app)
 }
@@ -678,11 +763,15 @@ fn persist_settings(app: &AppHandle, applied: &str) {
         history: *lock(&state.history),
         export: lock(&state.export).clone(),
         last_region: *lock(&state.last_region),
+        language: lock(&state.language).clone(),
     };
     match save_to_path(&settings_path(app), &stored) {
         Ok(()) => *lock(&state.notice) = None,
         Err(error) => {
-            *lock(&state.notice) = Some(format!("{applied}，但未能写入本机设置：{error}"));
+            *lock(&state.notice) = Some(i18n::tp(
+                "notice.persist_failed",
+                &[("applied", applied), ("error", &error)],
+            ));
         }
     }
 }
@@ -759,6 +848,7 @@ mod tests {
                 width: 320,
                 height: 200,
             }),
+            language: "en".into(),
         };
         save_to_path(&path, &stored).unwrap();
         let text = fs::read_to_string(&path).unwrap();
@@ -783,6 +873,7 @@ mod tests {
         assert_eq!(loaded.export.last_format, ExportFormat::Jpeg);
         assert_eq!(loaded.export.last_dir.as_deref(), Some("C:/shots"));
         assert_eq!(loaded.export.quality, ExportQuality::Low);
+        assert_eq!(loaded.language, "en");
         assert_eq!(
             loaded.last_region,
             Some(LastRegion {
@@ -922,6 +1013,8 @@ mod tests {
             history: HistorySettings::default(),
             export: ExportSettings::default(),
             tray: TrayState::available(),
+            language: i18n::SYSTEM_LANGUAGE.to_string(),
+            resolved_language: Language::ZhCn,
         };
         ui.autostart = result.clone();
         assert!(!ui.autostart.enabled);
@@ -1372,5 +1465,54 @@ mod tests {
         .unwrap();
         assert_eq!(serialized["available"], false);
         assert_eq!(serialized["message"], "当前桌面环境未提供托盘");
+    }
+
+    #[test]
+    fn language_defaults_to_system_and_rejects_unknown_values() {
+        assert_eq!(default_language_setting(), "system");
+        assert_eq!(sanitize_language("zh-CN"), "zh-CN");
+        assert_eq!(sanitize_language(" en "), "en");
+        assert_eq!(sanitize_language("system"), "system");
+        assert_eq!(sanitize_language("fr-FR"), "system");
+        assert_eq!(sanitize_language(""), "system");
+    }
+
+    #[test]
+    fn missing_language_field_loads_system_default() {
+        let dir =
+            std::env::temp_dir().join(format!("cropmark-settings-lang-{}", std::process::id()));
+        let path = dir.join("settings.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            r#"{"hotkeys":{"region":"Ctrl+Alt+R","window":"Alt+Shift+W","fullscreen":"Alt+Shift+S"}}"#,
+        )
+        .unwrap();
+        let loaded = load_from_path(&path);
+        assert_eq!(loaded.language, i18n::SYSTEM_LANGUAGE);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn language_deserializes_from_camel_case_json() {
+        let parsed: StoredSettings = serde_json::from_str(r#"{"language":"en"}"#).unwrap();
+        assert_eq!(parsed.language, "en");
+        let serialized = serde_json::to_value(StoredSettings {
+            language: "zh-CN".into(),
+            ..StoredSettings::default()
+        })
+        .unwrap();
+        assert_eq!(serialized["language"], "zh-CN");
+    }
+
+    #[test]
+    fn language_info_reports_setting_and_resolution() {
+        let info = LanguageInfo {
+            language: "system".into(),
+            resolved_language: i18n::resolve_setting("system"),
+        };
+        let serialized = serde_json::to_value(&info).unwrap();
+        assert_eq!(serialized["language"], "system");
+        assert!(serialized["resolvedLanguage"] == "zh-CN" || serialized["resolvedLanguage"] == "en");
     }
 }

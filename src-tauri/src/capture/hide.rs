@@ -184,7 +184,7 @@ pub fn session_steps(region: bool, delay_ms: u64) -> Vec<SessionStep> {
 }
 
 pub fn hide_not_presented_error() -> CaptureError {
-    CaptureError::api("界面尚未隐藏完成，未能截取。")
+    CaptureError::api("error.capture.hide_failed")
 }
 
 pub fn grab_allowed(wait: &HideWait) -> Result<(), CaptureError> {

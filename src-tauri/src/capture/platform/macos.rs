@@ -62,7 +62,7 @@ pub fn pointer_monitor() -> Result<MonitorGeom, CaptureError> {
     };
     let status = unsafe { cropmark_sck_monitor_at_pointer(&mut monitor) };
     if status != 0 || monitor.physical_w == 0 || monitor.physical_h == 0 {
-        return Err(CaptureError::unavailable("没有可用的显示器。"));
+        return Err(CaptureError::unavailable("error.capture.no_monitor"));
     }
     Ok(MonitorGeom {
         id: format!("display-{},{}", monitor.logical_x, monitor.logical_y),
@@ -105,9 +105,7 @@ pub fn list_windows(self_pid: u32) -> Result<Vec<ListedWindow>, CaptureError> {
         return Err(classify_platform_failure(PlatformFailure::PermissionDenied));
     }
     if status != 0 {
-        return Err(classify_platform_failure(PlatformFailure::Api(
-            "ScreenCaptureKit 无法列出窗口。".into(),
-        )));
+        return Err(CaptureError::unavailable("error.capture.screencapturekit_windows"));
     }
     let mut listed = Vec::new();
     // CGWindowList 返回 front-to-back(自顶向下),符合 selectable_windows 契约。
@@ -133,7 +131,7 @@ pub fn list_windows(self_pid: u32) -> Result<Vec<ListedWindow>, CaptureError> {
 pub fn capture_window(id: &str) -> Result<Frame, CaptureError> {
     let window_id = id
         .parse::<u32>()
-        .map_err(|_| CaptureError::api("无法识别该窗口。"))?;
+        .map_err(|_| CaptureError::api("error.capture.window_unknown"))?;
     take_result(|out| unsafe { cropmark_sck_capture_window(window_id, out) }, 2.0)
 }
 
@@ -174,7 +172,10 @@ fn map_kind(kind: i32, message: Option<String>) -> CaptureError {
     match kind {
         1 => classify_platform_failure(PlatformFailure::PermissionDenied),
         3 => classify_platform_failure(PlatformFailure::BufferUninitialized),
-        4 => CaptureError::unavailable(message.unwrap_or_else(|| "没有可用的截屏接口。".into())),
+        4 => match message {
+            Some(detail) if !detail.trim().is_empty() => CaptureError::platform_message(detail),
+            _ => CaptureError::unavailable("error.capture.no_interface"),
+        },
         _ => classify_platform_failure(PlatformFailure::Api(message.unwrap_or_default())),
     }
 }

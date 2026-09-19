@@ -8,6 +8,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::capture::session;
 use crate::clipboard;
+use crate::i18n;
 
 use engine::{resolve_model_dir, Engine};
 use hit::{all_indices, hit_point, hit_rect, join_spans, Rect, TextSpan};
@@ -23,15 +24,19 @@ pub enum OcrError {
 }
 
 impl OcrError {
-    pub fn user_message(&self) -> String {
+    pub fn key(&self) -> &'static str {
         match self {
-            Self::NoText => "没有识别到文字。".into(),
-            Self::NoSelection => "没有选中文字。".into(),
-            Self::Failed => "无法识别图上的文字。".into(),
-            Self::MissingModels => "本机缺少识别模型，无法取字。".into(),
-            Self::Copy => "无法把文字放入剪贴板。截图仍保留。".into(),
-            Self::NoPreview => "没有可预览的截图。".into(),
+            Self::NoText => "error.ocr.no_text",
+            Self::NoSelection => "error.ocr.no_selection",
+            Self::Failed => "error.ocr.failed",
+            Self::MissingModels => "error.ocr.missing_models",
+            Self::Copy => "error.ocr.copy",
+            Self::NoPreview => "error.ocr.no_preview",
         }
+    }
+
+    pub fn user_message(&self) -> String {
+        i18n::t(self.key())
     }
 }
 

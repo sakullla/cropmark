@@ -9,6 +9,7 @@ use crate::capture::error::CaptureError;
 use crate::capture::session;
 use crate::capture::ui;
 use crate::clipboard;
+use crate::i18n;
 use crate::settings::{self, ExportFormat, ExportQuality};
 
 #[derive(Debug, Clone, Serialize)]
@@ -41,7 +42,7 @@ impl SaveResult {
 fn fail(err: CaptureError) -> String {
     let message = err.user_message();
     if message.is_empty() {
-        "无法导出当前截图。".into()
+        i18n::t("error.capture.export")
     } else {
         message
     }
@@ -71,10 +72,9 @@ fn write_export(
 ) -> Result<(), String> {
     let bytes = encode_for_export(frame, format, quality)?;
     std::fs::write(path, bytes).map_err(|error| {
-        format!(
-            "无法保存到「{}」：{}。预览仍保留，可继续标注、复制或换一个位置保存。",
-            path.display(),
-            error
+        i18n::tp(
+            "error.capture.save_to_path",
+            &[("path", &path.display().to_string()), ("error", &error.to_string())],
         )
     })
 }
@@ -138,9 +138,9 @@ pub async fn save_frame_with_dialog(
 ) -> Result<SaveResult, String> {
     let fallback = export.last_format;
     let mut dialog = rfd::AsyncFileDialog::new()
-        .add_filter("图片", &["png", "jpg", "jpeg", "webp"])
+        .add_filter(i18n::t("dialog.images_filter"), &["png", "jpg", "jpeg", "webp"])
         .set_file_name(format!("cropmark.{}", fallback.extension()))
-        .set_title("保存截图");
+        .set_title(i18n::t("dialog.save_capture_title"));
     if let Some(directory) = export.existing_directory() {
         dialog = dialog.set_directory(directory);
     }

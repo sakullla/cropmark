@@ -28,7 +28,7 @@ use crate::capture::windows_list::{selectable_windows, ListedWindow};
 pub fn pointer_monitor() -> Result<MonitorGeom, CaptureError> {
     unsafe {
         let mut point = POINT::default();
-        GetCursorPos(&mut point).map_err(|_| CaptureError::api("无法读取指针位置。"))?;
+        GetCursorPos(&mut point).map_err(|_| CaptureError::api("error.capture.pointer"))?;
         let handle = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
         monitor_from_handle(handle, point.x, point.y)
     }
@@ -52,7 +52,7 @@ pub fn list_windows(self_pid: u32) -> Result<Vec<ListedWindow>, CaptureError> {
     unsafe {
         // EnumWindows 按 z 序自顶向下枚举,符合 selectable_windows 契约。
         EnumWindows(Some(enum_windows_callback), param)
-            .map_err(|_| CaptureError::api("无法列出窗口。"))?;
+            .map_err(|_| CaptureError::api("error.capture.window_list"))?;
     }
     Ok(selectable_windows(&collected, self_pid))
 }
@@ -94,7 +94,7 @@ unsafe fn monitor_from_handle(
     let mut info = MONITORINFOEXW::default();
     info.monitorInfo.cbSize = size_of::<MONITORINFOEXW>() as u32;
     if !GetMonitorInfoW(handle, &mut info as *mut MONITORINFOEXW as *mut MONITORINFO).as_bool() {
-        return Err(CaptureError::api("无法读取显示器信息。"));
+        return Err(CaptureError::api("error.capture.monitor_info"));
     }
     let rect = info.monitorInfo.rcMonitor;
     let width = (rect.right - rect.left).max(0) as u32;
@@ -278,7 +278,7 @@ unsafe fn dibits_to_frame(
 
 unsafe fn capture_hwnd(hwnd: HWND) -> Result<Frame, CaptureError> {
     if hwnd.is_invalid() {
-        return Err(CaptureError::api("窗口已不存在。"));
+        return Err(CaptureError::api("error.capture.window_gone"));
     }
     let mut rect = RECT::default();
     let dwm = DwmGetWindowAttribute(
@@ -288,7 +288,7 @@ unsafe fn capture_hwnd(hwnd: HWND) -> Result<Frame, CaptureError> {
         size_of::<RECT>() as u32,
     );
     if dwm.is_err() {
-        GetWindowRect(hwnd, &mut rect).map_err(|_| CaptureError::api("无法读取窗口位置。"))?;
+        GetWindowRect(hwnd, &mut rect).map_err(|_| CaptureError::api("error.capture.window_rect"))?;
     }
     let width = (rect.right - rect.left).max(0) as u32;
     let height = (rect.bottom - rect.top).max(0) as u32;
@@ -422,7 +422,7 @@ unsafe extern "system" fn enum_menu_callback(hwnd: HWND, lparam: LPARAM) -> BOOL
 fn parse_hwnd(id: &str) -> Result<HWND, CaptureError> {
     let value = id
         .parse::<usize>()
-        .map_err(|_| CaptureError::api("无法识别该窗口。"))?;
+        .map_err(|_| CaptureError::api("error.capture.window_unknown"))?;
     Ok(HWND(value as *mut _))
 }
 

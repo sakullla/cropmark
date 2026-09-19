@@ -1,11 +1,24 @@
 use serde::Serialize;
 
+use crate::i18n;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CaptureError {
     pub kind: CaptureErrorKind,
+    /// 生成时按当时的界面语言解析后的文案;键与参数保留,供语言切换后重解析。
     pub message: String,
     pub hint: Option<String>,
+    #[serde(skip)]
+    template: Option<Box<ErrorTemplate>>,
+}
+
+/// 词条键 + 参数 + 提示键:语言切换后据此重新解析 message/hint。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ErrorTemplate {
+    key: String,
+    params: Vec<(String, String)>,
+    hint_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -19,35 +32,81 @@ pub enum CaptureErrorKind {
 }
 
 impl CaptureError {
-    pub fn permission(message: impl Into<String>, hint: impl Into<String>) -> Self {
+    fn from_parts(
+        kind: CaptureErrorKind,
+        key: &str,
+        params: &[(&str, &str)],
+        hint_key: Option<&str>,
+    ) -> Self {
         Self {
-            kind: CaptureErrorKind::Permission,
-            message: message.into(),
-            hint: Some(hint.into()),
+            kind,
+            message: i18n::tp(key, params),
+            hint: hint_key.map(i18n::t),
+            template: Some(Box::new(ErrorTemplate {
+                key: key.to_string(),
+                params: params
+                    .iter()
+                    .map(|(name, value)| ((*name).to_string(), (*value).to_string()))
+                    .collect(),
+                hint_key: hint_key.map(str::to_string),
+            })),
         }
     }
 
-    pub fn api(message: impl Into<String>) -> Self {
-        Self {
-            kind: CaptureErrorKind::Api,
-            message: message.into(),
-            hint: None,
-        }
+    /// 按当前语言重新解析(语言切换后刷新已打开的错误窗);无键的历史消息原样返回。
+    pub fn localized(&self) -> Self {
+        let Some(template) = self.template.as_deref() else {
+            return self.clone();
+        };
+        let params: Vec<(&str, &str)> = template
+            .params
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .collect();
+        Self::from_parts(
+            self.kind,
+            &template.key,
+            &params,
+            template.hint_key.as_deref(),
+        )
     }
 
-    pub fn invalid_buffer(reason: &str) -> Self {
-        Self {
-            kind: CaptureErrorKind::InvalidBuffer,
-            message: format!("截屏缓冲无效：{reason}。"),
-            hint: None,
-        }
+    pub fn permission(key: &str, hint_key: &str) -> Self {
+        Self::from_parts(CaptureErrorKind::Permission, key, &[], Some(hint_key))
     }
 
-    pub fn unavailable(message: impl Into<String>) -> Self {
+    pub fn api(key: &str) -> Self {
+        Self::from_parts(CaptureErrorKind::Api, key, &[], None)
+    }
+
+    /// 带系统原始原因的参数化接口错误(`{detail}` 保留原样,不做翻译)。
+    pub fn api_detail(key: &str, detail: &str) -> Self {
+        Self::from_parts(CaptureErrorKind::Api, key, &[("detail", detail)], None)
+    }
+
+    /// 缓冲类错误的原因本身也是词条键,生成时解析为当前语言。
+    pub fn invalid_buffer(reason_key: &str) -> Self {
+        let reason = i18n::t(reason_key);
+        Self::from_parts(
+            CaptureErrorKind::InvalidBuffer,
+            "error.capture.invalid_buffer",
+            &[("reason", &reason)],
+            None,
+        )
+    }
+
+    pub fn unavailable(key: &str) -> Self {
+        Self::from_parts(CaptureErrorKind::Unavailable, key, &[], None)
+    }
+
+    /// 平台层返回的原始系统文案(如 C 层错误串):系统级文案不纳入词条覆盖,
+    /// 按原样展示;保持无模板,语言切换时原样保留。
+    pub fn platform_message(message: String) -> Self {
         Self {
             kind: CaptureErrorKind::Unavailable,
-            message: message.into(),
+            message,
             hint: None,
+            template: None,
         }
     }
 
@@ -56,6 +115,7 @@ impl CaptureError {
             kind: CaptureErrorKind::Cancelled,
             message: String::new(),
             hint: None,
+            template: None,
         }
     }
 
@@ -86,33 +146,47 @@ pub enum PlatformFailure {
 pub fn classify_platform_failure(failure: PlatformFailure) -> CaptureError {
     match failure {
         PlatformFailure::PermissionDenied => CaptureError::permission(
-            "没有截屏权限，未能截取。",
-            permission_hint(),
+            "error.capture.no_permission",
+            permission_hint_key(),
         ),
         PlatformFailure::Api(detail) => {
             if detail.is_empty() {
-                CaptureError::api("截屏接口调用失败。")
+                CaptureError::api("error.capture.api")
             } else {
-                CaptureError::api(format!("截屏接口调用失败：{detail}"))
+                CaptureError::api_detail("error.capture.api_detail", &detail)
             }
         }
-        PlatformFailure::NoInterface(detail) => CaptureError::unavailable(detail),
-        PlatformFailure::BufferEmpty => CaptureError::invalid_buffer("空缓冲"),
-        PlatformFailure::BufferZeroSize => CaptureError::invalid_buffer("尺寸为 0"),
-        PlatformFailure::BufferUninitialized => CaptureError::invalid_buffer("未初始化"),
+        PlatformFailure::NoInterface(_detail) => CaptureError::unavailable("error.capture.no_interface"),
+        PlatformFailure::BufferEmpty => CaptureError::invalid_buffer("error.capture.buffer_empty"),
+        PlatformFailure::BufferZeroSize => CaptureError::invalid_buffer("error.capture.buffer_zero_size"),
+        PlatformFailure::BufferUninitialized => {
+            CaptureError::invalid_buffer("error.capture.buffer_uninitialized")
+        }
     }
 }
 
-pub fn permission_hint() -> String {
+pub fn permission_hint_key() -> &'static str {
     #[cfg(target_os = "macos")]
-    let hint = "请在系统设置 › 隐私与安全性 › 屏幕录制中打开 Cropmark。打开后必须从菜单栏图标完全退出再打开，权限才会生效。若开关已打开仍弹出授权，先点减号移除 Cropmark，完全退出后再截取。";
+    {
+        "error.capture.permission_hint_macos"
+    }
     #[cfg(windows)]
-    let hint = "请在 Windows 设置 › 隐私和安全性 › 屏幕截图和屏幕录制中允许 Cropmark，然后重新截取。";
+    {
+        "error.capture.permission_hint_windows"
+    }
     #[cfg(target_os = "linux")]
-    let hint = "请在系统门户提示中允许截屏，并确认已安装 xdg-desktop-portal。";
+    {
+        "error.capture.permission_hint_linux"
+    }
     #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
-    let hint = "当前系统没有可用的截屏接口。";
-    hint.to_string()
+    {
+        "error.capture.permission_hint_other"
+    }
+}
+
+#[cfg(test)]
+pub fn permission_hint() -> String {
+    i18n::t(permission_hint_key())
 }
 
 #[cfg(test)]

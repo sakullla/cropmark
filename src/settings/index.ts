@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { autostartHelp, hotkeyErrorText } from "../errors";
+import { t, type CatalogKey } from "../i18n";
 
 export type CaptureMode = "region" | "window" | "fullscreen";
 
@@ -48,6 +49,8 @@ export interface TrayState {
   message: string | null;
 }
 
+export type LanguageSetting = "system" | "zh-CN" | "en";
+
 export interface UiSettings {
   hotkeys: Hotkeys;
   hotkeyErrors: HotkeyErrors;
@@ -57,28 +60,60 @@ export interface UiSettings {
   capture: CaptureSettings;
   history: HistorySettings;
   tray: TrayState;
+  language: string;
+  resolvedLanguage: string;
 }
 
 type FeatureKey = keyof FeatureSettings;
 
-const FEATURE_ITEMS: Array<{ key: FeatureKey; label: string; hint: string }> = [
-  { key: "ocrEntry", label: "取字", hint: "关闭后选区菜单与预览工具条不再显示取字，O 键停用。" },
-  { key: "pinEntry", label: "贴图", hint: "关闭后选区菜单不再显示贴图入口。" },
-  { key: "magnifier", label: "放大镜", hint: "选区时跟随指针的像素放大镜；关闭后选区内 C 键取色同时停用。" },
-  { key: "toolbarCopy", label: "操作条·复制", hint: "选区操作条上的复制按钮。" },
-  { key: "toolbarSave", label: "操作条·保存", hint: "选区操作条上的保存按钮。" },
-  { key: "toolbarPin", label: "操作条·贴图", hint: "选区操作条上的贴图按钮。" },
+const FEATURE_ITEMS: Array<{ key: FeatureKey; labelKey: CatalogKey; hintKey: CatalogKey }> = [
+  {
+    key: "ocrEntry",
+    labelKey: "settings.feature.ocr_label",
+    hintKey: "settings.feature.ocr_hint",
+  },
+  {
+    key: "pinEntry",
+    labelKey: "settings.feature.pin_label",
+    hintKey: "settings.feature.pin_hint",
+  },
+  {
+    key: "magnifier",
+    labelKey: "settings.feature.magnifier_label",
+    hintKey: "settings.feature.magnifier_hint",
+  },
+  {
+    key: "toolbarCopy",
+    labelKey: "settings.feature.toolbar_copy_label",
+    hintKey: "settings.feature.toolbar_copy_hint",
+  },
+  {
+    key: "toolbarSave",
+    labelKey: "settings.feature.toolbar_save_label",
+    hintKey: "settings.feature.toolbar_save_hint",
+  },
+  {
+    key: "toolbarPin",
+    labelKey: "settings.feature.toolbar_pin_label",
+    hintKey: "settings.feature.toolbar_pin_hint",
+  },
 ];
 
-const MODE_LABEL: Record<CaptureMode, string> = {
-  region: "区域截取",
-  window: "窗口截取",
-  fullscreen: "全屏截取",
+const MODE_LABEL_KEY: Record<CaptureMode, CatalogKey> = {
+  region: "settings.mode.region",
+  window: "settings.mode.window",
+  fullscreen: "settings.mode.fullscreen",
 };
+
+const LANGUAGE_OPTIONS: Array<{ value: LanguageSetting; labelKey: CatalogKey }> = [
+  { value: "system", labelKey: "language.system" },
+  { value: "zh-CN", labelKey: "language.zh_cn" },
+  { value: "en", labelKey: "language.en" },
+];
 
 const MODES: CaptureMode[] = ["region", "window", "fullscreen"];
 
-export function mountSettings(root: HTMLElement): void {
+export function mountSettings(root: HTMLElement): () => void {
   root.innerHTML = `
     <div class="shell">
       <header class="titlebar" data-tauri-drag-region>
@@ -86,30 +121,30 @@ export function mountSettings(root: HTMLElement): void {
           <span class="mark" aria-hidden="true"></span>
           <span class="name">Cropmark</span>
         </div>
-        <button type="button" class="icon-btn" data-action="close" aria-label="关闭">×</button>
+        <button type="button" class="icon-btn" data-action="close" data-i18n-aria-label="settings.close" aria-label="关闭">×</button>
       </header>
       <main class="content">
         <p class="notice" role="alert" hidden></p>
         <p class="notice tray-notice" data-tray-notice role="status" hidden></p>
         <section class="card" aria-labelledby="hotkeys-title">
-          <h1 id="hotkeys-title">热键</h1>
-          <p class="hint">点击热键按钮后按下新组合，Esc 取消；改动立即生效。</p>
+          <h1 id="hotkeys-title" data-i18n="settings.hotkeys.title">热键</h1>
+          <p class="hint" data-i18n="settings.hotkeys.hint">点击热键按钮后按下新组合，Esc 取消；改动立即生效。</p>
           <div class="rows" data-hotkeys></div>
         </section>
         <section class="card" aria-labelledby="capture-title">
-          <h1 id="capture-title">截图</h1>
+          <h1 id="capture-title" data-i18n="settings.capture.title">截图</h1>
           <div class="setting-row">
             <div>
-              <div class="label" id="delay-label">延时秒数</div>
-              <p class="hint">0–60 秒，热键与托盘截取按此倒计时；0 为立即截取。</p>
+              <div class="label" id="delay-label" data-i18n="settings.capture.delay_label">延时秒数</div>
+              <p class="hint" data-i18n="settings.capture.delay_hint">0–60 秒，热键与托盘截取按此倒计时；0 为立即截取。</p>
             </div>
             <input type="number" class="number-input" data-capture="delay" min="0" max="60" step="1" inputmode="numeric" aria-labelledby="delay-label" />
           </div>
           <p class="error" data-capture-error role="alert" hidden></p>
           <div class="setting-row">
             <div>
-              <div class="label" id="autocopy-label">完成后自动复制</div>
-              <p class="hint">关闭后截图完成不写入剪贴板；预览内手动复制不受影响。</p>
+              <div class="label" id="autocopy-label" data-i18n="settings.capture.autocopy_label">完成后自动复制</div>
+              <p class="hint" data-i18n="settings.capture.autocopy_hint">关闭后截图完成不写入剪贴板；预览内手动复制不受影响。</p>
             </div>
             <button type="button" class="switch" data-capture="auto-copy" role="switch" aria-checked="true" aria-labelledby="autocopy-label">
               <span class="knob"></span>
@@ -117,22 +152,22 @@ export function mountSettings(root: HTMLElement): void {
           </div>
           <div class="setting-row">
             <div>
-              <div class="label" id="finish-label">完成后动作</div>
-              <p class="hint">静默完成会直接复制并给出提示，不打开预览；需自动复制开启。</p>
+              <div class="label" id="finish-label" data-i18n="settings.capture.finish_label">完成后动作</div>
+              <p class="hint" data-i18n="settings.capture.finish_hint">静默完成会直接复制并给出提示，不打开预览；需自动复制开启。</p>
             </div>
             <div class="choices" data-capture="finish" role="radiogroup" aria-labelledby="finish-label">
-              <button type="button" class="choice" role="radio" data-finish-action="preview" aria-checked="true">预览</button>
-              <button type="button" class="choice" role="radio" data-finish-action="quiet" aria-checked="false">静默完成</button>
+              <button type="button" class="choice" role="radio" data-finish-action="preview" aria-checked="true" data-i18n="settings.capture.finish_preview">预览</button>
+              <button type="button" class="choice" role="radio" data-finish-action="quiet" aria-checked="false" data-i18n="settings.capture.finish_quiet">静默完成</button>
             </div>
           </div>
         </section>
         <section class="card" aria-labelledby="history-title">
-          <h1 id="history-title">历史记录</h1>
-          <p class="hint">截图完成后在本机保留最近记录，可重新复制、贴图或删除；数据只保存在本机。</p>
+          <h1 id="history-title" data-i18n="settings.history.title">历史记录</h1>
+          <p class="hint" data-i18n="settings.history.hint">截图完成后在本机保留最近记录，可重新复制、贴图或删除；数据只保存在本机。</p>
           <div class="setting-row">
             <div>
-              <div class="label" id="history-enabled-label">保留截图历史</div>
-              <p class="hint">关闭后不再新增记录；已有记录保留，可在历史窗口清空。</p>
+              <div class="label" id="history-enabled-label" data-i18n="settings.history.enabled_label">保留截图历史</div>
+              <p class="hint" data-i18n="settings.history.enabled_hint">关闭后不再新增记录；已有记录保留，可在历史窗口清空。</p>
             </div>
             <button type="button" class="switch" data-history="enabled" role="switch" aria-checked="true" aria-labelledby="history-enabled-label">
               <span class="knob"></span>
@@ -140,25 +175,25 @@ export function mountSettings(root: HTMLElement): void {
           </div>
           <div class="setting-row">
             <div>
-              <div class="label" id="history-limit-label">记录上限</div>
-              <p class="hint">5–200 条，超出上限时自动淘汰最旧记录。</p>
+              <div class="label" id="history-limit-label" data-i18n="settings.history.limit_label">记录上限</div>
+              <p class="hint" data-i18n="settings.history.limit_hint">5–200 条，超出上限时自动淘汰最旧记录。</p>
             </div>
             <input type="number" class="number-input" data-history="limit" min="5" max="200" step="1" inputmode="numeric" aria-labelledby="history-limit-label" />
           </div>
           <p class="error" data-history-error role="alert" hidden></p>
           <div class="setting-row">
             <div>
-              <div class="label" id="history-open-label">浏览历史</div>
-              <p class="hint">打开历史窗口，按时间查看缩略图并重新复制、贴图或删除。</p>
+              <div class="label" id="history-open-label" data-i18n="settings.history.open_label">浏览历史</div>
+              <p class="hint" data-i18n="settings.history.open_hint">打开历史窗口，按时间查看缩略图并重新复制、贴图或删除。</p>
             </div>
-            <button type="button" class="choice" data-action="open-history" aria-labelledby="history-open-label">打开历史记录</button>
+            <button type="button" class="choice" data-action="open-history" aria-labelledby="history-open-label" data-i18n="settings.history.open_button">打开历史记录</button>
           </div>
         </section>
         <section class="card" aria-labelledby="autostart-title">
-          <h1 id="autostart-title">开机启动</h1>
+          <h1 id="autostart-title" data-i18n="settings.autostart.title">开机启动</h1>
           <div class="autostart-row">
             <div>
-              <div class="label" id="autostart-label">登录时运行</div>
+              <div class="label" id="autostart-label" data-i18n="settings.autostart.label">登录时运行</div>
               <p class="hint autostart-help"></p>
             </div>
             <button type="button" class="switch" data-action="autostart" role="switch" aria-checked="false" aria-labelledby="autostart-label">
@@ -167,20 +202,35 @@ export function mountSettings(root: HTMLElement): void {
           </div>
         </section>
         <section class="card" aria-labelledby="features-title">
-          <h1 id="features-title">功能入口</h1>
-          <p class="hint">关闭的入口即刻生效，从下一次截取起消失；截取热键与复制/保存能力始终保留。</p>
+          <h1 id="features-title" data-i18n="settings.features.title">功能入口</h1>
+          <p class="hint" data-i18n="settings.features.hint">关闭的入口即刻生效，从下一次截取起消失；截取热键与复制/保存能力始终保留。</p>
           <div class="rows feature-rows" data-features></div>
         </section>
-        <section class="card about" aria-labelledby="about-title">
-          <h1 id="about-title">关于</h1>
-          <p class="about-name">Cropmark</p>
-          <p class="hint">独立系统截图工具，界面与托盘只使用 Cropmark 名称与图标。</p>
+        <section class="card" aria-labelledby="language-title">
+          <h1 id="language-title" data-i18n="settings.language.title">语言</h1>
+          <p class="hint" data-i18n="settings.language.hint">切换后界面立即更新，无需重启；选择会跨会话保留。</p>
           <div class="setting-row">
             <div>
-              <div class="label" id="quit-label">退出 Cropmark</div>
-              <p class="hint">结束应用并停止热键；有托盘时也可从托盘菜单退出。</p>
+              <div class="label" id="language-label" data-i18n="settings.language.label">界面语言</div>
             </div>
-            <button type="button" class="choice danger" data-action="quit" aria-labelledby="quit-label">退出</button>
+            <div class="choices" data-language role="radiogroup" aria-labelledby="language-label">
+              ${LANGUAGE_OPTIONS.map(
+                ({ value, labelKey }) =>
+                  `<button type="button" class="choice" role="radio" data-language-value="${value}" aria-checked="false" data-i18n="${labelKey}">${t(labelKey)}</button>`,
+              ).join("")}
+            </div>
+          </div>
+        </section>
+        <section class="card about" aria-labelledby="about-title">
+          <h1 id="about-title" data-i18n="settings.about.title">关于</h1>
+          <p class="about-name">Cropmark</p>
+          <p class="hint" data-i18n="settings.about.hint">独立系统截图工具，界面与托盘只使用 Cropmark 名称与图标。</p>
+          <div class="setting-row">
+            <div>
+              <div class="label" id="quit-label" data-i18n="settings.about.quit_label">退出 Cropmark</div>
+              <p class="hint" data-i18n="settings.about.quit_hint">结束应用并停止热键；有托盘时也可从托盘菜单退出。</p>
+            </div>
+            <button type="button" class="choice danger" data-action="quit" aria-labelledby="quit-label" data-i18n="settings.about.quit_button">退出</button>
           </div>
         </section>
       </main>
@@ -203,6 +253,7 @@ export function mountSettings(root: HTMLElement): void {
   const historyOpenEl = root.querySelector("[data-action=open-history]");
   const trayNoticeEl = root.querySelector("[data-tray-notice]");
   const quitEl = root.querySelector("[data-action=quit]");
+  const languageRoot = root.querySelector("[data-language]");
   if (
     !(noticeEl instanceof HTMLElement) ||
     !(hotkeyRoot instanceof HTMLElement) ||
@@ -219,13 +270,15 @@ export function mountSettings(root: HTMLElement): void {
     !(historyErrorEl instanceof HTMLElement) ||
     !(historyOpenEl instanceof HTMLButtonElement) ||
     !(trayNoticeEl instanceof HTMLElement) ||
-    !(quitEl instanceof HTMLButtonElement)
+    !(quitEl instanceof HTMLButtonElement) ||
+    !(languageRoot instanceof HTMLElement)
   ) {
-    return;
+    return () => undefined;
   }
 
   let recording: CaptureMode | null = null;
   let applying = false;
+  let lastSettings: UiSettings | null = null;
   let captureSettings: CaptureSettings = {
     delaySeconds: 0,
     autoCopy: true,
@@ -264,7 +317,7 @@ export function mountSettings(root: HTMLElement): void {
       button.setAttribute("aria-checked", selected ? "true" : "false");
       button.classList.toggle("selected", selected);
       button.disabled = quiet && !capture.autoCopy;
-      button.title = button.disabled ? "需先开启完成后自动复制" : "";
+      button.title = button.disabled ? t("settings.capture.quiet_locked") : "";
     }
   };
 
@@ -288,7 +341,16 @@ export function mountSettings(root: HTMLElement): void {
     historyEnabledEl.classList.toggle("on", history.enabled);
   };
 
+  const renderLanguage = (language: string): void => {
+    languageRoot.querySelectorAll<HTMLButtonElement>("[data-language-value]").forEach((button) => {
+      const selected = button.dataset.languageValue === language;
+      button.setAttribute("aria-checked", selected ? "true" : "false");
+      button.classList.toggle("selected", selected);
+    });
+  };
+
   const render = (settings: UiSettings): void => {
+    lastSettings = settings;
     if (settings.notice) {
       noticeEl.hidden = false;
       noticeEl.textContent = settings.notice;
@@ -301,14 +363,17 @@ export function mountSettings(root: HTMLElement): void {
     if (tray && !tray.available) {
       trayNoticeEl.hidden = false;
       trayNoticeEl.textContent =
-        tray.message ?? "当前桌面环境未提供托盘，热键仍可用。";
+        tray.message ?? t("settings.tray.unavailable_fallback");
     } else {
       trayNoticeEl.hidden = true;
       trayNoticeEl.textContent = "";
     }
 
+    renderLanguage(settings.language);
+
     hotkeyRoot.replaceChildren();
     for (const mode of MODES) {
+      const modeLabel = t(MODE_LABEL_KEY[mode]);
       const row = document.createElement("div");
       row.className = "hotkey-row";
       const errorText = hotkeyErrorText(settings.hotkeyErrors[mode]);
@@ -318,21 +383,24 @@ export function mountSettings(root: HTMLElement): void {
 
       const label = document.createElement("div");
       label.className = "label";
-      label.textContent = MODE_LABEL[mode];
+      label.textContent = modeLabel;
 
       const button = document.createElement("button");
       button.type = "button";
       button.className = "hotkey-btn";
       button.dataset.mode = mode;
-      button.title = "点击后按下新组合，Esc 取消";
+      button.title = t("settings.hotkey.title");
       button.setAttribute(
         "aria-label",
         recording === mode
-          ? `${MODE_LABEL[mode]}热键：正在录制，请按下新组合，Esc 取消`
-          : `${MODE_LABEL[mode]}热键：当前为 ${displayAccelerator(settings.hotkeys[mode])}，点击修改`,
+          ? t("settings.hotkey.aria_recording", { mode: modeLabel })
+          : t("settings.hotkey.aria_current", {
+              mode: modeLabel,
+              accelerator: displayAccelerator(settings.hotkeys[mode]),
+            }),
       );
       button.textContent =
-        recording === mode ? "按下新热键…" : displayAccelerator(settings.hotkeys[mode]);
+        recording === mode ? t("settings.hotkey.recording") : displayAccelerator(settings.hotkeys[mode]);
       if (recording === mode) {
         button.classList.add("recording");
       }
@@ -361,10 +429,10 @@ export function mountSettings(root: HTMLElement): void {
       const label = document.createElement("div");
       label.className = "label";
       label.id = `feature-label-${item.key}`;
-      label.textContent = item.label;
+      label.textContent = t(item.labelKey);
       const hint = document.createElement("p");
       hint.className = "hint";
-      hint.textContent = item.hint;
+      hint.textContent = t(item.hintKey);
       text.append(label, hint);
 
       const toggle = document.createElement("button");
@@ -452,15 +520,27 @@ export function mountSettings(root: HTMLElement): void {
     }
   };
 
+  const applyLanguageSetting = async (language: LanguageSetting): Promise<void> => {
+    applying = true;
+    try {
+      const settings = await invoke<UiSettings>("set_language", { language });
+      render(settings);
+    } catch (error) {
+      showInvokeError(error);
+    } finally {
+      applying = false;
+    }
+  };
+
   const commitDelay = (): void => {
     const raw = delayEl.value.trim();
     if (!/^\d+$/.test(raw)) {
-      showDelayError("延时需为 0–60 之间的整数秒。");
+      showDelayError(t("settings.capture.delay_error"));
       return;
     }
     const seconds = Number(raw);
     if (!Number.isSafeInteger(seconds) || seconds < 0 || seconds > 60) {
-      showDelayError("延时需为 0–60 之间的整数秒。");
+      showDelayError(t("settings.capture.delay_error"));
       return;
     }
     clearDelayError();
@@ -509,12 +589,12 @@ export function mountSettings(root: HTMLElement): void {
   const commitHistoryLimit = (): void => {
     const raw = historyLimitEl.value.trim();
     if (!/^\d+$/.test(raw)) {
-      showHistoryError("记录上限需为 5–200 之间的整数。");
+      showHistoryError(t("settings.history.limit_error"));
       return;
     }
     const limit = Number(raw);
     if (!Number.isSafeInteger(limit) || limit < 5 || limit > 200) {
-      showHistoryError("记录上限需为 5–200 之间的整数。");
+      showHistoryError(t("settings.history.limit_error"));
       return;
     }
     clearHistoryError();
@@ -554,6 +634,22 @@ export function mountSettings(root: HTMLElement): void {
 
   quitEl.addEventListener("click", () => {
     void invoke("quit_app").catch(showInvokeError);
+  });
+
+  languageRoot.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element) || applying) {
+      return;
+    }
+    const button = target.closest("[data-language-value]");
+    if (!(button instanceof HTMLButtonElement) || button.disabled) {
+      return;
+    }
+    const value = button.dataset.languageValue as LanguageSetting | undefined;
+    if (!value || value === lastSettings?.language) {
+      return;
+    }
+    void applyLanguageSetting(value);
   });
 
   switchEl.addEventListener("click", () => {
@@ -621,6 +717,16 @@ export function mountSettings(root: HTMLElement): void {
   });
 
   void refresh();
+
+  // 语言切换:静态标签由 main 的 applyTranslations 更新;这里先按当前状态
+  // 重渲染动态行,再从后端重取一次(热键错误/开机启动/无托盘提示由后端按
+  // 新语言重新解析)。
+  return () => {
+    if (lastSettings) {
+      render(lastSettings);
+    }
+    void refresh();
+  };
 }
 
 export function acceleratorFromEvent(event: KeyboardEvent): string | null {

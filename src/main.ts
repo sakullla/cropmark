@@ -1,5 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { mountHistory } from "./history";
+import { applyTranslations, initI18n, onLanguageChanged } from "./i18n";
 import { mountDelay } from "./overlay/delay";
 import { mountCaptureError } from "./overlay/error";
 import { mountOverlay } from "./overlay/index";
@@ -8,28 +9,40 @@ import { mountPreview } from "./preview";
 import { mountSettings } from "./settings";
 import { mountToast } from "./toast";
 
-const root = document.querySelector("#app");
-if (root instanceof HTMLElement) {
-  const view = new URLSearchParams(location.search).get("view") ?? "settings";
-  if (view === "settings") {
-    mountSettings(root);
-  } else if (view === "overlay") {
-    mountOverlay(root);
-  } else if (view === "preview") {
-    mountPreview(root);
-  } else if (view === "delay") {
-    mountDelay(root);
-  } else if (view === "error") {
-    mountCaptureError(root);
-  } else if (view === "toast") {
-    mountToast(root);
-  } else if (view === "pin") {
-    mountPin(root);
-  } else if (view === "history") {
-    mountHistory(root);
-  }
-}
-
 void listen("capture-requested", () => {
   // Rust owns hide-wait and capture; this keeps the resident-shell event consumed.
 });
+
+void (async () => {
+  // R12:先解析当前界面语言再挂载,首帧即为正确语言。
+  await initI18n();
+  const root = document.querySelector("#app");
+  if (!(root instanceof HTMLElement)) {
+    return;
+  }
+  const view = new URLSearchParams(location.search).get("view") ?? "settings";
+  let applyLanguage: () => void = () => undefined;
+  if (view === "settings") {
+    applyLanguage = mountSettings(root);
+  } else if (view === "overlay") {
+    applyLanguage = mountOverlay(root);
+  } else if (view === "preview") {
+    applyLanguage = mountPreview(root);
+  } else if (view === "delay") {
+    applyLanguage = mountDelay(root);
+  } else if (view === "error") {
+    applyLanguage = mountCaptureError(root);
+  } else if (view === "toast") {
+    applyLanguage = mountToast(root);
+  } else if (view === "pin") {
+    applyLanguage = mountPin(root);
+  } else if (view === "history") {
+    applyLanguage = mountHistory(root);
+  }
+  const renderLanguage = (): void => {
+    applyTranslations(root);
+    applyLanguage();
+  };
+  renderLanguage();
+  onLanguageChanged(renderLanguage);
+})();

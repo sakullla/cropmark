@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { t, type CatalogKey } from "../i18n";
 import "./preview.css";
 
 interface PreviewFrame {
@@ -98,10 +99,14 @@ type NoteKind = "success" | "feedback" | "error";
 type ExportFormat = "png" | "jpeg" | "webp";
 type ExportQuality = "high" | "medium" | "low";
 
-const SAVE_QUALITIES: Array<{ value: ExportQuality; label: string; title: string }> = [
-  { value: "high", label: "高", title: "高质量（文件较大）" },
-  { value: "medium", label: "中", title: "标准质量" },
-  { value: "low", label: "低", title: "低质量（文件较小）" },
+const SAVE_QUALITIES: Array<{
+  value: ExportQuality;
+  labelKey: CatalogKey;
+  titleKey: CatalogKey;
+}> = [
+  { value: "high", labelKey: "preview.quality.high", titleKey: "preview.quality.high_title" },
+  { value: "medium", labelKey: "preview.quality.medium", titleKey: "preview.quality.medium_title" },
+  { value: "low", labelKey: "preview.quality.low", titleKey: "preview.quality.low_title" },
 ];
 
 const FALLBACK_STROKE = "#e11d48";
@@ -123,15 +128,15 @@ const HEX_COLOR_RE = /^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
 
 // 样式预设：颜色含现行玫红；线宽/字号档位为逻辑值，绘制时乘 scale 并 clamp 2..8（线宽）。
 const STYLE_COLORS = ["#e11d48", "#2563eb", "#f59e0b", "#10b981", "#111827"];
-const STYLE_WIDTHS: Array<{ value: number; label: string }> = [
-  { value: 2, label: "细" },
-  { value: 3, label: "标准" },
-  { value: 5, label: "粗" },
+const STYLE_WIDTHS: Array<{ value: number; labelKey: CatalogKey }> = [
+  { value: 2, labelKey: "preview.style.width_thin" },
+  { value: 3, labelKey: "preview.style.width_normal" },
+  { value: 5, labelKey: "preview.style.width_thick" },
 ];
-const STYLE_TEXT_SIZES: Array<{ value: number; label: string }> = [
-  { value: 12, label: "小" },
-  { value: 16, label: "中" },
-  { value: 22, label: "大" },
+const STYLE_TEXT_SIZES: Array<{ value: number; labelKey: CatalogKey }> = [
+  { value: 12, labelKey: "preview.style.text_small" },
+  { value: 16, labelKey: "preview.style.text_medium" },
+  { value: 22, labelKey: "preview.style.text_large" },
 ];
 
 const ICONS: Record<Exclude<Tool, "ocr"> | "undo" | "style", string> = {
@@ -149,7 +154,7 @@ const ICONS: Record<Exclude<Tool, "ocr"> | "undo" | "style", string> = {
   style: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.8a6.2 6.2 0 0 0 0 12.4c.9 0 1.4-.6 1.4-1.3 0-1.1 1-1.4 2.2-1.4h1.1c.9 0 1.5-.7 1.5-1.9A6.2 6.2 0 0 0 8 1.8Z" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="5.2" cy="6.4" r="1" fill="currentColor"/><circle cx="8.6" cy="4.8" r="1" fill="currentColor"/><circle cx="11.4" cy="7.2" r="1" fill="currentColor"/></svg>`,
 };
 
-export function mountPreview(root: HTMLElement): void {
+export function mountPreview(root: HTMLElement): () => void {
   root.className = "preview-root";
   root.dataset.tool = "arrow";
   root.innerHTML = `
@@ -158,55 +163,55 @@ export function mountPreview(root: HTMLElement): void {
         <span class="mark" aria-hidden="true"></span>
         <span class="name">Cropmark</span>
       </div>
-      <p class="preview-note" data-drag-handle data-tauri-drag-region>未标注图已复制</p>
-      <button type="button" class="preview-close" data-action="close" aria-label="关闭">关闭</button>
+      <p class="preview-note" data-drag-handle data-tauri-drag-region>${t("preview.copied_clean")}</p>
+      <button type="button" class="preview-close" data-action="close" data-i18n-aria-label="preview.close" aria-label="关闭">关闭</button>
     </header>
     <div class="preview-toolbar">
-      <div class="preview-tools" role="toolbar" aria-label="标注" data-tauri-drag-region="false">
-        <button type="button" data-tool="arrow" title="箭头 (A)" aria-label="箭头">${ICONS.arrow}</button>
-        <button type="button" data-tool="rect" title="框 (R)" aria-label="框">${ICONS.rect}</button>
-        <button type="button" data-tool="ellipse" title="椭圆 (E)" aria-label="椭圆">${ICONS.ellipse}</button>
-        <button type="button" data-tool="line" title="直线 (L)" aria-label="直线">${ICONS.line}</button>
-        <button type="button" data-tool="mosaic" title="马赛克 (M)" aria-label="马赛克">${ICONS.mosaic}</button>
-        <button type="button" data-tool="blur" title="高斯模糊 (B)" aria-label="高斯模糊">${ICONS.blur}</button>
-        <button type="button" data-tool="highlighter" title="荧光笔 (H)" aria-label="荧光笔">${ICONS.highlighter}</button>
-        <button type="button" data-tool="pen" title="画笔 (P)" aria-label="画笔">${ICONS.pen}</button>
-        <button type="button" data-tool="number" title="序号 (N)" aria-label="序号">${ICONS.number}</button>
-        <button type="button" data-tool="text" title="文字框 (T)" aria-label="文字框" class="tool-text">${ICONS.text}<span>文字</span></button>
-        <button type="button" data-action="undo" title="撤销 (Ctrl+Z)" aria-label="撤销">${ICONS.undo}</button>
+      <div class="preview-tools" role="toolbar" data-i18n-aria-label="preview.toolbar_group" aria-label="标注" data-tauri-drag-region="false">
+        <button type="button" data-tool="arrow" data-i18n-title="preview.tool.arrow_title" data-i18n-aria-label="preview.tool.arrow" title="箭头 (A)" aria-label="箭头">${ICONS.arrow}</button>
+        <button type="button" data-tool="rect" data-i18n-title="preview.tool.rect_title" data-i18n-aria-label="preview.tool.rect" title="框 (R)" aria-label="框">${ICONS.rect}</button>
+        <button type="button" data-tool="ellipse" data-i18n-title="preview.tool.ellipse_title" data-i18n-aria-label="preview.tool.ellipse" title="椭圆 (E)" aria-label="椭圆">${ICONS.ellipse}</button>
+        <button type="button" data-tool="line" data-i18n-title="preview.tool.line_title" data-i18n-aria-label="preview.tool.line" title="直线 (L)" aria-label="直线">${ICONS.line}</button>
+        <button type="button" data-tool="mosaic" data-i18n-title="preview.tool.mosaic_title" data-i18n-aria-label="preview.tool.mosaic" title="马赛克 (M)" aria-label="马赛克">${ICONS.mosaic}</button>
+        <button type="button" data-tool="blur" data-i18n-title="preview.tool.blur_title" data-i18n-aria-label="preview.tool.blur" title="高斯模糊 (B)" aria-label="高斯模糊">${ICONS.blur}</button>
+        <button type="button" data-tool="highlighter" data-i18n-title="preview.tool.highlighter_title" data-i18n-aria-label="preview.tool.highlighter" title="荧光笔 (H)" aria-label="荧光笔">${ICONS.highlighter}</button>
+        <button type="button" data-tool="pen" data-i18n-title="preview.tool.pen_title" data-i18n-aria-label="preview.tool.pen" title="画笔 (P)" aria-label="画笔">${ICONS.pen}</button>
+        <button type="button" data-tool="number" data-i18n-title="preview.tool.number_title" data-i18n-aria-label="preview.tool.number" title="序号 (N)" aria-label="序号">${ICONS.number}</button>
+        <button type="button" data-tool="text" data-i18n-title="preview.tool.text_title" data-i18n-aria-label="preview.tool.text" title="文字框 (T)" aria-label="文字框" class="tool-text">${ICONS.text}<span data-i18n="preview.tool.text_short">文字</span></button>
+        <button type="button" data-action="undo" data-i18n-title="preview.tool.undo_title" data-i18n-aria-label="preview.tool.undo" title="撤销 (Ctrl+Z)" aria-label="撤销">${ICONS.undo}</button>
         <div class="preview-style" data-style-root>
-          <button type="button" data-action="style" title="标注样式" aria-label="标注样式" aria-haspopup="true">${ICONS.style}</button>
+          <button type="button" data-action="style" data-i18n-title="preview.tool.style_title" data-i18n-aria-label="preview.tool.style_title" title="标注样式" aria-label="标注样式" aria-haspopup="true">${ICONS.style}</button>
           <div class="preview-style-panel" data-style-panel hidden>
             <div class="style-group">
-              <span class="style-label">颜色</span>
-              <div class="style-options" role="group" aria-label="标注颜色">
+              <span class="style-label" data-i18n="preview.style.color">颜色</span>
+              <div class="style-options" role="group" data-i18n-aria-label="preview.style.color_group" aria-label="标注颜色">
                 ${STYLE_COLORS.map(
                   (color) =>
-                    `<button type="button" data-style-color="${color}" style="--swatch:${color}" title="${color}" aria-label="颜色 ${color}"></button>`,
+                    `<button type="button" data-style-color="${color}" style="--swatch:${color}" title="${color}" aria-label="${t("preview.style.color_aria", { color })}"></button>`,
                 ).join("")}
               </div>
             </div>
             <div class="style-group">
-              <span class="style-label">线宽</span>
-              <div class="style-options" role="group" aria-label="线宽">
+              <span class="style-label" data-i18n="preview.style.width">线宽</span>
+              <div class="style-options" role="group" data-i18n-aria-label="preview.style.width" aria-label="线宽">
                 ${STYLE_WIDTHS.map(
-                  ({ value, label }) =>
-                    `<button type="button" data-style-width="${value}" title="${label} (${value})">${label}</button>`,
+                  ({ value, labelKey }) =>
+                    `<button type="button" data-style-width="${value}" title="${t("preview.style.option_title", { label: t(labelKey), value })}">${t(labelKey)}</button>`,
                 ).join("")}
               </div>
             </div>
             <div class="style-group">
-              <span class="style-label">字号</span>
-              <div class="style-options" role="group" aria-label="文字字号">
+              <span class="style-label" data-i18n="preview.style.text_size">字号</span>
+              <div class="style-options" role="group" data-i18n-aria-label="preview.style.text_size_group" aria-label="文字字号">
                 ${STYLE_TEXT_SIZES.map(
-                  ({ value, label }) =>
-                    `<button type="button" data-style-text-size="${value}" title="${label} (${value})">${label}</button>`,
+                  ({ value, labelKey }) =>
+                    `<button type="button" data-style-text-size="${value}" title="${t("preview.style.option_title", { label: t(labelKey), value })}">${t(labelKey)}</button>`,
                 ).join("")}
               </div>
             </div>
             <div class="style-group">
-              <span class="style-label">序号</span>
-              <div class="style-options" role="group" aria-label="序号起始值">
+              <span class="style-label" data-i18n="preview.style.number">序号</span>
+              <div class="style-options" role="group" data-i18n-aria-label="preview.style.number_group" aria-label="序号起始值">
                 <input
                   type="number"
                   class="style-number-start"
@@ -215,7 +220,9 @@ export function mountPreview(root: HTMLElement): void {
                   max="${MAX_NUMBER_START}"
                   step="1"
                   value="${MIN_NUMBER_START}"
+                  data-i18n-aria-label="preview.style.number_group"
                   aria-label="序号起始值"
+                  data-i18n-title="preview.style.number_title"
                   title="序号起始值 (1–999)"
                 />
               </div>
@@ -224,31 +231,31 @@ export function mountPreview(root: HTMLElement): void {
         </div>
       </div>
       <div class="preview-actions" data-tauri-drag-region="false">
-        <button type="button" data-tool="ocr" title="取字 (O)" data-tauri-drag-region="false">取字</button>
-        <button type="button" data-action="copy-ocr-all" hidden data-tauri-drag-region="false">复制全部</button>
-        <button type="button" data-action="pin" title="贴图" data-tauri-drag-region="false">贴图</button>
-        <button type="button" data-action="update-pin" title="更新贴图：确认后写回来源贴图" hidden data-tauri-drag-region="false">更新贴图</button>
+        <button type="button" data-tool="ocr" data-i18n-title="preview.action.ocr_title" data-i18n="preview.action.ocr" title="取字 (O)" data-tauri-drag-region="false">取字</button>
+        <button type="button" data-action="copy-ocr-all" hidden data-tauri-drag-region="false" data-i18n="preview.action.copy_all">复制全部</button>
+        <button type="button" data-action="pin" data-i18n-title="preview.action.pin_title" data-i18n="preview.action.pin" title="贴图" data-tauri-drag-region="false">贴图</button>
+        <button type="button" data-action="update-pin" data-i18n-title="preview.action.update_pin_title" data-i18n="preview.action.update_pin" title="更新贴图：确认后写回来源贴图" hidden data-tauri-drag-region="false">更新贴图</button>
         <div class="style-group" data-save-quality-root>
-          <span class="style-label">质量</span>
-          <div class="style-options" role="group" aria-label="保存质量">
+          <span class="style-label" data-i18n="preview.quality.label">质量</span>
+          <div class="style-options" role="group" data-i18n-aria-label="preview.quality.group" aria-label="保存质量">
             ${SAVE_QUALITIES.map(
-              ({ value, label, title }) =>
-                `<button type="button" data-save-quality="${value}" title="${title}">${label}</button>`,
+              ({ value, labelKey, titleKey }) =>
+                `<button type="button" data-save-quality="${value}" title="${t(titleKey)}">${t(labelKey)}</button>`,
             ).join("")}
           </div>
         </div>
-        <button type="button" data-action="save" title="保存 (Ctrl+S)：扩展名决定格式 PNG/JPEG/WebP" data-tauri-drag-region="false">保存</button>
-        <button type="button" class="primary" data-action="copy" title="复制 (Ctrl+C)" data-tauri-drag-region="false">复制</button>
+        <button type="button" data-action="save" data-i18n-title="preview.action.save_title" data-i18n="preview.action.save" title="保存 (Ctrl+S)：扩展名决定格式 PNG/JPEG/WebP" data-tauri-drag-region="false">保存</button>
+        <button type="button" class="primary" data-action="copy" data-i18n-title="preview.action.copy_title" data-i18n="preview.action.copy" title="复制 (Ctrl+C)" data-tauri-drag-region="false">复制</button>
       </div>
     </div>
     <div class="preview-stage">
       <div class="preview-frame">
         <canvas></canvas>
-        <textarea class="preview-text" rows="2" spellcheck="false" placeholder="在此输入汉字"></textarea>
+        <textarea class="preview-text" rows="2" spellcheck="false" data-i18n-placeholder="preview.text_placeholder" placeholder="在此输入汉字"></textarea>
       </div>
     </div>
     <div class="preview-context" data-context-menu hidden>
-      <button type="button" data-action="delete-annotation">删除标注</button>
+      <button type="button" data-action="delete-annotation" data-i18n="preview.action.delete_annotation">删除标注</button>
     </div>
   `;
 
@@ -284,11 +291,11 @@ export function mountPreview(root: HTMLElement): void {
     !(contextMenu instanceof HTMLElement) ||
     !(numberStartInput instanceof HTMLInputElement)
   ) {
-    return;
+    return () => undefined;
   }
   const ctx = canvas.getContext("2d");
   if (!ctx) {
-    return;
+    return () => undefined;
   }
 
   const rootStyle = getComputedStyle(root);
@@ -323,7 +330,12 @@ export function mountPreview(root: HTMLElement): void {
   let freehand: Point[] = [];
   let editorOrigin: Point | null = null;
   let busy = false;
-  let copied = "未标注图已复制";
+  // 提示条的来源:词条键可在语言切换后重渲染,不透明文案(宿主错误串)保持原样。
+  let noteSource: { key: CatalogKey | null; params?: Record<string, string | number>; text: string } | null =
+    null;
+  let noteKind: NoteKind = "feedback";
+  let copiedSource: { key: CatalogKey | null; params?: Record<string, string | number>; text: string } =
+    { key: "preview.copied_clean", text: "" };
   let copiedKind: NoteKind = "success";
   let ocrDoc: OcrDocument | null = null;
   let ocrSelected: number[] = [];
@@ -369,28 +381,61 @@ export function mountPreview(root: HTMLElement): void {
     return { color: colorFor(op.color), lineWidth: strokeFor(op.strokeWidth) };
   };
 
+  const noteText = (source: {
+    key: CatalogKey | null;
+    params?: Record<string, string | number>;
+    text: string;
+  }): string => (source.key ? t(source.key, source.params) : source.text);
+
+  const renderNote = (): void => {
+    if (!noteSource) {
+      return;
+    }
+    note.textContent = noteText(noteSource);
+    note.classList.toggle("is-success", noteKind === "success");
+    note.classList.toggle("is-feedback", noteKind === "feedback");
+    note.classList.toggle("is-error", noteKind === "error");
+  };
+
+  const setNoteSource = (
+    source: { key: CatalogKey | null; params?: Record<string, string | number>; text: string },
+    kind: NoteKind = "feedback",
+  ): void => {
+    noteSource = source;
+    noteKind = kind;
+    renderNote();
+  };
+
   const setNote = (text: string, kind: NoteKind = "feedback"): void => {
-    note.textContent = text;
-    note.classList.toggle("is-success", kind === "success");
-    note.classList.toggle("is-feedback", kind === "feedback");
-    note.classList.toggle("is-error", kind === "error");
+    setNoteSource({ key: null, text }, kind);
+  };
+
+  const setNoteKey = (
+    key: CatalogKey,
+    params?: Record<string, string | number>,
+    kind: NoteKind = "feedback",
+  ): void => {
+    setNoteSource({ key, params, text: "" }, kind);
   };
 
   // 「已复制」提示携带来源样式(成功/失败/未自动复制);切换工具重绘时
   // 沿用原 kind,不让 feedback 提示被固定改写成成功色。
-  const setCopied = (text: string, kind: NoteKind): void => {
-    copied = text;
+  const setCopied = (
+    source: { key: CatalogKey | null; params?: Record<string, string | number>; text: string },
+    kind: NoteKind,
+  ): void => {
+    copiedSource = source;
     copiedKind = kind;
-    setNote(text, kind);
+    setNoteSource(source, kind);
   };
 
   // 诊断面:未捕获的脚本错误与 Promise 拒绝直接显现在提示条,避免"按钮点了没反应"无处可查。
   window.addEventListener("error", (event) => {
-    setNote(`界面错误:${String(event.message ?? "未知错误").slice(0, 80)}`, "error");
+    setNoteKey("preview.error.ui", { message: String(event.message ?? t("preview.error.unknown")).slice(0, 80) }, "error");
   });
   window.addEventListener("unhandledrejection", (event) => {
     const reason = event.reason instanceof Error ? event.reason.message : String(event.reason);
-    setNote(`操作失败:${reason.slice(0, 80)}`, "error");
+    setNoteKey("preview.error.action", { message: reason.slice(0, 80) }, "error");
   });
 
   const setTool = (next: Tool): void => {
@@ -416,20 +461,20 @@ export function mountPreview(root: HTMLElement): void {
       if (!ocrDoc) {
         void runOcr();
       } else if (!note.classList.contains("is-error")) {
-        setNote("点选或划选文字，也可复制全部。");
+        setNoteKey("preview.note.ocr_hint");
       }
     } else if (next === "text") {
-      setNote("点在图上放置文字框，然后输入汉字。Enter 确认，Esc 取消。");
+      setNoteKey("preview.note.text_hint");
     } else if (next === "number") {
-      setNote(`点在图上放置序号，从 ${numberStart} 起自动递增。`);
+      setNoteKey("preview.note.number_hint", { start: numberStart });
     } else if (next === "pen") {
-      setNote("按住拖动自由绘制。");
+      setNoteKey("preview.note.pen_hint");
     } else if (next === "highlighter") {
-      setNote("按住拖动高亮；半透明覆盖文字仍可见。");
+      setNoteKey("preview.note.highlighter_hint");
     } else if (next === "blur") {
-      setNote("按住拖出高斯模糊区域，保存后不可还原原始内容。");
+      setNoteKey("preview.note.blur_hint");
     } else if (!note.classList.contains("is-error")) {
-      setNote(copied, copiedKind);
+      setNoteSource(copiedSource, copiedKind);
     }
     redraw();
   };
@@ -483,7 +528,7 @@ export function mountPreview(root: HTMLElement): void {
         }
       })
       .catch(() => {
-        setNote("标注样式本次可用，但未能记住。", "error");
+        setNoteKey("preview.note.style_not_saved", undefined, "error");
       });
   };
 
@@ -542,7 +587,7 @@ export function mountPreview(root: HTMLElement): void {
     numberPlaced = 0;
     persistStyle();
     if (tool === "number" && !note.classList.contains("is-error")) {
-      setNote(`点在图上放置序号，从 ${numberStart} 起自动递增。`);
+      setNoteKey("preview.note.number_hint", { start: numberStart });
     }
   });
 
@@ -882,7 +927,7 @@ export function mountPreview(root: HTMLElement): void {
     ocrDoc = null;
     ocrSelected = [];
     syncCopyAll();
-    setNote("正在识别…");
+    setNoteKey("preview.note.ocr_running");
     redraw();
     try {
       const doc = await invoke<OcrDocument>("recognize_preview");
@@ -891,7 +936,7 @@ export function mountPreview(root: HTMLElement): void {
       }
       ocrDoc = doc;
       syncCopyAll();
-      setNote("点选或划选文字，也可复制全部。");
+      setNoteKey("preview.note.ocr_hint");
       redraw();
     } catch (error) {
       if (token !== ocrGen) {
@@ -899,7 +944,7 @@ export function mountPreview(root: HTMLElement): void {
       }
       ocrDoc = null;
       syncCopyAll();
-      setNote(invokeError(error, "无法识别图上的文字。"), "error");
+      setNote(invokeError(error, t("preview.error.ocr_fallback")), "error");
       redraw();
     } finally {
       if (token === ocrGen) {
@@ -920,9 +965,9 @@ export function mountPreview(root: HTMLElement): void {
           ? await invoke<string>("copy_ocr_point", { x: endPoint.x, y: endPoint.y })
           : await invoke<string>("copy_ocr_rect", normalizeRect(startPoint, endPoint));
       const snippet = copiedText.length > 24 ? `${copiedText.slice(0, 24)}…` : copiedText;
-      setNote(`已复制「${snippet}」`, "success");
+      setNoteKey("preview.note.ocr_copied", { snippet }, "success");
     } catch (error) {
-      setNote(invokeError(error, "没有选中文字。"), "error");
+      setNote(invokeError(error, t("preview.error.no_selection")), "error");
     } finally {
       busy = false;
     }
@@ -935,9 +980,9 @@ export function mountPreview(root: HTMLElement): void {
     busy = true;
     try {
       await invoke<string>("copy_ocr_all");
-      setNote("已复制全部识别文本。", "success");
+      setNoteKey("preview.note.ocr_all_copied", undefined, "success");
     } catch (error) {
-      setNote(invokeError(error, "没有识别到文字。"), "error");
+      setNote(invokeError(error, t("preview.error.no_text")), "error");
     } finally {
       busy = false;
     }
@@ -952,11 +997,13 @@ export function mountPreview(root: HTMLElement): void {
     try {
       await invoke("copy_preview_png", { annotations: exportList() });
       setCopied(
-        annotations.length > 0 ? "已复制当前标注图" : "未标注图已复制",
+        annotations.length > 0
+          ? { key: "preview.copied_annotated", text: "" }
+          : { key: "preview.copied_clean", text: "" },
         "success",
       );
     } catch (error) {
-      setNote(invokeError(error, "无法把截图放入剪贴板。预览仍保留。"), "error");
+      setNote(invokeError(error, t("preview.error.copy_fallback")), "error");
     } finally {
       busy = false;
     }
@@ -980,10 +1027,10 @@ export function mountPreview(root: HTMLElement): void {
       if (result.saved) {
         const format = result.format ?? "png";
         const name = fileNameFromPath(result.path) ?? `cropmark.${format === "jpeg" ? "jpg" : format}`;
-        setNote(`已保存 ${name}。`, "success");
+        setNoteKey("preview.note.saved", { name }, "success");
       }
     } catch (error) {
-      setNote(invokeError(error, "无法保存图片。预览仍保留，可继续标注或复制。"), "error");
+      setNote(invokeError(error, t("preview.error.save_fallback")), "error");
     } finally {
       busy = false;
     }
@@ -992,17 +1039,17 @@ export function mountPreview(root: HTMLElement): void {
   // 贴图:当前标注合成图钉成置顶小窗;预览保持打开,可继续标注/再贴。
   const pin = async (): Promise<void> => {
     if (busy) {
-      setNote("正在处理，请稍候。");
+      setNoteKey("preview.note.busy");
       return;
     }
     commitEditor();
     busy = true;
-    setNote("正在贴图…");
+    setNoteKey("preview.note.pinning");
     try {
       await invoke("pin_current", { annotations: exportList() });
-      setNote("已贴图。", "success");
+      setNoteKey("preview.note.pinned", undefined, "success");
     } catch (error) {
-      setNote(invokeError(error, "无法创建贴图。"), "error");
+      setNote(invokeError(error, t("preview.error.pin_fallback")), "error");
     } finally {
       busy = false;
     }
@@ -1016,11 +1063,11 @@ export function mountPreview(root: HTMLElement): void {
     }
     commitEditor();
     busy = true;
-    setNote("正在更新贴图…");
+    setNoteKey("preview.note.updating_pin");
     try {
       await invoke("update_pin_from_preview", { annotations: exportList() });
     } catch (error) {
-      setNote(invokeError(error, "无法更新贴图。"), "error");
+      setNote(invokeError(error, t("preview.error.update_pin_fallback")), "error");
     } finally {
       busy = false;
     }
@@ -1028,7 +1075,7 @@ export function mountPreview(root: HTMLElement): void {
 
   const closePreview = (): void => {
     void invoke("close_preview").catch((error) => {
-      setNote(invokeError(error, "无法关闭预览。"), "error");
+      setNote(invokeError(error, t("preview.error.close_fallback")), "error");
     });
   };
 
@@ -1540,12 +1587,12 @@ export function mountPreview(root: HTMLElement): void {
       try {
         bytes = await invoke<ArrayBuffer>("get_preview_frame");
       } catch (error) {
-        if (generation === previewLoad) setNote(invokeError(error, "没有可预览的截图。"), "error");
+        if (generation === previewLoad) setNote(invokeError(error, t("preview.error.preview_missing")), "error");
         return;
       }
       if (generation !== previewLoad) return;
       if (bytes.byteLength <= 20) {
-        setNote("预览图像数据不完整。", "error");
+        setNoteKey("preview.note.image_incomplete", undefined, "error");
         return;
       }
       const activeWriteback = writeback !== null;
@@ -1570,24 +1617,24 @@ export function mountPreview(root: HTMLElement): void {
         source.height = payload.height;
         const sourceCtx = source.getContext("2d");
         if (!sourceCtx) {
-          setNote("无法显示预览图像。", "error");
+          setNoteKey("preview.note.image_failed", undefined, "error");
           return;
         }
         sourceCtx.drawImage(image, 0, 0, payload.width, payload.height);
         if (activeWriteback) {
-          setCopied("贴图再标注：确认后更新贴图，取消不改动。", "feedback");
+          setCopied({ key: "preview.copied_writeback", text: "" }, "feedback");
         } else if (copyState === 1) {
-          setCopied("未标注图已复制", "success");
+          setCopied({ key: "preview.copied_clean", text: "" }, "success");
         } else if (copyState === 2) {
-          setCopied("自动复制失败，可点击复制重试。", "error");
+          setCopied({ key: "preview.copied_manual_failed", text: "" }, "error");
         } else {
-          setCopied("未自动复制，可点击复制。", "feedback");
+          setCopied({ key: "preview.copied_disabled", text: "" }, "feedback");
         }
         redraw();
       };
       image.onerror = () => {
         URL.revokeObjectURL(imageUrl);
-        if (generation === previewLoad) setNote("无法显示预览图像。", "error");
+        if (generation === previewLoad) setNoteKey("preview.note.image_failed", undefined, "error");
       };
       image.src = imageUrl;
     })();
@@ -1618,6 +1665,49 @@ export function mountPreview(root: HTMLElement): void {
     loadPreview();
   });
   loadPreview();
+
+  // 语言切换:静态标签由 main 的 applyTranslations 更新;这里刷新组合了本地化
+  // 文本的样式/质量选项 label+title,并重渲染来源可解析的提示条。
+  const refreshOptionLabels = (): void => {
+    stylePanel.querySelectorAll<HTMLButtonElement>("[data-style-width]").forEach((button) => {
+      const option = STYLE_WIDTHS.find((item) => String(item.value) === button.dataset.styleWidth);
+      if (option) {
+        button.textContent = t(option.labelKey);
+        button.title = t("preview.style.option_title", {
+          label: t(option.labelKey),
+          value: option.value,
+        });
+      }
+    });
+    stylePanel.querySelectorAll<HTMLButtonElement>("[data-style-text-size]").forEach((button) => {
+      const option = STYLE_TEXT_SIZES.find(
+        (item) => String(item.value) === button.dataset.styleTextSize,
+      );
+      if (option) {
+        button.textContent = t(option.labelKey);
+        button.title = t("preview.style.option_title", {
+          label: t(option.labelKey),
+          value: option.value,
+        });
+      }
+    });
+    stylePanel.querySelectorAll<HTMLButtonElement>("[data-style-color]").forEach((button) => {
+      const color = button.dataset.styleColor ?? "";
+      button.setAttribute("aria-label", t("preview.style.color_aria", { color }));
+    });
+    saveQualityRoot.querySelectorAll<HTMLButtonElement>("[data-save-quality]").forEach((button) => {
+      const option = SAVE_QUALITIES.find((item) => item.value === button.dataset.saveQuality);
+      if (option) {
+        button.textContent = t(option.labelKey);
+        button.title = t(option.titleKey);
+      }
+    });
+  };
+
+  return () => {
+    refreshOptionLabels();
+    renderNote();
+  };
 }
 
 const ALL_TOOLS: Tool[] = [

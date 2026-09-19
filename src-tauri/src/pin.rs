@@ -9,13 +9,18 @@ use crate::annotate::{rasterize, Annotation};
 use crate::capture::buffer::{decode_png, encode_png, Frame};
 use crate::capture::error::CaptureError;
 use crate::capture::session;
+use crate::i18n;
 
 /// 同时存在的贴图上限:标签 pin-1..pin-N 轮转复用空闲槽位。
 pub const PIN_MAX: usize = 8;
 pub const PIN_LABEL_PREFIX: &str = "pin-";
 /// 满员时 `open_pin` 与 Quiet Pin Toast 共用的说明。
-pub const PIN_FULL_MESSAGE: &str = "贴图最多同时 8 张，请先关闭部分贴图。";
-const PIN_RETRY_MESSAGE: &str = "贴图失败，请重试。";
+pub fn pin_full_message() -> String {
+    i18n::t("pin.full")
+}
+fn pin_retry_message() -> String {
+    i18n::t("pin.retry")
+}
 const PIN_SAVE_DEFAULT_NAME: &str = "cropmark-pin.png";
 
 /// 轮转游标:下一次分配从上一次分配槽位之后开始找空闲标签。
@@ -73,7 +78,7 @@ fn pick_slot(cursor: usize, occupied: impl Fn(usize) -> bool) -> Option<usize> {
 fn fail(err: CaptureError) -> String {
     let message = err.user_message();
     if message.is_empty() {
-        "无法完成贴图。".into()
+        i18n::t("error.pin.failed")
     } else {
         message
     }
@@ -257,7 +262,7 @@ pub fn open_pin(
     let slot = pick_slot(cursor, |slot| {
         app.get_webview_window(&slot_label(slot)).is_some()
     })
-    .ok_or_else(|| PIN_FULL_MESSAGE.to_string())?;
+    .ok_or_else(pin_full_message)?;
     NEXT_SLOT.store((slot + 1) % PIN_MAX, Ordering::SeqCst);
 
     let label = slot_label(slot);
@@ -293,7 +298,7 @@ pub fn open_pin(
     .build()
     .map_err(|error| {
         with_store(|slots| slots[slot] = None);
-        format!("无法创建贴图窗口：{error}")
+        i18n::tp("error.pin.window_create", &[("error", &error.to_string())])
     })?;
     // 先定位再显示,避免窗口在左上角闪现后再跳到光标附近。
     let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
@@ -362,17 +367,17 @@ pub async fn pin_current(app: AppHandle, annotations: Vec<Annotation>) -> Result
         move || prepare_pin(&app, &annotations)
     })
     .await
-    .map_err(|_| "贴图线程失败。".to_string())??;
+    .map_err(|_| i18n::t("error.pin.thread_pin"))??;
     open_pin(&app, prepared.frame, prepared.width, prepared.height).map(|_| ())
 }
 
 /// Quiet Pin 失败 Toast:保留 `pin_current` 的可读原因(含满 8 张说明);
 /// 空串才退回泛化重试文案。
-fn quiet_pin_toast(message: &str) -> &str {
+fn quiet_pin_toast(message: &str) -> String {
     if message.is_empty() {
-        PIN_RETRY_MESSAGE
+        pin_retry_message()
     } else {
-        message
+        message.to_string()
     }
 }
 
@@ -384,16 +389,17 @@ pub fn pin_retained(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         if let Err(message) = pin_current(app.clone(), Vec::new()).await {
-            crate::capture::ui::show_toast(&app, quiet_pin_toast(&message));
+            let toast = quiet_pin_toast(&message);
+            crate::capture::ui::show_toast(&app, &toast);
         }
     });
 }
 
 /// 读取槽位源图(克隆);窗口已关闭或源图已清时返回错误文案。
 fn source_for(label: &str) -> Result<PinSource, String> {
-    let slot = slot_from_label(label).ok_or_else(|| "未知贴图窗口。".to_string())?;
+    let slot = slot_from_label(label).ok_or_else(|| i18n::t("error.pin.window_unknown"))?;
     with_store(|slots| slots[slot].clone())
-        .ok_or_else(|| "贴图图像已失效，请重新贴图。".to_string())
+        .ok_or_else(|| i18n::t("error.pin.source_gone"))
 }
 
 /// 读取源图并应用当前旋转/透明度(复制、保存、再标注共用)。
@@ -404,7 +410,7 @@ fn transformed_frame_for(
     opacity: f32,
 ) -> Result<Frame, String> {
     if app.get_webview_window(label).is_none() {
-        return Err("贴图窗口已关闭。".to_string());
+        return Err(i18n::t("error.pin.window_closed"));
     }
     let source = source_for(label)?;
     Ok(transformed_frame(&source, rotation, opacity))
@@ -414,7 +420,7 @@ fn transformed_frame_for(
 #[tauri::command]
 pub fn get_pin_image(app: AppHandle, label: String) -> Result<tauri::ipc::Response, String> {
     if app.get_webview_window(&label).is_none() {
-        return Err("贴图窗口已关闭。".to_string());
+        return Err(i18n::t("error.pin.window_closed"));
     }
     let source = source_for(&label)?;
     let png = encode_png(&source_frame(&source)).map_err(fail)?;
@@ -438,7 +444,7 @@ pub async fn copy_pin(
         }
     })
     .await
-    .map_err(|_| "复制线程失败。".to_string())?
+    .map_err(|_| i18n::t("error.pin.thread_copy"))?
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -463,12 +469,12 @@ pub async fn save_pin(
         move || transformed_frame_for(&app, &label, rotation, opacity)
     })
     .await
-    .map_err(|_| "保存线程失败。".to_string())??;
+    .map_err(|_| i18n::t("error.pin.thread_save"))??;
 
     let mut dialog = rfd::AsyncFileDialog::new()
-        .add_filter("PNG 图片", &["png"])
+        .add_filter(i18n::t("dialog.png_filter"), &["png"])
         .set_file_name(PIN_SAVE_DEFAULT_NAME)
-        .set_title("保存贴图");
+        .set_title(i18n::t("dialog.save_pin_title"));
     if let Some(directory) = crate::settings::current_export(&app).existing_directory() {
         dialog = dialog.set_directory(directory);
     }
@@ -484,9 +490,9 @@ pub async fn save_pin(
     let path = ensure_png_extension(file.path().to_path_buf());
     let bytes = tauri::async_runtime::spawn_blocking(move || encode_png(&frame).map_err(fail))
         .await
-        .map_err(|_| "保存线程失败。".to_string())??;
+        .map_err(|_| i18n::t("error.pin.thread_save"))??;
     std::fs::write(&path, bytes)
-        .map_err(|error| format!("无法保存贴图到「{}」：{error}", path.display()))?;
+        .map_err(|error| i18n::tp("error.pin.save_to_path", &[("path", &path.display().to_string()), ("error", &error.to_string())]))?;
     Ok(PinSaveResult {
         saved: true,
         path: Some(path.to_string_lossy().into_owned()),
@@ -509,7 +515,7 @@ pub async fn begin_pin_edit(
         move || transformed_frame_for(&app, &label, rotation, opacity)
     })
     .await
-    .map_err(|_| "贴图线程失败。".to_string())??;
+    .map_err(|_| i18n::t("error.pin.thread_pin"))??;
 
     let window = app.get_webview_window(&label);
     // 切换再标注目标时先把上一个来源贴图恢复置顶,避免遗留非置顶窗口。
@@ -546,19 +552,19 @@ pub async fn update_pin_from_preview(
     annotations: Vec<Annotation>,
 ) -> Result<(), String> {
     let Some(label) = session::writeback_target(&app) else {
-        return Err("当前预览不在贴图再标注模式。".to_string());
+        return Err(i18n::t("error.pin.not_editing"));
     };
     let frame = session::current_preview_frame(&app).map_err(fail)?;
     let rendered = tauri::async_runtime::spawn_blocking(move || {
         rasterize(&frame, &annotations).map_err(fail)
     })
     .await
-    .map_err(|_| "贴图线程失败。".to_string())??;
+    .map_err(|_| i18n::t("error.pin.thread_pin"))??;
 
-    let slot = slot_from_label(&label).ok_or_else(|| "未知贴图窗口。".to_string())?;
+    let slot = slot_from_label(&label).ok_or_else(|| i18n::t("error.pin.window_unknown"))?;
     let stored = with_store(|slots| {
         let Some(source) = slots[slot].as_mut() else {
-            return Err("贴图已关闭。".to_string());
+            return Err(i18n::t("error.pin.closed"));
         };
         replace_source_content(source, rendered);
         Ok(())
@@ -735,14 +741,16 @@ mod tests {
 
     #[test]
     fn quiet_pin_toast_surfaces_eight_slot_notice() {
-        assert_eq!(quiet_pin_toast(PIN_FULL_MESSAGE), PIN_FULL_MESSAGE);
+        let full = pin_full_message();
+        assert_eq!(quiet_pin_toast(&full), full);
+        assert!(full.contains("8"));
     }
 
     #[test]
     fn quiet_pin_toast_keeps_other_readable_errors() {
         assert_eq!(quiet_pin_toast("无法创建贴图窗口：timeout"), "无法创建贴图窗口：timeout");
         assert_eq!(quiet_pin_toast("贴图线程失败。"), "贴图线程失败。");
-        assert_eq!(quiet_pin_toast(""), PIN_RETRY_MESSAGE);
+        assert_eq!(quiet_pin_toast(""), pin_retry_message());
     }
 
     #[test]
