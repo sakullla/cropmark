@@ -9,13 +9,19 @@ use crate::annotate::{parse_hex_color, DEFAULT_COLOR};
 use crate::autostart::{self, AutostartState};
 use crate::hotkeys::{self, CaptureMode, HotkeyErrors, Hotkeys};
 
-/// 标注样式默认值：color 为 #hex；width/text_size 为 None 时沿用现有自动推导。
+/// 序号工具起始值允许范围；超出时钳制。
+pub const MIN_NUMBER_START: u32 = 1;
+pub const MAX_NUMBER_START: u32 = 999;
+
+/// 标注样式默认值：color 为 #hex；width/text_size 为 None 时沿用现有自动推导；
+/// number_start 为序号工具第一次放置的编号，连续放置自动递增并跨会话保留。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AnnotationDefaults {
     pub color: String,
     pub width: Option<f64>,
     pub text_size: Option<f64>,
+    pub number_start: u32,
 }
 
 impl Default for AnnotationDefaults {
@@ -24,12 +30,14 @@ impl Default for AnnotationDefaults {
             color: DEFAULT_COLOR.into(),
             width: None,
             text_size: None,
+            number_start: MIN_NUMBER_START,
         }
     }
 }
 
 impl AnnotationDefaults {
-    /// 非法颜色回退默认色，非正/非有限数值回退 None（自动推导）。
+    /// 非法颜色回退默认色，非正/非有限数值回退 None（自动推导），
+    /// 起始序号钳制到 1–999。
     pub fn sanitized(self) -> Self {
         let color = if parse_hex_color(&self.color).is_some() {
             self.color
@@ -48,6 +56,9 @@ impl AnnotationDefaults {
             color,
             width,
             text_size,
+            number_start: self
+                .number_start
+                .clamp(MIN_NUMBER_START, MAX_NUMBER_START),
         }
     }
 }
@@ -685,6 +696,7 @@ mod tests {
                 color: "#2563eb".into(),
                 width: Some(5.0),
                 text_size: Some(22.0),
+                number_start: 5,
             },
             features: FeatureSettings {
                 ocr_entry: false,
@@ -723,6 +735,7 @@ mod tests {
         assert_eq!(loaded.annotation_defaults.color, "#2563eb");
         assert_eq!(loaded.annotation_defaults.width, Some(5.0));
         assert_eq!(loaded.annotation_defaults.text_size, Some(22.0));
+        assert_eq!(loaded.annotation_defaults.number_start, 5);
         assert!(!loaded.features.ocr_entry);
         assert!(loaded.features.pin_entry);
         assert!(!loaded.features.magnifier);
@@ -771,11 +784,48 @@ mod tests {
             color: "rose".into(),
             width: Some(-3.0),
             text_size: Some(4.0),
+            number_start: 0,
         };
         let clean = dirty.sanitized();
         assert_eq!(clean.color, crate::annotate::DEFAULT_COLOR);
         assert_eq!(clean.width, None);
         assert_eq!(clean.text_size, None);
+        assert_eq!(clean.number_start, MIN_NUMBER_START);
+    }
+
+    #[test]
+    fn annotation_defaults_default_number_start_and_clamp_range() {
+        assert_eq!(AnnotationDefaults::default().number_start, 1);
+        let low = AnnotationDefaults {
+            number_start: 0,
+            ..AnnotationDefaults::default()
+        }
+        .sanitized();
+        assert_eq!(low.number_start, MIN_NUMBER_START);
+        let high = AnnotationDefaults {
+            number_start: 100_000,
+            ..AnnotationDefaults::default()
+        }
+        .sanitized();
+        assert_eq!(high.number_start, MAX_NUMBER_START);
+        let exact = AnnotationDefaults {
+            number_start: MAX_NUMBER_START,
+            ..AnnotationDefaults::default()
+        }
+        .sanitized();
+        assert_eq!(exact.number_start, MAX_NUMBER_START);
+    }
+
+    #[test]
+    fn legacy_annotation_defaults_json_defaults_number_start() {
+        let parsed: StoredSettings = serde_json::from_str(
+            r##"{"annotationDefaults":{"color":"#2563eb","width":5.0,"textSize":22.0}}"##,
+        )
+        .unwrap();
+        assert_eq!(parsed.annotation_defaults.number_start, 1);
+        assert_eq!(parsed.annotation_defaults.color, "#2563eb");
+        let serialized = serde_json::to_value(parsed.annotation_defaults).unwrap();
+        assert_eq!(serialized["numberStart"], 1);
     }
 
     #[test]

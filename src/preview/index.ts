@@ -9,7 +9,23 @@ interface PreviewFrame {
   scale: number;
 }
 
-type Tool = "arrow" | "rect" | "mosaic" | "text" | "ocr";
+type Tool =
+  | "arrow"
+  | "rect"
+  | "ellipse"
+  | "line"
+  | "mosaic"
+  | "blur"
+  | "highlighter"
+  | "pen"
+  | "number"
+  | "text"
+  | "ocr";
+
+// 拖拽式绘制工具：按下为起点、拖动出范围、松开入栈。
+type DragTool = "arrow" | "rect" | "ellipse" | "line" | "mosaic" | "blur";
+// 自由绘制工具：按住移动采集折线点，松开入栈。
+type FreehandTool = "highlighter" | "pen";
 
 type Point = { x: number; y: number };
 
@@ -46,7 +62,21 @@ type Annotation =
       strokeWidth: number | null;
     }
   | { type: "mosaic"; x: number; y: number; width: number; height: number; block: number }
-  | { type: "text"; x: number; y: number; text: string; size: number; color: string };
+  | { type: "text"; x: number; y: number; text: string; size: number; color: string }
+  | {
+      type: "ellipse";
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      color: string;
+      strokeWidth: number | null;
+    }
+  | { type: "line"; from: Point; to: Point; color: string; strokeWidth: number | null }
+  | { type: "number"; x: number; y: number; value: number; size: number; color: string }
+  | { type: "highlighter"; points: Point[]; color: string; strokeWidth: number | null }
+  | { type: "pen"; points: Point[]; color: string; strokeWidth: number | null }
+  | { type: "blur"; x: number; y: number; width: number; height: number; sigma: number };
 
 interface TextSpan {
   text: string;
@@ -80,6 +110,14 @@ const FALLBACK_OCR_HL_STRONG = "#0369a1";
 const FALLBACK_SELECT = "#2563eb";
 const TEXT_FONT_STACK = '"Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif';
 
+// 与 Rust annotate::HIGHLIGHTER_ALPHA / MIN_BLUR_SIGMA / MAX_BLUR_SIGMA 对齐。
+const HIGHLIGHTER_ALPHA = 0.38;
+const BLUR_SIGMA_MIN = 3;
+const BLUR_SIGMA_MAX = 48;
+const MIN_NUMBER_START = 1;
+const MAX_NUMBER_START = 999;
+const MIN_DRAW_SIZE = 3;
+
 // 与 Rust parse_hex_color 对齐：接受 #rgb / #rrggbb / #rrggbbaa，其余形式回退默认色。
 const HEX_COLOR_RE = /^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
 
@@ -99,7 +137,13 @@ const STYLE_TEXT_SIZES: Array<{ value: number; label: string }> = [
 const ICONS: Record<Exclude<Tool, "ocr"> | "undo" | "style", string> = {
   arrow: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 12.5 12.5 3.5M7 3.5h5.5V9" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
   rect: `<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="4" width="10" height="8" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>`,
+  ellipse: `<svg viewBox="0 0 16 16" aria-hidden="true"><ellipse cx="8" cy="8" rx="5.4" ry="4" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>`,
+  line: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.8 12.2 12.2 3.8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="3.8" cy="12.2" r="1.3" fill="currentColor"/><circle cx="12.2" cy="3.8" r="1.3" fill="currentColor"/></svg>`,
   mosaic: `<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2" width="5" height="5" fill="currentColor"/><rect x="9" y="2" width="5" height="5" fill="currentColor" opacity="0.45"/><rect x="2" y="9" width="5" height="5" fill="currentColor" opacity="0.65"/><rect x="9" y="9" width="5" height="5" fill="currentColor" opacity="0.28"/></svg>`,
+  blur: `<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.6" fill="currentColor" opacity="0.18"/><circle cx="8" cy="8" r="3.6" fill="currentColor" opacity="0.32"/><circle cx="8" cy="8" r="1.8" fill="currentColor" opacity="0.6"/></svg>`,
+  highlighter: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 2.6h4.6a1 1 0 0 1 1 1V9H6z" fill="currentColor" opacity="0.55"/><path d="M5.2 9h7.2v1.6a1 1 0 0 1-1 1H6.2a1 1 0 0 1-1-1z" fill="currentColor" opacity="0.85"/><path d="M6 12.4h7" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M4.5 2.6h1.5v6.4H4.5z" fill="currentColor" opacity="0.4"/></svg>`,
+  pen: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 13c2.2-1.2 2.6-3 3.8-4.9C8 6 9.4 4.2 12.8 2.4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M12.8 2.4c-2 1-3.4 2.4-4.5 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>`,
+  number: `<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.6" fill="none" stroke="currentColor" stroke-width="1.6"/><text x="8" y="11.4" text-anchor="middle" font-size="8.4" font-weight="700" fill="currentColor" font-family="sans-serif">1</text></svg>`,
   text: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4.2h8M8 4.2v8.2M5.5 12.4h5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>`,
   undo: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 7h6.2a3 3 0 1 1 0 6H9" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M4 7 6.4 4.6M4 7l2.4 2.4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>`,
   style: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.8a6.2 6.2 0 0 0 0 12.4c.9 0 1.4-.6 1.4-1.3 0-1.1 1-1.4 2.2-1.4h1.1c.9 0 1.5-.7 1.5-1.9A6.2 6.2 0 0 0 8 1.8Z" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="5.2" cy="6.4" r="1" fill="currentColor"/><circle cx="8.6" cy="4.8" r="1" fill="currentColor"/><circle cx="11.4" cy="7.2" r="1" fill="currentColor"/></svg>`,
@@ -121,7 +165,13 @@ export function mountPreview(root: HTMLElement): void {
       <div class="preview-tools" role="toolbar" aria-label="标注" data-tauri-drag-region="false">
         <button type="button" data-tool="arrow" title="箭头 (A)" aria-label="箭头">${ICONS.arrow}</button>
         <button type="button" data-tool="rect" title="框 (R)" aria-label="框">${ICONS.rect}</button>
+        <button type="button" data-tool="ellipse" title="椭圆 (E)" aria-label="椭圆">${ICONS.ellipse}</button>
+        <button type="button" data-tool="line" title="直线 (L)" aria-label="直线">${ICONS.line}</button>
         <button type="button" data-tool="mosaic" title="马赛克 (M)" aria-label="马赛克">${ICONS.mosaic}</button>
+        <button type="button" data-tool="blur" title="高斯模糊 (B)" aria-label="高斯模糊">${ICONS.blur}</button>
+        <button type="button" data-tool="highlighter" title="荧光笔 (H)" aria-label="荧光笔">${ICONS.highlighter}</button>
+        <button type="button" data-tool="pen" title="画笔 (P)" aria-label="画笔">${ICONS.pen}</button>
+        <button type="button" data-tool="number" title="序号 (N)" aria-label="序号">${ICONS.number}</button>
         <button type="button" data-tool="text" title="文字框 (T)" aria-label="文字框" class="tool-text">${ICONS.text}<span>文字</span></button>
         <button type="button" data-action="undo" title="撤销 (Ctrl+Z)" aria-label="撤销">${ICONS.undo}</button>
         <div class="preview-style" data-style-root>
@@ -152,6 +202,22 @@ export function mountPreview(root: HTMLElement): void {
                   ({ value, label }) =>
                     `<button type="button" data-style-text-size="${value}" title="${label} (${value})">${label}</button>`,
                 ).join("")}
+              </div>
+            </div>
+            <div class="style-group">
+              <span class="style-label">序号</span>
+              <div class="style-options" role="group" aria-label="序号起始值">
+                <input
+                  type="number"
+                  class="style-number-start"
+                  data-style-number-start
+                  min="${MIN_NUMBER_START}"
+                  max="${MAX_NUMBER_START}"
+                  step="1"
+                  value="${MIN_NUMBER_START}"
+                  aria-label="序号起始值"
+                  title="序号起始值 (1–999)"
+                />
               </div>
             </div>
           </div>
@@ -198,6 +264,7 @@ export function mountPreview(root: HTMLElement): void {
   const stylePanel = root.querySelector("[data-style-panel]");
   const styleBtn = root.querySelector("[data-action=style]");
   const contextMenu = root.querySelector("[data-context-menu]");
+  const numberStartInput = root.querySelector("[data-style-number-start]");
   if (
     !(canvas instanceof HTMLCanvasElement) ||
     !(note instanceof HTMLElement) ||
@@ -211,7 +278,8 @@ export function mountPreview(root: HTMLElement): void {
     !(styleRoot instanceof HTMLElement) ||
     !(stylePanel instanceof HTMLElement) ||
     !(styleBtn instanceof HTMLButtonElement) ||
-    !(contextMenu instanceof HTMLElement)
+    !(contextMenu instanceof HTMLElement) ||
+    !(numberStartInput instanceof HTMLInputElement)
   ) {
     return;
   }
@@ -249,6 +317,7 @@ export function mountPreview(root: HTMLElement): void {
   let dragging = false;
   let start: Point | null = null;
   let current: Point | null = null;
+  let freehand: Point[] = [];
   let editorOrigin: Point | null = null;
   let busy = false;
   let copied = "未标注图已复制";
@@ -267,6 +336,9 @@ export function mountPreview(root: HTMLElement): void {
   let styleColor = FALLBACK_STROKE;
   let styleWidth: number | null = null;
   let styleTextBase: number | null = null;
+  let numberStart = MIN_NUMBER_START;
+  // 编辑会话内已放置的序号数：下一次放置 = numberStart + numberPlaced。
+  let numberPlaced = 0;
   let saveQuality: ExportQuality = "high";
   editor.classList.remove("is-open");
 
@@ -281,11 +353,12 @@ export function mountPreview(root: HTMLElement): void {
     Math.min(8, Math.max(2, (opWidth ?? 3) * Math.max(frame?.scale ?? 1, 1)));
   const colorFor = (opColor: string): string =>
     HEX_COLOR_RE.test(opColor) ? opColor : strokeColor;
+  const frameScale = (): number => Math.max(frame?.scale ?? 1, 1);
   const annotationStyle = (op: Annotation): { color: string; lineWidth: number } => {
-    if (op.type === "mosaic") {
+    if (op.type === "mosaic" || op.type === "blur") {
       return { color: strokeColor, lineWidth: strokeFor(null) };
     }
-    if (op.type === "text") {
+    if (op.type === "text" || op.type === "number") {
       return { color: colorFor(op.color), lineWidth: strokeFor(null) };
     }
     return { color: colorFor(op.color), lineWidth: strokeFor(op.strokeWidth) };
@@ -325,6 +398,10 @@ export function mountPreview(root: HTMLElement): void {
     selected = null;
     moving = false;
     moveState = null;
+    dragging = false;
+    start = null;
+    current = null;
+    freehand = [];
     ocrSelected = [];
     ocrCurrent = null;
     ocrStart = null;
@@ -338,6 +415,14 @@ export function mountPreview(root: HTMLElement): void {
       }
     } else if (next === "text") {
       setNote("点在图上放置文字框，然后输入汉字。Enter 确认，Esc 取消。");
+    } else if (next === "number") {
+      setNote(`点在图上放置序号，从 ${numberStart} 起自动递增。`);
+    } else if (next === "pen") {
+      setNote("按住拖动自由绘制。");
+    } else if (next === "highlighter") {
+      setNote("按住拖动高亮；半透明覆盖文字仍可见。");
+    } else if (next === "blur") {
+      setNote("按住拖出高斯模糊区域，保存后不可还原原始内容。");
     } else if (!note.classList.contains("is-error")) {
       setNote(copied, copiedKind);
     }
@@ -361,6 +446,9 @@ export function mountPreview(root: HTMLElement): void {
     stylePanel.querySelectorAll<HTMLButtonElement>("[data-style-text-size]").forEach((button) => {
       button.classList.toggle("active", button.dataset.styleTextSize === activeTextSize);
     });
+    if (numberStartInput.value !== String(numberStart)) {
+      numberStartInput.value = String(numberStart);
+    }
   };
 
   const syncSaveQuality = (): void => {
@@ -371,7 +459,12 @@ export function mountPreview(root: HTMLElement): void {
 
   const persistStyle = (): void => {
     void invoke<{ notice: string | null }>("set_annotation_defaults", {
-      defaults: { color: styleColor, width: styleWidth, textSize: styleTextBase },
+      defaults: {
+        color: styleColor,
+        width: styleWidth,
+        textSize: styleTextBase,
+        numberStart,
+      },
     })
       .then((result) => {
         if (result?.notice) {
@@ -422,6 +515,26 @@ export function mountPreview(root: HTMLElement): void {
     redraw();
   });
 
+  // 起始序号调整后本次会话的连续递增从新起点重算；空/非法输入回退当前值。
+  numberStartInput.addEventListener("change", () => {
+    const parsed = Number(numberStartInput.value);
+    if (!Number.isFinite(parsed)) {
+      numberStartInput.value = String(numberStart);
+      return;
+    }
+    const next = clamp(Math.round(parsed), MIN_NUMBER_START, MAX_NUMBER_START);
+    numberStartInput.value = String(next);
+    if (next === numberStart) {
+      return;
+    }
+    numberStart = next;
+    numberPlaced = 0;
+    persistStyle();
+    if (tool === "number" && !note.classList.contains("is-error")) {
+      setNote(`点在图上放置序号，从 ${numberStart} 起自动递增。`);
+    }
+  });
+
   document.addEventListener("click", (event) => {
     if (!contextMenu.hidden && !(event.target instanceof Node && contextMenu.contains(event.target))) {
       hideContextMenu();
@@ -453,9 +566,10 @@ export function mountPreview(root: HTMLElement): void {
     };
   };
 
-  // 几何命中:从最上层(数组末尾)往下找,箭头按线段距离+箭头端容差,其余按包围盒。
+  // 几何命中:从最上层(数组末尾)往下找,箭头/直线/自由绘制按线段距离,
+  // 其余按包围盒;容差随帧缩放。
   const hitAnnotation = (point: Point): number => {
-    const tol = Math.max(6, Math.round((frame?.scale ?? 1) * 6));
+    const tol = Math.max(6, Math.round(frameScale() * 6));
     for (let i = annotations.length - 1; i >= 0; i -= 1) {
       const op = annotations[i];
       if (op.type === "arrow") {
@@ -464,6 +578,16 @@ export function mountPreview(root: HTMLElement): void {
           distToSegment(point, op.from, op.to) <= tol + lineWidth / 2 ||
           Math.hypot(point.x - op.to.x, point.y - op.to.y) <= tol + 8
         ) {
+          return i;
+        }
+      } else if (op.type === "line") {
+        const lineWidth = annotationStyle(op).lineWidth;
+        if (distToSegment(point, op.from, op.to) <= tol + lineWidth / 2) {
+          return i;
+        }
+      } else if (op.type === "pen" || op.type === "highlighter") {
+        const lineWidth = annotationStyle(op).lineWidth;
+        if (polylineDistance(point, op.points) <= tol + lineWidth / 2) {
           return i;
         }
       } else {
@@ -526,12 +650,22 @@ export function mountPreview(root: HTMLElement): void {
     if (selected !== null && annotations[selected]) {
       paintSelectionBox(ctx, annotations[selected], selectColor, Math.max(frame?.scale ?? 1, 1));
     }
-    if (dragging && start && current && (tool === "arrow" || tool === "rect" || tool === "mosaic")) {
+    if (dragging && start && current && isDragTool(tool)) {
       const op = draft(tool, start, current, mosaicBlock(), styleColor, styleWidth);
       if (op) {
         const s = annotationStyle(op);
         paint(ctx, op, s.color, s.lineWidth);
       }
+    }
+    if (dragging && freehand.length >= 2 && isFreehandTool(tool)) {
+      const op: Annotation = {
+        type: tool,
+        points: freehand,
+        color: styleColor,
+        strokeWidth: styleWidth,
+      };
+      const s = annotationStyle(op);
+      paint(ctx, op, s.color, s.lineWidth);
     }
     if (tool === "ocr" && ocrDoc) {
       const rubber =
@@ -684,6 +818,10 @@ export function mountPreview(root: HTMLElement): void {
       return;
     }
     runAction(action, true);
+    // 撤销"放置序号"时回退会话计数,使重放/继续放置仍连续递增不跳号。
+    if (action.kind === "add" && action.op.type === "number") {
+      numberPlaced = Math.max(0, numberPlaced - 1);
+    }
     selected = null;
     moving = false;
     moveState = null;
@@ -707,6 +845,9 @@ export function mountPreview(root: HTMLElement): void {
       return;
     }
     runAction(action, false);
+    if (action.kind === "add" && action.op.type === "number") {
+      numberPlaced += 1;
+    }
     selected = null;
     moving = false;
     moveState = null;
@@ -897,9 +1038,23 @@ export function mountPreview(root: HTMLElement): void {
       return;
     }
     selected = null;
+    if (tool === "number") {
+      // 序号工具点击即放置:起始值 + 本次会话已放置数,并立即入栈可撤销。
+      const value = numberStart + numberPlaced;
+      numberPlaced += 1;
+      pushAction({
+        kind: "add",
+        index: annotations.length,
+        op: { type: "number", x: point.x, y: point.y, value, size: textSize(), color: styleColor },
+      });
+      redraw();
+      syncUndo();
+      return;
+    }
     dragging = true;
     start = point;
     current = point;
+    freehand = isFreehandTool(tool) ? [point] : [];
   });
 
   canvas.addEventListener("dblclick", (event) => {
@@ -971,7 +1126,21 @@ export function mountPreview(root: HTMLElement): void {
       redraw();
       return;
     }
-    if (!dragging || !start) {
+    if (!dragging) {
+      return;
+    }
+    if (isFreehandTool(tool)) {
+      const point = physicalPoint(event);
+      const last = freehand[freehand.length - 1];
+      // 1.5px 抽稀:只保留有位移的采样点,控制撤销栈内存。
+      if (!last || Math.hypot(point.x - last.x, point.y - last.y) >= 1.5) {
+        freehand.push(point);
+      }
+      current = point;
+      redraw();
+      return;
+    }
+    if (!start) {
       return;
     }
     current = physicalPoint(event);
@@ -1001,12 +1170,21 @@ export function mountPreview(root: HTMLElement): void {
       void copyOcrSelection(from, to);
       return;
     }
-    if (!dragging || !start || !current) {
-      dragging = false;
+    if (!dragging) {
       return;
     }
     dragging = false;
-    if (tool === "arrow" || tool === "rect" || tool === "mosaic") {
+    if (isFreehandTool(tool)) {
+      const points = freehand;
+      freehand = [];
+      if (points.length >= 2 && polylineLength(points) >= MIN_DRAW_SIZE) {
+        pushAction({
+          kind: "add",
+          index: annotations.length,
+          op: { type: tool, points, color: styleColor, strokeWidth: styleWidth },
+        });
+      }
+    } else if (isDragTool(tool) && start && current) {
       const op = draft(tool, start, current, mosaicBlock(), styleColor, styleWidth);
       if (op) {
         pushAction({ kind: "add", index: annotations.length, op });
@@ -1014,6 +1192,7 @@ export function mountPreview(root: HTMLElement): void {
     }
     start = null;
     current = null;
+    freehand = [];
     redraw();
     syncUndo();
   });
@@ -1063,7 +1242,7 @@ export function mountPreview(root: HTMLElement): void {
       return;
     }
     const nextTool = button.dataset.tool;
-    if (nextTool === "arrow" || nextTool === "rect" || nextTool === "mosaic" || nextTool === "text" || nextTool === "ocr") {
+    if (nextTool && isTool(nextTool)) {
       if (nextTool === "ocr" && !ocrEntryEnabled) {
         return;
       }
@@ -1205,7 +1384,14 @@ export function mountPreview(root: HTMLElement): void {
       }
       return;
     }
-    if (event.altKey || event.shiftKey || document.activeElement === editor || editorOpen()) {
+    // 序号输入框聚焦时不吞按键(退格/Delete 属于输入编辑),也不触发工具切换。
+    if (
+      event.altKey ||
+      event.shiftKey ||
+      document.activeElement === editor ||
+      document.activeElement === numberStartInput ||
+      editorOpen()
+    ) {
       return;
     }
     if (event.key === "Delete" || event.key === "Backspace") {
@@ -1218,7 +1404,13 @@ export function mountPreview(root: HTMLElement): void {
     const toolKeys: Record<string, Tool> = {
       a: "arrow",
       r: "rect",
+      e: "ellipse",
+      l: "line",
       m: "mosaic",
+      b: "blur",
+      h: "highlighter",
+      p: "pen",
+      n: "number",
       t: "text",
     };
     if (ocrEntryEnabled) {
@@ -1234,6 +1426,7 @@ export function mountPreview(root: HTMLElement): void {
   setTool("arrow");
   syncUndo();
   syncSaveQuality();
+  syncStylePanel();
 
   // 重读功能入口开关并同步预览 UI:ocrEntryEnabled 同时驱动工具条按钮显隐、
   // O 键映射与当前 ocr 工具的回退;pinEntryEnabled 驱动贴图按钮显隐;
@@ -1258,7 +1451,12 @@ export function mountPreview(root: HTMLElement): void {
   // 同时读取功能入口开关，关闭取字后隐藏预览工具条按钮并停用 O 键。
   const loadStyleDefaults = (): void => {
     void invoke<{
-      annotationDefaults?: { color?: string; width?: number | null; textSize?: number | null };
+      annotationDefaults?: {
+        color?: string;
+        width?: number | null;
+        textSize?: number | null;
+        numberStart?: number;
+      };
       features?: { ocrEntry?: boolean; pinEntry?: boolean };
       export?: { quality?: ExportQuality };
     }>("get_ui_settings")
@@ -1279,6 +1477,9 @@ export function mountPreview(root: HTMLElement): void {
         styleWidth = typeof defaults.width === "number" && Number.isFinite(defaults.width) ? defaults.width : null;
         styleTextBase =
           typeof defaults.textSize === "number" && Number.isFinite(defaults.textSize) ? defaults.textSize : null;
+        if (typeof defaults.numberStart === "number" && Number.isFinite(defaults.numberStart)) {
+          numberStart = clamp(Math.round(defaults.numberStart), MIN_NUMBER_START, MAX_NUMBER_START);
+        }
         syncStylePanel();
         redraw();
       })
@@ -1346,6 +1547,12 @@ export function mountPreview(root: HTMLElement): void {
     selected = null;
     moving = false;
     moveState = null;
+    dragging = false;
+    start = null;
+    current = null;
+    freehand = [];
+    // 新帧的序号重新从设置起始值开始递增。
+    numberPlaced = 0;
     // 新帧不带旧编辑态:收掉文字编辑器,清掉 editorOrigin,防旧文本误入新帧。
     hideEditor();
     syncUndo();
@@ -1360,36 +1567,112 @@ export function mountPreview(root: HTMLElement): void {
   loadPreview();
 }
 
+const ALL_TOOLS: Tool[] = [
+  "arrow",
+  "rect",
+  "ellipse",
+  "line",
+  "mosaic",
+  "blur",
+  "highlighter",
+  "pen",
+  "number",
+  "text",
+  "ocr",
+];
+
+function isTool(value: string): value is Tool {
+  return (ALL_TOOLS as string[]).includes(value);
+}
+
+function isDragTool(tool: Tool): tool is DragTool {
+  return (
+    tool === "arrow" ||
+    tool === "rect" ||
+    tool === "ellipse" ||
+    tool === "line" ||
+    tool === "mosaic" ||
+    tool === "blur"
+  );
+}
+
+function isFreehandTool(tool: Tool): tool is FreehandTool {
+  return tool === "pen" || tool === "highlighter";
+}
+
+// 默认模糊强度随选区短边自适应;上限保证大区域不会慢到卡住界面。
+function blurSigma(width: number, height: number): number {
+  return Math.round(clamp(Math.min(width, height) / 8, BLUR_SIGMA_MIN, BLUR_SIGMA_MAX));
+}
+
+function polylineLength(points: Point[]): number {
+  let total = 0;
+  for (let i = 1; i < points.length; i += 1) {
+    total += Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
+  }
+  return total;
+}
+
+function polylineDistance(point: Point, points: Point[]): number {
+  if (points.length === 0) {
+    return Number.POSITIVE_INFINITY;
+  }
+  if (points.length === 1) {
+    return Math.hypot(point.x - points[0].x, point.y - points[0].y);
+  }
+  let best = Number.POSITIVE_INFINITY;
+  for (let i = 1; i < points.length; i += 1) {
+    best = Math.min(best, distToSegment(point, points[i - 1], points[i]));
+  }
+  return best;
+}
+
 function draft(
-  tool: "arrow" | "rect" | "mosaic",
+  tool: Tool,
   start: Point,
   end: Point,
   block: number,
   color: string,
   strokeWidth: number | null,
 ): Annotation | null {
-  if (tool === "arrow") {
-    if (Math.hypot(end.x - start.x, end.y - start.y) < 3) {
+  if (tool === "arrow" || tool === "line") {
+    if (Math.hypot(end.x - start.x, end.y - start.y) < MIN_DRAW_SIZE) {
       return null;
     }
-    return { type: "arrow", from: start, to: end, color, strokeWidth };
+    return tool === "arrow"
+      ? { type: "arrow", from: start, to: end, color, strokeWidth }
+      : { type: "line", from: start, to: end, color, strokeWidth };
   }
   const x = Math.min(start.x, end.x);
   const y = Math.min(start.y, end.y);
   const width = Math.abs(end.x - start.x);
   const height = Math.abs(end.y - start.y);
-  if (width < 3 || height < 3) {
+  // 极小选区不产生无效标注:短边小于 3px 的区域类工具直接丢弃。
+  if (width < MIN_DRAW_SIZE || height < MIN_DRAW_SIZE) {
     return null;
   }
   if (tool === "mosaic") {
     return { type: "mosaic", x, y, width, height, block };
   }
-  return { type: "rect", x, y, width, height, color, strokeWidth };
+  if (tool === "blur") {
+    return { type: "blur", x, y, width, height, sigma: blurSigma(width, height) };
+  }
+  if (tool === "ellipse") {
+    return { type: "ellipse", x, y, width, height, color, strokeWidth };
+  }
+  if (tool === "rect") {
+    return { type: "rect", x, y, width, height, color, strokeWidth };
+  }
+  return null;
 }
 
 function paint(ctx: CanvasRenderingContext2D, op: Annotation, stroke: string, lineWidth: number): void {
   if (op.type === "mosaic") {
     paintMosaic(ctx, op);
+    return;
+  }
+  if (op.type === "blur") {
+    paintBlur(ctx, op);
     return;
   }
   ctx.save();
@@ -1400,6 +1683,15 @@ function paint(ctx: CanvasRenderingContext2D, op: Annotation, stroke: string, li
   ctx.lineJoin = "round";
   if (op.type === "rect") {
     ctx.strokeRect(op.x + 0.5, op.y + 0.5, op.width, op.height);
+  } else if (op.type === "ellipse") {
+    ctx.beginPath();
+    ctx.ellipse(op.x + op.width / 2, op.y + op.height / 2, op.width / 2, op.height / 2, 0, 0, Math.PI * 2);
+    ctx.stroke();
+  } else if (op.type === "line") {
+    ctx.beginPath();
+    ctx.moveTo(op.from.x, op.from.y);
+    ctx.lineTo(op.to.x, op.to.y);
+    ctx.stroke();
   } else if (op.type === "arrow") {
     paintArrow(ctx, op.from, op.to, lineWidth);
   } else if (op.type === "text") {
@@ -1409,8 +1701,31 @@ function paint(ctx: CanvasRenderingContext2D, op: Annotation, stroke: string, li
     lines.forEach((line, index) => {
       ctx.fillText(line, op.x, op.y + index * op.size * 1.25);
     });
+  } else if (op.type === "number") {
+    ctx.font = `600 ${op.size}px ${TEXT_FONT_STACK}`;
+    ctx.textBaseline = "top";
+    ctx.fillText(String(op.value), op.x, op.y);
+  } else if (op.type === "pen") {
+    paintPolyline(ctx, op.points, 1);
+  } else if (op.type === "highlighter") {
+    paintPolyline(ctx, op.points, HIGHLIGHTER_ALPHA);
   }
   ctx.restore();
+}
+
+function paintPolyline(ctx: CanvasRenderingContext2D, points: Point[], alpha: number): void {
+  if (points.length < 2) {
+    return;
+  }
+  const previous = ctx.globalAlpha;
+  ctx.globalAlpha = previous * alpha;
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  for (let i = 1; i < points.length; i += 1) {
+    ctx.lineTo(points[i].x, points[i].y);
+  }
+  ctx.stroke();
+  ctx.globalAlpha = previous;
 }
 
 function paintArrow(ctx: CanvasRenderingContext2D, from: Point, to: Point, lineWidth: number): void {
@@ -1493,6 +1808,62 @@ function paintMosaic(
   ctx.putImageData(data, x, y);
 }
 
+// ctx.filter 支持探测只需一次;不支持时(旧版 WebKit)退回降采样近似。
+let canvasFilterSupport: boolean | null = null;
+
+function supportsCanvasFilter(ctx: CanvasRenderingContext2D): boolean {
+  if (canvasFilterSupport !== null) {
+    return canvasFilterSupport;
+  }
+  canvasFilterSupport = false;
+  if ("filter" in ctx) {
+    const previous = ctx.filter;
+    ctx.filter = "blur(1px)";
+    canvasFilterSupport = ctx.filter !== "none" && ctx.filter !== "";
+    ctx.filter = previous;
+  }
+  return canvasFilterSupport;
+}
+
+// 高斯模糊预览:对当前已绘制内容做区域模糊,与 Rust 侧对合成帧做 imageops::blur
+// 的语义一致(遮盖类只要求视觉不可还原,不要求逐像素一致)。
+function paintBlur(ctx: CanvasRenderingContext2D, op: Extract<Annotation, { type: "blur" }>): void {
+  const x = clamp(Math.round(op.x), 0, ctx.canvas.width);
+  const y = clamp(Math.round(op.y), 0, ctx.canvas.height);
+  const w = Math.min(Math.round(op.width), ctx.canvas.width - x);
+  const h = Math.min(Math.round(op.height), ctx.canvas.height - y);
+  if (w < 2 || h < 2) {
+    return;
+  }
+  const sigma = clamp(op.sigma, 1, 200);
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x, y, w, h);
+  ctx.clip();
+  if (supportsCanvasFilter(ctx)) {
+    ctx.filter = `blur(${sigma}px)`;
+    // 外扩边距作为采样余量,避免区域边缘混入画布外的透明像素。
+    const pad = Math.max(2, Math.round(sigma * 2));
+    const sx = Math.max(0, x - pad);
+    const sy = Math.max(0, y - pad);
+    const ex = Math.min(ctx.canvas.width, x + w + pad);
+    const ey = Math.min(ctx.canvas.height, y + h + pad);
+    ctx.drawImage(ctx.canvas, sx, sy, ex - sx, ey - sy, sx, sy, ex - sx, ey - sy);
+  } else {
+    const factor = Math.max(2, Math.round(sigma));
+    const small = document.createElement("canvas");
+    small.width = Math.max(1, Math.round(w / factor));
+    small.height = Math.max(1, Math.round(h / factor));
+    const smallCtx = small.getContext("2d");
+    if (smallCtx) {
+      smallCtx.drawImage(ctx.canvas, x, y, w, h, 0, 0, small.width, small.height);
+      ctx.imageSmoothingEnabled = true;
+      ctx.drawImage(small, 0, 0, small.width, small.height, x, y, w, h);
+    }
+  }
+  ctx.restore();
+}
+
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
@@ -1520,7 +1891,7 @@ function distToSegment(p: Point, a: Point, b: Point): number {
 
 // 与 paint 的文字绘制同字体度量出的包围盒,供命中与选中高亮共用。
 function annotationBounds(ctx: CanvasRenderingContext2D, op: Annotation): Bounds {
-  if (op.type === "arrow") {
+  if (op.type === "arrow" || op.type === "line") {
     return {
       minX: Math.min(op.from.x, op.to.x),
       minY: Math.min(op.from.y, op.to.y),
@@ -1528,27 +1899,48 @@ function annotationBounds(ctx: CanvasRenderingContext2D, op: Annotation): Bounds
       maxY: Math.max(op.from.y, op.to.y),
     };
   }
-  if (op.type === "text") {
+  if (op.type === "text" || op.type === "number") {
+    const text = op.type === "text" ? op.text : String(op.value);
     ctx.save();
-    ctx.font = `${op.size}px ${TEXT_FONT_STACK}`;
+    ctx.font =
+      op.type === "text" ? `${op.size}px ${TEXT_FONT_STACK}` : `600 ${op.size}px ${TEXT_FONT_STACK}`;
     let width = 0;
-    for (const line of op.text.split("\n")) {
+    for (const line of text.split("\n")) {
       width = Math.max(width, ctx.measureText(line).width);
     }
     ctx.restore();
-    const lineCount = op.text.split("\n").length;
+    const lineCount = text.split("\n").length;
     return { minX: op.x, minY: op.y, maxX: op.x + width, maxY: op.y + lineCount * op.size * 1.25 };
+  }
+  if (op.type === "pen" || op.type === "highlighter") {
+    if (op.points.length === 0) {
+      return { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+    }
+    let minX = op.points[0].x;
+    let minY = op.points[0].y;
+    let maxX = minX;
+    let maxY = minY;
+    for (const point of op.points) {
+      minX = Math.min(minX, point.x);
+      minY = Math.min(minY, point.y);
+      maxX = Math.max(maxX, point.x);
+      maxY = Math.max(maxY, point.y);
+    }
+    return { minX, minY, maxX, maxY };
   }
   return { minX: op.x, minY: op.y, maxX: op.x + op.width, maxY: op.y + op.height };
 }
 
 function translateOp(op: Annotation, dx: number, dy: number): Annotation {
-  if (op.type === "arrow") {
+  if (op.type === "arrow" || op.type === "line") {
     return {
       ...op,
       from: { x: op.from.x + dx, y: op.from.y + dy },
       to: { x: op.to.x + dx, y: op.to.y + dy },
     };
+  }
+  if (op.type === "pen" || op.type === "highlighter") {
+    return { ...op, points: op.points.map((point) => ({ x: point.x + dx, y: point.y + dy })) };
   }
   return { ...op, x: op.x + dx, y: op.y + dy };
 }

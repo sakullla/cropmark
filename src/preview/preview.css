@@ -243,6 +243,25 @@
   background: transparent;
 }
 
+.style-options input[data-style-number-start] {
+  width: 68px;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel) 80%, transparent);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  text-align: center;
+}
+
+.style-options input[data-style-number-start]:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
 .style-options button[data-style-color]::before {
   content: "";
   position: absolute;
@@ -324,6 +343,10 @@
 .preview-root[data-tool="text"] .preview-frame canvas,
 .preview-root[data-tool="ocr"] .preview-frame canvas {
   cursor: text;
+}
+
+.preview-root[data-tool="number"] .preview-frame canvas {
+  cursor: copy;
 }
 
 .preview-text {
