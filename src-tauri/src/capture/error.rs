@@ -73,7 +73,6 @@ impl CaptureError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlatformFailure {
-    #[cfg_attr(windows, allow(dead_code))]
     PermissionDenied,
     Api(String),
     #[allow(dead_code)]
@@ -125,9 +124,22 @@ mod tests {
         let permission = classify_platform_failure(PlatformFailure::PermissionDenied);
         assert_eq!(permission.kind, CaptureErrorKind::Permission);
         assert!(permission.message.contains("权限"));
+        let hint = permission
+            .hint
+            .as_deref()
+            .expect("permission errors include a platform hint");
+        assert_eq!(hint, permission_hint());
+        assert!(!hint.is_empty());
+        assert!(permission.user_message().contains(hint));
+
         let api = classify_platform_failure(PlatformFailure::Api("BitBlt".into()));
         assert_eq!(api.kind, CaptureErrorKind::Api);
         assert!(api.message.contains("接口"));
+        assert!(api.message.contains("BitBlt"));
+        assert!(api.hint.is_none());
+        assert!(!api.user_message().contains("权限"));
+        assert!(!api.user_message().contains("屏幕录制"));
+        assert!(!api.user_message().contains("屏幕截图"));
     }
 
     #[cfg(target_os = "macos")]
@@ -137,6 +149,22 @@ mod tests {
         assert!(hint.contains("屏幕录制"));
         assert!(hint.contains("菜单栏"));
         assert!(hint.contains("退出"));
+        let error = classify_platform_failure(PlatformFailure::PermissionDenied);
+        let user = error.user_message();
+        assert!(user.contains("屏幕录制"));
+        assert!(user.contains("菜单栏"));
+        assert!(user.contains("退出"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_permission_hint_points_to_screenshot_settings() {
+        let hint = permission_hint();
+        assert!(hint.contains("屏幕截图"));
+        assert!(hint.contains("屏幕录制"));
+        let error = classify_platform_failure(PlatformFailure::PermissionDenied);
+        assert!(error.user_message().contains("屏幕截图"));
+        assert!(error.user_message().contains("屏幕录制"));
     }
 
     #[test]

@@ -1,7 +1,10 @@
 use std::mem::size_of;
 
 use windows::core::BOOL;
-use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
+use windows::Win32::Foundation::{
+    SetLastError, ERROR_ACCESS_DENIED, ERROR_SUCCESS, E_ACCESSDENIED, HWND, LPARAM, POINT, RECT,
+    WIN32_ERROR,
+};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS};
 use windows::Win32::Graphics::Gdi::{
     BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits,
@@ -133,24 +136,14 @@ unsafe fn capture_rect(
     if width == 0 || height == 0 {
         return Err(classify_platform_failure(PlatformFailure::BufferZeroSize));
     }
-    let hdc_screen = GetDC(None);
-    if hdc_screen.is_invalid() {
-        return Err(classify_platform_failure(PlatformFailure::Api("GetDC".into())));
-    }
-    let captured = capture_dc(hdc_screen, |hdc_mem| {
-        BitBlt(
-            hdc_mem,
-            0,
-            0,
-            width as i32,
-            height as i32,
-            Some(hdc_screen),
-            x,
-            y,
-            ROP_SRCCOPY_CAPTURE,
-        )
-        .is_ok()
-    }, width, height, scale);
+    let hdc_screen = screen_dc()?;
+    let captured = capture_dc(
+        hdc_screen,
+        |hdc_mem| bitblt_capture(hdc_mem, width as i32, height as i32, hdc_screen, x, y),
+        width,
+        height,
+        scale,
+    );
     ReleaseDC(None, hdc_screen);
     captured
 }
@@ -158,9 +151,58 @@ unsafe fn capture_rect(
 const ROP_SRCCOPY_CAPTURE: windows::Win32::Graphics::Gdi::ROP_CODE =
     windows::Win32::Graphics::Gdi::ROP_CODE(SRCCOPY.0 | CAPTUREBLT.0);
 
+fn gdi_access_denied(error: &windows::core::Error) -> bool {
+    error.code() == E_ACCESSDENIED || WIN32_ERROR::from_error(error) == Some(ERROR_ACCESS_DENIED)
+}
+
+fn classify_gdi_failure(api: &'static str, error: windows::core::Error) -> CaptureError {
+    if gdi_access_denied(&error) {
+        classify_platform_failure(PlatformFailure::PermissionDenied)
+    } else {
+        classify_platform_failure(PlatformFailure::Api(api.into()))
+    }
+}
+
+fn classify_gdi_last_error(api: &'static str) -> CaptureError {
+    classify_gdi_failure(api, windows::core::Error::from_win32())
+}
+
+unsafe fn screen_dc() -> Result<HDC, CaptureError> {
+    SetLastError(ERROR_SUCCESS);
+    let hdc = GetDC(None);
+    if hdc.is_invalid() {
+        Err(classify_gdi_last_error("GetDC"))
+    } else {
+        Ok(hdc)
+    }
+}
+
+unsafe fn bitblt_capture(
+    hdc_mem: HDC,
+    width: i32,
+    height: i32,
+    hdc_screen: HDC,
+    x: i32,
+    y: i32,
+) -> Result<(), CaptureError> {
+    SetLastError(ERROR_SUCCESS);
+    BitBlt(
+        hdc_mem,
+        0,
+        0,
+        width,
+        height,
+        Some(hdc_screen),
+        x,
+        y,
+        ROP_SRCCOPY_CAPTURE,
+    )
+    .map_err(|err| classify_gdi_failure("BitBlt", err))
+}
+
 unsafe fn capture_dc(
     hdc_screen: HDC,
-    paint: impl FnOnce(HDC) -> bool,
+    paint: impl FnOnce(HDC) -> Result<(), CaptureError>,
     width: u32,
     height: u32,
     scale: f64,
@@ -177,11 +219,11 @@ unsafe fn capture_dc(
         return Err(classify_platform_failure(PlatformFailure::BufferUninitialized));
     }
     let old = SelectObject(hdc_mem, bitmap.into());
-    if !paint(hdc_mem) {
+    if let Err(error) = paint(hdc_mem) {
         SelectObject(hdc_mem, old);
         let _ = DeleteObject(bitmap.into());
         let _ = DeleteDC(hdc_mem);
-        return Err(classify_platform_failure(PlatformFailure::Api("BitBlt".into())));
+        return Err(error);
     }
     let result = dibits_to_frame(hdc_mem, bitmap, width, height, scale);
     SelectObject(hdc_mem, old);
@@ -253,29 +295,22 @@ unsafe fn capture_hwnd(hwnd: HWND) -> Result<Frame, CaptureError> {
     if width == 0 || height == 0 {
         return Err(classify_platform_failure(PlatformFailure::BufferZeroSize));
     }
-    let hdc_screen = GetDC(None);
-    if hdc_screen.is_invalid() {
-        return Err(classify_platform_failure(PlatformFailure::Api("GetDC".into())));
-    }
+    let hdc_screen = screen_dc()?;
     let scale = monitor_scale_at(rect.left, rect.top);
     let captured = capture_dc(
         hdc_screen,
         |hdc_mem| {
             if print_window(hwnd, hdc_mem) {
-                true
+                Ok(())
             } else {
-                BitBlt(
+                bitblt_capture(
                     hdc_mem,
-                    0,
-                    0,
                     width as i32,
                     height as i32,
-                    Some(hdc_screen),
+                    hdc_screen,
                     rect.left,
                     rect.top,
-                    ROP_SRCCOPY_CAPTURE,
                 )
-                .is_ok()
             }
         },
         width,
@@ -389,4 +424,39 @@ fn parse_hwnd(id: &str) -> Result<HWND, CaptureError> {
         .parse::<usize>()
         .map_err(|_| CaptureError::api("无法识别该窗口。"))?;
     Ok(HWND(value as *mut _))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::capture::error::CaptureErrorKind;
+    use windows::Win32::Foundation::ERROR_INVALID_HANDLE;
+
+    #[test]
+    fn access_denied_is_permission_with_windows_hint() {
+        let error = classify_gdi_failure("BitBlt", ERROR_ACCESS_DENIED.into());
+        assert_eq!(error.kind, CaptureErrorKind::Permission);
+        let hint = error.hint.as_deref().expect("permission hint");
+        assert!(hint.contains("屏幕截图"));
+        assert!(hint.contains("屏幕录制"));
+        assert!(error.user_message().contains(hint));
+    }
+
+    #[test]
+    fn e_accessdenied_hresult_is_permission() {
+        let error = classify_gdi_failure("BitBlt", E_ACCESSDENIED.into());
+        assert_eq!(error.kind, CaptureErrorKind::Permission);
+        assert!(error.hint.is_some());
+    }
+
+    #[test]
+    fn generic_bitblt_failure_is_api_without_permission_hint() {
+        let error = classify_gdi_failure("BitBlt", ERROR_INVALID_HANDLE.into());
+        assert_eq!(error.kind, CaptureErrorKind::Api);
+        assert!(error.hint.is_none());
+        assert!(error.message.contains("BitBlt"));
+        assert!(!error.user_message().contains("权限"));
+        assert!(!error.user_message().contains("屏幕截图"));
+        assert!(!error.user_message().contains("屏幕录制"));
+    }
 }

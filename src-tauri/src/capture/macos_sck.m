@@ -2,6 +2,7 @@
 #import <CoreGraphics/CoreGraphics.h>
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 #import <dispatch/dispatch.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -41,6 +42,17 @@ static void cropmark_set_error(CropmarkSckResult *out, int32_t kind, const char 
   out->error = msg ? strdup(msg) : NULL;
 }
 
+// 未授权后同一进程内不再走 getShareableContent，避免热键连按反复弹 TCC。
+static atomic_int g_sck_content_denied = 0;
+
+static void cropmark_mark_shareable_content_denied(void) {
+  atomic_store(&g_sck_content_denied, 1);
+}
+
+static bool cropmark_shareable_content_denied(void) {
+  return atomic_load(&g_sck_content_denied) != 0;
+}
+
 static int cropmark_classify_error(NSError *error) {
   if (!error) {
     return 2;
@@ -53,6 +65,7 @@ static int cropmark_classify_error(NSError *error) {
       [desc localizedCaseInsensitiveContainsString:@"denied"] ||
       [desc localizedCaseInsensitiveContainsString:@"not authorized"] ||
       error.code == -3801 || error.code == -3802) {
+    cropmark_mark_shareable_content_denied();
     return 1;
   }
   return 2;
@@ -61,6 +74,9 @@ static int cropmark_classify_error(NSError *error) {
 // ScreenCaptureKit 的 getShareableContent 在 TCC 未真正绑定时每次都会弹系统授权。
 // 先用 CGPreflight 判断；未授权时每进程只调用一次 CGRequest，避免热键连弹。
 static int32_t cropmark_sck_ensure_permission(void) {
+  if (cropmark_shareable_content_denied()) {
+    return 1;
+  }
   if (CGPreflightScreenCaptureAccess()) {
     return 0;
   }
@@ -75,7 +91,11 @@ static int32_t cropmark_sck_ensure_permission(void) {
       dispatch_sync(dispatch_get_main_queue(), request);
     }
   });
-  return CGPreflightScreenCaptureAccess() ? 0 : 1;
+  if (CGPreflightScreenCaptureAccess()) {
+    return 0;
+  }
+  cropmark_mark_shareable_content_denied();
+  return 1;
 }
 
 static bool cropmark_cgimage_to_rgba(CGImageRef image, CropmarkSckResult *out) {
@@ -115,6 +135,14 @@ static bool cropmark_cgimage_to_rgba(CGImageRef image, CropmarkSckResult *out) {
 }
 
 static SCShareableContent *cropmark_content(NSError **errorOut) {
+  if (cropmark_shareable_content_denied()) {
+    if (errorOut) {
+      *errorOut = [NSError errorWithDomain:@"CropmarkScreenCapture"
+                                      code:1
+                                  userInfo:@{NSLocalizedDescriptionKey : @"not authorized"}];
+    }
+    return nil;
+  }
   dispatch_semaphore_t sema = dispatch_semaphore_create(0);
   __block SCShareableContent *content = nil;
   __block NSError *contentError = nil;
@@ -124,6 +152,9 @@ static SCShareableContent *cropmark_content(NSError **errorOut) {
     dispatch_semaphore_signal(sema);
   }];
   dispatch_semaphore_wait(sema, DISPATCH_TIME_FOREVER);
+  if (!content) {
+    (void)cropmark_classify_error(contentError);
+  }
   if (errorOut) {
     *errorOut = contentError;
   }
