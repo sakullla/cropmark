@@ -19,6 +19,10 @@
 //! 光标提示按引擎 `cursor_for` 映射:选区内部→开手(拖移中闭合手)、手柄/边→
 //! resize(SF Symbol 自绘)、chrome→箭头、空白→十字;符号不可用时退回十字,
 //! 光标切换不阻断选择/确认/取消(ADR-5).
+//! 文本输入(R21):文本工具激活时 `keyDown:` 经 `interpretKeyEvents:` 交给系统
+//! 输入上下文,视图实现 `NSTextInputClient`(insertText/setMarkedText/候选窗定位),
+//! IME 组合串作为 preedit 交给引擎绘制、提交串走 Text 事件;输入法不可用时
+//! ASCII 直输仍经 insertText 到达引擎,选择/确认/取消完全不受影响.
 //!
 //! 注意:本模块只能在 macOS 编译;Windows/Linux 主机上的离线核对以
 //! windows.rs 逐块对照 + `geometry::appkit_global_to_physical` 测试为准.
@@ -32,18 +36,22 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use objc2::rc::Retained;
-use objc2::{define_class, msg_send, AnyThread, MainThreadMarker, MainThreadOnly};
+use objc2::runtime::{AnyObject, Sel};
+use objc2::{define_class, msg_send, sel, AnyThread, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSBackingStoreType, NSCursor, NSEvent, NSEventMask, NSEventModifierFlags,
-    NSEventType, NSGraphicsContext, NSImage, NSPanel, NSResponder, NSScreen, NSView, NSWindow,
-    NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSEventType, NSGraphicsContext, NSImage, NSPanel, NSResponder, NSScreen, NSTextInputClient,
+    NSView, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 use objc2_core_foundation::{CFRetained, CGPoint, CGRect, CGSize, CGFloat};
 use objc2_core_graphics::{
     kCGScreenSaverWindowLevel, CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGContext,
     CGDataProvider, CGImage, CGImageAlphaInfo, CGImageByteOrderInfo,
 };
-use objc2_foundation::{NSDate, NSPoint, NSRect, NSRunLoopCommonModes, NSSize, NSString};
+use objc2_foundation::{
+    NSArray, NSAttributedString, NSDate, NSNotFound, NSPoint, NSRange, NSRangePointer, NSRect,
+    NSRunLoopCommonModes, NSSize, NSString,
+};
 
 use crate::capture::buffer::Frame;
 use crate::capture::error::CaptureError;
@@ -58,16 +66,20 @@ use crate::capture::session::QuietAction;
 
 // macOS Carbon 键码(HIToolbox/Events.h,kVK_*;与键盘布局无关的物理键位)。
 const KC_ANSI_C: u16 = 0x08;
+const KC_ANSI_Z: u16 = 0x06;
+const KC_ANSI_Y: u16 = 0x10;
+const KC_DELETE: u16 = 0x33;
 const KC_RETURN: u16 = 0x24;
 const KC_ESCAPE: u16 = 0x35;
 const KC_LEFT: u16 = 0x7B;
 const KC_RIGHT: u16 = 0x7C;
 const KC_DOWN: u16 = 0x7D;
 const KC_UP: u16 = 0x7E;
+const KC_FORWARD_DELETE: u16 = 0x75;
 
 /// 壳的最终结果:会话层据此选择完成路径(与 Windows 壳同构)。
-/// R21 起携带即时标注图元;macOS 文本输入由 posix 任务接入前,
-/// `AnnotationOptions::text_input` 为假,工具条不含文字工具。
+/// R21 起携带即时标注图元;文本输入经 `NSTextInputClient` 接入,
+/// `AnnotationOptions::text_input` 为真,工具条含文字工具。
 #[derive(Debug, Clone, PartialEq)]
 pub enum RegionOutcome {
     /// Enter 确认:rect 走普通完成路径(按 finishAction 预览或静默)。
@@ -125,6 +137,21 @@ struct ShellState {
     close_baseline: u64,
     /// 派发方主线程进入超时后置位:迟到的壳在泵内自行退出,不悬挂在屏幕上。
     abandoned: Arc<AtomicBool>,
+    /// IME 组合(未提交)文本与选区;None = 无组合。
+    marked: Option<MarkedText>,
+}
+
+/// IME 组合串与选中区间;长度单位与 `NSRange` 一致(UTF-16 码元)。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct MarkedText {
+    text: String,
+    selected: NSRange,
+}
+
+impl MarkedText {
+    fn utf16_len(&self) -> usize {
+        self.text.encode_utf16().count()
+    }
 }
 
 /// 壳内光标形态:引擎提示在上层细化(移动提示拖移中变为闭合手)。
@@ -271,15 +298,112 @@ define_class!(
 
         #[unsafe(method(keyDown:))]
         fn key_down(&self, event: &NSEvent) {
-            if let Some(key) = map_key_code(event.keyCode()) {
-                let shift = event.modifierFlags().contains(NSEventModifierFlags::Shift);
-                dispatch_input(self, InputEvent::Key { key, shift });
-            }
+            handle_key(self, event);
         }
 
         #[unsafe(method(drawRect:))]
         fn draw_rect(&self, _dirty_rect: NSRect) {
             draw_cached_image(self);
+        }
+    }
+
+    // NSTextInputClient(R21):文本工具激活时 `interpretKeyEvents:` 把键盘交给系统
+    // 输入上下文,组合/提交回调到这里;组合串作为 preedit、提交串作为 Text 事件
+    // 转发给选区引擎,壳不自行保存编辑状态(IME 不可用时 ASCII 直输同路径)。
+    unsafe impl NSTextInputClient for SelectionView {
+        #[unsafe(method(insertText:replacementRange:))]
+        fn insert_text(&self, string: &AnyObject, _replacement_range: NSRange) {
+            apply_committed_text(self, input_text(string));
+        }
+
+        #[unsafe(method(setMarkedText:selectedRange:replacementRange:))]
+        fn set_marked_text(
+            &self,
+            string: &AnyObject,
+            selected_range: NSRange,
+            _replacement_range: NSRange,
+        ) {
+            apply_marked_text(self, marked_from_input(input_text(string), selected_range));
+        }
+
+        #[unsafe(method(unmarkText))]
+        fn unmark_text(&self) {
+            apply_marked_text(self, None);
+        }
+
+        #[unsafe(method(hasMarkedText))]
+        fn has_marked_text(&self) -> bool {
+            state_marked().is_some()
+        }
+
+        #[unsafe(method(markedRange))]
+        fn marked_range(&self) -> NSRange {
+            match state_marked() {
+                Some(marked) => NSRange::new(0, marked.utf16_len()),
+                None => not_found_range(),
+            }
+        }
+
+        #[unsafe(method(selectedRange))]
+        fn selected_range(&self) -> NSRange {
+            match state_marked() {
+                Some(marked) => marked.selected,
+                None => NSRange::new(editing_utf16_len(), 0),
+            }
+        }
+
+        #[unsafe(method_id(validAttributesForMarkedText))]
+        fn valid_attributes_for_marked_text(&self) -> Retained<NSArray<NSString>> {
+            NSArray::new()
+        }
+
+        #[unsafe(method_id(attributedSubstringForProposedRange:actualRange:))]
+        unsafe fn attributed_substring(
+            &self,
+            _range: NSRange,
+            actual_range: NSRangePointer,
+        ) -> Option<Retained<NSAttributedString>> {
+            if !actual_range.is_null() {
+                unsafe { *actual_range = not_found_range() };
+            }
+            None
+        }
+
+        #[unsafe(method(firstRectForCharacterRange:actualRange:))]
+        unsafe fn first_rect(&self, range: NSRange, actual_range: NSRangePointer) -> NSRect {
+            if !actual_range.is_null() {
+                unsafe { *actual_range = range };
+            }
+            caret_screen_rect().unwrap_or_default()
+        }
+
+        #[unsafe(method(characterIndexForPoint:))]
+        fn character_index_for_point(&self, _point: NSPoint) -> usize {
+            0
+        }
+
+        #[unsafe(method(doCommandBySelector:))]
+        fn do_command_by_selector(&self, selector: Sel) {
+            let key = if selector == sel!(insertNewline:) {
+                Some(LogicalKey::Enter)
+            } else if selector == sel!(cancelOperation:) {
+                Some(LogicalKey::Escape)
+            } else if selector == sel!(deleteBackward:) || selector == sel!(deleteForward:) {
+                Some(LogicalKey::Delete)
+            } else if selector == sel!(moveLeft:) {
+                Some(LogicalKey::ArrowLeft)
+            } else if selector == sel!(moveRight:) {
+                Some(LogicalKey::ArrowRight)
+            } else if selector == sel!(moveUp:) {
+                Some(LogicalKey::ArrowUp)
+            } else if selector == sel!(moveDown:) {
+                Some(LogicalKey::ArrowDown)
+            } else {
+                None
+            };
+            if let Some(key) = key {
+                dispatch_input(self, InputEvent::Key { key, shift: false });
+            }
         }
     }
 );
@@ -564,6 +688,7 @@ fn run_shell(
             resize_cursors: ResizeCursors::default(),
             close_baseline,
             abandoned,
+            marked: None,
         });
     });
     let app = NSApplication::sharedApplication(mtm);
@@ -746,10 +871,7 @@ fn route_input(view: &SelectionView, event: &NSEvent) -> bool {
         forward_mouse(view, event, MouseInput::RightDown);
         true
     } else if ty == NSEventType::KeyDown {
-        if let Some(key) = map_key_code(event.keyCode()) {
-            let shift = event.modifierFlags().contains(NSEventModifierFlags::Shift);
-            dispatch_input(view, InputEvent::Key { key, shift });
-        }
+        handle_key(view, event);
         true
     } else {
         false
@@ -942,8 +1064,153 @@ fn map_key_code(code: u16) -> Option<LogicalKey> {
         KC_RIGHT => Some(LogicalKey::ArrowRight),
         KC_DOWN => Some(LogicalKey::ArrowDown),
         KC_ANSI_C => Some(LogicalKey::CopyColor),
+        // 文本编辑的退格/删除(非编辑态下引擎忽略)。
+        KC_DELETE | KC_FORWARD_DELETE => Some(LogicalKey::Delete),
         _ => None,
     }
+}
+
+/// 撤销/重做快捷键键码映射(Cmd/Ctrl 由调用方判定,Shift 决定重做)。
+fn shortcut_key(code: u16, shift: bool) -> Option<LogicalKey> {
+    match code {
+        KC_ANSI_Z => Some(if shift {
+            LogicalKey::Redo
+        } else {
+            LogicalKey::Undo
+        }),
+        KC_ANSI_Y => Some(LogicalKey::Redo),
+        _ => None,
+    }
+}
+
+/// 键盘事件分发:文本编辑中走 `interpretKeyEvents:`(系统输入上下文/IME);
+/// 其余情况保持壳内直接映射(Enter/Esc/方向/C),Cmd/Ctrl+Z/Y 撤销/重做。
+fn handle_key(view: &SelectionView, event: &NSEvent) {
+    let editing = STATE.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .map(|state| state.canvas.engine.text_edit().is_some())
+            .unwrap_or(false)
+    });
+    if editing {
+        let events = NSArray::from_retained_slice(&[Retained::from(event)]);
+        view.interpretKeyEvents(&events);
+        return;
+    }
+    let code = event.keyCode();
+    let flags = event.modifierFlags();
+    let shift = flags.contains(NSEventModifierFlags::Shift);
+    let command = flags.intersects(NSEventModifierFlags::Command.union(NSEventModifierFlags::Control));
+    if command {
+        if let Some(key) = shortcut_key(code, shift) {
+            dispatch_input(view, InputEvent::Key { key, shift });
+            return;
+        }
+    }
+    if let Some(key) = map_key_code(code) {
+        dispatch_input(view, InputEvent::Key { key, shift });
+    }
+}
+
+// ---- R21 文本输入:组合/提交到引擎的转发与输入上下文查询 ----
+
+/// `NSRange` 的“无范围”值(NSNotFound, 0)。
+fn not_found_range() -> NSRange {
+    NSRange::new(NSNotFound as usize, 0)
+}
+
+/// setMarkedText: 的入参校验:空串等于结束组合,选区钳制在组合串长度内。
+fn marked_from_input(text: String, selected_range: NSRange) -> Option<MarkedText> {
+    if text.is_empty() {
+        return None;
+    }
+    let len = text.encode_utf16().count();
+    let location = selected_range.location.min(len);
+    let length = selected_range.length.min(len - location);
+    Some(MarkedText {
+        text,
+        selected: NSRange::new(location, length),
+    })
+}
+
+/// 读 shell 状态执行副作用;测试/收尾后状态缺失时静默忽略。
+fn with_shell_state<R>(f: impl FnOnce(&mut ShellState) -> R) -> Option<R> {
+    STATE.with(|slot| slot.borrow_mut().as_mut().map(f))
+}
+
+/// 当前编辑会话的文本(已提交 + 组合)UTF-16 长度;无会话为 0。
+fn editing_utf16_len() -> usize {
+    STATE.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .and_then(|state| state.canvas.engine.text_edit())
+            .map(|edit| edit.display().encode_utf16().count())
+            .unwrap_or(0)
+    })
+}
+
+fn state_marked() -> Option<MarkedText> {
+    STATE.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .and_then(|state| state.marked.clone())
+    })
+}
+
+/// 提交文本(insertText:):结束组合态并交给引擎;无编辑会话时引擎自行忽略。
+fn apply_committed_text(view: &SelectionView, text: String) {
+    if text.is_empty() {
+        return;
+    }
+    with_shell_state(|state| state.marked = None);
+    dispatch_input(view, InputEvent::Text(text));
+}
+
+/// 更新组合串(setMarkedText:/unmarkText):作为 preedit 交引擎绘制。
+fn apply_marked_text(view: &SelectionView, marked: Option<MarkedText>) {
+    with_shell_state(|state| state.marked = marked.clone());
+    let preedit = marked.map(|marked| marked.text).unwrap_or_default();
+    dispatch_input(view, InputEvent::Composition(preedit));
+}
+
+/// insertText:/setMarkedText: 的 string 参数可能是 NSString 或 NSAttributedString。
+fn input_text(string: &AnyObject) -> String {
+    if let Some(text) = string.downcast_ref::<NSString>() {
+        return text.to_string();
+    }
+    if let Some(attributed) = string.downcast_ref::<NSAttributedString>() {
+        return attributed.string().to_string();
+    }
+    String::new()
+}
+
+/// 文本光标在 AppKit 屏幕坐标系(主屏左下原点)的矩形:候选窗定位用。
+fn caret_screen_rect() -> Option<NSRect> {
+    let (caret, text_size, frame_x, frame_y, frame_h, scale) = STATE.with(|slot| {
+        let guard = slot.borrow();
+        let state = guard.as_ref()?;
+        let caret = state.canvas.engine.text_caret()?;
+        let text_size = state.canvas.engine.annotation_overlay().text_size as f64;
+        Some((
+            caret,
+            text_size,
+            state.frame_x,
+            state.frame_y,
+            state.frame_h,
+            state.scale,
+        ))
+    })?;
+    // 引擎物理像素(左上原点)→ AppKit 全局逻辑坐标(主屏左下原点)。
+    let x = frame_x + f64::from(caret.0) / scale;
+    let line_h = (text_size / scale).max(1.0);
+    let y = frame_y + frame_h - f64::from(caret.1) / scale - line_h;
+    Some(NSRect {
+        origin: NSPoint { x, y },
+        size: NSSize {
+            width: 1.0,
+            height: line_h,
+        },
+    })
 }
 
 /// 单次合成耗时(仅 Redraw 路径调用;ADR-007 护栏的可观察基线)。
@@ -1097,7 +1364,38 @@ mod tests {
         assert_eq!(map_key_code(KC_RIGHT), Some(LogicalKey::ArrowRight));
         assert_eq!(map_key_code(KC_DOWN), Some(LogicalKey::ArrowDown));
         assert_eq!(map_key_code(KC_ANSI_C), Some(LogicalKey::CopyColor));
+        // 文本编辑的退格/删除(与 Windows 壳同义)。
+        assert_eq!(map_key_code(KC_DELETE), Some(LogicalKey::Delete));
+        assert_eq!(map_key_code(KC_FORWARD_DELETE), Some(LogicalKey::Delete));
         assert_eq!(map_key_code(0x0A), None);
+    }
+
+    #[test]
+    fn shortcut_keys_cover_undo_and_redo() {
+        assert_eq!(shortcut_key(KC_ANSI_Z, false), Some(LogicalKey::Undo));
+        assert_eq!(shortcut_key(KC_ANSI_Z, true), Some(LogicalKey::Redo));
+        assert_eq!(shortcut_key(KC_ANSI_Y, false), Some(LogicalKey::Redo));
+        assert_eq!(shortcut_key(KC_ANSI_Y, true), Some(LogicalKey::Redo));
+        assert_eq!(shortcut_key(KC_ANSI_C, false), None);
+    }
+
+    #[test]
+    fn marked_from_input_clears_empty_and_clamps_selection() {
+        assert_eq!(marked_from_input(String::new(), NSRange::new(0, 0)), None);
+        // 中文 1 个 UTF-16 码元;越界选区钳回长度内。
+        let marked = marked_from_input("中".into(), NSRange::new(5, 9)).unwrap();
+        assert_eq!(marked.utf16_len(), 1);
+        assert_eq!(marked.selected, NSRange::new(1, 0));
+        // 组合串内部的合法选区原样保留。
+        let marked = marked_from_input("ni".into(), NSRange::new(1, 1)).unwrap();
+        assert_eq!(marked.selected, NSRange::new(1, 1));
+    }
+
+    #[test]
+    fn not_found_range_matches_foundation_convention() {
+        let range = not_found_range();
+        assert_eq!(range.length, 0);
+        assert_eq!(range.location, NSNotFound as usize);
     }
 
     #[test]

@@ -74,8 +74,9 @@ pub struct AnnotationOptions {
     pub stroke_width: Option<f64>,
     pub text_size: Option<f64>,
     pub number_start: u32,
-    /// 平台壳是否具备文本输入通道(Windows 的 WM_CHAR/IME;posix 接入后置真)。
-    /// 为假时工具条不出现文字工具,选择/确认/取消完全不受影响。
+    /// 平台壳是否具备文本输入通道(Windows WM_CHAR/IME、macOS
+    /// NSTextInputClient、Linux X11 XIM/直输)。为假时工具条不出现文字工具,
+    /// 选择/确认/取消完全不受影响。
     pub text_input: bool,
 }
 

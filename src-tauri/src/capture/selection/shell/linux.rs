@@ -21,6 +21,13 @@
 //! 键位),方向键/Enter/Esc/C 与布局无关;Shift 状态取事件 state 的
 //! KeyButMask::SHIFT 位,与 windows.rs 的 VK_SHIFT 跟踪同义。
 //!
+//! 文本输入(R21):Xlib 侧独立连接(链接 libX11,CI/构建依赖已含 libx11-dev)
+//! 上开 XIM(`XOpenIM`/`XCreateIC`,XIMPreeditNothing|XIMStatusNothing),按键经
+//! `XFilterEvent` 转发给 IM、IM 回放/提交经 `XInternalConnectionNumbers` +
+//! `XProcessInternalConnection` 取回后用 `Xutf8LookupString` 读出;
+//! `XOpenDisplay`/`XOpenIM` 失败时只失去 IME,ASCII 直输仍走核心键盘映射的
+//! keysym→字符回退,选择/确认/取消不受影响。
+//!
 //! 接线说明:经 `capture/native_overlay.rs` 的 `#[path]` 分发挂入编译
 //! (ADR-008);session.rs 的 Linux `capture_region` 按会话类型分派——
 //! 非 Wayland 且 `$DISPLAY` 可用(含 XWayland)时调 `pick_region`,
@@ -31,6 +38,8 @@
 //! 后续独立工作。注意:本模块只能在 Linux 编译;Windows/macOS 主机上的
 //! 离线核对以 windows.rs 逐块对照 + probe crate 交叉 cargo check 为准。
 
+use std::ffi::{c_char, c_int, c_uint, c_ulong, c_void};
+use std::ptr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
@@ -71,6 +80,12 @@ const XK_KP_RIGHT: u32 = 0xff98;
 const XK_KP_DOWN: u32 = 0xff99;
 const XK_C_LOWER: u32 = 0x63;
 const XK_C_UPPER: u32 = 0x43;
+const XK_Y_LOWER: u32 = 0x79;
+const XK_Y_UPPER: u32 = 0x59;
+const XK_Z_LOWER: u32 = 0x7a;
+const XK_Z_UPPER: u32 = 0x5a;
+const XK_BACKSPACE: u32 = 0xff08;
+const XK_DELETE: u32 = 0xffff;
 
 // "cursor" 字体中的标准字形(X11/cursorfont.h 的 XC_* 常量)。每个光标占两个
 // 字符码:source=glyph、mask=glyph+1(XCreateFontCursor 语义)。
@@ -276,6 +291,8 @@ struct ShellState {
     cursor_hint: Option<CursorHint>,
     outcome: Option<RegionOutcome>,
     timing: bool,
+    /// R21 文本输入通道(XIM);None = Xlib 不可用,直输走核心键盘映射。
+    xim: Option<XimSession>,
 }
 
 /// 一次会话预建的字体光标集。字体或单个字形创建失败时对应项为 NONE
@@ -430,6 +447,24 @@ impl KeyboardMap {
         Some(sym)
     }
 
+    /// 按 Shift 列取 keysym(文本直输用);第 0 列为 NoSymbol 时回退首个有效列。
+    fn keysym_for(&self, keycode: u8, shift: bool) -> Option<u32> {
+        if self.per_keycode == 0 {
+            return None;
+        }
+        let index = keycode.checked_sub(self.min_keycode)? as usize;
+        let base = index.checked_mul(self.per_keycode)?;
+        let list = self.keysyms.get(base..base + self.per_keycode)?;
+        let primary = list
+            .get(usize::from(shift))
+            .copied()
+            .unwrap_or(NO_SYMBOL);
+        if primary != NO_SYMBOL {
+            return Some(primary);
+        }
+        list.iter().copied().find(|sym| *sym != NO_SYMBOL)
+    }
+
     fn logical_key(&self, keycode: u8) -> Option<LogicalKey> {
         match self.plain_keysym(keycode)? {
             XK_RETURN | XK_KP_ENTER => Some(LogicalKey::Enter),
@@ -439,9 +474,434 @@ impl KeyboardMap {
             XK_RIGHT | XK_KP_RIGHT => Some(LogicalKey::ArrowRight),
             XK_DOWN | XK_KP_DOWN => Some(LogicalKey::ArrowDown),
             XK_C_LOWER | XK_C_UPPER => Some(LogicalKey::CopyColor),
+            // 文本编辑的退格/删除(非编辑态下引擎忽略)。
+            XK_BACKSPACE | XK_DELETE => Some(LogicalKey::Delete),
             _ => None,
         }
     }
+
+    /// 撤销/重做快捷键:与 Windows 壳一致用 Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y。
+    fn shortcut_key(&self, keycode: u8, state: u16) -> Option<LogicalKey> {
+        if state & u16::from(KeyButMask::CONTROL) == 0 {
+            return None;
+        }
+        let shift = state & u16::from(KeyButMask::SHIFT) != 0;
+        match self.plain_keysym(keycode)? {
+            XK_Z_LOWER | XK_Z_UPPER => Some(if shift {
+                LogicalKey::Redo
+            } else {
+                LogicalKey::Undo
+            }),
+            XK_Y_LOWER | XK_Y_UPPER => Some(LogicalKey::Redo),
+            _ => None,
+        }
+    }
+}
+
+// ---- R21 文本输入:Xlib XIM(基础路径) ----
+
+/// Xlib 不透明句柄(仅作为 FFI 指针类型;语义由 Xlib 管理)。
+#[repr(C)]
+struct XDisplay {
+    _private: [u8; 0],
+}
+#[repr(C)]
+struct XimOpaque {
+    _private: [u8; 0],
+}
+#[repr(C)]
+struct XicOpaque {
+    _private: [u8; 0],
+}
+
+/// XKeyEvent 的 C 布局(Bool 即 int;60 字节字段 + 对齐,见 Xlib.h)。
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct XKeyEvent {
+    kind: c_int,
+    serial: c_ulong,
+    send_event: c_int,
+    display: *mut XDisplay,
+    window: c_ulong,
+    root: c_ulong,
+    subwindow: c_ulong,
+    time: c_ulong,
+    x: c_int,
+    y: c_int,
+    x_root: c_int,
+    y_root: c_int,
+    state: c_uint,
+    keycode: c_uint,
+    same_screen: c_int,
+}
+
+/// XEvent 联合体按 64 位平台 24 个 long 定容;Xlib 可能按整只 XEvent
+/// 复制/回塞事件,缓冲必须足量。
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct XEventBuf {
+    _pad: [c_ulong; 24],
+}
+
+impl XEventBuf {
+    fn zeroed() -> Self {
+        Self { _pad: [0; 24] }
+    }
+
+    fn from_key(key: &XKeyEvent) -> Self {
+        let mut buf = Self::zeroed();
+        unsafe { ptr::write(buf._pad.as_mut_ptr().cast::<XKeyEvent>(), *key) };
+        buf
+    }
+
+    fn key(&self) -> XKeyEvent {
+        unsafe { ptr::read(self._pad.as_ptr().cast::<XKeyEvent>()) }
+    }
+}
+
+// X11 常量(Xlib.h):事件类型、XIM 样式、查找状态。
+const X_KEY_PRESS: c_int = 2;
+const X_KEY_RELEASE: c_int = 3;
+/// XIMPreeditNothing | XIMStatusNothing:IM 自绘预编辑/状态,不要求客户端窗口。
+const XIM_STYLE_NO_CLIENT_DRAW: c_ulong = (1 << 3) | (1 << 18);
+const X_BUFFER_OVERFLOW: c_int = -1;
+/// 转发按键后等待 IM 回放/提交的上限(ms);IM 无响应时只多这一次轮询。
+const XIM_KEY_DRAIN_MS: c_int = 15;
+/// 单次 drain 收集上限(防御 IM 持续灌数据导致泵饥饿)。
+const XIM_DRAIN_MAX_EVENTS: usize = 128;
+
+#[link(name = "X11")]
+extern "C" {
+    fn XOpenDisplay(name: *const c_char) -> *mut XDisplay;
+    fn XCloseDisplay(dpy: *mut XDisplay) -> c_int;
+    fn XSetLocaleModifiers(mods: *const c_char) -> *mut c_char;
+    fn XOpenIM(
+        dpy: *mut XDisplay,
+        rdb: *mut c_void,
+        res_name: *const c_char,
+        res_class: *const c_char,
+    ) -> *mut XimOpaque;
+    fn XCloseIM(im: *mut XimOpaque) -> c_int;
+    fn XCreateIC(im: *mut XimOpaque, ...) -> *mut XicOpaque;
+    fn XDestroyIC(ic: *mut XicOpaque);
+    fn XSetICFocus(ic: *mut XicOpaque);
+    fn XUnsetICFocus(ic: *mut XicOpaque);
+    fn XFilterEvent(ev: *mut XEventBuf, window: c_ulong) -> c_int;
+    fn Xutf8LookupString(
+        ic: *mut XicOpaque,
+        ev: *mut XKeyEvent,
+        buffer: *mut c_char,
+        bytes: c_int,
+        keysym: *mut c_ulong,
+        status: *mut c_int,
+    ) -> c_int;
+    fn XLookupString(
+        ev: *mut XKeyEvent,
+        buffer: *mut c_char,
+        bytes: c_int,
+        keysym: *mut c_ulong,
+        status: *mut c_void,
+    ) -> c_int;
+    fn XInternalConnectionNumbers(
+        dpy: *mut XDisplay,
+        fd_list: *mut *mut c_int,
+        count: *mut c_int,
+    ) -> c_int;
+    fn XProcessInternalConnection(dpy: *mut XDisplay, fd: c_int);
+    fn XFree(data: *mut c_void) -> c_int;
+    fn XPending(dpy: *mut XDisplay) -> c_int;
+    fn XNextEvent(dpy: *mut XDisplay, ev: *mut XEventBuf) -> c_int;
+}
+
+/// IM 回放/提交的输出;文本进引擎、按键按壳内映射继续处理。
+enum XimOutput {
+    Text(String),
+    Key(XKeyEvent),
+}
+
+/// 打开的 XIM 文本输入通道:Xlib 独立连接 + IM/IC + 传输 fd。
+/// `XOpenDisplay` 失败返回 None,壳回退核心键盘映射直输。
+struct XimSession {
+    dpy: *mut XDisplay,
+    im: *mut XimOpaque,
+    ic: *mut XicOpaque,
+    /// IM 传输的内部连接 fd;就绪后交 `XProcessInternalConnection`。
+    fds: Vec<c_int>,
+}
+
+impl Drop for XimSession {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.ic.is_null() {
+                XUnsetICFocus(self.ic);
+                XDestroyIC(self.ic);
+            }
+            if !self.im.is_null() {
+                XCloseIM(self.im);
+            }
+            if !self.dpy.is_null() {
+                XCloseDisplay(self.dpy);
+            }
+        }
+    }
+}
+
+impl XimSession {
+    /// 在独立 Xlib 连接上打开 XIM 并绑定选区窗;任一步失败只退回直输。
+    fn open(window: xproto::Window) -> Option<Self> {
+        unsafe {
+            let dpy = XOpenDisplay(ptr::null());
+            if dpy.is_null() {
+                return None;
+            }
+            // 使用当前 locale 的 IM 修饰键;locale 由 GTK 初始化设置。
+            XSetLocaleModifiers(c"".as_ptr());
+            let mut session = Self {
+                dpy,
+                im: ptr::null_mut(),
+                ic: ptr::null_mut(),
+                fds: Vec::new(),
+            };
+            let im = XOpenIM(dpy, ptr::null_mut(), ptr::null(), ptr::null());
+            if !im.is_null() {
+                session.im = im;
+                session.create_ic(window);
+            }
+            session.refresh_fds();
+            Some(session)
+        }
+    }
+
+    /// XCreateIC(style=Nothing|Nothing + client/focus window);失败保持 ic=NULL。
+    unsafe fn create_ic(&mut self, window: xproto::Window) {
+        const XN_INPUT_STYLE: &[u8] = b"inputStyle\0";
+        const XN_CLIENT_WINDOW: &[u8] = b"clientWindow\0";
+        const XN_FOCUS_WINDOW: &[u8] = b"focusWindow\0";
+        let ic = XCreateIC(
+            self.im,
+            XN_INPUT_STYLE.as_ptr().cast::<c_char>(),
+            XIM_STYLE_NO_CLIENT_DRAW,
+            XN_CLIENT_WINDOW.as_ptr().cast::<c_char>(),
+            window as c_ulong,
+            XN_FOCUS_WINDOW.as_ptr().cast::<c_char>(),
+            window as c_ulong,
+            ptr::null::<c_char>(),
+        );
+        if !ic.is_null() {
+            self.ic = ic;
+        }
+    }
+
+    /// 缓存 IM 传输 fd(Xlib 内部连接;数据由 XIM 协议层直读 socket)。
+    unsafe fn refresh_fds(&mut self) {
+        let mut list: *mut c_int = ptr::null_mut();
+        let mut count: c_int = 0;
+        if XInternalConnectionNumbers(self.dpy, &mut list, &mut count) != 0
+            && !list.is_null()
+            && count > 0
+        {
+            self.fds = std::slice::from_raw_parts(list, count as usize).to_vec();
+        }
+        if !list.is_null() {
+            XFree(list.cast::<c_void>());
+        }
+    }
+
+    /// 告知 IM 选区窗持有输入焦点。
+    fn focus(&self) {
+        if !self.ic.is_null() {
+            unsafe { XSetICFocus(self.ic) };
+        }
+    }
+
+    /// 把按键转发给 IM(XFilterEvent);返回 true 表示事件已被 IM 消费。
+    /// 未被消费时事件可能被本地 compose 改写(keycode=0),调用方按改写后处理。
+    fn forward_key(&mut self, key: &mut XKeyEvent, window: xproto::Window) -> bool {
+        if self.ic.is_null() {
+            return false;
+        }
+        key.display = self.dpy;
+        let mut buf = XEventBuf::from_key(key);
+        let filtered = unsafe { XFilterEvent(&mut buf, window as c_ulong) } != 0;
+        if !filtered {
+            *key = buf.key();
+        }
+        filtered
+    }
+
+    /// 轮询 IM 传输与 Xlib 队列:回放按键/提交文本以输出形式返回。
+    /// `wait_ms` 仅作用第一轮(转发后等回放);其后只做非阻塞轮询。
+    fn drain(&mut self, wait_ms: c_int) -> Vec<XimOutput> {
+        let mut out = Vec::new();
+        let mut first = true;
+        loop {
+            let timeout = if first { wait_ms } else { 0 };
+            first = false;
+            if !self.service_internal(timeout) {
+                break;
+            }
+            self.collect(&mut out);
+            if out.len() >= XIM_DRAIN_MAX_EVENTS {
+                break;
+            }
+        }
+        self.collect(&mut out);
+        out
+    }
+
+    /// select/poll 语义:IM fd 就绪时交 Xlib 生成内部事件(回塞队列)。
+    fn service_internal(&mut self, timeout_ms: c_int) -> bool {
+        if self.fds.is_empty() {
+            return false;
+        }
+        let mut pfds: Vec<libc::pollfd> = self
+            .fds
+            .iter()
+            .map(|fd| libc::pollfd {
+                fd: *fd,
+                events: libc::POLLIN,
+                revents: 0,
+            })
+            .collect();
+        let ready = unsafe { libc::poll(pfds.as_mut_ptr(), pfds.len() as libc::nfds_t, timeout_ms) };
+        if ready <= 0 {
+            return false;
+        }
+        for pfd in &pfds {
+            if pfd.revents & libc::POLLIN != 0 {
+                unsafe { XProcessInternalConnection(self.dpy, pfd.fd) };
+            }
+        }
+        true
+    }
+
+    /// 清空 Xlib 队列:协议事件先过 `XFilterEvent`,回放/提交转输出。
+    fn collect(&mut self, out: &mut Vec<XimOutput>) {
+        loop {
+            if out.len() >= XIM_DRAIN_MAX_EVENTS {
+                return;
+            }
+            if unsafe { XPending(self.dpy) } <= 0 {
+                return;
+            }
+            let mut buf = XEventBuf::zeroed();
+            unsafe { XNextEvent(self.dpy, &mut buf) };
+            let key = buf.key();
+            let filtered = unsafe { XFilterEvent(&mut buf, 0) } != 0;
+            if key.kind == X_KEY_PRESS && key.keycode == 0 {
+                // 提交串:keycode=0 的合成事件,查 lookup 取文本。
+                if let Some(text) = self.lookup_utf8(&buf.key()) {
+                    out.push(XimOutput::Text(text));
+                }
+            } else if !filtered && (key.kind == X_KEY_PRESS || key.kind == X_KEY_RELEASE) {
+                out.push(XimOutput::Key(key));
+            }
+        }
+    }
+
+    /// 文本输入:XIM 打开时走 Xutf8LookupString(含组合/提交),否则回退
+    /// XLookupString 的 keysym 直映射。IME 不可用不影响其余交互。
+    fn text_for(&self, key: &XKeyEvent) -> Option<String> {
+        if !self.ic.is_null() {
+            if let Some(text) = self.lookup_utf8(key) {
+                if !text.is_empty() {
+                    return Some(text);
+                }
+            }
+        }
+        self.lookup_direct(key)
+    }
+
+    /// Xutf8LookupString:提交串与直输文本统一 UTF-8;缓冲区不足时扩容量试。
+    fn lookup_utf8(&self, key: &XKeyEvent) -> Option<String> {
+        if self.ic.is_null() {
+            return None;
+        }
+        let mut event = *key;
+        event.display = self.dpy;
+        let mut size = 64usize;
+        loop {
+            let mut bytes = vec![0u8; size];
+            let mut keysym: c_ulong = 0;
+            let mut status: c_int = 0;
+            let n = unsafe {
+                Xutf8LookupString(
+                    self.ic,
+                    &mut event,
+                    bytes.as_mut_ptr().cast::<c_char>(),
+                    bytes.len() as c_int,
+                    &mut keysym,
+                    &mut status,
+                )
+            };
+            if status == X_BUFFER_OVERFLOW && size < 4096 {
+                size *= 4;
+                continue;
+            }
+            if n <= 0 {
+                return None;
+            }
+            let len = (n as usize).min(bytes.len());
+            return Some(String::from_utf8_lossy(&bytes[..len]).into_owned());
+        }
+    }
+
+    /// 无 IC 时的直输:XLookupString 取 keysym,再用 keysym→字符映射,
+    /// 避免依赖 locale 编码。
+    fn lookup_direct(&self, key: &XKeyEvent) -> Option<String> {
+        let mut event = *key;
+        event.display = self.dpy;
+        let mut buf = [0 as c_char; 8];
+        let mut keysym: c_ulong = 0;
+        let n = unsafe {
+            XLookupString(
+                &mut event,
+                buf.as_mut_ptr(),
+                buf.len() as c_int,
+                &mut keysym,
+                ptr::null_mut(),
+            )
+        };
+        if let Some(ch) = keysym_to_char(keysym as u32) {
+            return Some(ch.to_string());
+        }
+        if n > 0 {
+            let bytes = unsafe {
+                std::slice::from_raw_parts(buf.as_ptr().cast::<u8>(), (n as usize).min(buf.len()))
+            };
+            if let Ok(text) = std::str::from_utf8(bytes) {
+                let text = text.trim_end_matches('\0');
+                if !text.is_empty() {
+                    return Some(text.to_string());
+                }
+            }
+        }
+        None
+    }
+}
+
+/// keysym → 可提交字符:ASCII/拉丁文与 Unicode 段(0x01000000+码点);
+/// 功能键/方向键等 XK_* 段不产生文本。
+fn keysym_to_char(keysym: u32) -> Option<char> {
+    let code = if keysym >= 0x0100_0000 {
+        keysym & 0x00ff_ffff
+    } else {
+        keysym
+    };
+    let printable = keysym >= 0x0100_0000 || matches!(code, 0x20..=0x7e | 0xa0..=0xff);
+    if !printable {
+        return None;
+    }
+    char::from_u32(code).filter(|ch| !ch.is_control())
+}
+
+/// 按当前 Shift 状态从核心键盘表取 keysym 并映射为直输字符。
+fn direct_text_from_map(keyboard: &KeyboardMap, key: &XKeyEvent) -> Option<String> {
+    let shift = key.state & u32::from(KeyButMask::SHIFT) != 0;
+    keyboard
+        .keysym_for(key.keycode as u8, shift)
+        .and_then(keysym_to_char)
+        .map(|ch| ch.to_string())
 }
 
 /// 驱动一次区域选区:创建 override-redirect 全屏窗并泵事件直到引擎终态。
@@ -504,7 +964,8 @@ pub fn pick_region(
                     | EventMask::BUTTON_PRESS
                     | EventMask::BUTTON_RELEASE
                     | EventMask::POINTER_MOTION
-                    | EventMask::KEY_PRESS,
+                    | EventMask::KEY_PRESS
+                    | EventMask::KEY_RELEASE,
             ),
     )
     .map_err(|_| window_failed())?
@@ -519,6 +980,12 @@ pub fn pick_region(
     // 字体/字形缺失时对应提示退回服务器默认指针(不阻断交互)。
     let cursors = CursorSet::build(&conn);
     let grab_cursor = cursors.cursor(CursorHint::Crosshair);
+
+    // R21 文本输入:独立 Xlib 连接上开 XIM(XOpenIM/XCreateIC);失败只失去
+    // IME,直输仍回退核心键盘映射。文字工具在 X11 原生壳始终可用。
+    let xim = XimSession::open(window);
+    let mut annotation_options = annotation_options;
+    annotation_options.text_input = true;
 
     let mut state = ShellState {
         hooks,
@@ -538,6 +1005,7 @@ pub fn pick_region(
         cursor_hint: Some(CursorHint::Crosshair),
         outcome: None,
         timing: std::env::var_os("CROPMARK_CAPTURE_TIMING").is_some(),
+        xim,
     };
 
     // 窗口光标兜底:抓取失败时窗口属性仍能显示十字(与抓取光标一致)。
@@ -564,6 +1032,11 @@ pub fn pick_region(
     ACTIVE_SHELL_WINDOW.store(window, Ordering::SeqCst);
     ACTIVE_SHELL_CANCEL_ATOM.store(cancel_atom, Ordering::SeqCst);
     grab_inputs(&conn, window, grab_cursor);
+    // XIM 焦点跟随键盘抓取:无 WM 的 override-redirect 窗没有 FocusIn,
+    // 抓取成功即视为 IC 获得输入焦点。
+    if let Some(xim) = state.xim.as_ref() {
+        xim.focus();
+    }
     let _ = conn.flush();
 
     pump_until_done(&mut state, &surface, &keyboard);
@@ -734,13 +1207,8 @@ fn pump_until_done(state: &mut ShellState, surface: &Surface<'_>, keyboard: &Key
                     y: e.event_y as i32,
                 },
             ),
-            XEvent::KeyPress(e) => {
-                let shift = u16::from(e.state) & u16::from(KeyButMask::SHIFT) != 0;
-                keyboard
-                    .logical_key(e.detail)
-                    .map(|key| feed_event(state, surface, InputEvent::Key { key, shift }))
-                    .unwrap_or(false)
-            }
+            XEvent::KeyPress(e) => handle_key_press(state, surface, keyboard, &e),
+            XEvent::KeyRelease(e) => handle_key_release(state, surface, keyboard, &e),
             // 无效验请求的错误回执会以事件形式送达;选区窗的绘制/抓取
             // 请求均为尽力而为,忽略错误继续泵。
             XEvent::Error(_) => false,
@@ -760,10 +1228,194 @@ fn pump_until_done(state: &mut ShellState, surface: &Surface<'_>, keyboard: &Key
             }
             _ => false,
         };
-        if done {
+        // IM 的异步回放/提交(与当前事件无直接对应)在阻塞等待前收掉。
+        if done || flush_xim(state, surface, keyboard) {
             return;
         }
     }
+}
+
+/// 构造 IM 用的按键事件(display 由 XimSession 填入;坐标为物理像素)。
+#[allow(clippy::too_many_arguments)]
+fn key_event_for(
+    surface: &Surface<'_>,
+    kind: c_int,
+    detail: u8,
+    time: u32,
+    event_x: i16,
+    event_y: i16,
+    root_x: i16,
+    root_y: i16,
+    state_mask: u16,
+    root: xproto::Window,
+) -> XKeyEvent {
+    XKeyEvent {
+        kind,
+        serial: 0,
+        send_event: 0,
+        display: ptr::null_mut(),
+        window: surface.window as c_ulong,
+        root: root as c_ulong,
+        subwindow: 0,
+        time: time as c_ulong,
+        x: event_x as c_int,
+        y: event_y as c_int,
+        x_root: root_x as c_int,
+        y_root: root_y as c_int,
+        state: state_mask as c_uint,
+        keycode: detail as c_uint,
+        same_screen: 1,
+    }
+}
+
+/// 按键:先交 IM 转发(被消费的按键由回放/提交输出继续处理),
+/// 未被消费时按壳内映射处理(Enter/Esc/方向/Ctrl+Z 与文本直输)。
+fn handle_key_press(
+    state: &mut ShellState,
+    surface: &Surface<'_>,
+    keyboard: &KeyboardMap,
+    event: &xproto::KeyPressEvent,
+) -> bool {
+    let mut key = key_event_for(
+        surface,
+        X_KEY_PRESS,
+        event.detail,
+        event.time,
+        event.event_x,
+        event.event_y,
+        event.root_x,
+        event.root_y,
+        u16::from(event.state),
+        event.root,
+    );
+    let (forwarded, outputs) = match state.xim.as_mut() {
+        Some(xim) => {
+            let forwarded = xim.forward_key(&mut key, surface.window);
+            (forwarded, xim.drain(XIM_KEY_DRAIN_MS))
+        }
+        None => (false, Vec::new()),
+    };
+    let mut done = false;
+    for output in outputs {
+        done |= apply_xim_output(state, surface, keyboard, output);
+    }
+    if forwarded {
+        return done;
+    }
+    done || handle_key_event(state, surface, keyboard, &key)
+}
+
+/// 释放事件只用于 IM 追踪按键状态;不产生引擎动作。
+fn handle_key_release(
+    state: &mut ShellState,
+    surface: &Surface<'_>,
+    keyboard: &KeyboardMap,
+    event: &xproto::KeyReleaseEvent,
+) -> bool {
+    let outputs = match state.xim.as_mut() {
+        Some(xim) => {
+            let mut key = key_event_for(
+                surface,
+                X_KEY_RELEASE,
+                event.detail,
+                event.time,
+                event.event_x,
+                event.event_y,
+                event.root_x,
+                event.root_y,
+                u16::from(event.state),
+                event.root,
+            );
+            let _ = xim.forward_key(&mut key, surface.window);
+            xim.drain(0)
+        }
+        None => Vec::new(),
+    };
+    let mut done = false;
+    for output in outputs {
+        done |= apply_xim_output(state, surface, keyboard, output);
+    }
+    done
+}
+
+/// 应用 IM 输出:提交串进引擎(仅文本编辑态),回放按键走壳内映射。
+fn apply_xim_output(
+    state: &mut ShellState,
+    surface: &Surface<'_>,
+    keyboard: &KeyboardMap,
+    output: XimOutput,
+) -> bool {
+    match output {
+        XimOutput::Text(text) => feed_text(state, surface, text),
+        XimOutput::Key(key) => handle_key_event(state, surface, keyboard, &key),
+    }
+}
+
+/// 非阻塞处理 IM 传输数据(与按键无直接对应的异步回放/提交)。
+fn flush_xim(state: &mut ShellState, surface: &Surface<'_>, keyboard: &KeyboardMap) -> bool {
+    let outputs = match state.xim.as_mut() {
+        Some(xim) => xim.drain(0),
+        None => Vec::new(),
+    };
+    let mut done = false;
+    for output in outputs {
+        done |= apply_xim_output(state, surface, keyboard, output);
+    }
+    done
+}
+
+/// 单次按键的壳内语义:逻辑键(含 Ctrl+Z/Y)与文本直输;控制键不插入文本。
+fn handle_key_event(
+    state: &mut ShellState,
+    surface: &Surface<'_>,
+    keyboard: &KeyboardMap,
+    key: &XKeyEvent,
+) -> bool {
+    let shift = key.state & u32::from(KeyButMask::SHIFT) != 0;
+    let keycode = key.keycode as u8;
+    let logical = keyboard
+        .shortcut_key(keycode, key.state as u16)
+        .or_else(|| keyboard.logical_key(keycode));
+    if let Some(logical) = logical {
+        if feed_event(state, surface, InputEvent::Key { key: logical, shift }) {
+            return true;
+        }
+    }
+    // 控制键不进入文本输入(与 Windows 壳丢弃 WM_CHAR 控制字符一致);
+    // 修饰组合(Ctrl/Alt/Super)同样不产生文本;取色键 C 仍允许插入字符。
+    if key.state
+        & (u32::from(KeyButMask::CONTROL)
+            | u32::from(KeyButMask::MOD1)
+            | u32::from(KeyButMask::MOD4))
+        != 0
+    {
+        return false;
+    }
+    if let Some(logical) = logical {
+        if logical != LogicalKey::CopyColor {
+            return false;
+        }
+    }
+    // 无编辑会话时文本没有落点:直接跳过,避免无意义重合成。
+    if state.canvas.engine.text_edit().is_none() {
+        return false;
+    }
+    let text = match state.xim.as_ref() {
+        Some(xim) => xim.text_for(key),
+        None => direct_text_from_map(keyboard, key),
+    };
+    match text {
+        Some(text) => feed_text(state, surface, text),
+        None => false,
+    }
+}
+
+/// 文本进入引擎(仅文本编辑态;空串丢弃)。
+fn feed_text(state: &mut ShellState, surface: &Surface<'_>, text: String) -> bool {
+    if text.is_empty() || state.canvas.engine.text_edit().is_none() {
+        return false;
+    }
+    feed_event(state, surface, InputEvent::Text(text))
 }
 
 /// 依引擎当前提示切换光标(X11 光标提示,ADR-5);提示未变时跳过。切换
@@ -1086,6 +1738,94 @@ mod tests {
         // 超出键盘表范围。
         assert_eq!(map.logical_key(7), None);
         assert_eq!(map.logical_key(100), None);
+    }
+
+    #[test]
+    fn backspace_and_delete_map_to_engine_delete() {
+        let map = KeyboardMap {
+            min_keycode: 8,
+            per_keycode: 2,
+            keysyms: vec![
+                XK_BACKSPACE, NO_SYMBOL, XK_DELETE, NO_SYMBOL, XK_RETURN, NO_SYMBOL,
+            ],
+        };
+        assert_eq!(map.logical_key(8), Some(LogicalKey::Delete));
+        assert_eq!(map.logical_key(9), Some(LogicalKey::Delete));
+        assert_eq!(map.logical_key(10), Some(LogicalKey::Enter));
+    }
+
+    #[test]
+    fn shortcut_keys_require_ctrl_and_shift_selects_redo() {
+        let map = KeyboardMap {
+            min_keycode: 8,
+            per_keycode: 2,
+            keysyms: vec![XK_Z_LOWER, NO_SYMBOL, XK_Y_LOWER, NO_SYMBOL],
+        };
+        let ctrl = u16::from(KeyButMask::CONTROL);
+        let shift = u16::from(KeyButMask::SHIFT);
+        assert_eq!(map.shortcut_key(8, 0), None);
+        assert_eq!(map.shortcut_key(8, ctrl), Some(LogicalKey::Undo));
+        assert_eq!(map.shortcut_key(8, ctrl | shift), Some(LogicalKey::Redo));
+        assert_eq!(map.shortcut_key(9, ctrl), Some(LogicalKey::Redo));
+        assert_eq!(map.shortcut_key(9, ctrl | shift), Some(LogicalKey::Redo));
+    }
+
+    #[test]
+    fn shift_column_keysym_falls_back_when_unshifted_is_no_symbol() {
+        let map = KeyboardMap {
+            min_keycode: 8,
+            per_keycode: 2,
+            keysyms: vec![0x61, 0x41, NO_SYMBOL, 0x42, NO_SYMBOL, NO_SYMBOL],
+        };
+        assert_eq!(map.keysym_for(8, false), Some(0x61));
+        assert_eq!(map.keysym_for(8, true), Some(0x41));
+        // 第 0 列 NoSymbol → 回退第 1 列;两列都空 → None。
+        assert_eq!(map.keysym_for(9, false), Some(0x42));
+        assert_eq!(map.keysym_for(10, false), None);
+    }
+
+    #[test]
+    fn keysym_to_char_accepts_printable_and_unicode_only() {
+        assert_eq!(keysym_to_char(0x61), Some('a'));
+        assert_eq!(keysym_to_char(0x7e), Some('~'));
+        assert_eq!(keysym_to_char(0xe9), Some('é'));
+        // 方向键/回车/功能键等 XK_* 段不产生文本。
+        assert_eq!(keysym_to_char(XK_RETURN), None);
+        assert_eq!(keysym_to_char(XK_LEFT), None);
+        assert_eq!(keysym_to_char(0xffbe), None);
+        assert_eq!(keysym_to_char(XK_BACKSPACE), None);
+        // 0x01000000|码点 段(Unicode keysym)。
+        assert_eq!(keysym_to_char(0x0100_4e2d), Some('中'));
+        // 空格与拉丁文补段。
+        assert_eq!(keysym_to_char(0x20), Some(' '));
+    }
+
+    #[test]
+    fn x_event_buf_roundtrips_key_layout() {
+        let key = XKeyEvent {
+            kind: X_KEY_PRESS,
+            serial: 7,
+            send_event: 0,
+            display: ptr::null_mut(),
+            window: 0x1234,
+            root: 0x99,
+            subwindow: 0,
+            time: 42,
+            x: 3,
+            y: 4,
+            x_root: 5,
+            y_root: 6,
+            state: u32::from(KeyButMask::SHIFT),
+            keycode: 38,
+            same_screen: 1,
+        };
+        let buf = XEventBuf::from_key(&key);
+        let read = buf.key();
+        assert_eq!(read.window, key.window);
+        assert_eq!(read.keycode, key.keycode);
+        assert_eq!(read.state, key.state);
+        assert_eq!(read.kind, X_KEY_PRESS);
+        assert!(std::mem::size_of::<XEventBuf>() >= std::mem::size_of::<XKeyEvent>());
     }
 
     #[test]
