@@ -43,6 +43,11 @@ export interface HistorySettings {
   limit: number;
 }
 
+export interface TrayState {
+  available: boolean;
+  message: string | null;
+}
+
 export interface UiSettings {
   hotkeys: Hotkeys;
   hotkeyErrors: HotkeyErrors;
@@ -51,6 +56,7 @@ export interface UiSettings {
   features: FeatureSettings;
   capture: CaptureSettings;
   history: HistorySettings;
+  tray: TrayState;
 }
 
 type FeatureKey = keyof FeatureSettings;
@@ -84,6 +90,7 @@ export function mountSettings(root: HTMLElement): void {
       </header>
       <main class="content">
         <p class="notice" role="alert" hidden></p>
+        <p class="notice tray-notice" data-tray-notice role="status" hidden></p>
         <section class="card" aria-labelledby="hotkeys-title">
           <h1 id="hotkeys-title">热键</h1>
           <p class="hint">点击热键按钮后按下新组合，Esc 取消；改动立即生效。</p>
@@ -168,6 +175,13 @@ export function mountSettings(root: HTMLElement): void {
           <h1 id="about-title">关于</h1>
           <p class="about-name">Cropmark</p>
           <p class="hint">独立系统截图工具，界面与托盘只使用 Cropmark 名称与图标。</p>
+          <div class="setting-row">
+            <div>
+              <div class="label" id="quit-label">退出 Cropmark</div>
+              <p class="hint">结束应用并停止热键；有托盘时也可从托盘菜单退出。</p>
+            </div>
+            <button type="button" class="choice danger" data-action="quit" aria-labelledby="quit-label">退出</button>
+          </div>
         </section>
       </main>
     </div>
@@ -187,6 +201,8 @@ export function mountSettings(root: HTMLElement): void {
   const historyLimitEl = root.querySelector("[data-history=limit]");
   const historyErrorEl = root.querySelector("[data-history-error]");
   const historyOpenEl = root.querySelector("[data-action=open-history]");
+  const trayNoticeEl = root.querySelector("[data-tray-notice]");
+  const quitEl = root.querySelector("[data-action=quit]");
   if (
     !(noticeEl instanceof HTMLElement) ||
     !(hotkeyRoot instanceof HTMLElement) ||
@@ -201,7 +217,9 @@ export function mountSettings(root: HTMLElement): void {
     !(historyEnabledEl instanceof HTMLButtonElement) ||
     !(historyLimitEl instanceof HTMLInputElement) ||
     !(historyErrorEl instanceof HTMLElement) ||
-    !(historyOpenEl instanceof HTMLButtonElement)
+    !(historyOpenEl instanceof HTMLButtonElement) ||
+    !(trayNoticeEl instanceof HTMLElement) ||
+    !(quitEl instanceof HTMLButtonElement)
   ) {
     return;
   }
@@ -277,6 +295,16 @@ export function mountSettings(root: HTMLElement): void {
     } else {
       noticeEl.hidden = true;
       noticeEl.textContent = "";
+    }
+
+    const tray = settings.tray;
+    if (tray && !tray.available) {
+      trayNoticeEl.hidden = false;
+      trayNoticeEl.textContent =
+        tray.message ?? "当前桌面环境未提供托盘，热键仍可用。";
+    } else {
+      trayNoticeEl.hidden = true;
+      trayNoticeEl.textContent = "";
     }
 
     hotkeyRoot.replaceChildren();
@@ -522,6 +550,10 @@ export function mountSettings(root: HTMLElement): void {
 
   closeEl.addEventListener("click", () => {
     void getCurrentWindow().close();
+  });
+
+  quitEl.addEventListener("click", () => {
+    void invoke("quit_app").catch(showInvokeError);
   });
 
   switchEl.addEventListener("click", () => {

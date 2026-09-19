@@ -337,6 +337,16 @@ h1 {
   cursor: default;
 }
 
+.choice.danger {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+}
+
+.choice.danger:hover:not(:disabled) {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
+
 .switch {
   width: 44px;
   height: 26px;

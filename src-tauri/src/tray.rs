@@ -1,3 +1,7 @@
+//! 托盘菜单三平台共用同一份定义(区域/窗口/全屏/延时/设置/历史/退出),
+//! 不支持的平台能力(托盘弹窗检测等)由 capture/platform 静默降级,不影响
+//! 此处入口。构建失败不在本模块处理,由 `lib.rs` 记录降级并继续启动(R16)。
+
 use tauri::image::Image;
 use tauri::menu::{IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::TrayIconBuilder;
@@ -21,6 +25,13 @@ pub fn last_region_label(has_region: bool) -> &'static str {
     } else {
         "上次区域（暂无记录）"
     }
+}
+
+/// R16:托盘构建失败时的用户可见提示。以 `TrayIconBuilder::build` 结果为
+/// 唯一判据,不做 AppIndicator/StatusNotifier 探测(DE 图标不可见属不可检测
+/// 场景);提示需给出仍可用能力与替代入口。
+pub fn unavailable_message() -> String {
+    "当前桌面环境未提供托盘，热键仍可用；可再次启动 Cropmark 打开设置，或在此退出应用。".into()
 }
 
 pub fn install(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
@@ -308,5 +319,14 @@ mod tests {
     fn last_region_id_is_not_parsed_as_a_capture_mode() {
         assert_eq!(menu_action(LAST_REGION_ID), None);
         assert_eq!(menu_action("capture-last-region-delay-3"), None);
+    }
+
+    #[test]
+    fn unavailable_message_explains_hotkeys_and_exit_path() {
+        let message = unavailable_message();
+        assert!(message.contains("托盘"));
+        assert!(message.contains("热键"));
+        assert!(message.contains("退出"));
+        assert!(!message.contains("错误"));
     }
 }

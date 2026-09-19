@@ -39,6 +39,15 @@ pub fn should_prevent_exit(code: Option<i32>) -> bool {
     code.is_none()
 }
 
+/// R16:设置窗口的退出入口(无托盘环境下的兜底退出路径)。复用托盘"退出"的
+/// 同一条链:`app.exit(0)` 触发 `RunEvent::Exit`,由既有逻辑收掉全部贴图。
+/// 保持模块内私有:`pub` 会让 `#[tauri::command]` 生成的宏与 `#[macro_export]`
+/// 在 crate 根同名冲突(crate 根即本模块)。
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
 /// 在任何线程请求唤出设置窗:非主线程转发到主线程,主线程直接执行。
 fn open_settings_on_main(app: &tauri::AppHandle) {
     let app = app.clone();
@@ -104,9 +113,24 @@ pub fn run() {
             app.manage(settings::SessionState::from_stored(stored));
             app.manage(capture::session::CaptureRuntime::default());
             app.manage(ocr::OcrRuntime::default());
-            tray::install(app.handle())?;
+            // R16:托盘构建失败(典型为缺少 AppIndicator 的 Linux 桌面)不再
+            // 中止启动:记录降级状态、继续注册热键,随后打开设置窗口展示无托盘
+            // 提示与退出入口;构建成功时行为与以往一致。
+            let tray_ready = match tray::install(app.handle()) {
+                Ok(()) => true,
+                Err(error) => {
+                    eprintln!("Cropmark: 托盘不可用,继续以无托盘方式运行:{error}");
+                    settings::mark_tray_unavailable(app.handle(), tray::unavailable_message());
+                    false
+                }
+            };
             hotkeys::apply_to_app(app.handle(), &hotkeys);
             capture::precreate_windows(app.handle());
+            if !tray_ready {
+                if let Err(error) = settings::open_settings(app.handle()) {
+                    eprintln!("Cropmark: 无法打开设置窗口:{error}");
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -151,6 +175,7 @@ pub fn run() {
             history::delete_history_entry,
             history::clear_history,
             history::open_history,
+            quit_app,
         ])
         .on_window_event(|window, event| {
             // 贴图窗口销毁(手动关闭/显示器断开/退出)即释放标签与源图。

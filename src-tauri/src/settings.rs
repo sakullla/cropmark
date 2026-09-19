@@ -382,6 +382,25 @@ pub struct StoredSettings {
     pub last_region: Option<LastRegion>,
 }
 
+/// R16:托盘可用性状态。托盘构建失败(Linux 桌面缺少 AppIndicator 等)时应用
+/// 继续运行,设置窗口据此展示无托盘提示并提供退出入口;状态不持久化,每次
+/// 启动以实际构建结果为准。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrayState {
+    pub available: bool,
+    pub message: Option<String>,
+}
+
+impl TrayState {
+    pub fn available() -> Self {
+        Self {
+            available: true,
+            message: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UiSettings {
@@ -394,6 +413,7 @@ pub struct UiSettings {
     pub capture: CaptureSettings,
     pub history: HistorySettings,
     pub export: ExportSettings,
+    pub tray: TrayState,
 }
 
 pub struct SessionState {
@@ -407,6 +427,7 @@ pub struct SessionState {
     pub history: Mutex<HistorySettings>,
     pub export: Mutex<ExportSettings>,
     pub last_region: Mutex<Option<LastRegion>>,
+    pub tray: Mutex<TrayState>,
 }
 
 impl SessionState {
@@ -422,6 +443,7 @@ impl SessionState {
             history: Mutex::new(stored.history.sanitized()),
             export: Mutex::new(stored.export.sanitized()),
             last_region: Mutex::new(stored.last_region.and_then(LastRegion::sanitized)),
+            tray: Mutex::new(TrayState::available()),
         }
     }
 }
@@ -492,6 +514,15 @@ pub fn forget_last_region(app: &AppHandle) {
     crate::tray::refresh_menu(app);
 }
 
+/// R16:托盘构建失败后标记为无托盘运行。设置窗口据此常驻展示提示与退出入口;
+/// 热键、截取与预览链路保持原样,后续托盘菜单重建自动跳过。
+pub fn mark_tray_unavailable(app: &AppHandle, message: String) {
+    *lock(&app.state::<SessionState>().tray) = TrayState {
+        available: false,
+        message: Some(message),
+    };
+}
+
 pub fn load_from_app(app: &AppHandle) -> StoredSettings {
     load_from_path(&settings_path(app))
 }
@@ -551,6 +582,7 @@ pub fn snapshot(app: &AppHandle) -> UiSettings {
     let capture = *lock(&state.capture);
     let history = *lock(&state.history);
     let export = lock(&state.export).clone();
+    let tray = lock(&state.tray).clone();
     UiSettings {
         hotkeys,
         hotkey_errors,
@@ -561,6 +593,7 @@ pub fn snapshot(app: &AppHandle) -> UiSettings {
         capture,
         history,
         export,
+        tray,
     }
 }
 
@@ -888,6 +921,7 @@ mod tests {
             capture: CaptureSettings::default(),
             history: HistorySettings::default(),
             export: ExportSettings::default(),
+            tray: TrayState::available(),
         };
         ui.autostart = result.clone();
         assert!(!ui.autostart.enabled);
@@ -1320,5 +1354,23 @@ mod tests {
             height: 1080,
         }];
         assert_eq!(region.clamp_to_monitors(&monitors), Some((0, region)));
+    }
+
+    #[test]
+    fn tray_defaults_to_available_without_message() {
+        let tray = TrayState::available();
+        assert!(tray.available);
+        assert_eq!(tray.message, None);
+    }
+
+    #[test]
+    fn tray_state_serializes_for_settings_window() {
+        let serialized = serde_json::to_value(TrayState {
+            available: false,
+            message: Some("当前桌面环境未提供托盘".into()),
+        })
+        .unwrap();
+        assert_eq!(serialized["available"], false);
+        assert_eq!(serialized["message"], "当前桌面环境未提供托盘");
     }
 }
