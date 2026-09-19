@@ -114,9 +114,11 @@ pub fn run() {
             app.manage(capture::session::CaptureRuntime::default());
             app.manage(ocr::OcrRuntime::default());
             // R16:托盘构建失败(典型为缺少 AppIndicator 的 Linux 桌面)不再
-            // 中止启动:记录降级状态、继续注册热键,随后打开设置窗口展示无托盘
-            // 提示与退出入口;构建成功时行为与以往一致。
-            let tray_ready = match tray::install(app.handle()) {
+            // 中止启动:`install_guarded` 把构建 Err 与构建期 panic(锁定依赖
+            // 在 AppIndicator dlopen 失败时直接 panic)统一记为不可用,继续注册
+            // 热键,随后打开设置窗口展示无托盘提示与退出入口;构建成功时行为与
+            // 以往一致。
+            let tray_ready = match tray::install_guarded(app.handle()) {
                 Ok(()) => true,
                 Err(error) => {
                     eprintln!("Cropmark: 托盘不可用,继续以无托盘方式运行:{error}");

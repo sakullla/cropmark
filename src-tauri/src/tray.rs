@@ -1,6 +1,7 @@
 //! 托盘菜单三平台共用同一份定义(区域/窗口/全屏/延时/设置/历史/退出),
 //! 不支持的平台能力(托盘弹窗检测等)由 capture/platform 静默降级,不影响
-//! 此处入口。构建失败不在本模块处理,由 `lib.rs` 记录降级并继续启动(R16)。
+//! 此处入口。构建失败(Err 或构建期 panic)不在本模块处理,由 `install_guarded`
+//! 归一后交给 `lib.rs` 记录降级并继续启动(R16)。
 
 use tauri::image::Image;
 use tauri::menu::{IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
@@ -27,14 +28,55 @@ pub fn last_region_label(has_region: bool) -> &'static str {
     }
 }
 
-/// R16:托盘构建失败时的用户可见提示。以 `TrayIconBuilder::build` 结果为
-/// 唯一判据,不做 AppIndicator/StatusNotifier 探测(DE 图标不可见属不可检测
-/// 场景);提示需给出仍可用能力与替代入口。
+/// R16:托盘构建失败(Err 或构建期 panic)时的用户可见提示。以安装路径的
+/// 实际结果为唯一判据,不做 AppIndicator/StatusNotifier 探测(DE 图标不可见
+/// 属不可检测场景);提示需给出仍可用能力与替代入口。
 pub fn unavailable_message() -> String {
     "当前桌面环境未提供托盘，热键仍可用；可再次启动 Cropmark 打开设置，或在此退出应用。".into()
 }
 
-pub fn install(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+/// R16:托盘安装入口,把构建期 panic 与 `Err` 一视同仁地归一为错误。
+///
+/// Linux 缺少 AppIndicator 动态库时锁定依赖不会返回 `Err`:libappindicator-sys
+/// 的 static LIB 在 libayatana-appindicator3.so.1 与 libappindicator3.so.1 均
+/// dlopen 失败时直接 `panic!`,而该 panic 位于 `TrayIconBuilder::build` 调用链内,
+/// 若沿 setup 向外传播会跳过热键注册与设置窗口打开,使无托盘环境整体无法启动。
+/// 这里用 catch_unwind 捕获该 panic,与 `Err` 走同一条降级链。
+///
+/// 不采用安装前 dlopen 预检:预检只能覆盖"库文件不存在"这一已知形态,无法覆盖
+/// 库存在但符号缺失等其它构建期 panic;catch_unwind 覆盖安装路径的全部 panic。
+/// 已确认该 panic 链路为纯 Rust 栈帧(不穿过 C 帧),且发生在托盘注册与任何 GTK
+/// 调用之前,捕获后 Tauri/GTK 状态不受影响;捕获后不再重试构建,后续
+/// `refresh_menu` 因 `tray_by_id` 找不到托盘而自动跳过。
+pub fn install_guarded(app: &AppHandle) -> Result<(), String> {
+    guard_install(|| install(app))
+}
+
+/// panic 归一化的可测试包装:错误转为文本,panic payload 提取为可读文本。
+fn guard_install<F>(install: F) -> Result<(), String>
+where
+    F: FnOnce() -> Result<(), Box<dyn std::error::Error>>,
+{
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(install)) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(payload) => Err(panic_message(payload.as_ref())),
+    }
+}
+
+/// panic payload 的可读文本,仅用于日志;用户可见提示固定为
+/// `unavailable_message()`。
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&'static str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "托盘构建过程发生 panic".into()
+    }
+}
+
+fn install(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let seconds = settings::current_capture(app).delay_seconds;
     let menu = build_menu(app, seconds)?;
     let icon = tray_icon()?;
@@ -328,5 +370,32 @@ mod tests {
         assert!(message.contains("热键"));
         assert!(message.contains("退出"));
         assert!(!message.contains("错误"));
+    }
+
+    #[test]
+    fn guard_install_passes_success_and_normalizes_errors() {
+        assert!(guard_install(|| Ok(())).is_ok());
+        assert_eq!(
+            guard_install(|| Err("缺少 AppIndicator".into())),
+            Err("缺少 AppIndicator".to_string())
+        );
+    }
+
+    #[test]
+    fn guard_install_treats_panics_as_unavailable_like_errors() {
+        // Linux 缺少 AppIndicator 时构建直接 panic 而非返回 Err:
+        // 归一化后必须与 Err 一样返回可读文本,setup 才能继续降级启动。
+        assert_eq!(
+            guard_install(|| panic!("Failed to load appindicator3")),
+            Err("Failed to load appindicator3".to_string())
+        );
+        assert_eq!(
+            guard_install(|| std::panic::panic_any(String::from("动态库加载失败"))),
+            Err("动态库加载失败".to_string())
+        );
+        assert_eq!(
+            guard_install(|| std::panic::panic_any(42_u8)),
+            Err("托盘构建过程发生 panic".to_string())
+        );
     }
 }
