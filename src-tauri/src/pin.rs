@@ -1,10 +1,12 @@
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 use crate::annotate::{rasterize, Annotation};
-use crate::capture::buffer::encode_png;
+use crate::capture::buffer::{decode_png, encode_png, Frame};
 use crate::capture::error::CaptureError;
 use crate::capture::session;
 
@@ -14,17 +16,29 @@ pub const PIN_LABEL_PREFIX: &str = "pin-";
 /// 满员时 `open_pin` 与 Quiet Pin Toast 共用的说明。
 pub const PIN_FULL_MESSAGE: &str = "贴图最多同时 8 张，请先关闭部分贴图。";
 const PIN_RETRY_MESSAGE: &str = "贴图失败，请重试。";
+const PIN_SAVE_DEFAULT_NAME: &str = "cropmark-pin.png";
 
 /// 轮转游标:下一次分配从上一次分配槽位之后开始找空闲标签。
 static NEXT_SLOT: AtomicUsize = AtomicUsize::new(0);
 
-/// 新建贴图的 PNG 交接邮箱:窗口创建后由前端 `get_pin_image` 取走即清空,
-/// Rust 侧不长期持有图像副本(取走/窗口销毁都清槽)。
-static MAILBOX: Mutex<[Option<Vec<u8>>; PIN_MAX]> =
+/// 贴图源内容(R9):窗口存活期间常驻,供复制/保存/旋转/透明度/再标注共用;
+/// 关闭或窗口销毁即随槽位清空。逻辑尺寸记录窗口 1x 基准,旋转后随之换向。
+#[derive(Debug, Clone)]
+struct PinSource {
+    rgba: Vec<u8>,
+    width: u32,
+    height: u32,
+    scale: f64,
+    logical_width: f64,
+    logical_height: f64,
+}
+
+/// 按槽位保存的源图仓库;取代旧的 take-once 交接邮箱。
+static STORE: Mutex<[Option<PinSource>; PIN_MAX]> =
     Mutex::new([None, None, None, None, None, None, None, None]);
 
-fn with_mailbox<R>(f: impl FnOnce(&mut [Option<Vec<u8>>; PIN_MAX]) -> R) -> R {
-    let mut guard = MAILBOX
+fn with_store<R>(f: impl FnOnce(&mut [Option<PinSource>; PIN_MAX]) -> R) -> R {
+    let mut guard = STORE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     f(&mut guard)
@@ -63,6 +77,96 @@ fn fail(err: CaptureError) -> String {
     } else {
         message
     }
+}
+
+/// 角度归一化:只接受 90° 的整数倍,其余按整除取模(前端只发 0/90/180/270)。
+fn quarter_turns(rotation: u32) -> u32 {
+    (rotation / 90) % 4
+}
+
+/// 顺时针旋转 90°:像素 (x, y) → (h-1-y, x),宽高互换。
+fn rotate_frame_cw(frame: &Frame) -> Frame {
+    let (width, height) = (frame.width as usize, frame.height as usize);
+    if width == 0 || height == 0 {
+        return frame.clone();
+    }
+    let mut rgba = vec![0u8; width * height * 4];
+    for y in 0..height {
+        for x in 0..width {
+            let src = (y * width + x) * 4;
+            let dst = (x * height + (height - 1 - y)) * 4;
+            rgba[dst..dst + 4].copy_from_slice(&frame.rgba[src..src + 4]);
+        }
+    }
+    Frame {
+        width: frame.height,
+        height: frame.width,
+        rgba,
+        scale: frame.scale,
+    }
+}
+
+/// 透明度:仅乘算 alpha 通道,颜色保持不变;1.0 直接返回副本。
+fn apply_opacity(frame: &Frame, opacity: f32) -> Frame {
+    let opacity = opacity.clamp(0.0, 1.0);
+    let mut out = frame.clone();
+    if opacity >= 1.0 {
+        return out;
+    }
+    for pixel in out.rgba.chunks_exact_mut(4) {
+        pixel[3] = ((pixel[3] as f32) * opacity).round().clamp(0.0, 255.0) as u8;
+    }
+    out
+}
+
+/// 当前显示内容:源图先按旋转角旋转,再乘透明度;复制/保存/再标注共用。
+fn transformed_frame(source: &PinSource, rotation: u32, opacity: f32) -> Frame {
+    let mut frame = Frame {
+        width: source.width,
+        height: source.height,
+        rgba: source.rgba.clone(),
+        scale: source.scale,
+    };
+    for _ in 0..quarter_turns(rotation) {
+        frame = rotate_frame_cw(&frame);
+    }
+    apply_opacity(&frame, opacity)
+}
+
+fn source_frame(source: &PinSource) -> Frame {
+    Frame {
+        width: source.width,
+        height: source.height,
+        rgba: source.rgba.clone(),
+        scale: source.scale,
+    }
+}
+
+/// 回写:渲染结果替换源像素;旋转 90°/270° 会交换像素朝向,逻辑宽高同步换向,
+/// 保证窗口 1x 基准与图像方向一致。
+fn replace_source_content(source: &mut PinSource, rendered: Frame) {
+    let swapped = source.width != rendered.width || source.height != rendered.height;
+    source.rgba = rendered.rgba;
+    source.width = rendered.width;
+    source.height = rendered.height;
+    source.scale = rendered.scale;
+    if swapped {
+        std::mem::swap(&mut source.logical_width, &mut source.logical_height);
+    }
+}
+
+/// 保存路径统一为 PNG 后缀:无扩展名追加,其它扩展名替换,避免内容与名称不符。
+fn ensure_png_extension(path: PathBuf) -> PathBuf {
+    let is_png = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("png"));
+    if is_png {
+        return path;
+    }
+    let mut adjusted = path;
+    adjusted.set_extension("png");
+    adjusted
 }
 
 type LogicalPoint = (f64, f64);
@@ -141,10 +245,10 @@ fn pointer_work_area(app: &AppHandle) -> (Option<LogicalPoint>, Option<LogicalRe
 
 /// 打开一张贴图:轮转分配空闲标签,建置顶无边框、skip_taskbar、不可调
 /// 尺寸的窗口,初始逻辑尺寸为图像逻辑大小,位置在光标附近(钳制在
-/// 工作区内)。PNG 经邮箱交给前端,Rust 不留长期副本。
+/// 工作区内)。源图存入 STORE,前端按需经 `get_pin_image` 拉取。
 pub fn open_pin(
     app: &AppHandle,
-    png: Vec<u8>,
+    frame: Frame,
     logical_width: f64,
     logical_height: f64,
 ) -> Result<WebviewWindow, String> {
@@ -161,7 +265,16 @@ pub fn open_pin(
     let (width, height) = (logical_width.max(1.0), logical_height.max(1.0));
     let (x, y) = pin_origin(cursor_pos, work, width, height);
 
-    with_mailbox(|slots| slots[slot] = Some(png));
+    with_store(|slots| {
+        slots[slot] = Some(PinSource {
+            rgba: frame.rgba,
+            width: frame.width,
+            height: frame.height,
+            scale: frame.scale,
+            logical_width: width,
+            logical_height: height,
+        });
+    });
     let window = WebviewWindowBuilder::new(
         app,
         label.clone(),
@@ -179,7 +292,7 @@ pub fn open_pin(
     .inner_size(width, height)
     .build()
     .map_err(|error| {
-        with_mailbox(|slots| slots[slot] = None);
+        with_store(|slots| slots[slot] = None);
         format!("无法创建贴图窗口：{error}")
     })?;
     // 先定位再显示,避免窗口在左上角闪现后再跳到光标附近。
@@ -194,7 +307,7 @@ pub fn open_pin(
 }
 
 /// 从已存 PNG(历史记录等外部入口)打开贴图:按工作区适配窗口逻辑尺寸,
-/// 复用与预览贴图相同的 `pin_logical_size` 规则;PNG 经邮箱交给前端。
+/// 复用与预览贴图相同的 `pin_logical_size` 规则;解码后的 RGBA 存入 STORE。
 pub fn open_pin_from_frame(
     app: &AppHandle,
     png: Vec<u8>,
@@ -202,27 +315,41 @@ pub fn open_pin_from_frame(
     height: u32,
     scale: f64,
 ) -> Result<(), String> {
+    let mut frame = decode_png(&png).map_err(fail)?;
+    // 索引尺寸只作核对;两者不一致(外部改动文件等)时以 PNG 实际为准,
+    // 避免窗口基准与图像比例错位。
+    if frame.width != width.max(1) || frame.height != height.max(1) {
+        eprintln!(
+            "Cropmark: 历史贴图尺寸 {}x{} 与索引 {width}x{height} 不一致，按文件尺寸显示。",
+            frame.width, frame.height
+        );
+    }
+    frame.scale = scale;
     let (_, work) = pointer_work_area(app);
     let (work_w, work_h) = work.map(|(.., w, h)| (w, h)).unwrap_or((1920.0, 1080.0));
-    let (logical_w, logical_h) = pin_logical_size(width, height, scale, work_w, work_h);
-    open_pin(app, png, logical_w, logical_h).map(|_| ())
+    let (logical_w, logical_h) = pin_logical_size(frame.width, frame.height, scale, work_w, work_h);
+    open_pin(app, frame, logical_w, logical_h).map(|_| ())
 }
 
 struct PreparedPin {
-    png: Vec<u8>,
+    frame: Frame,
     width: f64,
     height: f64,
 }
 
-/// 从会话保留帧(预览帧或 Quiet TTL 帧)合成 PNG 与窗口尺寸;不含建窗。
+/// 从会话保留帧(预览帧或 Quiet TTL 帧)合成帧与窗口尺寸;不含建窗。
 fn prepare_pin(app: &AppHandle, annotations: &[Annotation]) -> Result<PreparedPin, String> {
     let frame = session::current_preview_frame(app).map_err(fail)?;
     let rendered = rasterize(&frame, annotations).map_err(fail)?;
-    let png = encode_png(&rendered).map_err(fail)?;
     let (_, work) = pointer_work_area(app);
     let (work_w, work_h) = work.map(|(.., w, h)| (w, h)).unwrap_or((1920.0, 1080.0));
-    let (width, height) = pin_logical_size(frame.width, frame.height, frame.scale, work_w, work_h);
-    Ok(PreparedPin { png, width, height })
+    let (width, height) =
+        pin_logical_size(rendered.width, rendered.height, rendered.scale, work_w, work_h);
+    Ok(PreparedPin {
+        frame: rendered,
+        width,
+        height,
+    })
 }
 
 /// 预览工具条「贴图」:必须是 async。Windows 上同步 command 占主线程,
@@ -236,7 +363,7 @@ pub async fn pin_current(app: AppHandle, annotations: Vec<Annotation>) -> Result
     })
     .await
     .map_err(|_| "贴图线程失败。".to_string())??;
-    open_pin(&app, prepared.png, prepared.width, prepared.height).map(|_| ())
+    open_pin(&app, prepared.frame, prepared.width, prepared.height).map(|_| ())
 }
 
 /// Quiet Pin 失败 Toast:保留 `pin_current` 的可读原因(含满 8 张说明);
@@ -262,22 +389,205 @@ pub fn pin_retained(app: &AppHandle) {
     });
 }
 
-/// 前端拉取本窗口的 PNG(取走即清,内存只留在前端)。
+/// 读取槽位源图(克隆);窗口已关闭或源图已清时返回错误文案。
+fn source_for(label: &str) -> Result<PinSource, String> {
+    let slot = slot_from_label(label).ok_or_else(|| "未知贴图窗口。".to_string())?;
+    with_store(|slots| slots[slot].clone())
+        .ok_or_else(|| "贴图图像已失效，请重新贴图。".to_string())
+}
+
+/// 读取源图并应用当前旋转/透明度(复制、保存、再标注共用)。
+fn transformed_frame_for(
+    app: &AppHandle,
+    label: &str,
+    rotation: u32,
+    opacity: f32,
+) -> Result<Frame, String> {
+    if app.get_webview_window(label).is_none() {
+        return Err("贴图窗口已关闭。".to_string());
+    }
+    let source = source_for(label)?;
+    Ok(transformed_frame(&source, rotation, opacity))
+}
+
+/// 前端拉取本窗口的源图 PNG;STORE 常驻保留,供复制/保存/旋转/再标注复用。
 #[tauri::command]
 pub fn get_pin_image(app: AppHandle, label: String) -> Result<tauri::ipc::Response, String> {
-    let slot = slot_from_label(&label).ok_or_else(|| "未知贴图窗口。".to_string())?;
     if app.get_webview_window(&label).is_none() {
         return Err("贴图窗口已关闭。".to_string());
     }
-    let png = with_mailbox(|slots| slots[slot].take())
-        .ok_or_else(|| "贴图图像已失效，请重新贴图。".to_string())?;
+    let source = source_for(&label)?;
+    let png = encode_png(&source_frame(&source)).map_err(fail)?;
     Ok(tauri::ipc::Response::new(png))
+}
+
+/// 复制当前显示内容(源图 + 旋转 + 透明度)为无损 PNG。
+#[tauri::command]
+pub async fn copy_pin(
+    app: AppHandle,
+    label: String,
+    rotation: u32,
+    opacity: f32,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking({
+        let app = app.clone();
+        move || {
+            let frame = transformed_frame_for(&app, &label, rotation, opacity)?;
+            let png = encode_png(&frame).map_err(fail)?;
+            crate::clipboard::copy_frame_with_png(&frame, &png).map_err(fail)
+        }
+    })
+    .await
+    .map_err(|_| "复制线程失败。".to_string())?
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PinSaveResult {
+    pub saved: bool,
+    /// 已写入文件的完整路径;取消时为 None。
+    pub path: Option<String>,
+}
+
+/// 保存当前显示内容为 PNG:一次编码写盘,不经过标注/导出管线。
+#[tauri::command]
+pub async fn save_pin(
+    app: AppHandle,
+    label: String,
+    rotation: u32,
+    opacity: f32,
+) -> Result<PinSaveResult, String> {
+    let frame = tauri::async_runtime::spawn_blocking({
+        let app = app.clone();
+        let label = label.clone();
+        move || transformed_frame_for(&app, &label, rotation, opacity)
+    })
+    .await
+    .map_err(|_| "保存线程失败。".to_string())??;
+
+    let mut dialog = rfd::AsyncFileDialog::new()
+        .add_filter("PNG 图片", &["png"])
+        .set_file_name(PIN_SAVE_DEFAULT_NAME)
+        .set_title("保存贴图");
+    if let Some(directory) = crate::settings::current_export(&app).existing_directory() {
+        dialog = dialog.set_directory(directory);
+    }
+    if let Some(window) = app.get_webview_window(&label) {
+        dialog = dialog.set_parent(&window);
+    }
+    let Some(file) = dialog.save_file().await else {
+        return Ok(PinSaveResult {
+            saved: false,
+            path: None,
+        });
+    };
+    let path = ensure_png_extension(file.path().to_path_buf());
+    let bytes = tauri::async_runtime::spawn_blocking(move || encode_png(&frame).map_err(fail))
+        .await
+        .map_err(|_| "保存线程失败。".to_string())??;
+    std::fs::write(&path, bytes)
+        .map_err(|error| format!("无法保存贴图到「{}」：{error}", path.display()))?;
+    Ok(PinSaveResult {
+        saved: true,
+        path: Some(path.to_string_lossy().into_owned()),
+    })
+}
+
+/// 贴图再标注(R9):把当前显示内容(旋转/透明度已应用)装入预览会话,
+/// 并标记回写目标 label;确认/取消由 `update_pin_from_preview` 与预览
+/// 关闭路径收尾。打开期间来源贴图取消置顶,避免盖住编辑器。
+#[tauri::command]
+pub async fn begin_pin_edit(
+    app: AppHandle,
+    label: String,
+    rotation: u32,
+    opacity: f32,
+) -> Result<(), String> {
+    let frame = tauri::async_runtime::spawn_blocking({
+        let app = app.clone();
+        let label = label.clone();
+        move || transformed_frame_for(&app, &label, rotation, opacity)
+    })
+    .await
+    .map_err(|_| "贴图线程失败。".to_string())??;
+
+    let window = app.get_webview_window(&label);
+    // 切换再标注目标时先把上一个来源贴图恢复置顶,避免遗留非置顶窗口。
+    if let Some(previous) = session::writeback_target(&app) {
+        if previous != label {
+            if let Some(previous) = app.get_webview_window(&previous) {
+                let _ = previous.set_always_on_top(true);
+            }
+        }
+    }
+    if let Some(window) = window.as_ref() {
+        let _ = window.set_always_on_top(false);
+    }
+    if let Err(error) = crate::capture::open_pin_edit_preview(&app, frame, label) {
+        if let Some(window) = window.as_ref() {
+            let _ = window.set_always_on_top(true);
+        }
+        return Err(fail(error));
+    }
+    Ok(())
+}
+
+/// 预览侧查询当前是否处于贴图再标注模式;返回回写目标 label。
+#[tauri::command]
+pub fn get_pin_writeback(app: AppHandle) -> Option<String> {
+    session::writeback_target(&app)
+}
+
+/// 再标注确认:把预览帧 + 标注栅格化后写回贴图源,通知贴图窗换图并关闭预览。
+/// 取消(预览直接关闭)不调用本命令,贴图内容保持不变。
+#[tauri::command]
+pub async fn update_pin_from_preview(
+    app: AppHandle,
+    annotations: Vec<Annotation>,
+) -> Result<(), String> {
+    let Some(label) = session::writeback_target(&app) else {
+        return Err("当前预览不在贴图再标注模式。".to_string());
+    };
+    let frame = session::current_preview_frame(&app).map_err(fail)?;
+    let rendered = tauri::async_runtime::spawn_blocking(move || {
+        rasterize(&frame, &annotations).map_err(fail)
+    })
+    .await
+    .map_err(|_| "贴图线程失败。".to_string())??;
+
+    let slot = slot_from_label(&label).ok_or_else(|| "未知贴图窗口。".to_string())?;
+    let stored = with_store(|slots| {
+        let Some(source) = slots[slot].as_mut() else {
+            return Err("贴图已关闭。".to_string());
+        };
+        replace_source_content(source, rendered);
+        Ok(())
+    });
+    stored?;
+
+    if let Some(window) = app.get_webview_window(&label) {
+        let _ = window.set_always_on_top(true);
+        let _ = window.emit("pin-reload", ());
+    }
+    session::close_preview(&app);
+    Ok(())
+}
+
+/// 预览关闭/新截取开始时的贴图收尾:恢复再标注来源贴图的置顶;
+/// 不改贴图内容(取消语义)。
+pub fn finish_pin_edit(app: &AppHandle) {
+    let Some(label) = session::writeback_target(app) else {
+        return;
+    };
+    if let Some(window) = app.get_webview_window(&label) {
+        let _ = window.set_always_on_top(true);
+    }
 }
 
 #[tauri::command]
 pub fn close_pin(app: AppHandle, label: String) {
     if let Some(slot) = slot_from_label(&label) {
-        with_mailbox(|slots| slots[slot] = None);
+        with_store(|slots| slots[slot] = None);
     }
     if let Some(window) = app.get_webview_window(&label) {
         let _ = window.close();
@@ -292,18 +602,18 @@ pub fn close_all_pins(app: AppHandle) {
 /// 退出清理:遍历关闭全部贴图窗口(标签占用随窗口销毁自动释放)。
 pub fn close_all(app: &AppHandle) {
     for slot in 0..PIN_MAX {
-        with_mailbox(|slots| slots[slot] = None);
+        with_store(|slots| slots[slot] = None);
         if let Some(window) = app.get_webview_window(&slot_label(slot)) {
             let _ = window.close();
         }
     }
 }
 
-/// 窗口销毁(手动关闭/显示器断开/应用退出)时清掉交接邮箱,
-/// 防止未取走的 PNG 滞留 Rust 侧。
+/// 窗口销毁(手动关闭/显示器断开/应用退出)时清掉源图仓库,
+/// 防止已关闭贴图的 RGBA 滞留在 Rust 侧。
 pub fn handle_destroyed(label: &str) {
     if let Some(slot) = slot_from_label(label) {
-        with_mailbox(|slots| slots[slot] = None);
+        with_store(|slots| slots[slot] = None);
     }
 }
 
@@ -433,5 +743,157 @@ mod tests {
         assert_eq!(quiet_pin_toast("无法创建贴图窗口：timeout"), "无法创建贴图窗口：timeout");
         assert_eq!(quiet_pin_toast("贴图线程失败。"), "贴图线程失败。");
         assert_eq!(quiet_pin_toast(""), PIN_RETRY_MESSAGE);
+    }
+
+    #[test]
+    fn quarter_turns_normalizes_to_rotation_steps() {
+        assert_eq!(quarter_turns(0), 0);
+        assert_eq!(quarter_turns(90), 1);
+        assert_eq!(quarter_turns(270), 3);
+        assert_eq!(quarter_turns(360), 0);
+        assert_eq!(quarter_turns(450), 1);
+    }
+
+    #[test]
+    fn rotate_frame_cw_maps_pixels_and_swaps_dimensions() {
+        // 2x1 左红右蓝 → 顺时针 90° 后 1x2 上红下蓝。
+        let frame = Frame {
+            width: 2,
+            height: 1,
+            rgba: vec![255, 0, 0, 255, 0, 0, 255, 255],
+            scale: 1.0,
+        };
+        let rotated = rotate_frame_cw(&frame);
+        assert_eq!((rotated.width, rotated.height), (1, 2));
+        assert_eq!(&rotated.rgba[0..4], &[255, 0, 0, 255]);
+        assert_eq!(&rotated.rgba[4..8], &[0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn rotate_frame_four_quarters_round_trips() {
+        let frame = Frame {
+            width: 3,
+            height: 2,
+            rgba: (0..24).collect(),
+            scale: 2.0,
+        };
+        let mut rotated = frame.clone();
+        for _ in 0..4 {
+            rotated = rotate_frame_cw(&rotated);
+        }
+        assert_eq!((rotated.width, rotated.height), (3, 2));
+        assert_eq!(rotated.rgba, frame.rgba);
+        assert_eq!(rotated.scale, frame.scale);
+    }
+
+    #[test]
+    fn opacity_scales_alpha_without_touching_color() {
+        let frame = Frame {
+            width: 2,
+            height: 1,
+            rgba: vec![10, 20, 30, 200, 1, 2, 3, 255],
+            scale: 1.0,
+        };
+        let half = apply_opacity(&frame, 0.5);
+        assert_eq!(&half.rgba[0..3], &[10, 20, 30]);
+        assert_eq!(half.rgba[3], 100);
+        // 255 * 0.5 = 127.5 → 128。
+        assert_eq!(half.rgba[7], 128);
+        assert_eq!(apply_opacity(&frame, 1.0).rgba, frame.rgba);
+        let none = apply_opacity(&frame, 0.0);
+        assert_eq!(none.rgba[3], 0);
+        assert_eq!(none.rgba[7], 0);
+        // 越界值按 0..=1 钳制。
+        assert_eq!(apply_opacity(&frame, -1.0).rgba[3], 0);
+        assert_eq!(apply_opacity(&frame, 2.0).rgba, frame.rgba);
+    }
+
+    #[test]
+    fn transformed_frame_applies_rotation_then_opacity() {
+        let source = PinSource {
+            rgba: vec![255, 0, 0, 200, 0, 0, 255, 200],
+            width: 2,
+            height: 1,
+            scale: 1.5,
+            logical_width: 40.0,
+            logical_height: 20.0,
+        };
+        let frame = transformed_frame(&source, 90, 0.5);
+        assert_eq!((frame.width, frame.height), (1, 2));
+        assert_eq!(frame.scale, 1.5);
+        assert_eq!(&frame.rgba[0..3], &[255, 0, 0]);
+        assert_eq!(frame.rgba[3], 100);
+        assert_eq!(frame.rgba[7], 100);
+        // 非法角度按整除归零,不越界 panic。
+        let plain = transformed_frame(&source, 45, 1.0);
+        assert_eq!((plain.width, plain.height), (2, 1));
+    }
+
+    #[test]
+    fn replace_source_content_swaps_logical_size_when_orientation_changes() {
+        let mut source = PinSource {
+            rgba: vec![0; 8],
+            width: 2,
+            height: 1,
+            scale: 1.0,
+            logical_width: 200.0,
+            logical_height: 100.0,
+        };
+        let rendered = Frame {
+            width: 1,
+            height: 2,
+            rgba: vec![1; 8],
+            scale: 1.0,
+        };
+        replace_source_content(&mut source, rendered);
+        assert_eq!((source.width, source.height), (1, 2));
+        assert_eq!(source.logical_width, 100.0);
+        assert_eq!(source.logical_height, 200.0);
+        // 同取向回写不交换。
+        let same = Frame {
+            width: 1,
+            height: 2,
+            rgba: vec![2; 8],
+            scale: 1.0,
+        };
+        replace_source_content(&mut source, same);
+        assert_eq!(source.logical_width, 100.0);
+        assert_eq!(source.logical_height, 200.0);
+    }
+
+    #[test]
+    fn ensure_png_extension_normalizes_names() {
+        assert_eq!(
+            ensure_png_extension(PathBuf::from("shot.png")),
+            PathBuf::from("shot.png")
+        );
+        assert_eq!(
+            ensure_png_extension(PathBuf::from("shot.PNG")),
+            PathBuf::from("shot.PNG")
+        );
+        assert_eq!(
+            ensure_png_extension(PathBuf::from("shot.jpg")),
+            PathBuf::from("shot.png")
+        );
+        assert_eq!(
+            ensure_png_extension(PathBuf::from("shot")),
+            PathBuf::from("shot.png")
+        );
+    }
+
+    #[test]
+    fn source_frame_keeps_native_pixels_and_scale() {
+        let source = PinSource {
+            rgba: vec![9; 12],
+            width: 1,
+            height: 3,
+            scale: 2.0,
+            logical_width: 10.0,
+            logical_height: 30.0,
+        };
+        let frame = source_frame(&source);
+        assert_eq!((frame.width, frame.height), (1, 3));
+        assert_eq!(frame.rgba, source.rgba);
+        assert_eq!(frame.scale, 2.0);
     }
 }

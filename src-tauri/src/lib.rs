@@ -137,6 +137,11 @@ pub fn run() {
             ocr::copy_ocr_all,
             pin::pin_current,
             pin::get_pin_image,
+            pin::copy_pin,
+            pin::save_pin,
+            pin::begin_pin_edit,
+            pin::update_pin_from_preview,
+            pin::get_pin_writeback,
             pin::close_pin,
             pin::close_all_pins,
             history::get_history,
@@ -148,9 +153,13 @@ pub fn run() {
             history::open_history,
         ])
         .on_window_event(|window, event| {
-            // 贴图窗口销毁(手动关闭/显示器断开/退出)即释放标签与交接邮箱。
+            // 贴图窗口销毁(手动关闭/显示器断开/退出)即释放标签与源图。
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 pin::handle_destroyed(window.label());
+                // 预览窗销毁时收尾可能存在的贴图再标注会话(恢复来源贴图置顶)。
+                if window.label() == capture::ui::PREVIEW {
+                    capture::close_preview(window.app_handle().clone());
+                }
             }
         })
         .build(tauri::generate_context!())

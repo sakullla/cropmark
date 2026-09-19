@@ -14,16 +14,20 @@ use tauri::AppHandle;
 
 use crate::hotkeys::CaptureMode;
 use crate::settings;
+use buffer::Frame;
 use error::CaptureError;
 use geometry::LogicalRect;
 use session::{QuietAction, RegionSelection};
 
 pub fn begin(app: &AppHandle, mode: CaptureMode, delay_ms: u64) {
+    // 新截取会替换预览会话:先收尾可能存在的贴图再标注(恢复来源贴图置顶)。
+    crate::pin::finish_pin_edit(app);
     session::begin(app, mode, delay_ms);
 }
 
 /// 托盘"上次区域"直取(R6):按记录区域抓取,不打开交互选区。
 pub fn begin_last_region(app: &AppHandle, delay_ms: u64) {
+    crate::pin::finish_pin_edit(app);
     session::begin_last_region(app, delay_ms);
 }
 
@@ -35,6 +39,17 @@ pub fn get_overlay_frame(app: AppHandle) -> Result<ui::OverlayPayload, CaptureEr
 #[tauri::command]
 pub fn get_preview_frame(app: AppHandle) -> Result<tauri::ipc::Response, CaptureError> {
     session::preview_frame(&app).map(|payload| tauri::ipc::Response::new(payload.bytes))
+}
+
+/// 贴图再标注(R9):把当前贴图内容装入预览会话并记录回写目标 label,
+/// 随后复用既有预览窗口与全部预览命令;确认/取消由 pin 侧命令收尾。
+pub fn open_pin_edit_preview(
+    app: &AppHandle,
+    frame: Frame,
+    writeback: String,
+) -> Result<(), CaptureError> {
+    session::adopt_external_frame(app, frame.clone(), writeback)?;
+    ui::open_preview(app, &frame).map(|_| ())
 }
 
 #[tauri::command]
@@ -155,6 +170,8 @@ pub fn cancel_capture(app: AppHandle) -> Result<(), CaptureError> {
 
 #[tauri::command]
 pub fn close_preview(app: AppHandle) {
+    // 再标注路径的取消语义:恢复来源贴图置顶,不改贴图内容。
+    crate::pin::finish_pin_edit(&app);
     session::close_preview(&app);
 }
 

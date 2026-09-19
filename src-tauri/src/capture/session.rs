@@ -47,6 +47,9 @@ struct ActiveSession {
     cancelled: bool,
     frame_deadline: Option<Instant>,
     started_at: Instant,
+    /// 贴图再标注(R9):预览会话的回写目标 label;普通截取预览为 None,
+    /// 会话被替换/关闭时随之失效。
+    writeback: Option<String>,
 }
 
 impl ActiveSession {
@@ -67,6 +70,7 @@ impl ActiveSession {
             cancelled: false,
             frame_deadline: None,
             started_at: now,
+            writeback: None,
         }
     }
 }
@@ -782,6 +786,43 @@ pub fn mark_preview_file_written(app: &AppHandle) {
             current.file_written = true;
         }
     });
+}
+
+/// 贴图再标注(R9):把外部帧装入预览会话并记录回写目标 label,复用全部
+/// 预览命令(取帧/复制/保存/OCR)。会话被关闭或新截取覆盖时回写目标随之
+/// 失效,取消不改动贴图源;进行中的截取会话不允许被覆盖。
+pub fn adopt_external_frame(
+    app: &AppHandle,
+    frame: Frame,
+    writeback: String,
+) -> Result<(), CaptureError> {
+    let busy = with_session(app, |session| {
+        session.as_ref().is_some_and(|current| current.busy)
+    });
+    if busy {
+        return Err(CaptureError::api("正在截取，无法进入贴图再标注。"));
+    }
+    let png = encode_png(&frame)?;
+    let preview = ui::preview_payload(&frame, &png, ui::PreviewCopyState::Disabled);
+    with_session_mut(app, |session| {
+        let mut current = ActiveSession::new(CaptureMode::Region, 0, Instant::now());
+        current.busy = false;
+        current.preview_opened = true;
+        current.freeze = Some(frame.clone());
+        current.preview = Some(preview);
+        current.writeback = Some(writeback);
+        *session = Some(current);
+    });
+    Ok(())
+}
+
+/// 当前预览会话的贴图回写目标;非再标注模式返回 None。
+pub fn writeback_target(app: &AppHandle) -> Option<String> {
+    with_session(app, |session| {
+        session
+            .as_ref()
+            .and_then(|current| current.writeback.clone())
+    })
 }
 
 pub fn confirm_region(app: &AppHandle, selection: RegionSelection) -> Result<(), CaptureError> {

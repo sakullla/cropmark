@@ -227,6 +227,7 @@ export function mountPreview(root: HTMLElement): void {
         <button type="button" data-tool="ocr" title="取字 (O)" data-tauri-drag-region="false">取字</button>
         <button type="button" data-action="copy-ocr-all" hidden data-tauri-drag-region="false">复制全部</button>
         <button type="button" data-action="pin" title="贴图" data-tauri-drag-region="false">贴图</button>
+        <button type="button" data-action="update-pin" title="更新贴图：确认后写回来源贴图" hidden data-tauri-drag-region="false">更新贴图</button>
         <div class="style-group" data-save-quality-root>
           <span class="style-label">质量</span>
           <div class="style-options" role="group" aria-label="保存质量">
@@ -259,6 +260,7 @@ export function mountPreview(root: HTMLElement): void {
   const copyAllBtn = root.querySelector("[data-action=copy-ocr-all]");
   const ocrBtn = root.querySelector("[data-tool=ocr]");
   const pinBtn = root.querySelector("[data-action=pin]");
+  const updatePinBtn = root.querySelector("[data-action=update-pin]");
   const saveQualityRoot = root.querySelector("[data-save-quality-root]");
   const styleRoot = root.querySelector("[data-style-root]");
   const stylePanel = root.querySelector("[data-style-panel]");
@@ -274,6 +276,7 @@ export function mountPreview(root: HTMLElement): void {
     !(copyAllBtn instanceof HTMLButtonElement) ||
     !(ocrBtn instanceof HTMLButtonElement) ||
     !(pinBtn instanceof HTMLButtonElement) ||
+    !(updatePinBtn instanceof HTMLButtonElement) ||
     !(saveQualityRoot instanceof HTMLElement) ||
     !(styleRoot instanceof HTMLElement) ||
     !(stylePanel instanceof HTMLElement) ||
@@ -333,6 +336,8 @@ export function mountPreview(root: HTMLElement): void {
   // 关闭时取字按钮隐藏、O 键停用;关闭贴图后隐藏预览工具条贴图按钮。
   let ocrEntryEnabled = true;
   let pinEntryEnabled = true;
+  // 贴图再标注(R9):非空表示本会话由贴图进入,确认后写回该 label。
+  let writebackLabel: string | null = null;
   let styleColor = FALLBACK_STROKE;
   let styleWidth: number | null = null;
   let styleTextBase: number | null = null;
@@ -455,6 +460,12 @@ export function mountPreview(root: HTMLElement): void {
     saveQualityRoot.querySelectorAll<HTMLButtonElement>("[data-save-quality]").forEach((button) => {
       button.classList.toggle("active", button.dataset.saveQuality === saveQuality);
     });
+  };
+
+  // 再标注模式:隐藏「贴图」(避免从编辑内容再开新贴图),显示「更新贴图」。
+  const syncWritebackUi = (): void => {
+    updatePinBtn.hidden = writebackLabel === null;
+    pinBtn.hidden = !pinEntryEnabled || writebackLabel !== null;
   };
 
   const persistStyle = (): void => {
@@ -997,6 +1008,24 @@ export function mountPreview(root: HTMLElement): void {
     }
   };
 
+  // 再标注确认:把当前标注写回来源贴图,Rust 更新源图并通知贴图窗换图;
+  // 成功后预览由 Rust 关闭。取消(直接关闭预览)不改动贴图内容。
+  const updatePin = async (): Promise<void> => {
+    if (busy || writebackLabel === null) {
+      return;
+    }
+    commitEditor();
+    busy = true;
+    setNote("正在更新贴图…");
+    try {
+      await invoke("update_pin_from_preview", { annotations: exportList() });
+    } catch (error) {
+      setNote(invokeError(error, "无法更新贴图。"), "error");
+    } finally {
+      busy = false;
+    }
+  };
+
   const closePreview = (): void => {
     void invoke("close_preview").catch((error) => {
       setNote(invokeError(error, "无法关闭预览。"), "error");
@@ -1276,6 +1305,8 @@ export function mountPreview(root: HTMLElement): void {
       if (pinEntryEnabled) {
         void pin();
       }
+    } else if (button.dataset.action === "update-pin") {
+      void updatePin();
     } else if (button.dataset.action === "close") {
       closePreview();
     }
@@ -1438,7 +1469,7 @@ export function mountPreview(root: HTMLElement): void {
       setTool("arrow");
     }
     pinEntryEnabled = settings?.features?.pinEntry !== false;
-    pinBtn.hidden = !pinEntryEnabled;
+    syncWritebackUi();
   };
   const reloadFeatureFlags = (): void => {
     void invoke<{ features?: { ocrEntry?: boolean; pinEntry?: boolean } }>("get_ui_settings")
@@ -1488,56 +1519,78 @@ export function mountPreview(root: HTMLElement): void {
   loadStyleDefaults();
 
   let previewLoad = 0;
+  const loadWriteback = async (): Promise<string | null> => {
+    try {
+      const label = await invoke<string | null>("get_pin_writeback");
+      return typeof label === "string" && label.length > 0 ? label : null;
+    } catch {
+      return null;
+    }
+  };
   const loadPreview = (): void => {
     const generation = ++previewLoad;
-    void invoke<ArrayBuffer>("get_preview_frame")
-      .then((bytes) => {
+    void (async () => {
+      // 再标注模式由会话决定(与帧同源):先取回写目标,再取同一会话的帧,
+      // 避免普通截取预览被误判为回写模式。
+      const writeback = await loadWriteback();
+      if (generation !== previewLoad) return;
+      writebackLabel = writeback;
+      syncWritebackUi();
+      let bytes: ArrayBuffer;
+      try {
+        bytes = await invoke<ArrayBuffer>("get_preview_frame");
+      } catch (error) {
+        if (generation === previewLoad) setNote(invokeError(error, "没有可预览的截图。"), "error");
+        return;
+      }
+      if (generation !== previewLoad) return;
+      if (bytes.byteLength <= 20) {
+        setNote("预览图像数据不完整。", "error");
+        return;
+      }
+      const activeWriteback = writeback !== null;
+      const header = new DataView(bytes);
+      // 16..20:0=设置关闭自动复制,1=已复制,2=自动复制失败。
+      const copyState = header.getUint32(16, true);
+      const payload: PreviewFrame = {
+        width: header.getUint32(0, true),
+        height: header.getUint32(4, true),
+        scale: header.getFloat64(8, true),
+      };
+      frame = payload;
+      canvas.width = payload.width;
+      canvas.height = payload.height;
+      const image = new Image();
+      const imageUrl = URL.createObjectURL(new Blob([bytes.slice(20)], { type: "image/png" }));
+      image.onload = () => {
+        URL.revokeObjectURL(imageUrl);
         if (generation !== previewLoad) return;
-        if (bytes.byteLength <= 20) throw new Error("预览图像数据不完整。");
-        const header = new DataView(bytes);
-        // 16..20:0=设置关闭自动复制,1=已复制,2=自动复制失败。
-        const copyState = header.getUint32(16, true);
-        const payload: PreviewFrame = {
-          width: header.getUint32(0, true),
-          height: header.getUint32(4, true),
-          scale: header.getFloat64(8, true),
-        };
-        frame = payload;
-        canvas.width = payload.width;
-        canvas.height = payload.height;
-        const image = new Image();
-        const imageUrl = URL.createObjectURL(new Blob([bytes.slice(20)], { type: "image/png" }));
-        image.onload = () => {
-          URL.revokeObjectURL(imageUrl);
-          if (generation !== previewLoad) return;
-          source = document.createElement("canvas");
-          source.width = payload.width;
-          source.height = payload.height;
-          const sourceCtx = source.getContext("2d");
-          if (!sourceCtx) {
-            setNote("无法显示预览图像。", "error");
-            return;
-          }
-          sourceCtx.drawImage(image, 0, 0, payload.width, payload.height);
-          if (copyState === 1) {
-            setCopied("未标注图已复制", "success");
-          } else if (copyState === 2) {
-            setCopied("自动复制失败，可点击复制重试。", "error");
-          } else {
-            setCopied("未自动复制，可点击复制。", "feedback");
-          }
-          redraw();
-        };
-        image.onerror = () => {
-          URL.revokeObjectURL(imageUrl);
-          if (generation === previewLoad) setNote("无法显示预览图像。", "error");
-        };
-        image.src = imageUrl;
-      })
-      .catch((error) => {
-        if (generation !== previewLoad) return;
-        setNote(invokeError(error, "没有可预览的截图。"), "error");
-      });
+        source = document.createElement("canvas");
+        source.width = payload.width;
+        source.height = payload.height;
+        const sourceCtx = source.getContext("2d");
+        if (!sourceCtx) {
+          setNote("无法显示预览图像。", "error");
+          return;
+        }
+        sourceCtx.drawImage(image, 0, 0, payload.width, payload.height);
+        if (activeWriteback) {
+          setCopied("贴图再标注：确认后更新贴图，取消不改动。", "feedback");
+        } else if (copyState === 1) {
+          setCopied("未标注图已复制", "success");
+        } else if (copyState === 2) {
+          setCopied("自动复制失败，可点击复制重试。", "error");
+        } else {
+          setCopied("未自动复制，可点击复制。", "feedback");
+        }
+        redraw();
+      };
+      image.onerror = () => {
+        URL.revokeObjectURL(imageUrl);
+        if (generation === previewLoad) setNote("无法显示预览图像。", "error");
+      };
+      image.src = imageUrl;
+    })();
   };
 
   void listen("preview-reload", () => {

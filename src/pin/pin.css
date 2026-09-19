@@ -15,11 +15,10 @@
   cursor: move;
 }
 
-.pin-image {
+.pin-canvas {
   display: block;
   width: 100%;
   height: 100%;
-  object-fit: fill;
   pointer-events: none;
 }
 
@@ -34,10 +33,29 @@
   font: 13px/1.4 "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 
-.pin-close {
+.pin-toolbar {
   position: absolute;
   top: 6px;
   right: 6px;
+  z-index: 5;
+  display: flex;
+  max-width: calc(100% - 12px);
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.pin-root:hover .pin-toolbar,
+.pin-toolbar:focus-within {
+  opacity: 1;
+}
+
+.pin-toolbar button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   width: 22px;
   height: 22px;
   padding: 0;
@@ -45,24 +63,32 @@
   border-radius: 6px;
   background: rgba(15, 23, 42, 0.55);
   color: #ffffff;
-  font-size: 14px;
-  line-height: 22px;
-  text-align: center;
   cursor: pointer;
-  opacity: 0;
-  transition: opacity 120ms ease;
 }
 
-.pin-close::before {
-  content: "×";
+.pin-toolbar button:hover {
+  background: rgba(37, 99, 235, 0.85);
 }
 
-.pin-root:hover .pin-close,
-.pin-close:focus-visible {
-  opacity: 1;
+.pin-toolbar svg {
+  display: block;
+  width: 13px;
+  height: 13px;
 }
 
-.pin-close:hover {
+.pin-toolbar .pin-opacity {
+  width: auto;
+  min-width: 36px;
+  padding: 0 5px;
+  font: 11px/1 "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.pin-toolbar .pin-close {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.pin-toolbar .pin-close:hover {
   background: rgba(225, 29, 72, 0.85);
 }
 
@@ -71,7 +97,7 @@
   z-index: 10;
   display: flex;
   flex-direction: column;
-  min-width: 120px;
+  min-width: 150px;
   padding: 4px;
   background: var(--panel, #ffffff);
   border: 1px solid var(--line, rgba(15, 23, 42, 0.14));
@@ -92,4 +118,51 @@
 
 .pin-menu button:hover {
   background: var(--accent-soft, rgba(37, 99, 235, 0.12));
+}
+
+.pin-menu button.active {
+  background: var(--accent-soft, rgba(37, 99, 235, 0.12));
+  color: var(--accent, #2563eb);
+}
+
+.pin-menu-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 4px 6px 4px 10px;
+  color: var(--ink, #334155);
+  font: 12px/1.4 "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.pin-menu-opacity {
+  display: flex;
+  gap: 2px;
+}
+
+.pin-menu-opacity button {
+  padding: 3px 6px;
+  font-size: 11px;
+}
+
+.pin-note {
+  position: absolute;
+  bottom: 8px;
+  left: 50%;
+  z-index: 6;
+  max-width: calc(100% - 16px);
+  padding: 4px 10px;
+  transform: translateX(-50%);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.75);
+  color: #ffffff;
+  font: 12px/1.4 "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.pin-note.is-error {
+  background: rgba(190, 18, 60, 0.88);
 }
