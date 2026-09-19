@@ -1,0 +1,113 @@
+/* 历史窗口:仅承载截图记录列表,基础外观复用 app.css 的 shell/card 变量。 */
+
+.history-root {
+  height: 100%;
+}
+
+.history-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.history-content {
+  gap: 10px;
+}
+
+.history-status {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ok);
+}
+
+.history-status.is-error {
+  color: var(--danger);
+}
+
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.history-item {
+  display: grid;
+  grid-template-columns: 100px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
+}
+
+.history-thumb {
+  width: 100px;
+  height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel) 78%, transparent);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.3;
+  text-align: center;
+}
+
+.history-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.history-meta {
+  min-width: 0;
+}
+
+.history-time {
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.history-size {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.history-missing-note {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--danger);
+}
+
+.history-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.history-actions .choice {
+  padding: 6px 10px;
+}
+
+.history-delete {
+  color: var(--danger);
+}
+
+.history-delete:hover:not(:disabled) {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.history-empty {
+  margin: 40px 0;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+}

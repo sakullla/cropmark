@@ -38,6 +38,11 @@ export interface CaptureSettings {
   finishAction: FinishAction;
 }
 
+export interface HistorySettings {
+  enabled: boolean;
+  limit: number;
+}
+
 export interface UiSettings {
   hotkeys: Hotkeys;
   hotkeyErrors: HotkeyErrors;
@@ -45,6 +50,7 @@ export interface UiSettings {
   notice: string | null;
   features: FeatureSettings;
   capture: CaptureSettings;
+  history: HistorySettings;
 }
 
 type FeatureKey = keyof FeatureSettings;
@@ -113,6 +119,34 @@ export function mountSettings(root: HTMLElement): void {
             </div>
           </div>
         </section>
+        <section class="card" aria-labelledby="history-title">
+          <h1 id="history-title">历史记录</h1>
+          <p class="hint">截图完成后在本机保留最近记录，可重新复制、贴图或删除；数据只保存在本机。</p>
+          <div class="setting-row">
+            <div>
+              <div class="label" id="history-enabled-label">保留截图历史</div>
+              <p class="hint">关闭后不再新增记录；已有记录保留，可在历史窗口清空。</p>
+            </div>
+            <button type="button" class="switch" data-history="enabled" role="switch" aria-checked="true" aria-labelledby="history-enabled-label">
+              <span class="knob"></span>
+            </button>
+          </div>
+          <div class="setting-row">
+            <div>
+              <div class="label" id="history-limit-label">记录上限</div>
+              <p class="hint">5–200 条，超出上限时自动淘汰最旧记录。</p>
+            </div>
+            <input type="number" class="number-input" data-history="limit" min="5" max="200" step="1" inputmode="numeric" aria-labelledby="history-limit-label" />
+          </div>
+          <p class="error" data-history-error role="alert" hidden></p>
+          <div class="setting-row">
+            <div>
+              <div class="label" id="history-open-label">浏览历史</div>
+              <p class="hint">打开历史窗口，按时间查看缩略图并重新复制、贴图或删除。</p>
+            </div>
+            <button type="button" class="choice" data-action="open-history" aria-labelledby="history-open-label">打开历史记录</button>
+          </div>
+        </section>
         <section class="card" aria-labelledby="autostart-title">
           <h1 id="autostart-title">开机启动</h1>
           <div class="autostart-row">
@@ -149,6 +183,10 @@ export function mountSettings(root: HTMLElement): void {
   const delayErrorEl = root.querySelector("[data-capture-error]");
   const autoCopyEl = root.querySelector("[data-capture=auto-copy]");
   const finishRoot = root.querySelector("[data-capture=finish]");
+  const historyEnabledEl = root.querySelector("[data-history=enabled]");
+  const historyLimitEl = root.querySelector("[data-history=limit]");
+  const historyErrorEl = root.querySelector("[data-history-error]");
+  const historyOpenEl = root.querySelector("[data-action=open-history]");
   if (
     !(noticeEl instanceof HTMLElement) ||
     !(hotkeyRoot instanceof HTMLElement) ||
@@ -159,7 +197,11 @@ export function mountSettings(root: HTMLElement): void {
     !(delayEl instanceof HTMLInputElement) ||
     !(delayErrorEl instanceof HTMLElement) ||
     !(autoCopyEl instanceof HTMLButtonElement) ||
-    !(finishRoot instanceof HTMLElement)
+    !(finishRoot instanceof HTMLElement) ||
+    !(historyEnabledEl instanceof HTMLButtonElement) ||
+    !(historyLimitEl instanceof HTMLInputElement) ||
+    !(historyErrorEl instanceof HTMLElement) ||
+    !(historyOpenEl instanceof HTMLButtonElement)
   ) {
     return;
   }
@@ -170,6 +212,10 @@ export function mountSettings(root: HTMLElement): void {
     delaySeconds: 0,
     autoCopy: true,
     finishAction: "preview",
+  };
+  let historySettings: HistorySettings = {
+    enabled: true,
+    limit: 20,
   };
 
   const showDelayError = (message: string): void => {
@@ -202,6 +248,26 @@ export function mountSettings(root: HTMLElement): void {
       button.disabled = quiet && !capture.autoCopy;
       button.title = button.disabled ? "需先开启完成后自动复制" : "";
     }
+  };
+
+  const showHistoryError = (message: string): void => {
+    historyErrorEl.hidden = false;
+    historyErrorEl.textContent = message;
+    historyLimitEl.setAttribute("aria-invalid", "true");
+  };
+
+  const clearHistoryError = (): void => {
+    historyErrorEl.hidden = true;
+    historyErrorEl.textContent = "";
+    historyLimitEl.removeAttribute("aria-invalid");
+  };
+
+  const renderHistory = (history: HistorySettings): void => {
+    historySettings = history;
+    historyLimitEl.value = String(history.limit);
+    clearHistoryError();
+    historyEnabledEl.setAttribute("aria-checked", history.enabled ? "true" : "false");
+    historyEnabledEl.classList.toggle("on", history.enabled);
   };
 
   const render = (settings: UiSettings): void => {
@@ -300,6 +366,7 @@ export function mountSettings(root: HTMLElement): void {
     helpEl.classList.toggle("error-text", Boolean(settings.autostart.message));
 
     renderCapture(settings.capture);
+    renderHistory(settings.history);
   };
 
   const showInvokeError = (error: unknown): void => {
@@ -333,6 +400,20 @@ export function mountSettings(root: HTMLElement): void {
     applying = true;
     try {
       const settings = await invoke<UiSettings>("set_capture_settings", {
+        settings: next,
+      });
+      render(settings);
+    } catch (error) {
+      showInvokeError(error);
+    } finally {
+      applying = false;
+    }
+  };
+
+  const applyHistory = async (next: HistorySettings): Promise<void> => {
+    applying = true;
+    try {
+      const settings = await invoke<UiSettings>("set_history_settings", {
         settings: next,
       });
       render(settings);
@@ -395,6 +476,48 @@ export function mountSettings(root: HTMLElement): void {
       return;
     }
     void applyCapture({ ...captureSettings, finishAction: action });
+  });
+
+  const commitHistoryLimit = (): void => {
+    const raw = historyLimitEl.value.trim();
+    if (!/^\d+$/.test(raw)) {
+      showHistoryError("记录上限需为 5–200 之间的整数。");
+      return;
+    }
+    const limit = Number(raw);
+    if (!Number.isSafeInteger(limit) || limit < 5 || limit > 200) {
+      showHistoryError("记录上限需为 5–200 之间的整数。");
+      return;
+    }
+    clearHistoryError();
+    if (limit === historySettings.limit) {
+      return;
+    }
+    void applyHistory({ ...historySettings, limit });
+  };
+
+  historyLimitEl.addEventListener("change", () => {
+    if (!applying) {
+      commitHistoryLimit();
+    }
+  });
+  historyLimitEl.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      historyLimitEl.blur();
+    }
+  });
+
+  historyEnabledEl.addEventListener("click", () => {
+    if (applying) {
+      return;
+    }
+    const next = historyEnabledEl.getAttribute("aria-checked") !== "true";
+    void applyHistory({ ...historySettings, enabled: next });
+  });
+
+  historyOpenEl.addEventListener("click", () => {
+    void invoke("open_history").catch(showInvokeError);
   });
 
   closeEl.addEventListener("click", () => {

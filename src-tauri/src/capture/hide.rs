@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use super::error::CaptureError;
 
 #[allow(dead_code)]
-pub const PRODUCT_SURFACES: [&str; 3] = ["preview", "settings", "tray-popup"];
+pub const PRODUCT_SURFACES: [&str; 4] = ["preview", "settings", "history", "tray-popup"];
 #[allow(dead_code)]
 pub const SESSION_SURFACES: [&str; 3] = ["overlay", "capture-delay", "capture-error"];
 
@@ -11,6 +11,7 @@ pub const SESSION_SURFACES: [&str; 3] = ["overlay", "capture-delay", "capture-er
 pub enum SurfaceKind {
     Preview,
     Settings,
+    History,
     TrayPopup,
     Overlay,
     Delay,
@@ -23,6 +24,7 @@ impl SurfaceKind {
         match self {
             Self::Preview => "preview",
             Self::Settings => "settings",
+            Self::History => "history",
             Self::TrayPopup => "tray-popup",
             Self::Overlay => "overlay",
             Self::Delay => "capture-delay",
@@ -34,6 +36,7 @@ impl SurfaceKind {
         match label {
             "preview" => Some(Self::Preview),
             "settings" => Some(Self::Settings),
+            "history" => Some(Self::History),
             "tray-popup" => Some(Self::TrayPopup),
             "overlay" => Some(Self::Overlay),
             "capture-delay" => Some(Self::Delay),
@@ -43,7 +46,10 @@ impl SurfaceKind {
     }
 
     pub fn restore_on_cancel(self) -> bool {
-        matches!(self, Self::Preview | Self::Settings | Self::TrayPopup)
+        matches!(
+            self,
+            Self::Preview | Self::Settings | Self::History | Self::TrayPopup
+        )
     }
 }
 
@@ -252,6 +258,7 @@ mod tests {
         let mut wait = HideWait::record(vec![
             visible("preview"),
             visible("settings"),
+            visible("history"),
             RecordedSurface {
                 label: "overlay".into(),
                 kind: SurfaceKind::Overlay,
@@ -261,7 +268,7 @@ mod tests {
         wait.request_hide();
         let restored = wait.restore_on_cancel();
         let labels: Vec<_> = restored.iter().map(|s| s.label.as_str()).collect();
-        assert_eq!(labels, ["preview", "settings"]);
+        assert_eq!(labels, ["preview", "settings", "history"]);
     }
 
     #[test]

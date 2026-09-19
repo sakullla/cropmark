@@ -1,4 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
+import { mountHistory } from "./history";
 import { mountDelay } from "./overlay/delay";
 import { mountCaptureError } from "./overlay/error";
 import { mountOverlay } from "./overlay/index";
@@ -24,6 +25,8 @@ if (root instanceof HTMLElement) {
     mountToast(root);
   } else if (view === "pin") {
     mountPin(root);
+  } else if (view === "history") {
+    mountHistory(root);
   }
 }
 

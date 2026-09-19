@@ -966,6 +966,9 @@ fn finish_with_ttl(
         set_last_error(app, Some(error.clone()));
         let _ = ui::open_error(app, error);
     }
+    // R2:history.enabled 时把最终帧写入本地历史;编码、缩略图与索引写入
+    // 全部在 spawn_blocking 内,不阻塞完成路径。
+    crate::history::record_capture(app, frame);
     Ok(FinishSummary { clipboard_written })
 }
 

@@ -153,6 +153,38 @@ impl CaptureSettings {
     }
 }
 
+/// 历史记录上限允许范围(条):低于 5 会被钳制,高于 200 会被钳制。
+pub const MIN_HISTORY_LIMIT: u32 = 5;
+pub const MAX_HISTORY_LIMIT: u32 = 200;
+
+/// 本地截图历史(R2):关闭后不新增记录,已有关闭前记录保留;
+/// limit 为保留条数上限,超出时按时间淘汰最旧。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct HistorySettings {
+    pub enabled: bool,
+    pub limit: u32,
+}
+
+impl Default for HistorySettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            limit: 20,
+        }
+    }
+}
+
+impl HistorySettings {
+    /// limit 钳制到 5–200;布尔无非法值。
+    pub fn sanitized(self) -> Self {
+        Self {
+            enabled: self.enabled,
+            limit: self.limit.clamp(MIN_HISTORY_LIMIT, MAX_HISTORY_LIMIT),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredSettings {
@@ -164,6 +196,8 @@ pub struct StoredSettings {
     pub features: FeatureSettings,
     #[serde(default)]
     pub capture: CaptureSettings,
+    #[serde(default)]
+    pub history: HistorySettings,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -176,6 +210,7 @@ pub struct UiSettings {
     pub annotation_defaults: AnnotationDefaults,
     pub features: FeatureSettings,
     pub capture: CaptureSettings,
+    pub history: HistorySettings,
 }
 
 pub struct SessionState {
@@ -186,6 +221,7 @@ pub struct SessionState {
     pub annotation_defaults: Mutex<AnnotationDefaults>,
     pub features: Mutex<FeatureSettings>,
     pub capture: Mutex<CaptureSettings>,
+    pub history: Mutex<HistorySettings>,
 }
 
 impl SessionState {
@@ -198,6 +234,7 @@ impl SessionState {
             annotation_defaults: Mutex::new(stored.annotation_defaults.sanitized()),
             features: Mutex::new(stored.features.sanitized()),
             capture: Mutex::new(stored.capture.sanitized()),
+            history: Mutex::new(stored.history.sanitized()),
         }
     }
 }
@@ -211,6 +248,11 @@ pub fn current_features(app: &AppHandle) -> FeatureSettings {
 /// 设置变更下一次截取即生效,无需重启。
 pub fn current_capture(app: &AppHandle) -> CaptureSettings {
     *lock(&app.state::<SessionState>().capture)
+}
+
+/// 供完成路径判断是否写入历史记录(内存值即时生效)。
+pub fn current_history(app: &AppHandle) -> HistorySettings {
+    *lock(&app.state::<SessionState>().history)
 }
 
 pub fn load_from_app(app: &AppHandle) -> StoredSettings {
@@ -270,6 +312,7 @@ pub fn snapshot(app: &AppHandle) -> UiSettings {
     let annotation_defaults = lock(&state.annotation_defaults).clone();
     let features = *lock(&state.features);
     let capture = *lock(&state.capture);
+    let history = *lock(&state.history);
     UiSettings {
         hotkeys,
         hotkey_errors,
@@ -278,6 +321,7 @@ pub fn snapshot(app: &AppHandle) -> UiSettings {
         annotation_defaults,
         features,
         capture,
+        history,
     }
 }
 
@@ -342,6 +386,16 @@ pub fn set_capture_settings(app: AppHandle, settings: CaptureSettings) -> UiSett
     snapshot(&app)
 }
 
+/// 设置历史开关与上限;上限调低时异步裁剪最旧记录,不阻塞设置窗口。
+#[tauri::command]
+pub fn set_history_settings(app: AppHandle, settings: HistorySettings) -> UiSettings {
+    let next = settings.sanitized();
+    *lock(&app.state::<SessionState>().history) = next;
+    persist_settings(&app, "历史记录设置已应用");
+    crate::history::prune_async(&app, next.limit);
+    snapshot(&app)
+}
+
 fn persist_settings(app: &AppHandle, applied: &str) {
     let state = app.state::<SessionState>();
     let stored = StoredSettings {
@@ -349,6 +403,7 @@ fn persist_settings(app: &AppHandle, applied: &str) {
         annotation_defaults: lock(&state.annotation_defaults).clone(),
         features: *lock(&state.features),
         capture: *lock(&state.capture),
+        history: *lock(&state.history),
     };
     match save_to_path(&settings_path(app), &stored) {
         Ok(()) => *lock(&state.notice) = None,
@@ -414,6 +469,10 @@ mod tests {
                 auto_copy: false,
                 finish_action: FinishAction::Quiet,
             },
+            history: HistorySettings {
+                enabled: false,
+                limit: 50,
+            },
         };
         save_to_path(&path, &stored).unwrap();
         let text = fs::read_to_string(&path).unwrap();
@@ -432,6 +491,8 @@ mod tests {
         assert_eq!(loaded.capture.delay_seconds, 5);
         assert!(!loaded.capture.auto_copy);
         assert_eq!(loaded.capture.finish_action, FinishAction::Quiet);
+        assert!(!loaded.history.enabled);
+        assert_eq!(loaded.history.limit, 50);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -522,6 +583,7 @@ mod tests {
             annotation_defaults: AnnotationDefaults::default(),
             features: FeatureSettings::default(),
             capture: CaptureSettings::default(),
+            history: HistorySettings::default(),
         };
         ui.autostart = result.clone();
         assert!(!ui.autostart.enabled);
@@ -601,5 +663,63 @@ mod tests {
         assert_eq!(serialized["delaySeconds"], 7);
         assert_eq!(serialized["autoCopy"], false);
         assert_eq!(serialized["finishAction"], "quiet");
+    }
+
+    #[test]
+    fn history_defaults_to_enabled_with_twenty_records() {
+        let history = HistorySettings::default();
+        assert!(history.enabled);
+        assert_eq!(history.limit, 20);
+        assert_eq!(history.sanitized(), history);
+    }
+
+    #[test]
+    fn history_sanitize_clamps_limit_into_range() {
+        let low = HistorySettings {
+            enabled: false,
+            limit: 1,
+        }
+        .sanitized();
+        assert_eq!(low.limit, MIN_HISTORY_LIMIT);
+        assert!(!low.enabled);
+        let high = HistorySettings {
+            enabled: true,
+            limit: 9_999,
+        }
+        .sanitized();
+        assert_eq!(high.limit, MAX_HISTORY_LIMIT);
+        let exact = HistorySettings {
+            enabled: true,
+            limit: MAX_HISTORY_LIMIT,
+        }
+        .sanitized();
+        assert_eq!(exact.limit, MAX_HISTORY_LIMIT);
+    }
+
+    #[test]
+    fn missing_history_field_loads_defaults() {
+        let dir =
+            std::env::temp_dir().join(format!("cropmark-settings-history-{}", std::process::id()));
+        let path = dir.join("settings.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            r#"{"hotkeys":{"region":"Ctrl+Alt+R","window":"Alt+Shift+W","fullscreen":"Alt+Shift+S"}}"#,
+        )
+        .unwrap();
+        let loaded = load_from_path(&path);
+        assert_eq!(loaded.history, HistorySettings::default());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn history_settings_deserialize_from_camel_case_json() {
+        let parsed: StoredSettings =
+            serde_json::from_str(r#"{"history":{"enabled":false,"limit":80}}"#).unwrap();
+        assert!(!parsed.history.enabled);
+        assert_eq!(parsed.history.limit, 80);
+        let serialized = serde_json::to_value(parsed.history).unwrap();
+        assert_eq!(serialized["enabled"], false);
+        assert_eq!(serialized["limit"], 80);
     }
 }

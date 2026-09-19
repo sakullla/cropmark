@@ -3,6 +3,7 @@ mod autostart;
 mod capture;
 mod clipboard;
 mod export;
+mod history;
 mod hotkeys;
 mod ocr;
 mod pin;
@@ -107,6 +108,7 @@ pub fn run() {
             settings::set_annotation_defaults,
             settings::set_feature,
             settings::set_capture_settings,
+            settings::set_history_settings,
             capture::get_overlay_frame,
             capture::get_preview_frame,
             capture::confirm_region,
@@ -129,6 +131,13 @@ pub fn run() {
             pin::get_pin_image,
             pin::close_pin,
             pin::close_all_pins,
+            history::get_history,
+            history::get_history_thumbnail,
+            history::copy_history_entry,
+            history::pin_history_entry,
+            history::delete_history_entry,
+            history::clear_history,
+            history::open_history,
         ])
         .on_window_event(|window, event| {
             // 贴图窗口销毁(手动关闭/显示器断开/退出)即释放标签与交接邮箱。

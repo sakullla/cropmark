@@ -193,6 +193,21 @@ pub fn open_pin(
     Ok(window)
 }
 
+/// 从已存 PNG(历史记录等外部入口)打开贴图:按工作区适配窗口逻辑尺寸,
+/// 复用与预览贴图相同的 `pin_logical_size` 规则;PNG 经邮箱交给前端。
+pub fn open_pin_from_frame(
+    app: &AppHandle,
+    png: Vec<u8>,
+    width: u32,
+    height: u32,
+    scale: f64,
+) -> Result<(), String> {
+    let (_, work) = pointer_work_area(app);
+    let (work_w, work_h) = work.map(|(.., w, h)| (w, h)).unwrap_or((1920.0, 1080.0));
+    let (logical_w, logical_h) = pin_logical_size(width, height, scale, work_w, work_h);
+    open_pin(app, png, logical_w, logical_h).map(|_| ())
+}
+
 struct PreparedPin {
     png: Vec<u8>,
     width: f64,

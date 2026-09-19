@@ -81,6 +81,9 @@ fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
         "settings" => {
             let _ = settings::open_settings(app);
         }
+        "history" => {
+            let _ = crate::history::open_window(app);
+        }
         "quit" => app.exit(0),
         id => {
             if let Some(action) = menu_action(id) {
@@ -117,6 +120,7 @@ fn build_menu(app: &AppHandle, configured_seconds: u32) -> tauri::Result<Menu<ta
     capture_items.push(&delay_configured);
     let capture = Submenu::with_items(app, "截取", true, &capture_items)?;
     let settings_item = MenuItem::with_id(app, "settings", "设置", true, None::<&str>)?;
+    let history_item = MenuItem::with_id(app, "history", "历史记录", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
     Menu::with_items(
         app,
@@ -124,6 +128,7 @@ fn build_menu(app: &AppHandle, configured_seconds: u32) -> tauri::Result<Menu<ta
             &capture,
             &PredefinedMenuItem::separator(app)?,
             &settings_item,
+            &history_item,
             &PredefinedMenuItem::separator(app)?,
             &quit,
         ],

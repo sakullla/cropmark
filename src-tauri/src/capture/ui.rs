@@ -19,6 +19,7 @@ pub const PREVIEW: &str = "preview";
 pub const DELAY: &str = "capture-delay";
 pub const ERROR: &str = "capture-error";
 pub const SETTINGS: &str = "settings";
+pub const HISTORY: &str = "history";
 pub const TOAST: &str = "toast";
 
 const TOAST_WIDTH: f64 = 300.0;
@@ -79,8 +80,8 @@ pub struct DelayPayload {
     pub mode: CaptureMode,
 }
 
-pub fn product_window_labels() -> [&'static str; 2] {
-    [PREVIEW, SETTINGS]
+pub fn product_window_labels() -> [&'static str; 3] {
+    [PREVIEW, SETTINGS, HISTORY]
 }
 
 pub fn session_window_labels() -> [&'static str; 3] {
