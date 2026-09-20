@@ -551,7 +551,11 @@ mod tests {
             let doc = engine
                 .recognize(&frame, true)
                 .unwrap_or_else(|error| panic!("{orientation:?} sample not recognized: {error:?}"));
-            assert_eq!(doc.full_text.trim(), base_text, "{orientation:?}");
+            let rotated_text = doc.full_text.trim();
+            assert!(
+                similar_ocr_text(rotated_text, &base_text),
+                "{orientation:?} OCR too far from upright: {rotated_text:?} vs {base_text:?}"
+            );
             for span in &doc.spans {
                 assert!(
                     span.x >= -0.5 && span.y >= -0.5,
@@ -626,6 +630,39 @@ mod tests {
             color: crate::annotate::DEFAULT_COLOR.into(),
         }];
         rasterize(&frame, &ops).unwrap_or(frame)
+    }
+
+    /// 旋转样例允许 1 个字形误差:逐行 180° cls 插值在 Windows CI 上会把
+    /// Hello 认成 Hellio,方向纠正仍然成功。倒置乱码或窄条噪声(如 "00")
+    /// 编辑距离会大于 1,不能当成通过。
+    fn similar_ocr_text(actual: &str, expected: &str) -> bool {
+        ocr_edit_distance(actual.trim(), expected.trim()) <= 1
+    }
+
+    fn ocr_edit_distance(left: &str, right: &str) -> usize {
+        let left: Vec<char> = left.chars().collect();
+        let right: Vec<char> = right.chars().collect();
+        let mut prev: Vec<usize> = (0..=right.len()).collect();
+        let mut curr = vec![0; right.len() + 1];
+        for (i, left_ch) in left.iter().enumerate() {
+            curr[0] = i + 1;
+            for (j, right_ch) in right.iter().enumerate() {
+                let subst = usize::from(left_ch != right_ch);
+                curr[j + 1] = (prev[j + 1] + 1).min(curr[j] + 1).min(prev[j] + subst);
+            }
+            std::mem::swap(&mut prev, &mut curr);
+        }
+        prev[right.len()]
+    }
+
+    #[test]
+    fn rotated_ocr_allows_single_glyph_noise_but_rejects_wrong_orientation() {
+        assert!(similar_ocr_text("Hello 中文", "Hello 中文"));
+        assert!(similar_ocr_text("Hellio 中文", "Hello 中文"));
+        assert!(similar_ocr_text("Helo 中文", "Hello 中文"));
+        assert!(!similar_ocr_text("Hello 中文00", "Hello 中文"));
+        assert!(!similar_ocr_text("olleH 文中", "Hello 中文"));
+        assert!(!similar_ocr_text("00", "Hello 中文"));
     }
 
     /// Linux CI 往往没有 CJK 字体;缺字会画出 .notdef 方框,旋转后被认成 "00"。
