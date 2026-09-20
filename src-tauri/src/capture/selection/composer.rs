@@ -547,7 +547,8 @@ pub fn toolbar_panel(
     // 底部水平排(按选区宽度折行,整体居中于选区)。
     let (_, _, grid_w, grid_h) = rail_grid(metrics, sel.width, count);
     let below_y = sel.bottom() + metrics.rail_margin_h;
-    let grid_x = || (sel.x + sel.width / 2 - grid_w / 2).clamp(0, (screen.0 as i32 - grid_w).max(0));
+    let grid_x =
+        || (sel.x + sel.width / 2 - grid_w / 2).clamp(0, (screen.0 as i32 - grid_w).max(0));
     if below_y + grid_h <= screen.1 as i32 {
         return Some(IntRect {
             x: grid_x(),
@@ -675,11 +676,7 @@ pub fn menu_item_rects(
 }
 
 /// 「取消」分隔线的 y 坐标(菜单至少含取消项时才有意义)。
-pub fn menu_separator_y(
-    metrics: ChromeMetrics,
-    panel: IntRect,
-    items: &[SelectionAction],
-) -> i32 {
+pub fn menu_separator_y(metrics: ChromeMetrics, panel: IntRect, items: &[SelectionAction]) -> i32 {
     panel.y + metrics.menu_pad + items.len().saturating_sub(1) as i32 * metrics.menu_item_h
 }
 
@@ -836,10 +833,7 @@ pub fn edge_hit(metrics: ChromeMetrics, rect: PhysicalRect, x: i32, y: i32) -> O
 
 /// 尺寸徽标文本:「宽 × 高 · 左, 上」,例如 "123 × 45 · 10, 20"。
 pub fn size_readout(rect: PhysicalRect) -> String {
-    format!(
-        "{} × {} · {}, {}",
-        rect.width, rect.height, rect.x, rect.y
-    )
+    format!("{} × {} · {}, {}", rect.width, rect.height, rect.x, rect.y)
 }
 
 /// 光标物理坐标读数,例如 "10, 20"。
@@ -1029,7 +1023,8 @@ impl Composer {
         }
         let mut region = self.baked_region(selection, overlay);
         if let Some(draft) = overlay.draft {
-            let local = crate::annotate::translated(draft, -(selection.x as f64), -(selection.y as f64));
+            let local =
+                crate::annotate::translated(draft, -(selection.x as f64), -(selection.y as f64));
             let _ = raster::apply_annotation(
                 &mut region,
                 selection.width,
@@ -1056,8 +1051,11 @@ impl Composer {
         }
         let mut region = self.copy_selection(selection);
         if !overlay.annotations.is_empty() {
-            let translated =
-                crate::annotate::translated_all(overlay.annotations, -(selection.x as f64), -(selection.y as f64));
+            let translated = crate::annotate::translated_all(
+                overlay.annotations,
+                -(selection.x as f64),
+                -(selection.y as f64),
+            );
             let _ = raster::apply_annotations(
                 &mut region,
                 selection.width,
@@ -1664,31 +1662,6 @@ fn draw_line(
     }
 }
 
-fn paint_sdf(
-    rgba: &mut [u8],
-    w: u32,
-    h: u32,
-    min_x: i32,
-    min_y: i32,
-    max_x: i32,
-    max_y: i32,
-    color: [u8; 4],
-    mut sdf: impl FnMut(f32, f32) -> f32,
-) {
-    for y in min_y..=max_y {
-        for x in min_x..=max_x {
-            let dist = sdf(x as f32 + 0.5, y as f32 + 0.5);
-            let cover = (0.5 - dist).clamp(0.0, 1.0);
-            if cover <= 0.004 {
-                continue;
-            }
-            let mut ink = color;
-            ink[3] = (f32::from(color[3]) * cover).round() as u8;
-            blend(rgba, w, h, x, y, ink);
-        }
-    }
-}
-
 fn dist_segment(px: f32, py: f32, x0: f32, y0: f32, x1: f32, y1: f32) -> f32 {
     let vx = x1 - x0;
     let vy = y1 - y0;
@@ -1704,163 +1677,160 @@ fn dist_segment(px: f32, py: f32, x0: f32, y0: f32, x1: f32, y1: f32) -> f32 {
     (dx * dx + dy * dy).sqrt()
 }
 
-fn fill_disk_aa(
-    rgba: &mut [u8],
+/// 可变 RGBA 扫描缓冲:把 `rgba/w/h` 收成绘制目标,抗锯齿图元走方法以免
+/// 每个图元函数都超过 clippy 参数上限。
+struct PixelBuf<'a> {
+    rgba: &'a mut [u8],
     w: u32,
     h: u32,
-    cx: f32,
-    cy: f32,
-    radius: f32,
-    color: [u8; 4],
-) {
-    let pad = radius + 1.5;
-    paint_sdf(
-        rgba,
-        w,
-        h,
-        (cx - pad).floor() as i32,
-        (cy - pad).floor() as i32,
-        (cx + pad).ceil() as i32,
-        (cy + pad).ceil() as i32,
-        color,
-        |x, y| {
-            let dx = x - cx;
-            let dy = y - cy;
-            (dx * dx + dy * dy).sqrt() - radius
-        },
-    );
 }
 
-fn stroke_capsule_aa(
-    rgba: &mut [u8],
-    w: u32,
-    h: u32,
-    x0: f32,
-    y0: f32,
-    x1: f32,
-    y1: f32,
-    radius: f32,
-    color: [u8; 4],
-) {
-    let pad = radius + 1.5;
-    paint_sdf(
-        rgba,
-        w,
-        h,
-        (x0.min(x1) - pad).floor() as i32,
-        (y0.min(y1) - pad).floor() as i32,
-        (x0.max(x1) + pad).ceil() as i32,
-        (y0.max(y1) + pad).ceil() as i32,
-        color,
-        |x, y| dist_segment(x, y, x0, y0, x1, y1) - radius,
-    );
-}
-
-fn stroke_round_rect_aa(
-    rgba: &mut [u8],
-    w: u32,
-    h: u32,
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
-    corner: f32,
-    stroke: f32,
-    color: [u8; 4],
-) {
-    if width <= 1.0 || height <= 1.0 {
-        return;
+impl PixelBuf<'_> {
+    fn paint_sdf(
+        &mut self,
+        min_x: i32,
+        min_y: i32,
+        max_x: i32,
+        max_y: i32,
+        color: [u8; 4],
+        mut sdf: impl FnMut(f32, f32) -> f32,
+    ) {
+        for y in min_y..=max_y {
+            for x in min_x..=max_x {
+                let dist = sdf(x as f32 + 0.5, y as f32 + 0.5);
+                let cover = (0.5 - dist).clamp(0.0, 1.0);
+                if cover <= 0.004 {
+                    continue;
+                }
+                let mut ink = color;
+                ink[3] = (f32::from(color[3]) * cover).round() as u8;
+                blend(self.rgba, self.w, self.h, x, y, ink);
+            }
+        }
     }
-    let cx = x + width * 0.5;
-    let cy = y + height * 0.5;
-    let hw = width * 0.5;
-    let hh = height * 0.5;
-    let corner = corner.min(hw).min(hh).max(0.0);
-    let half = stroke * 0.5;
-    let pad = half + 1.5;
-    paint_sdf(
-        rgba,
-        w,
-        h,
-        (x - pad).floor() as i32,
-        (y - pad).floor() as i32,
-        (x + width + pad).ceil() as i32,
-        (y + height + pad).ceil() as i32,
-        color,
-        |px, py| {
-            let dx = (px - cx).abs() - hw + corner;
-            let dy = (py - cy).abs() - hh + corner;
-            let outside = dx.max(0.0).hypot(dy.max(0.0));
-            let inside = dx.min(0.0).max(dy.min(0.0));
-            (outside + inside - corner).abs() - half
-        },
-    );
-}
 
-fn fill_triangle_aa(
-    rgba: &mut [u8],
-    w: u32,
-    h: u32,
-    ax: f32,
-    ay: f32,
-    bx: f32,
-    by: f32,
-    cx: f32,
-    cy: f32,
-    color: [u8; 4],
-) {
-    let edge = |x1: f32, y1: f32, x2: f32, y2: f32, px: f32, py: f32| {
-        let nx = y2 - y1;
-        let ny = x1 - x2;
-        let len = nx.hypot(ny).max(1e-6);
-        ((px - x1) * nx + (py - y1) * ny) / len
-    };
-    let sign = edge(ax, ay, bx, by, cx, cy).signum();
-    if sign == 0.0 {
-        stroke_capsule_aa(rgba, w, h, ax, ay, bx, by, 0.7, color);
-        return;
+    fn fill_disk_aa(&mut self, cx: f32, cy: f32, radius: f32, color: [u8; 4]) {
+        let pad = radius + 1.5;
+        self.paint_sdf(
+            (cx - pad).floor() as i32,
+            (cy - pad).floor() as i32,
+            (cx + pad).ceil() as i32,
+            (cy + pad).ceil() as i32,
+            color,
+            |x, y| {
+                let dx = x - cx;
+                let dy = y - cy;
+                (dx * dx + dy * dy).sqrt() - radius
+            },
+        );
     }
-    let pad = 1.5;
-    paint_sdf(
-        rgba,
-        w,
-        h,
-        (ax.min(bx).min(cx) - pad).floor() as i32,
-        (ay.min(by).min(cy) - pad).floor() as i32,
-        (ax.max(bx).max(cx) + pad).ceil() as i32,
-        (ay.max(by).max(cy) + pad).ceil() as i32,
-        color,
-        |px, py| {
-            let d0 = edge(ax, ay, bx, by, px, py) * sign;
-            let d1 = edge(bx, by, cx, cy, px, py) * sign;
-            let d2 = edge(cx, cy, ax, ay, px, py) * sign;
-            -d0.min(d1).min(d2)
-        },
-    );
-}
 
-fn stroke_arc_aa(
-    rgba: &mut [u8],
-    w: u32,
-    h: u32,
-    cx: f32,
-    cy: f32,
-    radius: f32,
-    start: f32,
-    end: f32,
-    stroke: f32,
-    color: [u8; 4],
-) {
-    let steps = ((radius * (end - start).abs()).ceil() as i32).max(8);
-    let mut prev_x = cx + radius * start.cos();
-    let mut prev_y = cy + radius * start.sin();
-    for i in 1..=steps {
-        let t = start + (end - start) * (i as f32 / steps as f32);
-        let x = cx + radius * t.cos();
-        let y = cy + radius * t.sin();
-        stroke_capsule_aa(rgba, w, h, prev_x, prev_y, x, y, stroke * 0.5, color);
-        prev_x = x;
-        prev_y = y;
+    fn stroke_capsule_aa(
+        &mut self,
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        radius: f32,
+        color: [u8; 4],
+    ) {
+        let pad = radius + 1.5;
+        self.paint_sdf(
+            (x0.min(x1) - pad).floor() as i32,
+            (y0.min(y1) - pad).floor() as i32,
+            (x0.max(x1) + pad).ceil() as i32,
+            (y0.max(y1) + pad).ceil() as i32,
+            color,
+            |x, y| dist_segment(x, y, x0, y0, x1, y1) - radius,
+        );
+    }
+
+    fn stroke_round_rect_aa(
+        &mut self,
+        rect: (f32, f32, f32, f32),
+        corner: f32,
+        stroke: f32,
+        color: [u8; 4],
+    ) {
+        let (x, y, width, height) = rect;
+        if width <= 1.0 || height <= 1.0 {
+            return;
+        }
+        let cx = x + width * 0.5;
+        let cy = y + height * 0.5;
+        let hw = width * 0.5;
+        let hh = height * 0.5;
+        let corner = corner.min(hw).min(hh).max(0.0);
+        let half = stroke * 0.5;
+        let pad = half + 1.5;
+        self.paint_sdf(
+            (x - pad).floor() as i32,
+            (y - pad).floor() as i32,
+            (x + width + pad).ceil() as i32,
+            (y + height + pad).ceil() as i32,
+            color,
+            |px, py| {
+                let dx = (px - cx).abs() - hw + corner;
+                let dy = (py - cy).abs() - hh + corner;
+                let outside = dx.max(0.0).hypot(dy.max(0.0));
+                let inside = dx.min(0.0).max(dy.min(0.0));
+                (outside + inside - corner).abs() - half
+            },
+        );
+    }
+
+    fn fill_triangle_aa(&mut self, a: (f32, f32), b: (f32, f32), c: (f32, f32), color: [u8; 4]) {
+        let (ax, ay) = a;
+        let (bx, by) = b;
+        let (cx, cy) = c;
+        let edge = |x1: f32, y1: f32, x2: f32, y2: f32, px: f32, py: f32| {
+            let nx = y2 - y1;
+            let ny = x1 - x2;
+            let len = nx.hypot(ny).max(1e-6);
+            ((px - x1) * nx + (py - y1) * ny) / len
+        };
+        let sign = edge(ax, ay, bx, by, cx, cy).signum();
+        if sign == 0.0 {
+            self.stroke_capsule_aa(ax, ay, bx, by, 0.7, color);
+            return;
+        }
+        let pad = 1.5;
+        self.paint_sdf(
+            (ax.min(bx).min(cx) - pad).floor() as i32,
+            (ay.min(by).min(cy) - pad).floor() as i32,
+            (ax.max(bx).max(cx) + pad).ceil() as i32,
+            (ay.max(by).max(cy) + pad).ceil() as i32,
+            color,
+            |px, py| {
+                let d0 = edge(ax, ay, bx, by, px, py) * sign;
+                let d1 = edge(bx, by, cx, cy, px, py) * sign;
+                let d2 = edge(cx, cy, ax, ay, px, py) * sign;
+                -d0.min(d1).min(d2)
+            },
+        );
+    }
+
+    fn stroke_arc_aa(
+        &mut self,
+        center: (f32, f32),
+        radius: f32,
+        start: f32,
+        end: f32,
+        stroke: f32,
+        color: [u8; 4],
+    ) {
+        let (cx, cy) = center;
+        let steps = ((radius * (end - start).abs()).ceil() as i32).max(8);
+        let mut prev_x = cx + radius * start.cos();
+        let mut prev_y = cy + radius * start.sin();
+        for i in 1..=steps {
+            let t = start + (end - start) * (i as f32 / steps as f32);
+            let x = cx + radius * t.cos();
+            let y = cy + radius * t.sin();
+            self.stroke_capsule_aa(prev_x, prev_y, x, y, stroke * 0.5, color);
+            prev_x = x;
+            prev_y = y;
+        }
     }
 }
 
@@ -1880,100 +1850,234 @@ fn draw_icon(
     let cy = cy as f32;
     let s = (size as f32 * 0.5).max(6.0);
     let stroke = (size as f32 * 0.09).clamp(1.35, 2.1);
+    let mut buf = PixelBuf { rgba, w, h };
     match action {
         SelectionAction::Copy => {
-            stroke_round_rect_aa(rgba, w, h, cx - s + 1.2, cy - s + 1.0, s + 1.6, s + 2.2, 2.1, stroke, ink);
-            stroke_round_rect_aa(rgba, w, h, cx - 1.6, cy - s + 4.0, s + 2.4, s + 3.0, 2.1, stroke, ink);
+            buf.stroke_round_rect_aa(
+                (cx - s + 1.2, cy - s + 1.0, s + 1.6, s + 2.2),
+                2.1,
+                stroke,
+                ink,
+            );
+            buf.stroke_round_rect_aa((cx - 1.6, cy - s + 4.0, s + 2.4, s + 3.0), 2.1, stroke, ink);
         }
         SelectionAction::Save => {
-            stroke_capsule_aa(rgba, w, h, cx, cy - s + 1.4, cx, cy + 1.2, stroke * 0.55, ink);
-            stroke_capsule_aa(rgba, w, h, cx, cy + 2.2, cx - 3.6, cy - 1.2, stroke * 0.55, ink);
-            stroke_capsule_aa(rgba, w, h, cx, cy + 2.2, cx + 3.6, cy - 1.2, stroke * 0.55, ink);
-            fill_triangle_aa(rgba, w, h, cx, cy + 3.4, cx - 3.8, cy - 0.4, cx + 3.8, cy - 0.4, ink);
-            stroke_capsule_aa(rgba, w, h, cx - s + 2.0, cy + s - 1.4, cx + s - 2.0, cy + s - 1.4, stroke * 0.55, ink);
-            stroke_capsule_aa(rgba, w, h, cx - s + 2.0, cy + s - 4.2, cx - s + 2.0, cy + s - 1.4, stroke * 0.55, ink);
-            stroke_capsule_aa(rgba, w, h, cx + s - 2.0, cy + s - 4.2, cx + s - 2.0, cy + s - 1.4, stroke * 0.55, ink);
+            buf.stroke_capsule_aa(cx, cy - s + 1.4, cx, cy + 1.2, stroke * 0.55, ink);
+            buf.stroke_capsule_aa(cx, cy + 2.2, cx - 3.6, cy - 1.2, stroke * 0.55, ink);
+            buf.stroke_capsule_aa(cx, cy + 2.2, cx + 3.6, cy - 1.2, stroke * 0.55, ink);
+            buf.fill_triangle_aa(
+                (cx, cy + 3.4),
+                (cx - 3.8, cy - 0.4),
+                (cx + 3.8, cy - 0.4),
+                ink,
+            );
+            buf.stroke_capsule_aa(
+                cx - s + 2.0,
+                cy + s - 1.4,
+                cx + s - 2.0,
+                cy + s - 1.4,
+                stroke * 0.55,
+                ink,
+            );
+            buf.stroke_capsule_aa(
+                cx - s + 2.0,
+                cy + s - 4.2,
+                cx - s + 2.0,
+                cy + s - 1.4,
+                stroke * 0.55,
+                ink,
+            );
+            buf.stroke_capsule_aa(
+                cx + s - 2.0,
+                cy + s - 4.2,
+                cx + s - 2.0,
+                cy + s - 1.4,
+                stroke * 0.55,
+                ink,
+            );
         }
         SelectionAction::Pin => {
-            fill_disk_aa(rgba, w, h, cx, cy - s + 4.2, s * 0.38, ink);
-            fill_triangle_aa(
-                rgba, w, h,
-                cx - s * 0.36, cy - 0.4,
-                cx + s * 0.36, cy - 0.4,
-                cx, cy + s - 1.2,
+            buf.fill_disk_aa(cx, cy - s + 4.2, s * 0.38, ink);
+            buf.fill_triangle_aa(
+                (cx - s * 0.36, cy - 0.4),
+                (cx + s * 0.36, cy - 0.4),
+                (cx, cy + s - 1.2),
                 ink,
             );
         }
         SelectionAction::Annotate => {
-            stroke_capsule_aa(rgba, w, h, cx - s + 3.2, cy + s - 3.4, cx + s - 3.4, cy - s + 3.2, stroke * 0.7, ink);
-            fill_triangle_aa(
-                rgba, w, h,
-                cx - s + 1.4, cy + s - 1.2,
-                cx - s + 5.2, cy + s - 5.0,
-                cx - s + 5.2, cy + s - 1.2,
+            buf.stroke_capsule_aa(
+                cx - s + 3.2,
+                cy + s - 3.4,
+                cx + s - 3.4,
+                cy - s + 3.2,
+                stroke * 0.7,
+                ink,
+            );
+            buf.fill_triangle_aa(
+                (cx - s + 1.4, cy + s - 1.2),
+                (cx - s + 5.2, cy + s - 5.0),
+                (cx - s + 5.2, cy + s - 1.2),
                 ink,
             );
         }
         SelectionAction::Ocr => {
-            stroke_round_rect_aa(rgba, w, h, cx - s + 2.0, cy - s + 1.2, (s - 2.0) * 2.0, (s - 1.2) * 2.0, 2.0, stroke, ink);
-            stroke_capsule_aa(rgba, w, h, cx - s + 4.6, cy - 1.8, cx + s - 4.6, cy - 1.8, stroke * 0.45, ink);
-            stroke_capsule_aa(rgba, w, h, cx - s + 4.6, cy + 1.0, cx + s - 4.6, cy + 1.0, stroke * 0.45, ink);
-            stroke_capsule_aa(rgba, w, h, cx - s + 4.6, cy + 3.8, cx + 1.2, cy + 3.8, stroke * 0.45, ink);
+            buf.stroke_round_rect_aa(
+                (cx - s + 2.0, cy - s + 1.2, (s - 2.0) * 2.0, (s - 1.2) * 2.0),
+                2.0,
+                stroke,
+                ink,
+            );
+            buf.stroke_capsule_aa(
+                cx - s + 4.6,
+                cy - 1.8,
+                cx + s - 4.6,
+                cy - 1.8,
+                stroke * 0.45,
+                ink,
+            );
+            buf.stroke_capsule_aa(
+                cx - s + 4.6,
+                cy + 1.0,
+                cx + s - 4.6,
+                cy + 1.0,
+                stroke * 0.45,
+                ink,
+            );
+            buf.stroke_capsule_aa(
+                cx - s + 4.6,
+                cy + 3.8,
+                cx + 1.2,
+                cy + 3.8,
+                stroke * 0.45,
+                ink,
+            );
         }
         SelectionAction::Cancel => {
-            stroke_capsule_aa(rgba, w, h, cx - s + 3.0, cy - s + 3.0, cx + s - 3.0, cy + s - 3.0, stroke * 0.55, ink);
-            stroke_capsule_aa(rgba, w, h, cx - s + 3.0, cy + s - 3.0, cx + s - 3.0, cy - s + 3.0, stroke * 0.55, ink);
+            buf.stroke_capsule_aa(
+                cx - s + 3.0,
+                cy - s + 3.0,
+                cx + s - 3.0,
+                cy + s - 3.0,
+                stroke * 0.55,
+                ink,
+            );
+            buf.stroke_capsule_aa(
+                cx - s + 3.0,
+                cy + s - 3.0,
+                cx + s - 3.0,
+                cy - s + 3.0,
+                stroke * 0.55,
+                ink,
+            );
         }
         SelectionAction::CopyColor => {
-            fill_disk_aa(rgba, w, h, cx, cy, 4.2, ink);
-            fill_disk_aa(rgba, w, h, cx, cy, 1.6, ink);
+            buf.fill_disk_aa(cx, cy, 4.2, ink);
+            buf.fill_disk_aa(cx, cy, 1.6, ink);
         }
         SelectionAction::Tool(AnnotationTool::Rect) => {
-            stroke_round_rect_aa(rgba, w, h, cx - s + 1.4, cy - s + 2.4, (s - 1.4) * 2.0, (s - 2.4) * 2.0, 2.2, stroke, ink);
+            buf.stroke_round_rect_aa(
+                (cx - s + 1.4, cy - s + 2.4, (s - 1.4) * 2.0, (s - 2.4) * 2.0),
+                2.2,
+                stroke,
+                ink,
+            );
         }
         SelectionAction::Tool(AnnotationTool::Ellipse) => {
             let rx = s - 1.4;
             let ry = s - 2.2;
-            stroke_round_rect_aa(rgba, w, h, cx - rx, cy - ry, rx * 2.0, ry * 2.0, ry, stroke, ink);
+            buf.stroke_round_rect_aa((cx - rx, cy - ry, rx * 2.0, ry * 2.0), ry, stroke, ink);
         }
         SelectionAction::Tool(AnnotationTool::Line) => {
-            stroke_capsule_aa(rgba, w, h, cx - s + 1.6, cy + s - 2.2, cx + s - 1.6, cy - s + 2.2, stroke * 0.5, ink);
-            fill_disk_aa(rgba, w, h, cx - s + 1.6, cy + s - 2.2, stroke * 0.85, ink);
-            fill_disk_aa(rgba, w, h, cx + s - 1.6, cy - s + 2.2, stroke * 0.85, ink);
+            buf.stroke_capsule_aa(
+                cx - s + 1.6,
+                cy + s - 2.2,
+                cx + s - 1.6,
+                cy - s + 2.2,
+                stroke * 0.5,
+                ink,
+            );
+            buf.fill_disk_aa(cx - s + 1.6, cy + s - 2.2, stroke * 0.85, ink);
+            buf.fill_disk_aa(cx + s - 1.6, cy - s + 2.2, stroke * 0.85, ink);
         }
         SelectionAction::Tool(AnnotationTool::Arrow) => {
-            stroke_capsule_aa(rgba, w, h, cx - s + 2.2, cy + s - 2.2, cx + s - 4.6, cy - s + 4.6, stroke * 0.55, ink);
-            fill_triangle_aa(
-                rgba, w, h,
-                cx + s - 1.2, cy - s + 1.2,
-                cx + s - 7.4, cy - s + 2.0,
-                cx + s - 2.0, cy - s + 7.4,
+            buf.stroke_capsule_aa(
+                cx - s + 2.2,
+                cy + s - 2.2,
+                cx + s - 4.6,
+                cy - s + 4.6,
+                stroke * 0.55,
+                ink,
+            );
+            buf.fill_triangle_aa(
+                (cx + s - 1.2, cy - s + 1.2),
+                (cx + s - 7.4, cy - s + 2.0),
+                (cx + s - 2.0, cy - s + 7.4),
                 ink,
             );
         }
         SelectionAction::Tool(AnnotationTool::Number) => {
-            stroke_round_rect_aa(rgba, w, h, cx - s + 1.6, cy - s + 1.6, (s - 1.6) * 2.0, (s - 1.6) * 2.0, s - 1.6, stroke, ink);
-            stroke_capsule_aa(rgba, w, h, cx - 1.6, cy - s + 3.6, cx, cy - s + 2.6, stroke * 0.5, ink);
-            stroke_capsule_aa(rgba, w, h, cx, cy - s + 2.6, cx, cy + s - 3.2, stroke * 0.5, ink);
+            buf.stroke_round_rect_aa(
+                (cx - s + 1.6, cy - s + 1.6, (s - 1.6) * 2.0, (s - 1.6) * 2.0),
+                s - 1.6,
+                stroke,
+                ink,
+            );
+            buf.stroke_capsule_aa(cx - 1.6, cy - s + 3.6, cx, cy - s + 2.6, stroke * 0.5, ink);
+            buf.stroke_capsule_aa(cx, cy - s + 2.6, cx, cy + s - 3.2, stroke * 0.5, ink);
         }
         SelectionAction::Tool(AnnotationTool::Text) => {
-            stroke_capsule_aa(rgba, w, h, cx - s + 2.0, cy - s + 2.6, cx + s - 2.0, cy - s + 2.6, stroke * 0.55, ink);
-            stroke_capsule_aa(rgba, w, h, cx, cy - s + 2.6, cx, cy + s - 2.8, stroke * 0.55, ink);
-            stroke_capsule_aa(rgba, w, h, cx - 3.2, cy + s - 2.8, cx + 3.2, cy + s - 2.8, stroke * 0.5, ink);
+            buf.stroke_capsule_aa(
+                cx - s + 2.0,
+                cy - s + 2.6,
+                cx + s - 2.0,
+                cy - s + 2.6,
+                stroke * 0.55,
+                ink,
+            );
+            buf.stroke_capsule_aa(cx, cy - s + 2.6, cx, cy + s - 2.8, stroke * 0.55, ink);
+            buf.stroke_capsule_aa(
+                cx - 3.2,
+                cy + s - 2.8,
+                cx + 3.2,
+                cy + s - 2.8,
+                stroke * 0.5,
+                ink,
+            );
         }
         SelectionAction::Tool(AnnotationTool::Pen) => {
-            stroke_capsule_aa(rgba, w, h, cx - s + 3.4, cy + s - 3.6, cx + s - 3.2, cy - s + 3.0, stroke * 0.7, ink);
-            fill_triangle_aa(
-                rgba, w, h,
-                cx - s + 1.4, cy + s - 1.2,
-                cx - s + 5.4, cy + s - 5.2,
-                cx - s + 5.4, cy + s - 1.2,
+            buf.stroke_capsule_aa(
+                cx - s + 3.4,
+                cy + s - 3.6,
+                cx + s - 3.2,
+                cy - s + 3.0,
+                stroke * 0.7,
+                ink,
+            );
+            buf.fill_triangle_aa(
+                (cx - s + 1.4, cy + s - 1.2),
+                (cx - s + 5.4, cy + s - 5.2),
+                (cx - s + 5.4, cy + s - 1.2),
                 ink,
             );
         }
         SelectionAction::Tool(AnnotationTool::Highlighter) => {
-            stroke_capsule_aa(rgba, w, h, cx - s + 1.6, cy + 1.8, cx + s - 2.0, cy - 2.8, stroke * 1.15, ink);
-            stroke_capsule_aa(rgba, w, h, cx - s + 2.2, cy + s - 2.0, cx + 1.6, cy + 2.8, stroke * 0.5, ink);
+            buf.stroke_capsule_aa(
+                cx - s + 1.6,
+                cy + 1.8,
+                cx + s - 2.0,
+                cy - 2.8,
+                stroke * 1.15,
+                ink,
+            );
+            buf.stroke_capsule_aa(
+                cx - s + 2.2,
+                cy + s - 2.0,
+                cx + 1.6,
+                cy + 2.8,
+                stroke * 0.5,
+                ink,
+            );
         }
         SelectionAction::Tool(AnnotationTool::Mosaic) => {
             let cell = (s * 0.42).max(2.2);
@@ -1986,37 +2090,92 @@ fn draw_icon(
                     let x = origin_x + col as f32 * (cell + gap);
                     let y = origin_y + row as f32 * (cell + gap);
                     if filled[row * 3 + col] {
-                        fill_disk_aa(rgba, w, h, x + cell * 0.5, y + cell * 0.5, cell * 0.42, ink);
+                        buf.fill_disk_aa(x + cell * 0.5, y + cell * 0.5, cell * 0.42, ink);
                     } else {
-                        stroke_round_rect_aa(rgba, w, h, x, y, cell, cell, 0.8, 1.2, ink);
+                        buf.stroke_round_rect_aa((x, y, cell, cell), 0.8, 1.2, ink);
                     }
                 }
             }
         }
         SelectionAction::Tool(AnnotationTool::Blur) => {
-            stroke_round_rect_aa(rgba, w, h, cx - s + 1.4, cy - s + 1.4, (s - 1.4) * 2.0, (s - 1.4) * 2.0, s - 1.4, stroke, ink);
-            stroke_round_rect_aa(rgba, w, h, cx - s * 0.45, cy - s * 0.45, s * 0.9, s * 0.9, s * 0.45, 1.2, ink);
-            fill_disk_aa(rgba, w, h, cx, cy, 1.4, ink);
+            buf.stroke_round_rect_aa(
+                (cx - s + 1.4, cy - s + 1.4, (s - 1.4) * 2.0, (s - 1.4) * 2.0),
+                s - 1.4,
+                stroke,
+                ink,
+            );
+            buf.stroke_round_rect_aa(
+                (cx - s * 0.45, cy - s * 0.45, s * 0.9, s * 0.9),
+                s * 0.45,
+                1.2,
+                ink,
+            );
+            buf.fill_disk_aa(cx, cy, 1.4, ink);
         }
         SelectionAction::Undo => {
-            stroke_arc_aa(rgba, w, h, cx + 0.4, cy + 0.6, s - 2.2, 0.55, 5.55, stroke, ink);
-            fill_triangle_aa(rgba, w, h, cx - s + 2.2, cy - 1.6, cx - s + 6.4, cy - 5.0, cx - s + 6.4, cy + 1.6, ink);
+            buf.stroke_arc_aa((cx + 0.4, cy + 0.6), s - 2.2, 0.55, 5.55, stroke, ink);
+            buf.fill_triangle_aa(
+                (cx - s + 2.2, cy - 1.6),
+                (cx - s + 6.4, cy - 5.0),
+                (cx - s + 6.4, cy + 1.6),
+                ink,
+            );
         }
         SelectionAction::Redo => {
-            stroke_arc_aa(rgba, w, h, cx - 0.4, cy + 0.6, s - 2.2, 3.73, -1.27, stroke, ink);
-            fill_triangle_aa(rgba, w, h, cx + s - 2.2, cy - 1.6, cx + s - 6.4, cy - 5.0, cx + s - 6.4, cy + 1.6, ink);
+            buf.stroke_arc_aa((cx - 0.4, cy + 0.6), s - 2.2, 3.73, -1.27, stroke, ink);
+            buf.fill_triangle_aa(
+                (cx + s - 2.2, cy - 1.6),
+                (cx + s - 6.4, cy - 5.0),
+                (cx + s - 6.4, cy + 1.6),
+                ink,
+            );
         }
         SelectionAction::Delete => {
-            stroke_capsule_aa(rgba, w, h, cx - 2.2, cy - s + 1.6, cx + 2.2, cy - s + 1.6, stroke * 0.45, ink);
-            stroke_capsule_aa(rgba, w, h, cx - s + 1.4, cy - s + 3.6, cx + s - 1.4, cy - s + 3.6, stroke * 0.55, ink);
-            stroke_capsule_aa(rgba, w, h, cx - s + 2.4, cy - s + 3.6, cx - s + 3.4, cy + s - 2.0, stroke * 0.5, ink);
-            stroke_capsule_aa(rgba, w, h, cx + s - 2.4, cy - s + 3.6, cx + s - 3.4, cy + s - 2.0, stroke * 0.5, ink);
-            stroke_capsule_aa(rgba, w, h, cx - s + 3.4, cy + s - 2.0, cx + s - 3.4, cy + s - 2.0, stroke * 0.5, ink);
+            buf.stroke_capsule_aa(
+                cx - 2.2,
+                cy - s + 1.6,
+                cx + 2.2,
+                cy - s + 1.6,
+                stroke * 0.45,
+                ink,
+            );
+            buf.stroke_capsule_aa(
+                cx - s + 1.4,
+                cy - s + 3.6,
+                cx + s - 1.4,
+                cy - s + 3.6,
+                stroke * 0.55,
+                ink,
+            );
+            buf.stroke_capsule_aa(
+                cx - s + 2.4,
+                cy - s + 3.6,
+                cx - s + 3.4,
+                cy + s - 2.0,
+                stroke * 0.5,
+                ink,
+            );
+            buf.stroke_capsule_aa(
+                cx + s - 2.4,
+                cy - s + 3.6,
+                cx + s - 3.4,
+                cy + s - 2.0,
+                stroke * 0.5,
+                ink,
+            );
+            buf.stroke_capsule_aa(
+                cx - s + 3.4,
+                cy + s - 2.0,
+                cx + s - 3.4,
+                cy + s - 2.0,
+                stroke * 0.5,
+                ink,
+            );
         }
         SelectionAction::More => {
-            fill_disk_aa(rgba, w, h, cx - s + 2.8, cy, 1.55, ink);
-            fill_disk_aa(rgba, w, h, cx, cy, 1.55, ink);
-            fill_disk_aa(rgba, w, h, cx + s - 2.8, cy, 1.55, ink);
+            buf.fill_disk_aa(cx - s + 2.8, cy, 1.55, ink);
+            buf.fill_disk_aa(cx, cy, 1.55, ink);
+            buf.fill_disk_aa(cx + s - 2.8, cy, 1.55, ink);
         }
     }
 }
@@ -2129,10 +2288,7 @@ mod tests {
                 block: 12,
             },
             Annotation::Highlighter {
-                points: vec![
-                    Point { x: 35.0, y: 80.0 },
-                    Point { x: 95.0, y: 88.0 },
-                ],
+                points: vec![Point { x: 35.0, y: 80.0 }, Point { x: 95.0, y: 88.0 }],
                 color: "#f59e0b".into(),
                 stroke_width: None,
             },
@@ -2153,7 +2309,9 @@ mod tests {
         // 排除选区边框/手柄/徽标覆盖的 8px 边带后逐像素一致。
         for row in 8..72usize {
             for col in 8..92usize {
-                let dst = ((selection.y as usize + row) * width as usize + selection.x as usize + col) * 4;
+                let dst =
+                    ((selection.y as usize + row) * width as usize + selection.x as usize + col)
+                        * 4;
                 let src = (row * 100 + col) * 4;
                 assert_eq!(
                     &composed[dst..dst + 4],
@@ -2267,7 +2425,8 @@ mod tests {
         let flags = no_magnifier_flags();
         let scene = annotation_scene(selection, flags);
         let empty: Vec<Annotation> = Vec::new();
-        let baseline = composer.compose_with_overlay(&scene, &annotation_overlay(&empty, None, None, 0));
+        let baseline =
+            composer.compose_with_overlay(&scene, &annotation_overlay(&empty, None, None, 0));
         // 1×1 矩形低于 exportable 下限,但草稿路径不过滤,应可见。
         let draft = Annotation::Rect {
             x: 50.0,
@@ -2277,8 +2436,8 @@ mod tests {
             color: "#e11d48".into(),
             stroke_width: None,
         };
-        let with_draft =
-            composer.compose_with_overlay(&scene, &annotation_overlay(&empty, Some(&draft), None, 0));
+        let with_draft = composer
+            .compose_with_overlay(&scene, &annotation_overlay(&empty, Some(&draft), None, 0));
         let count = baseline
             .chunks_exact(4)
             .zip(with_draft.chunks_exact(4))
@@ -2344,7 +2503,10 @@ mod tests {
             &mode_scene(selection, enabled, false),
             &annotation_overlay(&empty, None, None, 0),
         );
-        assert!(count_deep(&with_tools) > 0, "toolbar buttons should be drawn");
+        assert!(
+            count_deep(&with_tools) > 0,
+            "toolbar buttons should be drawn"
+        );
         // 关闭 inlineAnnotation:即使处于标注模式也不绘制。
         let without_tools = composer.compose_with_overlay(
             &mode_scene(selection, disabled, true),
@@ -2417,10 +2579,7 @@ mod tests {
             Some(rail),
         )
         .expect("toolbar with avoid");
-        assert!(
-            !intersects(avoided.panel, rail),
-            "工具条不得与操作条重叠"
-        );
+        assert!(!intersects(avoided.panel, rail), "工具条不得与操作条重叠");
         assert!(
             avoided.panel.bottom() <= selection.y as i32
                 || avoided.panel.y >= selection.y as i32 + selection.height as i32
@@ -2541,9 +2700,10 @@ mod tests {
             return; // 无字体环境:不落笔,仅保证不 panic。
         }
         // 文本覆盖处在暗底上出现标注色像素。
-        let painted = composed.chunks_exact(4).filter(|px| {
-            px[0] > 100 && px[1] < 90 && px[2] < 110
-        }).count();
+        let painted = composed
+            .chunks_exact(4)
+            .filter(|px| px[0] > 100 && px[1] < 90 && px[2] < 110)
+            .count();
         assert!(painted > 0, "text overlay should draw in annotation color");
     }
 
@@ -2584,15 +2744,39 @@ mod tests {
             width: 120,
             height: 80,
         };
-        assert_eq!(handle_hit(metrics_1(), rect, 100, 100), Some(HandleKind::NorthWest));
-        assert_eq!(handle_hit(metrics_1(), rect, 219, 100), Some(HandleKind::NorthEast));
-        assert_eq!(handle_hit(metrics_1(), rect, 219, 179), Some(HandleKind::SouthEast));
-        assert_eq!(handle_hit(metrics_1(), rect, 100, 179), Some(HandleKind::SouthWest));
+        assert_eq!(
+            handle_hit(metrics_1(), rect, 100, 100),
+            Some(HandleKind::NorthWest)
+        );
+        assert_eq!(
+            handle_hit(metrics_1(), rect, 219, 100),
+            Some(HandleKind::NorthEast)
+        );
+        assert_eq!(
+            handle_hit(metrics_1(), rect, 219, 179),
+            Some(HandleKind::SouthEast)
+        );
+        assert_eq!(
+            handle_hit(metrics_1(), rect, 100, 179),
+            Some(HandleKind::SouthWest)
+        );
         // 命中半径(9px)内仍算命中。
-        assert_eq!(handle_hit(metrics_1(), rect, 106, 100), Some(HandleKind::NorthWest));
-        assert_eq!(handle_hit(metrics_1(), rect, 109, 100), Some(HandleKind::NorthWest));
-        assert_eq!(handle_hit(metrics_1(), rect, 159, 100), Some(HandleKind::North));
-        assert_eq!(handle_hit(metrics_1(), rect, 219, 139), Some(HandleKind::East));
+        assert_eq!(
+            handle_hit(metrics_1(), rect, 106, 100),
+            Some(HandleKind::NorthWest)
+        );
+        assert_eq!(
+            handle_hit(metrics_1(), rect, 109, 100),
+            Some(HandleKind::NorthWest)
+        );
+        assert_eq!(
+            handle_hit(metrics_1(), rect, 159, 100),
+            Some(HandleKind::North)
+        );
+        assert_eq!(
+            handle_hit(metrics_1(), rect, 219, 139),
+            Some(HandleKind::East)
+        );
         // 半径外与选区内部不命中。
         assert_eq!(handle_hit(metrics_1(), rect, 110, 100), None);
         assert_eq!(handle_hit(metrics_1(), rect, 160, 140), None);
@@ -3076,8 +3260,14 @@ mod tests {
                 (RAIL_BUTTON as f32 * scale).round() as i32,
                 "scale {scale}: 操作条按钮"
             );
-            assert_eq!(metrics.menu_item_w, (MENU_ITEM_W as f32 * scale).round() as i32);
-            assert_eq!(metrics.menu_item_h, (MENU_ITEM_H as f32 * scale).round() as i32);
+            assert_eq!(
+                metrics.menu_item_w,
+                (MENU_ITEM_W as f32 * scale).round() as i32
+            );
+            assert_eq!(
+                metrics.menu_item_h,
+                (MENU_ITEM_H as f32 * scale).round() as i32
+            );
             assert_eq!(metrics.menu_font, MENU_FONT * scale);
             assert_eq!(metrics.badge_font, BADGE_FONT * scale);
             // 命中半径随 scale 放大且不低于 1.0 基准。
@@ -3103,7 +3293,10 @@ mod tests {
         for scale in [0.5_f32, 0.0, -2.0, f32::NAN, f32::INFINITY] {
             let metrics = ChromeMetrics::for_scale(scale);
             assert_eq!(metrics.rail_button, RAIL_BUTTON, "scale {scale}");
-            assert_eq!(metrics.handle_hit_radius, HANDLE_HIT_RADIUS, "scale {scale}");
+            assert_eq!(
+                metrics.handle_hit_radius, HANDLE_HIT_RADIUS,
+                "scale {scale}"
+            );
             assert_eq!(metrics.menu_font, MENU_FONT, "scale {scale}");
         }
         // 超过 4.0 钳制,避免 chrome 占据整屏。
