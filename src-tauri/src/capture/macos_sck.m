@@ -290,6 +290,29 @@ static NSScreen *cropmark_screen_at(int32_t px, int32_t py) {
   return [NSScreen mainScreen];
 }
 
+// SCDisplay.width 在部分系统上是点不是像素。用 NSScreen.frame × backingScale
+// 对齐 Retina backing,避免 1x 抓屏画到 2x 视图上发糊、选区也对不齐。
+static CGFloat cropmark_backing_scale_for_display(SCDisplay *display) {
+  CGFloat width = CGRectGetWidth(display.frame);
+  CGFloat height = CGRectGetHeight(display.frame);
+  for (NSScreen *screen in [NSScreen screens]) {
+    NSRect frame = screen.frame;
+    if (llround(NSWidth(frame)) == llround(width) && llround(NSHeight(frame)) == llround(height)) {
+      return screen.backingScaleFactor > 0 ? screen.backingScaleFactor : 1.0;
+    }
+  }
+  NSScreen *main = [NSScreen mainScreen];
+  return main && main.backingScaleFactor > 0 ? main.backingScaleFactor : 1.0;
+}
+
+static void cropmark_configure_display_capture(SCStreamConfiguration *config, SCDisplay *display) {
+  CGFloat scale = cropmark_backing_scale_for_display(display);
+  size_t width = (size_t)llround(CGRectGetWidth(display.frame) * scale);
+  size_t height = (size_t)llround(CGRectGetHeight(display.frame) * scale);
+  config.width = width > 0 ? width : 1;
+  config.height = height > 0 ? height : 1;
+}
+
 void cropmark_sck_free(CropmarkSckResult *out) {
   if (!out) {
     return;
@@ -385,8 +408,7 @@ int32_t cropmark_sck_capture_at_point(int32_t px, int32_t py, CropmarkSckResult 
                                                excludingApplications:excluded
                                                     exceptingWindows:@[]];
   SCStreamConfiguration *config = [SCStreamConfiguration new];
-  config.width = (size_t)chosen.width;
-  config.height = (size_t)chosen.height;
+  cropmark_configure_display_capture(config, chosen);
   config.showsCursor = NO;
   config.capturesAudio = NO;
   if (!cropmark_capture_filter(filter, config, out)) {

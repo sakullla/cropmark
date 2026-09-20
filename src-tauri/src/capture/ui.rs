@@ -149,12 +149,15 @@ pub fn hide_window(app: &AppHandle, label: &str) {
             let _ = window.hide();
         }
     }
+    crate::front::demote_if_idle(app);
 }
 
 pub fn show_window(app: &AppHandle, label: &str) {
     if let Some(window) = app.get_webview_window(label) {
         if label == PREVIEW {
             present_preview_window(&window, app);
+        } else if label == SETTINGS || label == HISTORY || label == ERROR {
+            crate::front::reveal(app, &window);
         } else {
             let _ = window.set_ignore_cursor_events(false);
             let _ = window.show();
@@ -304,8 +307,7 @@ pub fn open_error(app: &AppHandle, error: &CaptureError) -> Result<(), CaptureEr
     // 复用预创建的 error 窗,避免重建 webview 的偶发导航失败。
     let window = ensure_window(app, ERROR, "error", 420.0, 268.0, true, true)?;
     let _ = window.center();
-    let _ = window.show();
-    let _ = window.set_focus();
+    crate::front::reveal(app, &window);
     let _ = window.emit("capture-error", error.clone());
     Ok(())
 }
@@ -399,20 +401,12 @@ fn toast_origin(area: Option<(f64, f64, f64, f64)>, width: f64, height: f64) -> 
 fn present_preview_window(window: &WebviewWindow, app: &AppHandle) {
     let _ = window.set_ignore_cursor_events(false);
     let _ = window.set_always_on_top(true);
-    let _ = window.show();
-    let _ = window.unminimize();
-    raise_and_focus(window);
+    crate::front::reveal(app, window);
     dismiss_session_overlay(app);
     // overlay hide 可能再次把前台让出去;停放后再抢一次,再摘置顶。
     // 预览在任务栏,摘置顶后可切到其它应用;贴图窗才保持置顶。
-    raise_and_focus(window);
+    crate::front::reveal(app, window);
     let _ = window.set_always_on_top(false);
-}
-
-fn raise_and_focus(window: &WebviewWindow) {
-    let _ = window.set_focus();
-    #[cfg(windows)]
-    force_foreground(window);
 }
 
 fn dismiss_session_overlay(app: &AppHandle) {

@@ -388,12 +388,11 @@ pub fn clear_history(app: AppHandle) -> Result<HistoryListPayload, String> {
 /// `history-refresh`,避免截取期间被隐藏后列表停留在旧数据。
 pub fn open_window(app: &AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(HISTORY_WINDOW) {
-        window.show().map_err(|error| error.to_string())?;
-        window.set_focus().map_err(|error| error.to_string())?;
+        crate::front::reveal(app, &window);
         let _ = window.emit("history-refresh", ());
         return Ok(());
     }
-    WebviewWindowBuilder::new(
+    let window = WebviewWindowBuilder::new(
         app,
         HISTORY_WINDOW,
         WebviewUrl::App("index.html?view=history".into()),
@@ -412,6 +411,7 @@ pub fn open_window(app: &AppHandle) -> Result<(), String> {
     .center()
     .build()
     .map_err(|error| error.to_string())?;
+    crate::front::reveal(app, &window);
     Ok(())
 }
 

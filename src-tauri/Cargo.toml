@@ -69,8 +69,10 @@ objc2-app-kit = { version = "0.3.2", features = [
   "NSTextInputClient",
   "NSView",
   "NSWindow",
+  "block2",
 ] }
-objc2-core-foundation = { version = "0.3.2", features = ["CFCGTypes"] }
+block2 = "0.6"
+objc2-core-foundation = { version = "0.3.2", features = ["CFCGTypes", "CFRunLoop", "block2"] }
 objc2-core-graphics = { version = "0.3.2", features = [
   "CGColorSpace",
   "CGContext",

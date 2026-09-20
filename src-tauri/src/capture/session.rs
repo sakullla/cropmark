@@ -1883,11 +1883,13 @@ fn is_cancelled(app: &AppHandle) -> bool {
 pub fn close_preview(app: &AppHandle) {
     ui::hide_window(app, ui::PREVIEW);
     with_session_mut(app, |session| *session = None);
+    crate::front::demote_if_idle(app);
 }
 
 pub fn close_error(app: &AppHandle) {
     // 仅隐藏:error 窗是预创建复用的 webview。
     ui::hide_window(app, ui::ERROR);
+    crate::front::demote_if_idle(app);
 }
 
 fn with_session<R>(app: &AppHandle, f: impl FnOnce(&Option<ActiveSession>) -> R) -> R {

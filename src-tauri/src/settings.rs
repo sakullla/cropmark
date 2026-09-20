@@ -604,12 +604,11 @@ pub fn save_to_path(path: &std::path::Path, settings: &StoredSettings) -> Result
 
 pub fn open_settings(app: &AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("settings") {
-        window.show().map_err(|error| error.to_string())?;
-        window.set_focus().map_err(|error| error.to_string())?;
+        crate::front::reveal(app, &window);
         return Ok(());
     }
 
-    WebviewWindowBuilder::new(
+    let window = WebviewWindowBuilder::new(
         app,
         "settings",
         WebviewUrl::App("index.html?view=settings".into()),
@@ -628,6 +627,7 @@ pub fn open_settings(app: &AppHandle) -> Result<(), String> {
     .center()
     .build()
     .map_err(|error| error.to_string())?;
+    crate::front::reveal(app, &window);
     Ok(())
 }
 

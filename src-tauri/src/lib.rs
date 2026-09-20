@@ -3,6 +3,7 @@ mod autostart;
 mod capture;
 mod clipboard;
 mod export;
+mod front;
 mod history;
 mod hotkeys;
 mod i18n;
@@ -225,6 +226,7 @@ pub fn run() {
                 if window.label() == capture::ui::PREVIEW {
                     capture::close_preview(window.app_handle().clone());
                 }
+                front::demote_if_idle(window.app_handle());
             }
         })
         .build(tauri::generate_context!())

@@ -116,7 +116,7 @@ pub fn normalize_logical_rect(x0: f64, y0: f64, x1: f64, y1: f64) -> LogicalRect
 ///
 /// `frame_*` 是选区窗的 AppKit `NSWindow.frame`(同样左下原点).点击屏幕底部必须得到
 /// 接近 `frame_height * scale` 的引擎 y,而不是 0(顶部);漏掉 Y 翻转时选区会钉在顶边.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[allow(dead_code)]
 pub fn appkit_global_to_physical(
     screen_x: f64,
     screen_y: f64,
@@ -128,6 +128,42 @@ pub fn appkit_global_to_physical(
     let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
     let x = ((screen_x - frame_x) * scale).round() as i32;
     let y = ((frame_y + frame_height - screen_y) * scale).round() as i32;
+    (x, y)
+}
+
+/// 视图 backing 像素(左下原点)→ 引擎像素(左上原点)。
+/// 抓屏缓冲可能是 1x 或 2x,不能假定 backing 尺寸等于引擎尺寸。
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn backing_to_engine(
+    backing_x: f64,
+    backing_y_from_bottom: f64,
+    backing_width: f64,
+    backing_height: f64,
+    engine_width: f64,
+    engine_height: f64,
+) -> (i32, i32) {
+    let bw = if backing_width.is_finite() && backing_width > 0.0 {
+        backing_width
+    } else {
+        1.0
+    };
+    let bh = if backing_height.is_finite() && backing_height > 0.0 {
+        backing_height
+    } else {
+        1.0
+    };
+    let ew = if engine_width.is_finite() && engine_width > 0.0 {
+        engine_width
+    } else {
+        1.0
+    };
+    let eh = if engine_height.is_finite() && engine_height > 0.0 {
+        engine_height
+    } else {
+        1.0
+    };
+    let x = (backing_x / bw * ew).round() as i32;
+    let y = ((bh - backing_y_from_bottom) / bh * eh).round() as i32;
     (x, y)
 }
 
@@ -229,5 +265,27 @@ mod tests {
         assert_eq!((x, y), (0, 0));
         let (x, y) = appkit_global_to_physical(1640.0, 80.0, 1440.0, 0.0, 1080.0, 1.0);
         assert_eq!((x, y), (200, 1000));
+    }
+
+    #[test]
+    fn backing_1x_engine_keeps_click_in_place() {
+        // 1470×956 点窗、1x 抓屏:点 (100, 100 from top) 必须落到引擎 (100, 100)。
+        let (x, y) = backing_to_engine(100.0, 856.0, 1470.0, 956.0, 1470.0, 956.0);
+        assert_eq!((x, y), (100, 100));
+    }
+
+    #[test]
+    fn backing_2x_engine_maps_points_to_physical_pixels() {
+        let (x, y) = backing_to_engine(200.0, 1712.0, 2940.0, 1912.0, 2940.0, 1912.0);
+        assert_eq!((x, y), (200, 200));
+        let (x, y) = backing_to_engine(2940.0, 0.0, 2940.0, 1912.0, 2940.0, 1912.0);
+        assert_eq!((x, y), (2940, 1912));
+    }
+
+    #[test]
+    fn backing_2x_does_not_use_engine_1x_scale() {
+        // 旧 bug:鼠标按 scale=2 换算,引擎却是 1x 缓冲,选区偏到 2 倍位置。
+        let (x, y) = backing_to_engine(200.0, 1712.0, 2940.0, 1912.0, 1470.0, 956.0);
+        assert_eq!((x, y), (100, 100));
     }
 }

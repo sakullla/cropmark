@@ -8,10 +8,10 @@
 //!
 //! 窗口模式对标 Apple screencapture:每屏一个 borderless NSPanel
 //! (NonactivatingPanel + screen saver window level + CanJoinAllSpaces).
-//! Cropmark 是 Accessory 托盘应用;macOS 14+ 的 `NSApp.activate()` 不会抢焦点,
-//! `activateIgnoringOtherApps:` 也已失效,所以必须用 NonactivatingPanel 才能
-//! 在不激活应用的情况下收下鼠标/键盘.自定义 NSPanel 子类放行 canBecomeKeyWindow,
-//! 并绕过 constrainFrameRect(否则 AppKit 会把全屏框压到菜单栏下方).
+//! Cropmark 是 Accessory 托盘应用;macOS 14+ 的 `NSApp.activate()` 不会抢焦点.
+//! 选区开始时把激活策略切到 Regular,面板才能盖住其它应用并收下鼠标;
+//! 结束后由 `front::demote_if_idle` 退回 Accessory.自定义 NSPanel 子类放行
+//! canBecomeKeyWindow,并绕过 constrainFrameRect(否则 AppKit 会把全屏框压到菜单栏下方).
 //! 内容视图为自定义 NSView,`drawRect:` 中经 CGImage 绘制合成帧(引擎输出 RGBA→BGRA,
 //! kCGBitmapByteOrder32Little|kCGImageAlphaPremultipliedFirst).
 //! 鼠标坐标用 `NSEvent.mouseLocation`(AppKit 左下原点)换到引擎左上原点;事件泵
@@ -30,6 +30,7 @@
 use std::cell::RefCell;
 use std::ffi::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::Arc;
@@ -39,18 +40,22 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
 use objc2::{define_class, msg_send, sel, AnyThread, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSBackingStoreType, NSCursor, NSEvent, NSEventMask, NSEventModifierFlags,
-    NSEventType, NSGraphicsContext, NSImage, NSPanel, NSResponder, NSScreen, NSTextInputClient,
-    NSView, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSCursor, NSEvent,
+    NSEventMask, NSEventModifierFlags, NSEventType, NSGraphicsContext, NSImage, NSPanel,
+    NSResponder, NSScreen, NSTextInputClient, NSView, NSWindowCollectionBehavior,
+    NSWindowStyleMask,
 };
-use objc2_core_foundation::{CFRetained, CGPoint, CGRect, CGSize, CGFloat};
+use block2::{DynBlock, RcBlock};
+use objc2_core_foundation::{
+    kCFRunLoopCommonModes, CFRetained, CFRunLoop, CFType, CGPoint, CGRect, CGSize, CGFloat,
+};
 use objc2_core_graphics::{
     kCGScreenSaverWindowLevel, CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGContext,
-    CGDataProvider, CGImage, CGImageAlphaInfo, CGImageByteOrderInfo,
+    CGDataProvider, CGImage, CGImageAlphaInfo, CGImageByteOrderInfo, CGInterpolationQuality,
 };
 use objc2_foundation::{
-    NSArray, NSAttributedString, NSDate, NSNotFound, NSPoint, NSRange, NSRangePointer, NSRect,
-    NSRunLoopCommonModes, NSSize, NSString,
+    NSArray, NSAttributedString, NSNotFound, NSPoint, NSRange, NSRangePointer, NSRect, NSSize,
+    NSString,
 };
 
 use crate::capture::buffer::Frame;
@@ -107,10 +112,10 @@ pub enum RegionOutcome {
 struct Canvas {
     engine: SelectionEngine,
     composer: Composer,
-    /// 引擎输出的 RGBA 合成帧(长度与冻结帧一致)。
+    /// 引擎输出的 RGBA 合成帧(长度与冻结帧一致);CGImage 直接读这块,不再 swizzle。
     scratch: Vec<u8>,
-    /// 呈现用 BGRA 缓冲:CGImage 以
-    /// kCGImageAlphaPremultipliedFirst|kCGBitmapByteOrder32Little 直读 BGRA。
+    /// 兼容 Windows 壳字段;macOS 走 RGBA 直出,保持空缓冲。
+    #[allow(dead_code)]
     present_buf: Vec<u8>,
     width: i32,
     height: i32,
@@ -134,12 +139,14 @@ struct ShellState {
     frame_y: f64,
     frame_h: f64,
     /// 最近一次 Redraw 合成的 CGImage;provider 不持有数据,
-    /// 由 `canvas.present_buf`(定容,地址不漂移)保活。
+    /// 由 `canvas.scratch`(定容,地址不漂移)保活。
     image: Option<CFRetained<CGImage>>,
-    /// 有待 flush 的合成帧(STATE 借用释放后由 view.display 消费)。
+    /// 有待 AppKit 合批刷新的合成帧;只 setNeedsDisplay,不强制 display。
     dirty: bool,
     outcome: Option<RegionOutcome>,
     timing: bool,
+    /// 选区层 present 日志节流,避免每次鼠标移动刷 stderr。
+    last_present_log: Option<Instant>,
     /// 最近一次应用的壳内光标形态;未变化时跳过 set。
     applied_cursor: Option<CursorKind>,
     /// resize 自绘光标缓存(懒构建;符号不可用时保持 None,显示时退回十字)。
@@ -150,6 +157,10 @@ struct ShellState {
     abandoned: Arc<AtomicBool>,
     /// IME 组合(未提交)文本与选区;None = 无组合。
     marked: Option<MarkedText>,
+    window: Option<Retained<KeyWindow>>,
+    view: Option<Retained<SelectionView>>,
+    monitor: Option<Retained<AnyObject>>,
+    done: Option<Sender<Result<RegionOutcome, CaptureError>>>,
 }
 
 /// IME 组合串与选中区间;长度单位与 `NSRange` 一致(UTF-16 码元)。
@@ -450,26 +461,27 @@ define_class!(
     }
 );
 
-/// libdispatch 主队列:AppKit 对象只能活在主线程,阻塞线程上的调用形态在这里
-/// 经主队列派发整体切到主线程执行(有界等待,ADR-17)。
-#[repr(C)]
-struct DispatchQueueOpaque {
-    _private: [u8; 0],
-}
-
-#[link(name = "System", kind = "dylib")]
-extern "C" {
-    static _dispatch_main_q: DispatchQueueOpaque;
-    fn dispatch_async_f(
-        queue: *mut DispatchQueueOpaque,
-        context: *mut c_void,
-        work: extern "C" fn(*mut c_void),
-    );
-}
-
-/// 主线程进入上限(ADR-17):主队列长时间不执行派发任务时返回明确错误,
+/// 主线程进入上限(ADR-17):主 run loop 长时间不执行派发任务时返回明确错误,
 /// 由会话层进入错误窗并可重试,而不是永久挂起。
 const MAIN_THREAD_ENTRY_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// GCD 主队列回调里跑嵌套 `nextEventMatchingMask` 会重入
+/// `dispatch_main_queue_drain`,在 macOS 上把主线程打满并卡住选区。
+/// 必须把壳挂到主 **run loop** 上,让它在 NSApp 正常事件循环里启动。
+fn schedule_on_main_run_loop(work: extern "C" fn(*mut c_void), context: *mut c_void) {
+    let Some(rl) = CFRunLoop::main() else {
+        work(context);
+        return;
+    };
+    struct SendPtr(*mut c_void);
+    unsafe impl Send for SendPtr {}
+    let ptr = SendPtr(context);
+    let block = RcBlock::new(move || work(ptr.0));
+    let block: &DynBlock<dyn Fn()> = &block;
+    let mode = unsafe { kCFRunLoopCommonModes }.map(|mode| mode as &CFType);
+    unsafe { rl.perform_block(mode, Some(block)) };
+    rl.wake_up();
+}
 
 /// 当前壳的关闭代际(stale 重置/超时兜底):从任意线程递增,泵在下一轮迭代取消。
 /// 用代际而不是布尔标志:旧壳的收尾不会清除新壳的待关闭状态(评审 P3)。
@@ -484,18 +496,12 @@ pub fn shell_is_active() -> bool {
 
 pub fn request_shell_close() {
     SHELL_CLOSE_EPOCH.fetch_add(1, Ordering::SeqCst);
-    // 主队列回调只用于唤醒 run loop(泵会顺带服务主队列),不触碰 AppKit 状态。
-    unsafe {
-        dispatch_async_f(
-            std::ptr::addr_of!(_dispatch_main_q) as *mut DispatchQueueOpaque,
-            std::ptr::null_mut(),
-            wake_main_thread,
-        );
-    }
+    schedule_on_main_run_loop(finish_shell_if_needed_entry, std::ptr::null_mut());
 }
 
-/// 主队列唤醒回调:内容由泵的下一轮迭代读取,这里只负责让 run loop 醒一次。
-extern "C" fn wake_main_thread(_context: *mut c_void) {}
+extern "C" fn finish_shell_if_needed_entry(_context: *mut c_void) {
+    finish_shell_if_needed();
+}
 
 /// 派发到主线程所需的最小屏幕几何(Copy,供 'static 闭包携带)。
 #[derive(Debug, Clone, Copy)]
@@ -527,7 +533,7 @@ pub fn pick_region(
             .with_annotation_options(annotation_options),
         composer,
         scratch: vec![0; bytes],
-        present_buf: vec![0; bytes],
+        present_buf: Vec::new(),
         width,
         height,
     };
@@ -542,17 +548,13 @@ pub fn pick_region(
             1.0
         },
     };
-    if let Some(mtm) = MainThreadMarker::new() {
-        run_shell(
-            mtm,
-            canvas,
-            geometry,
-            hooks,
-            Arc::new(AtomicBool::new(false)),
-        )
-    } else {
-        run_on_main_thread(canvas, geometry, hooks)
+    // 选区壳必须在主线程建窗,但不能在主线程(或 GCD/runloop 回调里)
+    // 嵌套 nextEventMatchingMask:macOS 27 上会把主线程打满并卡住。
+    // 生产路径在 spawn_blocking 上等待;主线程只负责建窗和收事件。
+    if MainThreadMarker::new().is_some() {
+        return Err(CaptureError::api("error.capture.shell_main_thread"));
     }
+    run_on_main_thread(canvas, geometry, hooks)
 }
 
 fn timing_enabled() -> bool {
@@ -569,7 +571,7 @@ struct MainThreadJob {
     done: Sender<Result<RegionOutcome, CaptureError>>,
 }
 
-/// 经主队列异步派发并有界等待"已进入主线程"(ADR-17);壳的真正执行时间由
+/// 经主 run loop 异步派发并有界等待"已进入主线程"(ADR-17);壳的真正执行时间由
 /// 用户交互决定,只有进入这一跳受 `MAIN_THREAD_ENTRY_TIMEOUT` 限制。
 /// 超时返回明确错误;迟到的任务据 `abandoned` 跳过,已开始的壳由泵自行退出。
 fn run_on_main_thread(
@@ -588,15 +590,9 @@ fn run_on_main_thread(
         started: started_tx,
         done: done_tx,
     });
-    unsafe {
-        dispatch_async_f(
-            std::ptr::addr_of!(_dispatch_main_q) as *mut DispatchQueueOpaque,
-            Box::into_raw(job).cast::<c_void>(),
-            main_thread_entry,
-        );
-    }
+    schedule_on_main_run_loop(main_thread_entry, Box::into_raw(job).cast::<c_void>());
     if timing_enabled() {
-        eprintln!("Cropmark macos shell: dispatched to main thread");
+        eprintln!("Cropmark macos shell: dispatched to main run loop");
     }
     match started_rx.recv_timeout(MAIN_THREAD_ENTRY_TIMEOUT) {
         Ok(()) => {}
@@ -624,64 +620,53 @@ fn run_on_main_thread(
     }
 }
 
-/// 壳退出清理:正常返回与 unwind(panic)都收起面板并恢复系统光标,
-/// 避免裸 panic 留下全屏遮挡窗(ADR-17 失败边界)。
-struct ShellExitGuard<'a> {
-    window: &'a NSWindow,
-}
-
-impl Drop for ShellExitGuard<'_> {
-    fn drop(&mut self) {
-        self.window.orderOut(None);
-        NSCursor::arrowCursor().set();
-    }
-}
-
-/// 主队列入口:裸 panic 在此收敛为错误而不是静默丢帧(ADR-17)。
+/// 主 run loop 入口:只建窗并挂本地事件监听,立刻返回把主线程还给 NSApp。
+/// 终态由事件监听/视图回调里的 `finish_shell_if_needed` 送回等待方。
 extern "C" fn main_thread_entry(context: *mut c_void) {
     let mut job = unsafe { Box::from_raw(context as *mut MainThreadJob) };
     let done = job.done.clone();
     let abandoned = job.abandoned.clone();
     let result = catch_unwind(AssertUnwindSafe(|| {
         if abandoned.load(Ordering::SeqCst) {
-            return Ok(None);
+            return Ok(false);
         }
-        // 等待方已超时放弃(started 接收端已丢弃):不进入壳。
         if job.started.send(()).is_err() {
-            return Ok(None);
+            return Ok(false);
         }
         let canvas = job.canvas.take().expect("main thread job canvas");
-        let mtm = MainThreadMarker::new().expect("main queue 任务应在主线程运行");
-        run_shell(mtm, canvas, job.geometry, job.hooks, job.abandoned.clone()).map(Some)
+        let mtm = MainThreadMarker::new().expect("run loop 任务应在主线程运行");
+        start_shell(
+            mtm,
+            canvas,
+            job.geometry,
+            job.hooks,
+            job.abandoned.clone(),
+            job.done.clone(),
+        )
+        .map(|()| true)
     }));
-    let outcome = match result {
-        Ok(Ok(Some(outcome))) => Ok(outcome),
-        Ok(Ok(None)) => return,
-        Ok(Err(error)) => Err(error),
-        Err(_) => Err(CaptureError::api("error.capture.shell_panic")),
-    };
-    let _ = done.send(outcome);
+    match result {
+        Ok(Ok(true)) => {}
+        Ok(Ok(false)) => {}
+        Ok(Err(error)) => {
+            let _ = done.send(Err(error));
+        }
+        Err(_) => {
+            let _ = done.send(Err(CaptureError::api("error.capture.shell_panic")));
+        }
+    }
 }
 
-fn run_shell(
+fn start_shell(
     mtm: MainThreadMarker,
     canvas: Canvas,
     geometry: ShellGeometry,
     hooks: ShellHooks,
     abandoned: Arc<AtomicBool>,
-) -> Result<RegionOutcome, CaptureError> {
-    // 本次壳的关闭基线:基线之前的关闭请求属于旧壳,不再影响本次(评审 P3)。
+    done: Sender<Result<RegionOutcome, CaptureError>>,
+) -> Result<(), CaptureError> {
     let close_baseline = SHELL_CLOSE_EPOCH.load(Ordering::SeqCst);
-    SHELL_ACTIVE.store(true, Ordering::SeqCst);
-    struct ActiveGuard;
-    impl Drop for ActiveGuard {
-        fn drop(&mut self) {
-            SHELL_ACTIVE.store(false, Ordering::SeqCst);
-        }
-    }
-    let _active_guard = ActiveGuard;
     let timing = timing_enabled();
-    let started = Instant::now();
     if timing {
         eprintln!(
             "Cropmark macos shell: entered main thread logical={}x{} scale={} epoch={close_baseline}",
@@ -689,43 +674,20 @@ fn run_shell(
         );
     }
     if abandoned.load(Ordering::SeqCst) {
-        // 派发方已超时:不再建窗,结果会被会话层丢弃。
         if timing {
             eprintln!("Cropmark macos shell: abandoned before window creation");
         }
-        return Ok(RegionOutcome::Cancelled);
+        let _ = done.send(Ok(RegionOutcome::Cancelled));
+        return Ok(());
     }
     let frame = screen_frame_for(mtm, &geometry);
-    STATE.with(|slot| {
-        *slot.borrow_mut() = Some(ShellState {
-            hooks,
-            canvas,
-            scale: geometry.scale,
-            frame_x: frame.origin.x,
-            frame_y: frame.origin.y,
-            frame_h: frame.size.height,
-            image: None,
-            dirty: false,
-            outcome: None,
-            timing,
-            applied_cursor: Some(CursorKind::Crosshair),
-            resize_cursors: ResizeCursors::default(),
-            close_baseline,
-            abandoned,
-            marked: None,
-        });
-    });
     let app = NSApplication::sharedApplication(mtm);
-    // Accessory 托盘应用:macOS 14+ 的 activate() 不抢焦点,旧 API 在 14+ 也无效果,
-    // 仍调用一次以覆盖 13 及更早;真正收事件靠 NonactivatingPanel + 事件泵转发.
+    let _ = app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
     app.activate();
     #[allow(deprecated)]
     app.activateIgnoringOtherApps(true);
     let view = unsafe { create_selection_view(mtm, frame.size) };
     let window = unsafe { create_key_window(mtm, frame)? };
-    // 退出清理守卫:任何后续 panic 都不会把全屏面板留在屏幕上(ADR-17)。
-    let exit_guard = ShellExitGuard { window: &window };
-    window.setLevel(kCGScreenSaverWindowLevel as isize);
     window.setCollectionBehavior(
         NSWindowCollectionBehavior::CanJoinAllSpaces
             .union(NSWindowCollectionBehavior::FullScreenAuxiliary),
@@ -738,41 +700,144 @@ fn run_shell(
     window.setFloatingPanel(true);
     window.setBecomesKeyOnlyIfNeeded(false);
     window.setWorksWhenModal(true);
+    // setFloatingPanel 会把 level 打回 floating(3);必须在其后重新设屏保级,
+    // 否则选区层会沉到 Dock/菜单栏下面。
+    window.setLevel(kCGScreenSaverWindowLevel as isize);
     let content_view: &NSView = &view;
     window.setContentView(Some(content_view));
     window.setFrame_display(frame, true);
-    // 光标提示(ADR-5):首帧前先显示十字,其后每个输入事件由 apply_cursor
-    // 按引擎 cursor_for 切换——手柄/边→resize、选区内部→开手(拖移中闭合手)、
-    // chrome→箭头、空白→十字;斜向 resize 用 SF Symbol 自绘。
     NSCursor::crosshairCursor().set();
-    // 先合成首帧再上屏,避免 orderFront 到首次 drawRect 之间闪黑。
+    STATE.with(|slot| {
+        *slot.borrow_mut() = Some(ShellState {
+            hooks,
+            canvas,
+            scale: geometry.scale,
+            frame_x: frame.origin.x,
+            frame_y: frame.origin.y,
+            frame_h: frame.size.height,
+            image: None,
+            dirty: false,
+            outcome: None,
+            timing,
+            last_present_log: None,
+            applied_cursor: Some(CursorKind::Crosshair),
+            resize_cursors: ResizeCursors::default(),
+            close_baseline,
+            abandoned,
+            marked: None,
+            window: None,
+            view: None,
+            monitor: None,
+            done: Some(done),
+        });
+    });
     STATE.with(|slot| {
         if let Some(state) = slot.borrow_mut().as_mut() {
             present(state, &view);
         }
     });
-    // Accessory 未激活时 makeKeyAndOrderFront 可能不上屏;Regardless 仍置顶.
     window.orderFrontRegardless();
     window.makeKeyAndOrderFront(None);
     let responder: &NSResponder = &view;
     window.makeFirstResponder(Some(responder));
     view.display();
+    STATE.with(|slot| {
+        if let Some(state) = slot.borrow_mut().as_mut() {
+            state.window = Some(window);
+            state.view = Some(view);
+        }
+    });
+    let monitor = install_input_monitor();
+    STATE.with(|slot| {
+        if let Some(state) = slot.borrow_mut().as_mut() {
+            state.monitor = monitor;
+        }
+    });
+    SHELL_ACTIVE.store(true, Ordering::SeqCst);
     if timing {
-        eprintln!("Cropmark macos shell: panel presented");
+        eprintln!("Cropmark macos shell: panel presented (event monitor, no nested pump)");
     }
-    pump_until_done(&app, &view);
-    drop(exit_guard);
-    let state = STATE.with(|slot| slot.borrow_mut().take());
-    let outcome = state
-        .and_then(|state| state.outcome)
-        .unwrap_or(RegionOutcome::Cancelled);
-    if timing {
-        eprintln!(
-            "Cropmark macos shell: outcome={outcome:?} elapsed={:?}",
-            started.elapsed()
-        );
+    Ok(())
+}
+
+const INPUT_EVENT_MASK: NSEventMask = NSEventMask(
+    NSEventMask::LeftMouseDown.0
+        | NSEventMask::LeftMouseUp.0
+        | NSEventMask::LeftMouseDragged.0
+        | NSEventMask::RightMouseDown.0
+        | NSEventMask::MouseMoved.0
+        | NSEventMask::KeyDown.0,
+);
+
+fn install_input_monitor() -> Option<Retained<AnyObject>> {
+    let block = RcBlock::new(|event: NonNull<NSEvent>| -> *mut NSEvent {
+        // AppKit 回调不可 panic。先 clone 视图再放掉 STATE 借用,避免
+        // route_input 里 borrow_mut 重入 RefCell 直接 abort。
+        let handled = catch_unwind(AssertUnwindSafe(|| {
+            let view = STATE.with(|slot| slot.borrow().as_ref().and_then(|state| state.view.clone()));
+            view.map(|view| route_input(&view, unsafe { event.as_ref() }))
+                .unwrap_or(false)
+        }))
+        .unwrap_or(false);
+        if handled {
+            std::ptr::null_mut()
+        } else {
+            event.as_ptr()
+        }
+    });
+    let block: &DynBlock<dyn Fn(NonNull<NSEvent>) -> *mut NSEvent> = &block;
+    unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(INPUT_EVENT_MASK, block) }
+}
+
+fn finish_shell_if_needed() {
+    let ready = STATE.with(|slot| {
+        let mut guard = slot.borrow_mut();
+        let Some(state) = guard.as_mut() else {
+            return false;
+        };
+        if should_cancel(
+            state.outcome.is_some(),
+            state.abandoned.load(Ordering::SeqCst),
+            state.close_baseline,
+            SHELL_CLOSE_EPOCH.load(Ordering::SeqCst),
+        ) {
+            if state.timing {
+                eprintln!("Cropmark macos shell: close requested (epoch/abandoned)");
+            }
+            state.outcome = Some(RegionOutcome::Cancelled);
+        }
+        state.outcome.is_some()
+    });
+    if ready {
+        // 不能在 NSEvent 监听/视图回调里同步 removeMonitor,否则 AppKit 会拆掉
+        // 正在跑的 handler。下一圈 run loop 再收摊。
+        schedule_on_main_run_loop(finish_shell_entry, std::ptr::null_mut());
     }
-    Ok(outcome)
+}
+
+extern "C" fn finish_shell_entry(_context: *mut c_void) {
+    finish_shell();
+}
+
+fn finish_shell() {
+    let Some(mut state) = STATE.with(|slot| slot.borrow_mut().take()) else {
+        return;
+    };
+    SHELL_ACTIVE.store(false, Ordering::SeqCst);
+    if let Some(monitor) = state.monitor.take() {
+        unsafe { NSEvent::removeMonitor(&monitor) };
+    }
+    if let Some(window) = state.window.take() {
+        window.orderOut(None);
+    }
+    NSCursor::arrowCursor().set();
+    let outcome = state.outcome.unwrap_or(RegionOutcome::Cancelled);
+    if state.timing {
+        eprintln!("Cropmark macos shell: outcome={outcome:?}");
+    }
+    if let Some(done) = state.done.take() {
+        let _ = done.send(Ok(outcome));
+    }
 }
 
 /// 按捕获时的逻辑几何匹配 NSScreen;不一致时按 monitor 逻辑值直接构造
@@ -822,51 +887,6 @@ unsafe fn create_key_window(
         backing: NSBackingStoreType::Buffered,
         defer: false];
     Ok(window)
-}
-
-/// 手动泵事件直到引擎给出终态;阻塞等待期间 run loop 会顺带服务
-/// 窗口刷新(display/drawRect)与其它来源。等待有界(250ms):除事件外也
-/// 周期性检查关闭代际与派发方放弃标志,保证旧壳/迟到壳及时退出;无事件时
-/// 立即重入等待。
-fn pump_until_done(app: &NSApplication, view: &SelectionView) {
-    loop {
-        let done = STATE.with(|slot| {
-            let mut guard = slot.borrow_mut();
-            let Some(state) = guard.as_mut() else {
-                return false;
-            };
-            if should_cancel(
-                state.outcome.is_some(),
-                state.abandoned.load(Ordering::SeqCst),
-                state.close_baseline,
-                SHELL_CLOSE_EPOCH.load(Ordering::SeqCst),
-            ) {
-                if state.timing {
-                    eprintln!("Cropmark macos shell: close requested (epoch/abandoned)");
-                }
-                state.outcome = Some(RegionOutcome::Cancelled);
-            }
-            state.outcome.is_some()
-        });
-        if done {
-            return;
-        }
-        let event = app.nextEventMatchingMask_untilDate_inMode_dequeue(
-            NSEventMask::Any,
-            Some(&NSDate::dateWithTimeIntervalSinceNow(0.25)),
-            // CommonModes 覆盖 default+tracking,拖拽时 LeftMouseDragged 不会丢.
-            unsafe { NSRunLoopCommonModes },
-            true,
-        );
-        if let Some(event) = event {
-            // 输入走窗口过程同构路径,不依赖 NSView 响应链(Accessory 未激活时
-            // sendEvent 常常到不了 mouseDown:/mouseMoved:).
-            if !route_input(view, &event) {
-                app.sendEvent(&event);
-            }
-            app.updateWindows();
-        }
-    }
 }
 
 /// 泵的取消判定:已有终态不覆盖;派发方放弃(主线程进入超时)或关闭代际
@@ -921,53 +941,67 @@ fn forward_mouse(view: &SelectionView, event: &NSEvent, kind: MouseInput) {
     dispatch_input(view, input);
 }
 
-/// 事件物理像素坐标:`NSEvent.mouseLocation` 是 AppKit 全局坐标(主屏左下原点),
-/// 再减去窗框得到内容区偏移并翻转 Y,得到引擎物理像素(左上原点).
-fn event_point(view: &SelectionView, _event: &NSEvent) -> (i32, i32) {
-    let (scale, fallback) = STATE
+/// 事件→引擎像素:先把窗口点转到视图 backing,再按抓屏缓冲尺寸映射。
+/// 不能用 monitor.scale 硬乘——1x 抓屏配 2x 换算会让选区偏到两倍位置。
+fn event_point(view: &SelectionView, event: &NSEvent) -> (i32, i32) {
+    let (engine_w, engine_h) = STATE
         .with(|slot| {
             slot.borrow().as_ref().map(|state| {
-                (
-                    state.scale,
-                    (state.frame_x, state.frame_y, state.frame_h),
-                )
+                (state.canvas.width as f64, state.canvas.height as f64)
             })
         })
-        .unwrap_or((1.0, (0.0, 0.0, 0.0)));
-    let (frame_x, frame_y, frame_h) = view
-        .window()
-        .map(|window: Retained<NSWindow>| {
-            let frame = window.frame();
-            (frame.origin.x, frame.origin.y, frame.size.height)
-        })
-        .unwrap_or(fallback);
-    let screen = NSEvent::mouseLocation();
-    geometry::appkit_global_to_physical(
-        screen.x, screen.y, frame_x, frame_y, frame_h, scale,
+        .unwrap_or((1.0, 1.0));
+    let in_view = if event.windowNumber() != 0 {
+        view.convertPoint_fromView(event.locationInWindow(), None)
+    } else if let Some(window) = view.window() {
+        let frame = window.frame();
+        let screen = NSEvent::mouseLocation();
+        view.convertPoint_fromView(
+            NSPoint {
+                x: screen.x - frame.origin.x,
+                y: screen.y - frame.origin.y,
+            },
+            None,
+        )
+    } else {
+        NSPoint { x: 0.0, y: 0.0 }
+    };
+    let backing = view.convertPointToBacking(in_view);
+    let backing_size = view.convertSizeToBacking(view.bounds().size);
+    geometry::backing_to_engine(
+        backing.x,
+        backing.y,
+        backing_size.width,
+        backing_size.height,
+        engine_w,
+        engine_h,
     )
 }
 
 /// 把一次输入事件交给引擎并处理其输出;终态由 pump 读取 STATE 判定。
 /// drawRect 可能经 view.display 重入,因此 STATE 借用在 present 前释放。
 fn dispatch_input(view: &SelectionView, event: InputEvent) {
-    let dirty = STATE.with(|slot| {
-        let mut guard = slot.borrow_mut();
-        let Some(state) = guard.as_mut() else {
-            return false;
-        };
-        feed_event(state, event, view);
-        apply_cursor(state);
-        state.dirty
-    });
-    if dirty {
-        view.setNeedsDisplay(true);
-        view.display();
-        STATE.with(|slot| {
-            if let Some(state) = slot.borrow_mut().as_mut() {
-                state.dirty = false;
-            }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let dirty = STATE.with(|slot| {
+            let mut guard = slot.borrow_mut();
+            let Some(state) = guard.as_mut() else {
+                return false;
+            };
+            feed_event(state, event, view);
+            apply_cursor(state);
+            state.dirty
         });
-    }
+        if dirty {
+            // 交给 AppKit 合批到下一帧,避免每次 PointerMove 同步 display 打满 CPU。
+            view.setNeedsDisplay(true);
+            STATE.with(|slot| {
+                if let Some(state) = slot.borrow_mut().as_mut() {
+                    state.dirty = false;
+                }
+            });
+        }
+        finish_shell_if_needed();
+    }));
 }
 
 /// 依引擎当前提示切换系统光标;形态未变化时跳过 set。resize 提示用 SF
@@ -1261,19 +1295,27 @@ fn compose_canvas(canvas: &mut Canvas) -> Option<Duration> {
     let expected = w as usize * h as usize * 4;
     // 壳侧防御:compose_into 要求 out 长度与冻结帧严格一致,越界会 panic;
     // 长度不符时跳过本次合成而非崩溃。
-    if canvas.scratch.len() == expected && canvas.present_buf.len() == expected {
+    if canvas.scratch.len() == expected {
         let scene = canvas.engine.scene();
         let overlay = canvas.engine.annotation_overlay();
         canvas
             .composer
             .compose_into_with_overlay(&scene, &overlay, &mut canvas.scratch);
-        swizzle_rgba_to_bgra(&canvas.scratch, &mut canvas.present_buf);
         return Some(started.elapsed());
     }
     None
 }
 
+fn should_log_present(first: bool, last: Option<Instant>, now: Instant) -> bool {
+    if first {
+        return true;
+    }
+    last.map(|last| now.duration_since(last) >= Duration::from_millis(250))
+        .unwrap_or(true)
+}
+
 /// RGBA→BGRA 通道交换,输出到呈现缓冲。
+#[cfg(test)]
 fn swizzle_rgba_to_bgra(src: &[u8], dst: &mut [u8]) {
     for (s, d) in src.chunks_exact(4).zip(dst.chunks_exact_mut(4)) {
         d[0] = s[2];
@@ -1297,23 +1339,28 @@ fn present(state: &mut ShellState, view: &SelectionView) {
         state.dirty = true;
     }
     if let Some(started) = started {
-        eprintln!(
-            "Cropmark overlay {}x{} present: compose+swizzle={:?}, total={:?}",
-            state.canvas.width,
-            state.canvas.height,
-            compose_at,
-            started.elapsed()
-        );
+        let now = Instant::now();
+        if should_log_present(state.last_present_log.is_none(), state.last_present_log, now)
+        {
+            eprintln!(
+                "Cropmark overlay {}x{} present: compose={:?}, total={:?}",
+                state.canvas.width,
+                state.canvas.height,
+                compose_at,
+                started.elapsed()
+            );
+            state.last_present_log = Some(now);
+        }
     }
 }
 
-/// 从 BGRA 呈现缓冲构建 CGImage。provider 的 release 回调为空,数据由
-/// `canvas.present_buf` 保活:该缓冲定容(容量恒等于冻结帧),地址不漂移;
+/// 从 RGBA 合成缓冲构建 CGImage。provider 的 release 回调为空,数据由
+/// `canvas.scratch` 保活:该缓冲定容(容量恒等于冻结帧),地址不漂移;
 /// 旧 image 在缓冲被下一次 Redraw 覆写前即被替换丢弃。
 fn rebuild_image(state: &mut ShellState) {
     let w = state.canvas.width as usize;
     let h = state.canvas.height as usize;
-    let buffer = &state.canvas.present_buf;
+    let buffer = &state.canvas.scratch;
     let Some(provider) = (unsafe {
         CGDataProvider::with_data(
             std::ptr::null_mut(),
@@ -1327,8 +1374,9 @@ fn rebuild_image(state: &mut ShellState) {
     let Some(space) = CGColorSpace::new_device_rgb() else {
         return;
     };
+    // 内存布局 R,G,B,A:Last + 32Big,免去每帧 RGBA→BGRA swizzle。
     let bitmap_info = CGBitmapInfo(
-        CGImageAlphaInfo::PremultipliedFirst.0 | CGImageByteOrderInfo::Order32Little.0,
+        CGImageAlphaInfo::Last.0 | CGImageByteOrderInfo::Order32Big.0,
     );
     state.image = unsafe {
         CGImage::new(
@@ -1366,6 +1414,7 @@ fn draw_cached_image(view: &SelectionView) {
         #[allow(deprecated)]
         let port = context.graphicsPort();
         let cg_context = unsafe { &*(port.as_ptr() as *const CGContext) };
+        CGContext::set_interpolation_quality(Some(cg_context), CGInterpolationQuality::None);
         let bounds = view.bounds();
         let rect = CGRect {
             origin: CGPoint {
@@ -1507,12 +1556,40 @@ mod tests {
         let mut canvas = Canvas {
             engine: SelectionEngine::new(4, 4, FeatureFlags::default()),
             composer,
-            scratch: vec![0; 64],
-            present_buf: vec![0; 8], // 故意错误长度:防御路径返回 None 且不 panic。
+            scratch: vec![0; 8], // 故意错误长度:防御路径返回 None 且不 panic。
+            present_buf: Vec::new(),
             width: 4,
             height: 4,
         };
         assert!(compose_canvas(&mut canvas).is_none());
+    }
+
+    #[test]
+    fn present_log_throttles_after_first_frame() {
+        let t0 = Instant::now();
+        assert!(should_log_present(true, None, t0));
+        assert!(!should_log_present(
+            false,
+            Some(t0),
+            t0 + Duration::from_millis(100)
+        ));
+        assert!(should_log_present(
+            false,
+            Some(t0),
+            t0 + Duration::from_millis(250)
+        ));
+    }
+
+    #[test]
+    fn shell_does_not_call_nested_next_event_pump() {
+        // 嵌套 nextEventMatchingMask 在 macOS 27 会把主线程打满。选区必须走
+        // NSEvent 本地监听 + NSApp 自己的事件循环。
+        let src = include_str!("macos.rs");
+        let forbidden = concat!("nextEventMatchingMask", "_untilDate_inMode_dequeue");
+        assert!(
+            !src.contains(forbidden),
+            "do not nest nextEventMatchingMask in the macOS selection shell"
+        );
     }
 
     #[test]
@@ -1522,6 +1599,8 @@ mod tests {
         assert_eq!((x, y), (80, 1200));
         let (x, y) = geometry::appkit_global_to_physical(40.0, 600.0, 0.0, 0.0, 600.0, 2.0);
         assert_eq!((x, y), (80, 0));
+        let (x, y) = geometry::backing_to_engine(80.0, 0.0, 1200.0, 1200.0, 1200.0, 1200.0);
+        assert_eq!((x, y), (80, 1200));
     }
 
     #[test]
