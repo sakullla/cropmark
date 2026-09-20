@@ -55,6 +55,19 @@ impl AnnotationTool {
         Self::Blur,
     ];
 
+    /// 精简工具条主行工具(R21 修订):最常用的四个保持单行常驻。
+    pub const PRIMARY: [Self; 4] = [Self::Rect, Self::Ellipse, Self::Arrow, Self::Text];
+
+    /// 收进「更多」展开行的工具(直线/序号/画笔/荧光笔/马赛克/模糊)。
+    pub const MORE: [Self; 6] = [
+        Self::Line,
+        Self::Number,
+        Self::Pen,
+        Self::Highlighter,
+        Self::Mosaic,
+        Self::Blur,
+    ];
+
     fn is_drag(self) -> bool {
         matches!(
             self,
@@ -235,6 +248,9 @@ pub enum LogicalKey {
     ArrowDown,
     /// 取色快捷键(平台壳把 C 键映射到这里)。
     CopyColor,
+    /// 即时标注:工具快捷键(A/R/E/L/M/B/H/P/N/T,与预览编辑器一致);
+    /// 按下即进入标注模式并选中该工具。
+    Tool(AnnotationTool),
     /// 即时标注:撤销(Ctrl+Z)。
     Undo,
     /// 即时标注:重做(Ctrl+Y / Ctrl+Shift+Z)。
@@ -259,6 +275,8 @@ pub enum SelectionAction {
     Undo,
     Redo,
     Delete,
+    /// 标注模式「更多」:展开/收起其余工具(仅引擎内部消费)。
+    More,
 }
 
 /// 一次输入事件的处理结果;除 `None` 外都意味着需要重新合成并呈现。
@@ -323,6 +341,11 @@ pub struct Scene {
     pub toolbar_visible: bool,
     pub menu_open: bool,
     pub menu_anchor: (i32, i32),
+    /// R21 修订:标注模式开启(单行精简工具条可见;此时轻量操作条隐藏,
+    /// 避免双工具条并排)。
+    pub annotation_mode: bool,
+    /// 标注模式内「更多」展开行可见(其余工具)。
+    pub annotation_more: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -344,6 +367,11 @@ pub struct SelectionEngine {
     redo: Vec<AnnotationEdit>,
     /// 当前工具;None = 选择/移动模式。
     tool: Option<AnnotationTool>,
+    /// R21 修订:标注模式开关。默认选中态不铺开标注工具;点「标注」或按工具
+    /// 快捷键进入,只显示单行精简工具条。
+    annotation_mode: bool,
+    /// 标注模式「更多」展开行(其余工具)是否可见。
+    annotation_more: bool,
     /// 拖动中的草稿(未入栈)。
     draft: Option<Annotation>,
     options: AnnotationOptions,
@@ -368,6 +396,8 @@ impl SelectionEngine {
             undo: Vec::new(),
             redo: Vec::new(),
             tool: None,
+            annotation_mode: false,
+            annotation_more: false,
             draft: None,
             options: AnnotationOptions::default(),
             text_edit: None,
@@ -400,6 +430,29 @@ impl SelectionEngine {
     /// 当前工具(None = 选择/移动模式)。
     pub fn tool(&self) -> Option<AnnotationTool> {
         self.tool
+    }
+
+    /// R21 修订:标注模式是否开启(开启时只显示单行精简工具条)。
+    pub fn annotation_mode(&self) -> bool {
+        self.annotation_mode
+    }
+
+    /// 标注模式「更多」展开行是否可见。
+    pub fn annotation_more(&self) -> bool {
+        self.annotation_more
+    }
+
+    /// 轻量操作条(复制/保存/贴图)是否可见:仅默认选中态,标注模式下隐藏,
+    /// 避免与标注工具条形成双工具条。
+    fn rail_visible(&self) -> bool {
+        matches!(
+            self.state,
+            EngineState::Selected
+                | EngineState::PressingChrome { .. }
+                | EngineState::Drawing { .. }
+        ) && self.selection.is_some()
+            && !self.annotation_mode
+            && !composer::toolbar_buttons(self.flags).is_empty()
     }
 
     /// 文本编辑会话(壳据此定位 IME 候选窗)。
@@ -496,7 +549,7 @@ impl SelectionEngine {
                 {
                     return CursorHint::Arrow;
                 }
-                if self.scene().toolbar_visible && self.hit_toolbar(x, y).is_some() {
+                if self.rail_visible() && self.hit_toolbar(x, y).is_some() {
                     return CursorHint::Pointer;
                 }
                 if self.hit_annotation_toolbar(x, y).is_some() {
@@ -533,20 +586,17 @@ impl SelectionEngine {
 
     /// 当前状态对应的合成场景。
     pub fn scene(&self) -> Scene {
-        let toolbar_visible = matches!(
-            self.state,
-            EngineState::Selected
-                | EngineState::PressingChrome { .. }
-                | EngineState::Drawing { .. }
-        ) && self.selection.is_some()
-            && !composer::toolbar_buttons(self.flags).is_empty();
+        let annotation_mode =
+            self.annotation_mode && self.flags.inline_annotation && self.selection.is_some();
         Scene {
             selection: self.selection,
             cursor: self.cursor,
             flags: self.flags,
-            toolbar_visible,
+            toolbar_visible: self.rail_visible(),
             menu_open: self.state == EngineState::Menu,
             menu_anchor: self.menu_anchor,
+            annotation_mode,
+            annotation_more: annotation_mode && self.annotation_more,
         }
     }
 
@@ -689,8 +739,7 @@ impl SelectionEngine {
                         return EngineOutcome::Redraw;
                     }
                 }
-                // 选区外:退出工具,重新拖出新选区(新选区从零开始标注)。
-                self.tool = None;
+                // 选区外:退出标注会话与标注模式,重新拖出新选区(新选区从零开始标注)。
                 self.state = EngineState::Dragging {
                     anchor_x: x,
                     anchor_y: y,
@@ -750,10 +799,13 @@ impl SelectionEngine {
             }
             EngineState::PressingChrome { action } => {
                 let (x, y) = self.cursor;
-                // 标注工具条动作(工具切换/撤销/重做/删除)由引擎就地消费,
-                // 不向会话层产出 Action。
-                if is_internal_annotation_action(action) {
-                    let still = self.hit_annotation_toolbar(x, y) == Some(action);
+                // 标注工具条动作(工具切换/撤销/重做/删除/更多)与「标注」入口
+                // 由引擎就地消费,不向会话层产出 Action;关闭即时标注时
+                // 「标注」仍按既有路径交回会话层打开预览编辑器。
+                if self.is_internal_annotation_action(action) {
+                    let still = self.hit_annotation_toolbar(x, y) == Some(action)
+                        || (action == SelectionAction::Annotate
+                            && self.hit_menu(x, y) == Some(action));
                     self.state = if self.selection.is_some() {
                         EngineState::Selected
                     } else {
@@ -822,11 +874,35 @@ impl SelectionEngine {
             }
         }
         match key {
-            LogicalKey::Escape => EngineOutcome::Cancelled,
+            // 标注模式优先:Esc 先退出标注模式(保留已画标注,回到默认轻量态),
+            // 再按 Escape 才是取消整个选区会话;菜单打开时同时收起菜单。
+            LogicalKey::Escape => {
+                if self.annotation_mode {
+                    self.exit_annotation_mode();
+                    if self.state == EngineState::Menu {
+                        self.state = if self.selection.is_some() {
+                            EngineState::Selected
+                        } else {
+                            EngineState::Idle
+                        };
+                    }
+                    EngineOutcome::Redraw
+                } else {
+                    EngineOutcome::Cancelled
+                }
+            }
             LogicalKey::Enter => match self.selection {
                 Some(rect) => EngineOutcome::Confirmed(rect),
                 None => EngineOutcome::Redraw,
             },
+            LogicalKey::Tool(tool) => {
+                // 工具快捷键:选中态按下即进入标注模式并选中该工具;其余状态
+                // (Idle/拖动中/无选区)与关闭即时标注时忽略。
+                if self.state == EngineState::Selected && self.selection.is_some() {
+                    self.select_tool(tool);
+                }
+                EngineOutcome::Redraw
+            }
             LogicalKey::Undo => {
                 self.undo_annotation();
                 EngineOutcome::Redraw
@@ -880,6 +956,10 @@ impl SelectionEngine {
     }
 
     fn hit_toolbar(&self, x: i32, y: i32) -> Option<SelectionAction> {
+        // 标注模式下轻量操作条隐藏,其几何不再可命中(不允许隐形按钮)。
+        if !self.rail_visible() {
+            return None;
+        }
         let buttons = composer::toolbar_buttons(self.flags);
         let panel = composer::toolbar_panel(self.metrics(), self.selection?, self.size(), &buttons)?;
         composer::toolbar_button_rects(self.metrics(), panel, &buttons)
@@ -899,40 +979,37 @@ impl SelectionEngine {
 
     // ---- R21 选区即时标注:工具/草稿/文本编辑与撤销栈。----
 
-    /// 操作条面板矩形(标注工具条避让用)。
-    fn toolbar_panel(&self) -> Option<IntRect> {
-        let buttons = composer::toolbar_buttons(self.flags);
-        composer::toolbar_panel(self.metrics(), self.selection?, self.size(), &buttons)
-    }
-
-    /// 标注工具条按钮集(受 inlineAnnotation 开关与平台文本输入能力控制)。
-    pub(crate) fn annotation_buttons(&self) -> Vec<SelectionAction> {
-        composer::annotation_buttons(self.flags, self.options.text_input)
-    }
-
-    /// 标注工具条面板矩形;关闭即时标注或无选区时为 None。
-    pub(crate) fn annotation_panel(&self) -> Option<IntRect> {
-        if !self.flags.inline_annotation {
+    /// 标注工具条布局(面板 + 逐按钮矩形);关闭即时标注、非标注模式或
+    /// 无选区时为 None。轻量操作条在标注模式下隐藏,布局不再避让其几何
+    /// (避免小选区被迫落到与操作条重叠的兜底位置)。
+    pub(crate) fn annotation_toolbar(&self) -> Option<composer::AnnotationToolbar> {
+        if !self.flags.inline_annotation || !self.annotation_mode {
             return None;
         }
         let selection = self.selection?;
-        let buttons = self.annotation_buttons();
-        if buttons.is_empty() {
-            return None;
-        }
-        composer::annotation_panel(
+        composer::annotation_toolbar(
             self.metrics(),
             selection,
             self.size(),
-            &buttons,
-            self.toolbar_panel(),
+            self.flags,
+            self.options.text_input,
+            self.annotation_more,
+            None,
+        )
+    }
+
+    /// 标注工具条按钮集(含「更多」;受开关与平台文本输入能力控制)。
+    pub(crate) fn annotation_buttons(&self) -> Vec<SelectionAction> {
+        composer::annotation_toolbar_buttons(
+            self.flags,
+            self.options.text_input,
+            self.annotation_more,
         )
     }
 
     fn hit_annotation_toolbar(&self, x: i32, y: i32) -> Option<SelectionAction> {
-        let buttons = self.annotation_buttons();
-        let panel = self.annotation_panel()?;
-        composer::annotation_button_rects(self.metrics(), panel, &buttons)
+        self.annotation_toolbar()?
+            .buttons
             .into_iter()
             .find(|(_, rect)| rect.contains(x, y))
             .map(|(action, _)| action)
@@ -1113,8 +1190,12 @@ impl SelectionEngine {
     }
 
     /// 开始拖新选区时清空标注会话:图元、撤销/重做栈与编辑态都属于
-    /// 当前选区,避免旧图元落到新选区上。
+    /// 当前选区,避免旧图元落到新选区上;标注模式与工具同时复位(新选区
+    /// 从默认轻量态开始)。
     fn clear_annotations(&mut self) {
+        self.tool = None;
+        self.annotation_mode = false;
+        self.annotation_more = false;
         if self.annotations.is_empty()
             && self.undo.is_empty()
             && self.redo.is_empty()
@@ -1195,10 +1276,22 @@ impl SelectionEngine {
         true
     }
 
-    /// 工具条/快捷键动作:工具切换与撤销/重做/删除。
+    /// 工具条/快捷键/菜单「标注」动作:模式切换、工具切换与撤销/重做/删除/更多。
     fn apply_annotation_action(&mut self, action: SelectionAction) {
         match action {
+            SelectionAction::Annotate => {
+                if self.annotation_mode {
+                    self.exit_annotation_mode();
+                } else {
+                    self.enter_annotation_mode();
+                }
+            }
             SelectionAction::Tool(tool) => self.select_tool(tool),
+            SelectionAction::More => {
+                if self.annotation_mode {
+                    self.annotation_more = !self.annotation_more;
+                }
+            }
             SelectionAction::Undo => {
                 self.undo_annotation();
             }
@@ -1212,9 +1305,33 @@ impl SelectionEngine {
         }
     }
 
+    /// 进入标注模式:默认选中态仍只显示轻量操作条,进入后切换到单行精简
+    /// 工具条(无默认工具,用户点选或按工具快捷键);关闭即时标注时 no-op。
+    fn enter_annotation_mode(&mut self) {
+        if !self.flags.inline_annotation || self.selection.is_none() {
+            return;
+        }
+        self.annotation_mode = true;
+        self.annotation_more = false;
+        self.draft = None;
+    }
+
+    /// 退出标注模式回到默认轻量态:保留已画标注(可再次进入继续编辑),
+    /// 收起工具与展开行。
+    fn exit_annotation_mode(&mut self) {
+        if self.text_edit.is_some() {
+            self.commit_text_edit();
+        }
+        self.annotation_mode = false;
+        self.annotation_more = false;
+        self.tool = None;
+        self.draft = None;
+    }
+
     /// 切换工具(再次点击同一工具回到选择模式);平台无文本输入时忽略文字工具。
+    /// 选工具即进入标注模式(工具快捷键路径)。
     fn select_tool(&mut self, tool: AnnotationTool) {
-        if !self.flags.inline_annotation {
+        if !self.flags.inline_annotation || self.selection.is_none() {
             return;
         }
         if tool == AnnotationTool::Text && !self.options.text_input {
@@ -1223,6 +1340,7 @@ impl SelectionEngine {
         if self.text_edit.is_some() {
             self.commit_text_edit();
         }
+        self.annotation_mode = true;
         self.tool = if self.tool == Some(tool) {
             None
         } else {
@@ -1391,17 +1509,20 @@ impl SelectionEngine {
             height: rect.height,
         }
     }
-}
 
-/// 标注工具条动作(工具切换/撤销/重做/删除):引擎内部消费,壳不解释。
-fn is_internal_annotation_action(action: SelectionAction) -> bool {
-    matches!(
-        action,
-        SelectionAction::Tool(_)
+    /// 标注工具条/「标注」入口动作:引擎内部消费,壳不解释。
+    /// 关闭即时标注时「标注」不属于内部动作,继续交回会话层进预览编辑器。
+    fn is_internal_annotation_action(&self, action: SelectionAction) -> bool {
+        match action {
+            SelectionAction::Tool(_)
             | SelectionAction::Undo
             | SelectionAction::Redo
             | SelectionAction::Delete
-    )
+            | SelectionAction::More => true,
+            SelectionAction::Annotate => self.flags.inline_annotation,
+            _ => false,
+        }
+    }
 }
 
 /// 拖动草稿是否达到入栈下限;与预览编辑器 `MIN_DRAW_SIZE`/折线长度规则一致。
@@ -2263,42 +2384,150 @@ mod tests {
         drag(engine, from, to);
     }
 
-    /// 点击标注工具条上指定动作的按钮中心。
-    fn click_annotation_button(engine: &mut SelectionEngine, action: SelectionAction) {
-        let panel = engine.annotation_panel().expect("annotation panel");
-        let buttons = engine.annotation_buttons();
-        let rect = composer::annotation_button_rects(engine.metrics(), panel, &buttons)
+    /// 打开右键菜单并点击指定菜单项,返回本次点击的引擎结果。
+    fn click_menu_action(engine: &mut SelectionEngine, action: SelectionAction) -> EngineOutcome {
+        engine.handle_event(InputEvent::RightDown { x: 300, y: 300 });
+        let items = composer::menu_items(engine.flags());
+        let metrics = engine.metrics();
+        let panel = composer::menu_panel(metrics, engine.menu_anchor(), engine.size(), &items);
+        let (_, rect) = composer::menu_item_rects(metrics, panel, &items)
             .into_iter()
             .find(|(candidate, _)| *candidate == action)
-            .map(|(_, rect)| rect)
-            .expect("button present");
+            .expect("menu item present");
         let (cx, cy) = rect.center();
         engine.handle_event(InputEvent::LeftDown { x: cx, y: cy });
-        engine.handle_event(InputEvent::LeftUp { x: cx, y: cy });
-        assert_eq!(engine.state(), &EngineState::Selected);
+        engine.handle_event(InputEvent::LeftUp { x: cx, y: cy })
+    }
+
+    /// 经右键菜单「标注」进入标注模式(与真实壳路径一致)。
+    fn enter_annotation_mode(engine: &mut SelectionEngine) {
+        if engine.annotation_mode() {
+            return;
+        }
+        let outcome = click_menu_action(engine, SelectionAction::Annotate);
+        assert_eq!(outcome, EngineOutcome::Redraw);
+        assert!(engine.annotation_mode(), "「标注」应进入标注模式");
+    }
+
+    /// 点击标注工具条上指定动作的按钮中心;按钮在「更多」展开行时先展开。
+    fn click_annotation_button(engine: &mut SelectionEngine, action: SelectionAction) {
+        enter_annotation_mode(engine);
+        let click = |engine: &mut SelectionEngine, action: SelectionAction| {
+            let toolbar = engine.annotation_toolbar().expect("annotation toolbar");
+            let (_, rect) = toolbar
+                .buttons
+                .into_iter()
+                .find(|(candidate, _)| *candidate == action)
+                .expect("button present");
+            let (cx, cy) = rect.center();
+            engine.handle_event(InputEvent::LeftDown { x: cx, y: cy });
+            engine.handle_event(InputEvent::LeftUp { x: cx, y: cy });
+            assert_eq!(engine.state(), &EngineState::Selected);
+        };
+        let visible = engine
+            .annotation_toolbar()
+            .map(|toolbar| {
+                toolbar
+                    .buttons
+                    .iter()
+                    .any(|(candidate, _)| *candidate == action)
+            })
+            .unwrap_or(false);
+        if visible {
+            click(engine, action);
+            return;
+        }
+        click(engine, SelectionAction::More);
+        assert!(engine.annotation_more(), "「更多」应展开其余工具");
+        click(engine, action);
+    }
+
+    /// 面板矩形整体位于选区之外(下方/上方/侧面任一方向)。
+    fn panel_is_outside_selection(panel: composer::IntRect, selection: PhysicalRect) -> bool {
+        let sel = composer::IntRect::from(selection);
+        panel.bottom() <= sel.y
+            || panel.y >= sel.bottom()
+            || panel.right() <= sel.x
+            || panel.x >= sel.right()
     }
 
     #[test]
-    fn annotation_toolbar_visibility_follows_feature_and_text_input() {
-        let mut on = inline_engine(800, 600);
-        drag_selection(&mut on, (40, 30), (760, 560));
-        assert!(on.annotation_panel().is_some());
-        let buttons = on.annotation_buttons();
-        for tool in AnnotationTool::ALL {
+    fn default_selection_stays_light_and_reveals_compact_toolbar_on_demand() {
+        let mut engine = inline_engine(800, 600);
+        drag_selection(&mut engine, (40, 30), (760, 480));
+        // 默认选中态:轻量操作条可见,标注工具条不存在(不铺开标注工具)。
+        assert!(engine.scene().toolbar_visible);
+        assert!(engine.annotation_toolbar().is_none());
+        assert!(!engine.annotation_mode());
+
+        // 进入标注模式:操作条让位,只显示单行精简工具条。
+        enter_annotation_mode(&mut engine);
+        assert!(!engine.scene().toolbar_visible);
+        let toolbar = engine.annotation_toolbar().expect("annotation toolbar");
+        let metrics = engine.metrics();
+        assert_eq!(
+            toolbar.panel.height, metrics.tool_button,
+            "默认必须是单行工具条"
+        );
+        assert!(
+            panel_is_outside_selection(toolbar.panel, engine.selection().unwrap()),
+            "工具条必须位于选区外: {:?}",
+            toolbar.panel
+        );
+        let buttons = engine.annotation_buttons();
+        for tool in AnnotationTool::PRIMARY {
             assert!(
                 buttons.contains(&SelectionAction::Tool(tool)),
                 "missing {tool:?}"
             );
         }
-        assert!(buttons.contains(&SelectionAction::Undo));
-        assert!(buttons.contains(&SelectionAction::Redo));
-        assert!(buttons.contains(&SelectionAction::Delete));
-        // 平台无文本输入通道:文字工具不出现在工具条。
+        for action in [
+            SelectionAction::Undo,
+            SelectionAction::Redo,
+            SelectionAction::Delete,
+            SelectionAction::More,
+        ] {
+            assert!(buttons.contains(&action), "missing {action:?}");
+        }
+        for tool in AnnotationTool::MORE {
+            assert!(
+                !buttons.contains(&SelectionAction::Tool(tool)),
+                "{tool:?} 应默认收进「更多」"
+            );
+        }
+
+        // 展开「更多」:其余工具进入第二行,面板仍位于选区外。
+        click_annotation_button(&mut engine, SelectionAction::More);
+        assert!(engine.annotation_more());
+        let buttons = engine.annotation_buttons();
+        for tool in AnnotationTool::MORE {
+            assert!(
+                buttons.contains(&SelectionAction::Tool(tool)),
+                "missing {tool:?}"
+            );
+        }
+        let toolbar = engine.annotation_toolbar().unwrap();
+        assert_eq!(
+            toolbar.panel.height,
+            metrics.tool_button * 2 + metrics.tool_gap
+        );
+        assert!(panel_is_outside_selection(
+            toolbar.panel,
+            engine.selection().unwrap()
+        ));
+        // 紧凑按钮:24 逻辑像素,物理封顶 36px。
+        assert_eq!(ChromeMetrics::for_scale(1.0).tool_button, 24);
+        assert!(ChromeMetrics::for_scale(2.0).tool_button <= 36);
+        assert!(ChromeMetrics::for_scale(1.5).tool_button <= 36);
+
+        // 平台无文本输入通道:文字工具不出现在工具条(主行缩为 3 工具)。
         let mut no_text = SelectionEngine::new(800, 600, FeatureFlags::default());
         drag_selection(&mut no_text, (40, 30), (760, 560));
+        enter_annotation_mode(&mut no_text);
         assert!(!no_text
             .annotation_buttons()
             .contains(&SelectionAction::Tool(AnnotationTool::Text)));
+
         // 关闭 inlineAnnotation:选区无标注工具,操作条/选择交互保持可用。
         let mut off = SelectionEngine::new(
             800,
@@ -2309,8 +2538,121 @@ mod tests {
             },
         );
         drag_selection(&mut off, (40, 30), (760, 560));
-        assert!(off.annotation_panel().is_none());
+        assert!(off.annotation_toolbar().is_none());
         assert!(off.annotation_buttons().is_empty());
+        assert!(off.scene().toolbar_visible);
+    }
+
+    #[test]
+    fn tool_shortcut_enters_annotation_mode_and_selects_tool() {
+        let mut engine = inline_engine(800, 600);
+        drag_selection(&mut engine, (40, 30), (760, 560));
+        assert_eq!(
+            engine.handle_event(InputEvent::Key {
+                key: LogicalKey::Tool(AnnotationTool::Ellipse),
+                shift: false,
+            }),
+            EngineOutcome::Redraw
+        );
+        assert!(engine.annotation_mode());
+        assert_eq!(engine.tool(), Some(AnnotationTool::Ellipse));
+        assert!(engine.annotation_toolbar().is_some());
+        // 再次按下同一工具回到无工具(仍留在标注模式)。
+        engine.handle_event(InputEvent::Key {
+            key: LogicalKey::Tool(AnnotationTool::Ellipse),
+            shift: false,
+        });
+        assert_eq!(engine.tool(), None);
+        assert!(engine.annotation_mode());
+        // 无选区/关闭开关:工具快捷键忽略,不产生图元也不进模式。
+        let mut off = SelectionEngine::new(
+            320,
+            200,
+            FeatureFlags {
+                inline_annotation: false,
+                ..FeatureFlags::default()
+            },
+        );
+        drag(&mut off, (20, 20), (100, 80));
+        off.handle_event(InputEvent::Key {
+            key: LogicalKey::Tool(AnnotationTool::Rect),
+            shift: false,
+        });
+        assert!(!off.annotation_mode());
+        assert_eq!(off.tool(), None);
+    }
+
+    #[test]
+    fn escape_exits_annotation_mode_before_cancelling_selection() {
+        let mut engine = inline_engine(800, 600);
+        drag_selection(&mut engine, (40, 30), (760, 560));
+        enter_annotation_mode(&mut engine);
+        click_annotation_button(&mut engine, SelectionAction::Tool(AnnotationTool::Rect));
+        engine.handle_event(InputEvent::LeftDown { x: 200, y: 300 });
+        engine.handle_event(InputEvent::PointerMove { x: 400, y: 420 });
+        engine.handle_event(InputEvent::LeftUp { x: 400, y: 420 });
+        assert_eq!(engine.annotations().len(), 1);
+        // 第一次 Esc:退出标注模式,保留已画标注与选区。
+        assert_eq!(
+            engine.handle_event(InputEvent::Key {
+                key: LogicalKey::Escape,
+                shift: false,
+            }),
+            EngineOutcome::Redraw
+        );
+        assert!(!engine.annotation_mode());
+        assert_eq!(engine.tool(), None);
+        assert_eq!(engine.annotations().len(), 1);
+        assert!(engine.selection().is_some());
+        assert!(engine.scene().toolbar_visible);
+        // 第二次 Esc:取消整个选区会话。
+        assert_eq!(
+            engine.handle_event(InputEvent::Key {
+                key: LogicalKey::Escape,
+                shift: false,
+            }),
+            EngineOutcome::Cancelled
+        );
+    }
+
+    #[test]
+    fn annotate_action_falls_back_to_shell_when_inline_disabled() {
+        let mut engine = SelectionEngine::new(
+            320,
+            200,
+            FeatureFlags {
+                inline_annotation: false,
+                ..FeatureFlags::default()
+            },
+        );
+        drag(&mut engine, (40, 30), (200, 120));
+        // 关闭即时标注时「标注」不作为内部动作消费,交回壳打开预览编辑器。
+        assert_eq!(
+            click_menu_action(&mut engine, SelectionAction::Annotate),
+            EngineOutcome::Action(SelectionAction::Annotate)
+        );
+        assert!(!engine.annotation_mode());
+    }
+
+    #[test]
+    fn annotate_menu_action_toggles_annotation_mode_and_keeps_annotations() {
+        let mut engine = inline_engine(800, 600);
+        drag_selection(&mut engine, (40, 30), (760, 480));
+        enter_annotation_mode(&mut engine);
+        click_annotation_button(&mut engine, SelectionAction::Tool(AnnotationTool::Rect));
+        engine.handle_event(InputEvent::LeftDown { x: 200, y: 300 });
+        engine.handle_event(InputEvent::PointerMove { x: 400, y: 420 });
+        engine.handle_event(InputEvent::LeftUp { x: 400, y: 420 });
+        assert_eq!(engine.annotations().len(), 1);
+        // 再次点菜单「标注」:退出标注模式,保留图元并恢复轻量操作条。
+        assert_eq!(
+            click_menu_action(&mut engine, SelectionAction::Annotate),
+            EngineOutcome::Redraw
+        );
+        assert!(!engine.annotation_mode());
+        assert_eq!(engine.annotations().len(), 1);
+        assert!(engine.scene().toolbar_visible);
+        assert!(engine.annotation_toolbar().is_none());
     }
 
     #[test]
@@ -2489,7 +2831,7 @@ mod tests {
         let mut engine = inline_engine(400, 300);
         drag_selection(&mut engine, (40, 30), (300, 250));
         click_annotation_button(&mut engine, SelectionAction::Tool(AnnotationTool::Arrow));
-        // 工具条在选区顶部;从下方空白处拖出选区外,端点钳制在选区内。
+        // 工具条在选区外(下方优先);从选区内部下方拖出选区外,端点钳制在选区内。
         engine.handle_event(InputEvent::LeftDown { x: 100, y: 220 });
         engine.handle_event(InputEvent::PointerMove { x: 900, y: 900 });
         engine.handle_event(InputEvent::LeftUp { x: 900, y: 900 });
@@ -2521,6 +2863,7 @@ mod tests {
         engine.handle_event(InputEvent::LeftUp { x: 300, y: 200 });
         assert!(engine.annotations().is_empty());
         assert_eq!(engine.tool(), None);
+        assert!(!engine.annotation_mode());
         assert!(!engine.undo_annotation());
     }
 
@@ -2549,7 +2892,12 @@ mod tests {
                 height: 61
             })
         );
-        // 工具快捷键在关闭时也不产生图元。
+        // 工具快捷键在关闭时也不产生图元、不进入标注模式。
+        engine.handle_event(InputEvent::Key {
+            key: LogicalKey::Tool(AnnotationTool::Rect),
+            shift: false,
+        });
+        assert!(!engine.annotation_mode());
         engine.handle_event(InputEvent::Key {
             key: LogicalKey::Undo,
             shift: false,
@@ -2561,9 +2909,9 @@ mod tests {
     fn annotation_toolbar_actions_never_leak_to_shell_outcomes() {
         let mut engine = inline_engine(800, 600);
         drag_selection(&mut engine, (40, 30), (760, 560));
-        let panel = engine.annotation_panel().unwrap();
-        let buttons = engine.annotation_buttons();
-        for (_action, rect) in composer::annotation_button_rects(engine.metrics(), panel, &buttons) {
+        enter_annotation_mode(&mut engine);
+        let toolbar = engine.annotation_toolbar().unwrap();
+        for (_, rect) in toolbar.buttons {
             let (cx, cy) = rect.center();
             assert_eq!(
                 engine.handle_event(InputEvent::LeftDown { x: cx, y: cy }),

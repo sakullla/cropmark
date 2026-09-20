@@ -60,8 +60,8 @@ use crate::capture::geometry::{MonitorGeom, PhysicalRect};
 use crate::annotate::Annotation;
 use crate::capture::selection::composer::{self, Composer};
 use crate::capture::selection::{
-    AnnotationOptions, CursorHint, EngineOutcome, FeatureFlags, InputEvent, LogicalKey,
-    SelectionAction, SelectionEngine,
+    AnnotationOptions, AnnotationTool, CursorHint, EngineOutcome, FeatureFlags, InputEvent,
+    LogicalKey, SelectionAction, SelectionEngine,
 };
 use crate::capture::session::QuietAction;
 
@@ -86,6 +86,27 @@ const XK_Z_LOWER: u32 = 0x7a;
 const XK_Z_UPPER: u32 = 0x5a;
 const XK_BACKSPACE: u32 = 0xff08;
 const XK_DELETE: u32 = 0xffff;
+// 标注工具快捷键(与预览编辑器一致:A/R/E/L/M/B/H/P/N/T)。
+const XK_A_LOWER: u32 = 0x61;
+const XK_A_UPPER: u32 = 0x41;
+const XK_B_LOWER: u32 = 0x62;
+const XK_B_UPPER: u32 = 0x42;
+const XK_E_LOWER: u32 = 0x65;
+const XK_E_UPPER: u32 = 0x45;
+const XK_H_LOWER: u32 = 0x68;
+const XK_H_UPPER: u32 = 0x48;
+const XK_L_LOWER: u32 = 0x6c;
+const XK_L_UPPER: u32 = 0x4c;
+const XK_M_LOWER: u32 = 0x6d;
+const XK_M_UPPER: u32 = 0x4d;
+const XK_N_LOWER: u32 = 0x6e;
+const XK_N_UPPER: u32 = 0x4e;
+const XK_P_LOWER: u32 = 0x70;
+const XK_P_UPPER: u32 = 0x50;
+const XK_R_LOWER: u32 = 0x72;
+const XK_R_UPPER: u32 = 0x52;
+const XK_T_LOWER: u32 = 0x74;
+const XK_T_UPPER: u32 = 0x54;
 
 // "cursor" 字体中的标准字形(X11/cursorfont.h 的 XC_* 常量)。每个光标占两个
 // 字符码:source=glyph、mask=glyph+1(XCreateFontCursor 语义)。
@@ -476,6 +497,17 @@ impl KeyboardMap {
             XK_C_LOWER | XK_C_UPPER => Some(LogicalKey::CopyColor),
             // 文本编辑的退格/删除(非编辑态下引擎忽略)。
             XK_BACKSPACE | XK_DELETE => Some(LogicalKey::Delete),
+            // R21 修订:工具快捷键(A/R/E/L/M/B/H/P/N/T)进入标注模式并选工具。
+            XK_R_LOWER | XK_R_UPPER => Some(LogicalKey::Tool(AnnotationTool::Rect)),
+            XK_E_LOWER | XK_E_UPPER => Some(LogicalKey::Tool(AnnotationTool::Ellipse)),
+            XK_L_LOWER | XK_L_UPPER => Some(LogicalKey::Tool(AnnotationTool::Line)),
+            XK_A_LOWER | XK_A_UPPER => Some(LogicalKey::Tool(AnnotationTool::Arrow)),
+            XK_N_LOWER | XK_N_UPPER => Some(LogicalKey::Tool(AnnotationTool::Number)),
+            XK_T_LOWER | XK_T_UPPER => Some(LogicalKey::Tool(AnnotationTool::Text)),
+            XK_P_LOWER | XK_P_UPPER => Some(LogicalKey::Tool(AnnotationTool::Pen)),
+            XK_H_LOWER | XK_H_UPPER => Some(LogicalKey::Tool(AnnotationTool::Highlighter)),
+            XK_M_LOWER | XK_M_UPPER => Some(LogicalKey::Tool(AnnotationTool::Mosaic)),
+            XK_B_LOWER | XK_B_UPPER => Some(LogicalKey::Tool(AnnotationTool::Blur)),
             _ => None,
         }
     }
@@ -1389,10 +1421,21 @@ fn handle_key_event(
     key: &XKeyEvent,
 ) -> bool {
     let shift = key.state & u32::from(KeyButMask::SHIFT) != 0;
+    let ctrl = key.state & u32::from(KeyButMask::CONTROL) != 0;
     let keycode = key.keycode as u8;
+    let typing = state.canvas.engine.text_edit().is_some();
     let logical = keyboard
         .shortcut_key(keycode, key.state as u16)
-        .or_else(|| keyboard.logical_key(keycode));
+        .or_else(|| {
+            let mapped = keyboard.logical_key(keycode);
+            // 文本编辑中字母键属于输入内容;Ctrl 组合也不作为工具快捷键
+            // (与 Windows 壳一致,避免 Ctrl+R 等误切工具)。
+            if matches!(mapped, Some(LogicalKey::Tool(_))) && (typing || ctrl) {
+                None
+            } else {
+                mapped
+            }
+        });
     if let Some(logical) = logical {
         if feed_event(state, surface, InputEvent::Key { key: logical, shift }) {
             return true;
@@ -1505,7 +1548,8 @@ fn feed_event(state: &mut ShellState, surface: &Surface<'_>, event: InputEvent) 
             SelectionAction::Tool(_)
             | SelectionAction::Undo
             | SelectionAction::Redo
-            | SelectionAction::Delete => false,
+            | SelectionAction::Delete
+            | SelectionAction::More => false,
             quiet => {
                 if let (Some(rect), Some(action)) =
                     (state.canvas.engine.selection(), quiet_action_for(quiet))
@@ -1544,7 +1588,8 @@ fn quiet_action_for(action: SelectionAction) -> Option<QuietAction> {
         | SelectionAction::Tool(_)
         | SelectionAction::Undo
         | SelectionAction::Redo
-        | SelectionAction::Delete => None,
+        | SelectionAction::Delete
+        | SelectionAction::More => None,
     }
 }
 

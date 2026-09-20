@@ -127,6 +127,10 @@
     "zh-CN": "删除",
     "en": "Delete"
   },
+  "selection.tool.more": {
+    "zh-CN": "更多",
+    "en": "More"
+  },
   "preview.note.inline_annotations": {
     "zh-CN": "已带入选区标注，可继续编辑。",
     "en": "Selection annotations were carried over; you can keep editing."

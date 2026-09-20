@@ -85,6 +85,12 @@ pub fn run() {
     // R15:启动计时从进程入口附近起算,供门控日志在同机 release 构建中
     // 测量冷启动到可交互;未设置环境变量时该对象无任何可观察开销。
     let startup_started = std::time::Instant::now();
+    // R21 呈现诊断:进程 DPI 感知必须在任何 HWND 创建前设置——Windows 上
+    // 一旦创建窗口,进程 DPI 感知即不可再变更(旧系统上调用会以
+    // ERROR_ACCESS_DENIED 失败),覆盖层会被系统位图拉伸而模糊。单实例
+    // 闸门在 Windows 上会创建隐藏消息窗,因此本调用提前到它之前;非 Windows
+    // 平台为空实现。
+    capture::platform::enable_per_monitor_v2();
     // R1:单实例闸门先于任何 Tauri 初始化。已有实例时本进程在转发启动参数后
     // 直接退出,不创建托盘/窗口,也不注册热键;首实例无响应时同样有界退出。
     let settings_slot: Arc<OnceLock<tauri::AppHandle>> = Arc::new(OnceLock::new());
@@ -114,7 +120,6 @@ pub fn run() {
         }
     };
 
-    capture::platform::enable_per_monitor_v2();
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(move |app| {

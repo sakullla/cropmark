@@ -13,8 +13,12 @@ use std::time::{Duration, Instant};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    GetDC, ReleaseDC, ScreenToClient, StretchDIBits, UpdateWindow, ValidateRect, BITMAPINFO,
-    BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, RGBQUAD, SRCCOPY,
+    GetDC, ReleaseDC, ScreenToClient, SetDIBitsToDevice, SetStretchBltMode, StretchDIBits,
+    UpdateWindow, ValidateRect, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, COLORONCOLOR, DIB_RGB_COLORS,
+    RGBQUAD, SRCCOPY,
+};
+use windows::Win32::UI::HiDpi::{
+    GetAwarenessFromDpiAwarenessContext, GetThreadDpiAwarenessContext,
 };
 use windows::Win32::UI::Input::Ime::{
     ImmGetCompositionStringW, ImmGetContext, ImmReleaseContext, ImmSetCompositionWindow,
@@ -41,8 +45,8 @@ use crate::capture::error::CaptureError;
 use crate::capture::geometry::{MonitorGeom, PhysicalRect};
 use crate::capture::selection::composer::{self, Composer};
 use crate::capture::selection::{
-    AnnotationOptions, CursorHint, EngineOutcome, FeatureFlags, InputEvent, LogicalKey,
-    SelectionAction, SelectionEngine,
+    AnnotationOptions, AnnotationTool, CursorHint, EngineOutcome, FeatureFlags, InputEvent,
+    LogicalKey, SelectionAction, SelectionEngine,
 };
 use crate::capture::session::QuietAction;
 
@@ -67,6 +71,17 @@ const VK_LEFT: u32 = 0x25;
 const VK_UP: u32 = 0x26;
 const VK_RIGHT: u32 = 0x27;
 const VK_DOWN: u32 = 0x28;
+// 标注工具快捷键(与预览编辑器一致:A/R/E/L/M/B/H/P/N/T)。
+const VK_A: u32 = 0x41;
+const VK_B: u32 = 0x42;
+const VK_E: u32 = 0x45;
+const VK_H: u32 = 0x48;
+const VK_L: u32 = 0x4C;
+const VK_M: u32 = 0x4D;
+const VK_N: u32 = 0x4E;
+const VK_P: u32 = 0x50;
+const VK_R: u32 = 0x52;
+const VK_T: u32 = 0x54;
 
 /// 壳的最终结果:会话层据此选择完成路径。R21 起携带即时标注图元
 /// (坐标相对冻结帧物理像素,由会话层平移到裁剪坐标系)。
@@ -184,6 +199,14 @@ fn run_shell(
     });
     let hwnd =
         unsafe { create_overlay_window(monitor.physical_x, monitor.physical_y, width, height)? };
+    unsafe {
+        log_present_diagnostics(
+            hwnd,
+            (frame_w, frame_h),
+            (monitor.physical_width, monitor.physical_height),
+            frame.scale as f32,
+        );
+    }
     ACTIVE_SHELL_HWND.store(hwnd.0 as isize, Ordering::SeqCst);
     unsafe {
         pump();
@@ -230,12 +253,13 @@ fn feed_event(state: &mut ShellState, event: InputEvent, hwnd: HWND) -> bool {
                 copy_color_value(state);
                 false
             }
-            // 标注工具条动作(工具切换/撤销/重做/删除)在引擎内消费,不会到达这里;
-            // 防御性忽略,不结束会话。
+            // 标注工具条动作(工具切换/撤销/重做/删除/更多)在引擎内消费,
+            // 不会到达这里;防御性忽略,不结束会话。
             SelectionAction::Tool(_)
             | SelectionAction::Undo
             | SelectionAction::Redo
-            | SelectionAction::Delete => false,
+            | SelectionAction::Delete
+            | SelectionAction::More => false,
             quiet => {
                 if let (Some(rect), Some(action)) =
                     (state.canvas.engine.selection(), quiet_action_for(quiet))
@@ -295,7 +319,8 @@ fn quiet_action_for(action: SelectionAction) -> Option<QuietAction> {
         | SelectionAction::Tool(_)
         | SelectionAction::Undo
         | SelectionAction::Redo
-        | SelectionAction::Delete => None,
+        | SelectionAction::Delete
+        | SelectionAction::More => None,
     }
 }
 
@@ -333,6 +358,18 @@ fn map_virtual_key(vk: u32) -> Option<LogicalKey> {
         VK_C => Some(LogicalKey::CopyColor),
         // 文本编辑的退格/删除(非编辑态下引擎忽略)。
         VK_BACK | VK_DELETE => Some(LogicalKey::Delete),
+        // R21 修订:工具快捷键(A/R/E/L/M/B/H/P/N/T)进入标注模式并选工具;
+        // 非选中态/关闭即时标注时由引擎忽略。
+        VK_R => Some(LogicalKey::Tool(AnnotationTool::Rect)),
+        VK_E => Some(LogicalKey::Tool(AnnotationTool::Ellipse)),
+        VK_L => Some(LogicalKey::Tool(AnnotationTool::Line)),
+        VK_A => Some(LogicalKey::Tool(AnnotationTool::Arrow)),
+        VK_N => Some(LogicalKey::Tool(AnnotationTool::Number)),
+        VK_T => Some(LogicalKey::Tool(AnnotationTool::Text)),
+        VK_P => Some(LogicalKey::Tool(AnnotationTool::Pen)),
+        VK_H => Some(LogicalKey::Tool(AnnotationTool::Highlighter)),
+        VK_M => Some(LogicalKey::Tool(AnnotationTool::Mosaic)),
+        VK_B => Some(LogicalKey::Tool(AnnotationTool::Blur)),
         _ => None,
     }
 }
@@ -382,6 +419,29 @@ fn present(timing: bool, hwnd: HWND, canvas: &mut Canvas) {
     }
 }
 
+/// 呈现路径选择:客户区与冻结帧尺寸一致时 1:1 直拷(无插值/缩放),
+/// 不一致(DPI 虚拟化或抓屏分辨率不同)才走按比例拉伸。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BlitPlan {
+    /// 1:1 `SetDIBitsToDevice`。
+    Exact,
+    /// `StretchDIBits`(显式 COLORONCOLOR)。
+    Scaled,
+}
+
+fn blit_plan(client: (i32, i32), source: (i32, i32)) -> BlitPlan {
+    if client.0 == source.0 && client.1 == source.1 {
+        BlitPlan::Exact
+    } else {
+        BlitPlan::Scaled
+    }
+}
+
+/// 呈现一帧合成位图(R21 呈现诊断):
+/// - 客户区与冻结帧尺寸一致(per-monitor v2 下恒等)时走 `SetDIBitsToDevice`
+///   1:1 直拷,不经过任何拉伸/插值,选区画面与冻结帧物理像素一一对应;
+/// - 尺寸不一致(DPI 虚拟化或抓屏分辨率不同)时才按比例 `StretchDIBits`,
+///   并显式设置 `COLORONCOLOR`,避免默认 BLACKONWHITE 拉伸造成的模糊/色深减半。
 unsafe fn blit(hwnd: HWND, width: i32, height: i32, bgra: &[u8]) {
     // 集成测试以空 hwnd 驱动 feed_event:跳过真实 blit。
     if hwnd.0.is_null() {
@@ -407,22 +467,64 @@ unsafe fn blit(hwnd: HWND, width: i32, height: i32, bgra: &[u8]) {
     let _ = GetClientRect(hwnd, &mut client);
     let dest_w = (client.right - client.left).max(1);
     let dest_h = (client.bottom - client.top).max(1);
-    let _ = StretchDIBits(
-        hdc,
-        0,
-        0,
-        dest_w,
-        dest_h,
-        0,
-        0,
-        width,
-        height,
-        Some(bgra.as_ptr().cast::<c_void>()),
-        &info,
-        DIB_RGB_COLORS,
-        SRCCOPY,
-    );
+    match blit_plan((dest_w, dest_h), (width, height)) {
+        BlitPlan::Exact => {
+            let _ = SetDIBitsToDevice(
+                hdc,
+                0,
+                0,
+                width as u32,
+                height as u32,
+                0,
+                0,
+                0,
+                height as u32,
+                bgra.as_ptr().cast::<c_void>(),
+                &info,
+                DIB_RGB_COLORS,
+            );
+        }
+        BlitPlan::Scaled => {
+            let _ = SetStretchBltMode(hdc, COLORONCOLOR);
+            let _ = StretchDIBits(
+                hdc,
+                0,
+                0,
+                dest_w,
+                dest_h,
+                0,
+                0,
+                width,
+                height,
+                Some(bgra.as_ptr().cast::<c_void>()),
+                &info,
+                DIB_RGB_COLORS,
+                SRCCOPY,
+            );
+        }
+    }
     let _ = ReleaseDC(Some(hwnd), hdc);
+}
+
+/// R21 呈现诊断(仅 `CROPMARK_CAPTURE_TIMING` 门控):一行记录冻结帧、
+/// 显示器物理尺寸、窗口客户区尺寸、冻结帧 scale 与进程 DPI 感知上下文。
+/// 三者一致即为 1:1 无插值;客户区不一致时先定位抓屏分辨率还是窗口虚拟化。
+unsafe fn log_present_diagnostics(hwnd: HWND, frame: (u32, u32), monitor: (u32, u32), scale: f32) {
+    if std::env::var_os("CROPMARK_CAPTURE_TIMING").is_none() {
+        return;
+    }
+    let mut client = RECT::default();
+    let _ = GetClientRect(hwnd, &mut client);
+    let awareness = GetAwarenessFromDpiAwarenessContext(GetThreadDpiAwarenessContext());
+    eprintln!(
+        "Cropmark overlay present: frame={}x{} monitor={}x{} client={}x{} scale={scale:.3} awareness={awareness:?}",
+        frame.0,
+        frame.1,
+        monitor.0,
+        monitor.1,
+        (client.right - client.left).max(0),
+        (client.bottom - client.top).max(0),
+    );
 }
 
 unsafe fn create_overlay_window(x: i32, y: i32, w: i32, h: i32) -> Result<HWND, CaptureError> {
@@ -652,6 +754,11 @@ unsafe extern "system" fn wnd_proc(
                         }
                     }
                     if let Some(key) = map_virtual_key(vk) {
+                        // 工具快捷键仅在无 Ctrl 时生效(Ctrl+Z/Y 已在上方处理;
+                        // 其余 Ctrl 组合不切换标注工具)。
+                        if state.ctrl_down && matches!(key, LogicalKey::Tool(_)) {
+                            return false;
+                        }
                         return feed_event(state, InputEvent::Key { key, shift }, hwnd);
                     }
                 }
@@ -1137,7 +1244,56 @@ mod tests {
         assert_eq!(map_virtual_key(VK_SHIFT), None);
         assert_eq!(map_virtual_key(VK_CONTROL), None);
         assert_eq!(map_virtual_key(VK_Z), None);
-        assert_eq!(map_virtual_key(0x41), None);
+        assert_eq!(
+            map_virtual_key(VK_R),
+            Some(LogicalKey::Tool(AnnotationTool::Rect))
+        );
+        assert_eq!(
+            map_virtual_key(VK_E),
+            Some(LogicalKey::Tool(AnnotationTool::Ellipse))
+        );
+        assert_eq!(
+            map_virtual_key(VK_L),
+            Some(LogicalKey::Tool(AnnotationTool::Line))
+        );
+        assert_eq!(
+            map_virtual_key(VK_A),
+            Some(LogicalKey::Tool(AnnotationTool::Arrow))
+        );
+        assert_eq!(
+            map_virtual_key(VK_N),
+            Some(LogicalKey::Tool(AnnotationTool::Number))
+        );
+        assert_eq!(
+            map_virtual_key(VK_T),
+            Some(LogicalKey::Tool(AnnotationTool::Text))
+        );
+        assert_eq!(
+            map_virtual_key(VK_P),
+            Some(LogicalKey::Tool(AnnotationTool::Pen))
+        );
+        assert_eq!(
+            map_virtual_key(VK_H),
+            Some(LogicalKey::Tool(AnnotationTool::Highlighter))
+        );
+        assert_eq!(
+            map_virtual_key(VK_M),
+            Some(LogicalKey::Tool(AnnotationTool::Mosaic))
+        );
+        assert_eq!(
+            map_virtual_key(VK_B),
+            Some(LogicalKey::Tool(AnnotationTool::Blur))
+        );
+        assert_eq!(map_virtual_key(0x51), None);
+    }
+
+    /// R21 呈现诊断:客户区与冻结帧一致必须走 1:1 直拷路径(无插值)。
+    #[test]
+    fn blit_plan_prefers_exact_copy_when_sizes_match() {
+        assert_eq!(blit_plan((1920, 1080), (1920, 1080)), BlitPlan::Exact);
+        // DPI 虚拟化/分辨率不一致时才允许按比例拉伸。
+        assert_eq!(blit_plan((1920, 1080), (2880, 1620)), BlitPlan::Scaled);
+        assert_eq!(blit_plan((2880, 1620), (1920, 1080)), BlitPlan::Scaled);
     }
 
     #[test]
@@ -1171,7 +1327,8 @@ mod tests {
             other => panic!("expected preview outcome, got {other:?}"),
         }
 
-        // 操作条「复制」:Quiet 结果同样携带图元(输出合并后再执行动作)。
+        // 右键菜单「复制」:Quiet 结果同样携带图元(输出合并后再执行动作)。
+        // 标注模式下轻量操作条让位,复制/保存经右键菜单完成。
         let mut state = test_state_with_flags(800, 600, FeatureFlags::default());
         for event in [
             InputEvent::LeftDown { x: 40, y: 30 },
@@ -1188,12 +1345,24 @@ mod tests {
         ] {
             assert!(!feed_event(&mut state, event, hwnd));
         }
-        let selection = state.canvas.engine.selection().unwrap();
-        let metrics = composer::ChromeMetrics::for_scale(1.0);
-        let buttons = composer::toolbar_buttons(state.canvas.engine.flags());
-        let panel =
-            composer::toolbar_panel(metrics, selection, (800, 600), &buttons).unwrap();
-        let (_, copy_rect) = composer::toolbar_button_rects(metrics, panel, &buttons)[0];
+        assert!(!state.canvas.engine.scene().toolbar_visible);
+        assert!(!feed_event(
+            &mut state,
+            InputEvent::RightDown { x: 600, y: 300 },
+            hwnd
+        ));
+        let items = composer::menu_items(state.canvas.engine.flags());
+        let metrics = state.canvas.engine.metrics();
+        let menu = composer::menu_panel(
+            metrics,
+            state.canvas.engine.menu_anchor(),
+            state.canvas.engine.size(),
+            &items,
+        );
+        let (_, copy_rect) = composer::menu_item_rects(metrics, menu, &items)
+            .into_iter()
+            .find(|(action, _)| *action == SelectionAction::Copy)
+            .unwrap();
         let (cx, cy) = copy_rect.center();
         assert!(!feed_event(&mut state, InputEvent::LeftDown { x: cx, y: cy }, hwnd));
         assert!(feed_event(&mut state, InputEvent::LeftUp { x: cx, y: cy }, hwnd));
@@ -1250,19 +1419,141 @@ mod tests {
         }
     }
 
-    /// 点击标注工具条上指定工具的按钮中心(引擎内部消费该动作)。
-    fn click_engine_tool(state: &mut ShellState, hwnd: HWND, tool: AnnotationTool) {
-        let panel = state.canvas.engine.annotation_panel().expect("panel");
-        let buttons = state.canvas.engine.annotation_buttons();
-        let rect = composer::annotation_button_rects(state.canvas.engine.metrics(), panel, &buttons)
+    /// 经右键菜单「标注」进入标注模式(与用户路径一致)。
+    fn enter_annotation_mode(state: &mut ShellState, hwnd: HWND) {
+        if state.canvas.engine.annotation_mode() {
+            return;
+        }
+        let items = composer::menu_items(state.canvas.engine.flags());
+        let metrics = state.canvas.engine.metrics();
+        let selection = state.canvas.engine.selection().expect("selection");
+        let anchor = (
+            selection.x as i32 + selection.width as i32 / 2,
+            selection.y as i32 + selection.height as i32 / 2,
+        );
+        assert!(!feed_event(
+            state,
+            InputEvent::RightDown {
+                x: anchor.0,
+                y: anchor.1
+            },
+            hwnd
+        ));
+        let panel = composer::menu_panel(
+            metrics,
+            state.canvas.engine.menu_anchor(),
+            state.canvas.engine.size(),
+            &items,
+        );
+        let (_, rect) = composer::menu_item_rects(metrics, panel, &items)
             .into_iter()
-            .find(|(action, _)| *action == SelectionAction::Tool(tool))
-            .map(|(_, rect)| rect)
-            .expect("tool button");
+            .find(|(action, _)| *action == SelectionAction::Annotate)
+            .expect("annotate item");
         let (cx, cy) = rect.center();
         assert!(!feed_event(state, InputEvent::LeftDown { x: cx, y: cy }, hwnd));
         assert!(!feed_event(state, InputEvent::LeftUp { x: cx, y: cy }, hwnd));
+        assert!(
+            state.canvas.engine.annotation_mode(),
+            "「标注」应进入标注模式"
+        );
+    }
+
+    /// 点击标注工具条上指定工具的按钮中心(引擎内部消费该动作);
+    /// 工具在「更多」展开行时先展开。
+    fn click_engine_tool(state: &mut ShellState, hwnd: HWND, tool: AnnotationTool) {
+        enter_annotation_mode(state, hwnd);
+        let click = |state: &mut ShellState, hwnd: HWND, action: SelectionAction| {
+            let toolbar = state
+                .canvas
+                .engine
+                .annotation_toolbar()
+                .expect("annotation toolbar");
+            let (_, rect) = toolbar
+                .buttons
+                .into_iter()
+                .find(|(candidate, _)| *candidate == action)
+                .expect("button present");
+            let (cx, cy) = rect.center();
+            assert!(!feed_event(state, InputEvent::LeftDown { x: cx, y: cy }, hwnd));
+            assert!(!feed_event(state, InputEvent::LeftUp { x: cx, y: cy }, hwnd));
+        };
+        let target = SelectionAction::Tool(tool);
+        let visible = state
+            .canvas
+            .engine
+            .annotation_toolbar()
+            .map(|toolbar| {
+                toolbar
+                    .buttons
+                    .iter()
+                    .any(|(candidate, _)| *candidate == target)
+            })
+            .unwrap_or(false);
+        if visible {
+            click(state, hwnd, target);
+        } else {
+            click(state, hwnd, SelectionAction::More);
+            assert!(state.canvas.engine.annotation_more(), "「更多」应展开");
+            click(state, hwnd, target);
+        }
         assert_eq!(state.canvas.engine.tool(), Some(tool));
+    }
+
+    #[test]
+    fn annotation_mode_hides_rail_and_more_toggles_tools() {
+        let mut state = test_state_with_flags(800, 600, FeatureFlags::default());
+        let hwnd = HWND::default();
+        for event in [
+            InputEvent::LeftDown { x: 40, y: 30 },
+            InputEvent::PointerMove { x: 760, y: 480 },
+            InputEvent::LeftUp { x: 760, y: 480 },
+        ] {
+            assert!(!feed_event(&mut state, event, hwnd));
+        }
+        assert!(state.canvas.engine.scene().toolbar_visible);
+        enter_annotation_mode(&mut state, hwnd);
+        // 标注模式下轻量操作条让位,只显示单行精简工具条。
+        assert!(!state.canvas.engine.scene().toolbar_visible);
+        assert!(state.canvas.engine.annotation_toolbar().is_some());
+        // 隐藏的操作条几何不得产生动作(不出现隐形可点按钮)。
+        let selection = state.canvas.engine.selection().unwrap();
+        let metrics = state.canvas.engine.metrics();
+        let rail_buttons = composer::toolbar_buttons(state.canvas.engine.flags());
+        let rail = composer::toolbar_panel(metrics, selection, state.canvas.engine.size(), &rail_buttons)
+            .unwrap();
+        let (_, rail_rect) = composer::toolbar_button_rects(metrics, rail, &rail_buttons)[0];
+        let (rx, ry) = rail_rect.center();
+        assert!(!feed_event(&mut state, InputEvent::LeftDown { x: rx, y: ry }, hwnd));
+        assert!(!feed_event(&mut state, InputEvent::LeftUp { x: rx, y: ry }, hwnd));
+        assert!(state.outcome.is_none(), "隐藏的操作条不得结束会话或产出动作");
+        // 「更多」展开/收起其余工具。
+        assert!(!state.canvas.engine.annotation_more());
+        click_engine_action(&mut state, hwnd, SelectionAction::More);
+        assert!(state.canvas.engine.annotation_more());
+        click_engine_action(&mut state, hwnd, SelectionAction::More);
+        assert!(!state.canvas.engine.annotation_more());
+        // Esc 先退出标注模式,再 Esc 取消会话。
+        assert!(!feed_event(&mut state, key(LogicalKey::Escape), hwnd));
+        assert!(!state.canvas.engine.annotation_mode());
+        assert!(feed_event(&mut state, key(LogicalKey::Escape), hwnd));
+        assert_eq!(state.outcome, Some(RegionOutcome::Cancelled));
+    }
+
+    /// 点击标注工具条上指定动作的按钮中心。
+    fn click_engine_action(state: &mut ShellState, hwnd: HWND, action: SelectionAction) {
+        let toolbar = state
+            .canvas
+            .engine
+            .annotation_toolbar()
+            .expect("annotation toolbar");
+        let (_, rect) = toolbar
+            .buttons
+            .into_iter()
+            .find(|(candidate, _)| *candidate == action)
+            .expect("button present");
+        let (cx, cy) = rect.center();
+        assert!(!feed_event(state, InputEvent::LeftDown { x: cx, y: cy }, hwnd));
+        assert!(!feed_event(state, InputEvent::LeftUp { x: cx, y: cy }, hwnd));
     }
 
     #[test]
@@ -1286,6 +1577,7 @@ mod tests {
         assert_eq!(quiet_action_for(SelectionAction::Annotate), None);
         assert_eq!(quiet_action_for(SelectionAction::Cancel), None);
         assert_eq!(quiet_action_for(SelectionAction::CopyColor), None);
+        assert_eq!(quiet_action_for(SelectionAction::More), None);
     }
 
     #[test]

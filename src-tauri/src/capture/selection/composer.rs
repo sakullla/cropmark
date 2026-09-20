@@ -89,6 +89,18 @@ const TOOLBAR_ICON: i32 = 18;
 /// 浮层圆角逻辑半径(× scale,钳制 8..=32)。
 const PANEL_RADIUS: f32 = 10.0;
 
+// ---- 标注工具条(R21 修订):紧凑单行,逻辑 24px、物理封顶 36px。----
+/// 标注工具条按钮逻辑边长(与需求「约 24–32 逻辑像素」下沿一致)。
+const TOOL_BUTTON: i32 = 24;
+/// 标注工具条按钮间距(逻辑)。
+const TOOL_GAP: i32 = 4;
+/// 标注工具条与选区/屏幕边的间距(逻辑)。
+const TOOL_MARGIN: i32 = 8;
+/// 标注工具条图标外接盒边长(逻辑)。
+const TOOL_ICON: i32 = 15;
+/// 标注工具条按钮物理边长上限(高 DPI 下按钮不无限放大)。
+const TOOL_BUTTON_MAX: i32 = 36;
+
 // 触达几何契约(1.0 基准):图标轨 40px 圆形按钮;菜单项高 36、min-width 168
 // (编译期断言)。实际 chrome 尺寸永不低于该基准(`ChromeMetrics` 钉死下限)。
 const _: () = assert!(RAIL_BUTTON >= 40 && MENU_ITEM_H >= 36 && MENU_ITEM_W >= 168);
@@ -118,6 +130,14 @@ pub struct ChromeMetrics {
     pub menu_font: f32,
     pub menu_icon: i32,
     pub toolbar_icon: i32,
+    /// 标注工具条按钮边长(逻辑 24,物理封顶 36)。
+    pub tool_button: i32,
+    /// 标注工具条按钮间距。
+    pub tool_gap: i32,
+    /// 标注工具条与选区/屏幕边距。
+    pub tool_margin: i32,
+    /// 标注工具条图标外接盒边长。
+    pub tool_icon: i32,
     /// 手柄视觉外环半径(≥5 物理 px)。
     pub handle_radius: i32,
     /// 手柄命中半径(≥现行 9 物理 px)。
@@ -157,6 +177,12 @@ impl ChromeMetrics {
             menu_font: MENU_FONT * scale,
             menu_icon: scaled(MENU_ICON),
             toolbar_icon: scaled(TOOLBAR_ICON),
+            // 标注工具条紧凑按钮:随 scale 放大但物理封顶 36px(R21 修订),
+            // 高 DPI 下不与选区抢空间;间距随 scale 但保持紧凑。
+            tool_button: scaled(TOOL_BUTTON).min(TOOL_BUTTON_MAX),
+            tool_gap: ((TOOL_GAP as f32) * scale).round().clamp(3.0, 6.0) as i32,
+            tool_margin: scaled(TOOL_MARGIN),
+            tool_icon: scaled(TOOL_ICON).clamp(12, 22),
             handle_radius: scaled(HANDLE_RADIUS as i32),
             handle_hit_radius: scaled(HANDLE_HIT_RADIUS),
             edge_hit_radius: scaled(EDGE_HIT_RADIUS),
@@ -268,6 +294,7 @@ pub fn action_label(action: SelectionAction) -> String {
         SelectionAction::Undo => "selection.tool.undo",
         SelectionAction::Redo => "selection.tool.redo",
         SelectionAction::Delete => "selection.tool.delete",
+        SelectionAction::More => "selection.tool.more",
     })
 }
 
@@ -300,13 +327,18 @@ pub fn menu_items(flags: FeatureFlags) -> Vec<SelectionAction> {
     items
 }
 
-/// 即时标注工具条按钮集:全部工具 + 撤销/重做/删除(R21)。
-/// 关闭 inlineAnnotation 时为空;平台无文本输入通道时不含文字工具。
-pub fn annotation_buttons(flags: FeatureFlags, text_input: bool) -> Vec<SelectionAction> {
+/// 即时标注工具条按钮集(R21 修订):主行固定为 4 个常用工具 + 撤销/重做/
+/// 删除 + 「更多」;关闭 inlineAnnotation 时为空;平台无文本输入通道时不含
+/// 文字工具。展开「更多」时追加其余 6 个工具(第二行)。
+pub fn annotation_toolbar_buttons(
+    flags: FeatureFlags,
+    text_input: bool,
+    more_open: bool,
+) -> Vec<SelectionAction> {
     if !flags.inline_annotation {
         return Vec::new();
     }
-    let mut buttons: Vec<SelectionAction> = AnnotationTool::ALL
+    let mut buttons: Vec<SelectionAction> = AnnotationTool::PRIMARY
         .iter()
         .copied()
         .filter(|tool| *tool != AnnotationTool::Text || text_input)
@@ -315,6 +347,15 @@ pub fn annotation_buttons(flags: FeatureFlags, text_input: bool) -> Vec<Selectio
     buttons.push(SelectionAction::Undo);
     buttons.push(SelectionAction::Redo);
     buttons.push(SelectionAction::Delete);
+    buttons.push(SelectionAction::More);
+    if more_open {
+        buttons.extend(
+            AnnotationTool::MORE
+                .iter()
+                .copied()
+                .map(SelectionAction::Tool),
+        );
+    }
     buttons
 }
 
@@ -323,113 +364,131 @@ fn intersects(a: IntRect, b: IntRect) -> bool {
     a.x < b.right() && b.x < a.right() && a.y < b.bottom() && b.y < a.bottom()
 }
 
-/// 标注工具条面板矩形(纯按钮网格,不含留白)。
+/// 标注工具条布局:面板矩形 + 逐按钮矩形(命中与绘制共用同一份几何)。
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnnotationToolbar {
+    pub panel: IntRect,
+    pub buttons: Vec<(SelectionAction, IntRect)>,
+}
+
+/// 标注工具条布局(R21 修订):默认单行精简工具条,展开「更多」后为两行。
 ///
-/// 放置顺序:选区内顶部(按选区宽度折行居中)→ 选区下方 → 选区上方 →
-/// 兜底选区内钳制;前三个候选都避开操作条面板(`avoid`),避免两个 chrome
-/// 浮层互相遮盖。返回 None 表示无按钮(关闭即时标注)。
-pub fn annotation_panel(
+/// 放置顺序:选区下方 → 上方 → 右侧 → 左侧;候选都保持在选区外、屏幕内,
+/// 并避开 `avoid`(传入时为轻量操作条几何;标注模式下操作条隐藏,通常为
+/// None)。小选区/贴边时按「不压选区」优先,最后才退化为钳制屏内的可见位置。
+/// 返回 None 表示无按钮(关闭即时标注)。
+pub fn annotation_toolbar(
     metrics: ChromeMetrics,
     selection: PhysicalRect,
     screen: (u32, u32),
-    buttons: &[SelectionAction],
+    flags: FeatureFlags,
+    text_input: bool,
+    more_open: bool,
     avoid: Option<IntRect>,
-) -> Option<IntRect> {
+) -> Option<AnnotationToolbar> {
+    let buttons = annotation_toolbar_buttons(flags, text_input, more_open);
     if buttons.is_empty() {
         return None;
     }
-    let sel = IntRect::from(selection);
-    let button = metrics.rail_button;
-    let gap = metrics.rail_gap;
-    let pad = metrics.rail_margin_h;
-    let count = buttons.len() as i32;
-    let grid = |cols: i32| {
-        let rows = (count + cols - 1) / cols;
-        (
-            cols * button + (cols - 1) * gap,
-            rows * button + (rows - 1) * gap,
-        )
+    let primary_len = AnnotationTool::PRIMARY
+        .iter()
+        .filter(|tool| **tool != AnnotationTool::Text || text_input)
+        .count() as i32
+        + 4; // 撤销/重做/删除/更多
+    let (row1, row2) = buttons.split_at(primary_len as usize);
+
+    let button = metrics.tool_button;
+    let gap = metrics.tool_gap;
+    let margin = metrics.tool_margin;
+    let row_w = |count: i32| count * button + (count - 1).max(0) * gap;
+    let w1 = row_w(row1.len() as i32);
+    let w2 = if row2.is_empty() {
+        0
+    } else {
+        row_w(row2.len() as i32)
     };
-    let clear = |panel: IntRect| !avoid.is_some_and(|other| intersects(panel, other));
-    // 1) 选区内顶部居中:按选区宽度折行,从最宽布局起试;完整放进选区
-    // 且不与操作条相交才采用(小选区会自然落到选区外)。
-    let inner_cols = ((sel.width - pad * 2 + gap) / (button + gap)).max(0).min(count);
-    for cols in (1..=inner_cols).rev() {
-        let (w, h) = grid(cols);
-        if h + pad * 2 > sel.height {
-            continue;
-        }
-        let panel = IntRect {
-            x: sel.x + (sel.width - w) / 2,
-            y: sel.y + pad,
-            width: w,
-            height: h,
-        };
-        if clear(panel) {
-            return Some(panel);
-        }
-    }
-    // 2/3) 选区下方、上方:按屏幕宽度折行(避免小选区生成超长条),
-    // 居中钳制屏内并避开操作条。
-    let outside_cols = ((screen.0 as i32 - pad * 2 + gap) / (button + gap))
-        .max(1)
-        .min(count);
-    let (panel_w, panel_h) = grid(outside_cols);
-    let centered_x =
-        || (sel.x + sel.width / 2 - panel_w / 2).clamp(0, (screen.0 as i32 - panel_w).max(0));
+    let panel_w = w1.max(w2);
+    let rows = if row2.is_empty() { 1 } else { 2 };
+    let panel_h = rows * button + (rows - 1) * gap;
+
+    let sel = IntRect::from(selection);
+    let sw = screen.0 as i32;
+    let sh = screen.1 as i32;
+    let clamp_x = |x: i32| x.clamp(0, (sw - panel_w).max(0));
+    let clamp_y = |y: i32| y.clamp(0, (sh - panel_h).max(0));
+    let centered_x = || clamp_x(sel.x + (sel.width - panel_w) / 2);
+    let centered_y = || clamp_y(sel.y + (sel.height - panel_h) / 2);
     let below = IntRect {
         x: centered_x(),
-        y: sel.bottom() + metrics.rail_margin_h,
+        y: clamp_y(sel.bottom() + margin),
         width: panel_w,
         height: panel_h,
     };
-    if below.bottom() <= screen.1 as i32 && clear(below) {
-        return Some(below);
-    }
     let above = IntRect {
         x: centered_x(),
-        y: sel.y - metrics.rail_margin_h - panel_h,
+        y: clamp_y(sel.y - margin - panel_h),
         width: panel_w,
         height: panel_h,
     };
-    if above.y >= 0 && clear(above) {
-        return Some(above);
-    }
-    // 4) 兜底:按选区顶部居中对齐并钳制屏内(即使与操作条/选区相交也保证
-    // 工具条可见可点,不会生成超出屏幕的超长条)。
-    let fallback_w = panel_w.min(screen.0 as i32).max(button);
-    let fallback_h = panel_h.min(screen.1 as i32).max(button);
-    Some(IntRect {
-        x: centered_x().clamp(0, (screen.0 as i32 - fallback_w).max(0)),
-        y: sel.y.clamp(0, (screen.1 as i32 - fallback_h).max(0)),
-        width: fallback_w,
-        height: fallback_h,
-    })
-}
+    let right = IntRect {
+        x: clamp_x(sel.right() + margin),
+        y: centered_y(),
+        width: panel_w,
+        height: panel_h,
+    };
+    let left = IntRect {
+        x: clamp_x(sel.x - margin - panel_w),
+        y: centered_y(),
+        width: panel_w,
+        height: panel_h,
+    };
+    let fits = |panel: IntRect| {
+        panel.x >= 0 && panel.y >= 0 && panel.right() <= sw && panel.bottom() <= sh
+    };
+    let clear = |panel: IntRect| {
+        !intersects(panel, sel) && !avoid.is_some_and(|other| intersects(panel, other))
+    };
+    // 交集面积:四个候选都放不进选区外时(选区几乎占满屏幕),选重叠最小的
+    // 位置,保证工具条可见可点且尽量少遮挡。
+    let overlap_area = |panel: IntRect| -> i64 {
+        let sel_x = (panel.right().min(sel.right()) - panel.x.max(sel.x)).max(0);
+        let sel_y = (panel.bottom().min(sel.bottom()) - panel.y.max(sel.y)).max(0);
+        let mut area = i64::from(sel_x) * i64::from(sel_y);
+        if let Some(other) = avoid {
+            let x = (panel.right().min(other.right()) - panel.x.max(other.x)).max(0);
+            let y = (panel.bottom().min(other.bottom()) - panel.y.max(other.y)).max(0);
+            area += i64::from(x) * i64::from(y);
+        }
+        area
+    };
+    let candidates = [below, above, right, left];
+    let panel = candidates
+        .iter()
+        .copied()
+        .find(|panel| fits(*panel) && clear(*panel))
+        .or_else(|| {
+            candidates
+                .iter()
+                .copied()
+                .filter(|panel| fits(*panel))
+                .min_by_key(|panel| overlap_area(*panel))
+        })
+        .unwrap_or(below);
 
-/// 面板内逐按钮矩形(与绘制共用,保证 hitbox 一致);每行居中。
-pub fn annotation_button_rects(
-    metrics: ChromeMetrics,
-    panel: IntRect,
-    buttons: &[SelectionAction],
-) -> Vec<(SelectionAction, IntRect)> {
-    let button = metrics.rail_button;
-    let gap = metrics.rail_gap;
-    let count = buttons.len() as i32;
-    let cols = ((panel.width + gap) / (button + gap)).max(1);
-    let rows = (count + cols - 1) / cols;
+    // 主行与展开行都水平居中于面板。
     let mut rects = Vec::with_capacity(buttons.len());
-    for row in 0..rows {
-        let row_count = (count - row * cols).min(cols);
-        let row_w = row_count * button + (row_count - 1) * gap;
-        let x0 = panel.x + (panel.width - row_w) / 2;
-        let y = panel.y + row * (button + gap);
-        for col in 0..row_count {
-            let index = (row * cols + col) as usize;
+    for (row, row_buttons) in [row1, row2].into_iter().enumerate() {
+        if row_buttons.is_empty() {
+            continue;
+        }
+        let row_width = row_w(row_buttons.len() as i32);
+        let x0 = panel.x + (panel_w - row_width) / 2;
+        let y = panel.y + row as i32 * (button + gap);
+        for (col, action) in row_buttons.iter().enumerate() {
             rects.push((
-                buttons[index],
+                *action,
                 IntRect {
-                    x: x0 + col * (button + gap),
+                    x: x0 + col as i32 * (button + gap),
                     y,
                     width: button,
                     height: button,
@@ -437,7 +496,10 @@ pub fn annotation_button_rects(
             ));
         }
     }
-    rects
+    Some(AnnotationToolbar {
+        panel,
+        buttons: rects,
+    })
 }
 
 /// 底部横排网格:按选区宽度决定每行按钮数,折行为多行居中。
@@ -942,9 +1004,7 @@ impl Composer {
             self.draw_magnifier(out, w, h, scene.cursor);
         }
         if let (Some(selection), Some(overlay)) = (scene.selection, overlay) {
-            if scene.flags.inline_annotation
-                && !annotation_buttons(scene.flags, overlay.text_input).is_empty()
-            {
+            if scene.annotation_mode && scene.flags.inline_annotation {
                 self.draw_annotation_toolbar(out, w, h, selection, scene, overlay);
             }
         }
@@ -1085,7 +1145,8 @@ impl Composer {
         }
     }
 
-    /// 标注工具条:亮铬面板 + 圆形按钮,当前工具用亮 accent 底。
+    /// 标注工具条(R21 修订):亮铬面板 + 紧凑圆形按钮,当前工具用亮 accent 底;
+    /// 默认单行(4 主工具 + 撤销/重做/删除/更多),「更多」展开其余工具行。
     fn draw_annotation_toolbar(
         &self,
         rgba: &mut [u8],
@@ -1096,23 +1157,26 @@ impl Composer {
         overlay: &AnnotationOverlay,
     ) {
         let metrics = self.metrics;
-        let buttons = annotation_buttons(scene.flags, overlay.text_input);
-        if buttons.is_empty() {
-            return;
-        }
-        let avoid = toolbar_panel(
+        let Some(toolbar) = annotation_toolbar(
             metrics,
             selection,
             (w, h),
-            &toolbar_buttons(scene.flags),
-        );
-        let Some(panel) = annotation_panel(metrics, selection, (w, h), &buttons, avoid) else {
+            scene.flags,
+            overlay.text_input,
+            scene.annotation_more,
+            // 标注模式下轻量操作条隐藏,无需避让;保留参数给调用方按需传入。
+            None,
+        ) else {
             return;
         };
-        draw_panel_chrome(rgba, w, h, panel, metrics.panel_radius);
-        for (action, rect) in annotation_button_rects(metrics, panel, &buttons) {
+        draw_panel_chrome(rgba, w, h, toolbar.panel, metrics.panel_radius);
+        for (action, rect) in toolbar.buttons {
             let (cx, cy) = rect.center();
-            let active = matches!(action, SelectionAction::Tool(tool) if overlay.tool == Some(tool));
+            let active = match action {
+                SelectionAction::Tool(tool) => overlay.tool == Some(tool),
+                SelectionAction::More => scene.annotation_more,
+                _ => false,
+            };
             let hover = rect.contains(scene.cursor.0, scene.cursor.1);
             let (bg, ink) = if active {
                 (ACCENT, ACCENT_DEEP)
@@ -1121,8 +1185,16 @@ impl Composer {
             } else {
                 (ACCENT_DEEP, ICON_INK)
             };
-            fill_circle(rgba, w, h, cx, cy, metrics.rail_button / 2 - metrics.rail_gap / 2, bg);
-            draw_annotation_icon(rgba, w, h, action, rect, ink, metrics.toolbar_icon);
+            fill_circle(
+                rgba,
+                w,
+                h,
+                cx,
+                cy,
+                (metrics.tool_button / 2 - metrics.tool_gap / 2).max(6),
+                bg,
+            );
+            draw_annotation_icon(rgba, w, h, action, rect, ink, metrics.tool_icon);
         }
     }
 
@@ -1547,7 +1619,8 @@ fn draw_icon(
         SelectionAction::Tool(_)
         | SelectionAction::Undo
         | SelectionAction::Redo
-        | SelectionAction::Delete => {}
+        | SelectionAction::Delete
+        | SelectionAction::More => {}
     }
 }
 
@@ -1707,6 +1780,13 @@ fn draw_annotation_icon(
             draw_line(rgba, w, h, cx - 1, cy - s + 5, cx - 1, cy + s - 3, 1, ink);
             draw_line(rgba, w, h, cx + 1, cy - s + 5, cx + 1, cy + s - 3, 1, ink);
         }
+        SelectionAction::More => {
+            // 横向三点:展开/收起其余工具。
+            let dot = (size / 10).max(1);
+            for dx in [-s + dot, 0, s - dot] {
+                fill_circle(rgba, w, h, cx + dx, cy, dot, ink);
+            }
+        }
         _ => {}
     }
 }
@@ -1734,6 +1814,8 @@ mod tests {
             toolbar_visible: false,
             menu_open: false,
             menu_anchor: (0, 0),
+            annotation_mode: false,
+            annotation_more: false,
         }
     }
 
@@ -1892,6 +1974,8 @@ mod tests {
             toolbar_visible: false,
             menu_open: false,
             menu_anchor: (0, 0),
+            annotation_mode: false,
+            annotation_more: false,
         };
         let composed = composer.compose_with_overlay(&scene, &overlay);
         let panel = magnifier_rect(cursor, (w, h), 1.0);
@@ -1911,6 +1995,8 @@ mod tests {
             toolbar_visible: false,
             menu_open: true,
             menu_anchor: cursor,
+            annotation_mode: false,
+            annotation_more: false,
         };
         let composed = composer.compose_with_overlay(&scene, &overlay);
         let items = menu_items(flags);
@@ -1956,9 +2042,10 @@ mod tests {
         assert!(count > 0, "draft must be visible while dragging");
     }
 
-    /// 工具条仅在 inlineAnnotation 开启时绘制;选中工具时按钮高亮。
+    /// 工具条仅在标注模式 + inlineAnnotation 开启时绘制;默认轻量态不铺开;
+    /// 展开「更多」时第二行可见;选中工具时按钮高亮。
     #[test]
-    fn annotation_toolbar_draws_only_when_enabled() {
+    fn annotation_toolbar_draws_only_in_annotation_mode() {
         let frame = solid_frame(800, 600, [30, 30, 30, 255]);
         let composer = Composer::new(&frame).unwrap();
         let selection = PhysicalRect {
@@ -1977,14 +2064,22 @@ mod tests {
             ..FeatureFlags::default()
         };
         let empty: Vec<Annotation> = Vec::new();
-        assert!(annotation_panel(
+        assert!(annotation_toolbar(
             ChromeMetrics::for_scale(1.0),
             selection,
             (800, 600),
-            &annotation_buttons(enabled, true),
+            enabled,
+            true,
+            false,
             None,
         )
         .is_some());
+        let mode_scene = |selection: PhysicalRect, flags: FeatureFlags, more: bool| {
+            let mut scene = annotation_scene(selection, flags);
+            scene.annotation_mode = true;
+            scene.annotation_more = more;
+            scene
+        };
         let count_deep = |bytes: &[u8]| {
             bytes
                 .chunks_exact(4)
@@ -1993,21 +2088,130 @@ mod tests {
                 })
                 .count()
         };
-        let with_tools = composer.compose_with_overlay(
+        // 默认轻量态(annotation_mode=false):不出现标注工具条。
+        let light = composer.compose_with_overlay(
             &annotation_scene(selection, enabled),
             &annotation_overlay(&empty, None, None, 0),
         );
-        let without_tools = composer.compose_with_overlay(
-            &annotation_scene(selection, disabled),
+        assert_eq!(count_deep(&light), 0, "默认态不得铺开标注工具");
+        // 标注模式:单行精简工具条。
+        let with_tools = composer.compose_with_overlay(
+            &mode_scene(selection, enabled, false),
             &annotation_overlay(&empty, None, None, 0),
         );
         assert!(count_deep(&with_tools) > 0, "toolbar buttons should be drawn");
+        // 关闭 inlineAnnotation:即使处于标注模式也不绘制。
+        let without_tools = composer.compose_with_overlay(
+            &mode_scene(selection, disabled, true),
+            &annotation_overlay(&empty, None, None, 0),
+        );
         assert_eq!(
             count_deep(&without_tools),
             0,
             "disabled flag keeps the frame free of toolbar chrome"
         );
         assert_eq!(without_tools.len(), with_tools.len());
+        // 展开「更多」:第二行按钮出现(深色圆底像素增多)。
+        let expanded = composer.compose_with_overlay(
+            &mode_scene(selection, enabled, true),
+            &annotation_overlay(&empty, None, None, 0),
+        );
+        assert!(
+            count_deep(&expanded) > count_deep(&with_tools),
+            "expanded row must add visible buttons"
+        );
+    }
+
+    /// R21 修订布局:精简工具条紧凑、单行优先、位于选区外且避让操作条。
+    #[test]
+    fn compact_annotation_toolbar_placement_and_sizes() {
+        let selection = PhysicalRect {
+            x: 100,
+            y: 80,
+            width: 300,
+            height: 200,
+        };
+        let metrics = ChromeMetrics::for_scale(1.0);
+        let toolbar = annotation_toolbar(
+            metrics,
+            selection,
+            (1280, 800),
+            FeatureFlags::default(),
+            true,
+            false,
+            None,
+        )
+        .expect("toolbar");
+        // 单行、紧凑按钮(24 逻辑像素),且完全位于选区外。
+        assert_eq!(toolbar.panel.height, metrics.tool_button);
+        assert_eq!(metrics.tool_button, 24);
+        assert!(toolbar.panel.y >= selection.y as i32 + selection.height as i32);
+        // 按钮不重叠且都可命中。
+        for (index, (_, rect)) in toolbar.buttons.iter().enumerate() {
+            assert_eq!(rect.width, metrics.tool_button);
+            assert_eq!(rect.height, metrics.tool_button);
+            for (_, other) in toolbar.buttons.iter().skip(index + 1) {
+                assert!(!intersects(*rect, *other), "buttons must not overlap");
+            }
+        }
+        // 操作条几何进入 avoid 时,工具条避开操作条并改放上方或侧面。
+        let rail = toolbar_panel(
+            metrics,
+            selection,
+            (1280, 800),
+            &toolbar_buttons(FeatureFlags::default()),
+        )
+        .unwrap();
+        let avoided = annotation_toolbar(
+            metrics,
+            selection,
+            (1280, 800),
+            FeatureFlags::default(),
+            true,
+            false,
+            Some(rail),
+        )
+        .expect("toolbar with avoid");
+        assert!(
+            !intersects(avoided.panel, rail),
+            "工具条不得与操作条重叠"
+        );
+        assert!(
+            avoided.panel.bottom() <= selection.y as i32
+                || avoided.panel.y >= selection.y as i32 + selection.height as i32
+                || avoided.panel.right() <= selection.x as i32
+                || avoided.panel.x >= selection.x as i32 + selection.width as i32,
+            "工具条不得压住选区"
+        );
+        // 高 DPI:按钮随 scale 放大但物理封顶 36px。
+        for scale in [1.25_f32, 1.5, 2.0, 2.5] {
+            let scaled = ChromeMetrics::for_scale(scale);
+            assert!(
+                (24..=36).contains(&scaled.tool_button),
+                "scale {scale}: {}",
+                scaled.tool_button
+            );
+            assert!(scaled.tool_icon <= 22, "scale {scale}");
+        }
+        // 屏幕底部/右侧贴边的小选区:工具条仍完整落在屏幕内。
+        let corner = PhysicalRect {
+            x: 1180,
+            y: 700,
+            width: 90,
+            height: 90,
+        };
+        let placed = annotation_toolbar(
+            metrics,
+            corner,
+            (1280, 800),
+            FeatureFlags::default(),
+            true,
+            true,
+            None,
+        )
+        .expect("corner toolbar");
+        assert!(placed.panel.x >= 0 && placed.panel.y >= 0);
+        assert!(placed.panel.right() <= 1280 && placed.panel.bottom() <= 800);
     }
 
     /// 文本编辑会话按标注色绘制字符并画出光标(无字体环境仅验证不 panic)。
@@ -2196,6 +2400,8 @@ mod tests {
             toolbar_visible: false,
             menu_open: false,
             menu_anchor: (0, 0),
+            annotation_mode: false,
+            annotation_more: false,
         };
         let composed = composer.compose(&scene);
         let panel = magnifier_rect((200, 150), (400, 300), 1.0);
@@ -2237,6 +2443,8 @@ mod tests {
             toolbar_visible: false,
             menu_open: false,
             menu_anchor: (0, 0),
+            annotation_mode: false,
+            annotation_more: false,
         };
         let composed = composer.compose(&scene);
         let panel = magnifier_rect((300, 200), (600, 400), 1.5);
@@ -2271,6 +2479,8 @@ mod tests {
             toolbar_visible: false,
             menu_open: false,
             menu_anchor: (0, 0),
+            annotation_mode: false,
+            annotation_more: false,
         };
         let composed = composer.compose(&scene);
         let read = |x: i32, y: i32| {
@@ -2301,6 +2511,8 @@ mod tests {
             toolbar_visible: false,
             menu_open: false,
             menu_anchor: (0, 0),
+            annotation_mode: false,
+            annotation_more: false,
         };
         let composed = composer.compose(&scene);
         let read = |x: i32, y: i32| {
@@ -2466,6 +2678,8 @@ mod tests {
             toolbar_visible: true,
             menu_open: false,
             menu_anchor: (0, 0),
+            annotation_mode: false,
+            annotation_more: false,
         };
         let composed = composer.compose(&scene);
         let read = |x: i32, y: i32| {
@@ -2629,6 +2843,8 @@ mod tests {
             toolbar_visible: true,
             menu_open: false,
             menu_anchor: (0, 0),
+            annotation_mode: false,
+            annotation_more: false,
         };
         let composed = composer.compose(&scene);
         let read = |x: i32, y: i32| {
@@ -2658,6 +2874,8 @@ mod tests {
             toolbar_visible: false,
             menu_open: true,
             menu_anchor: (20, 20),
+            annotation_mode: false,
+            annotation_more: false,
         };
         let composed = composer.compose(&scene);
         let read = |x: i32, y: i32| {
