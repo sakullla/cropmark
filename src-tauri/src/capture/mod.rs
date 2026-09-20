@@ -177,6 +177,7 @@ pub fn get_toast_message() -> Option<ui::ToastPayload> {
 
 pub fn precreate_windows(app: &AppHandle) {
     ui::precreate(app);
+    crate::pin::precreate(app);
 }
 
 #[tauri::command]
@@ -189,6 +190,11 @@ pub fn close_preview(app: AppHandle) {
     // 再标注路径的取消语义:恢复来源贴图置顶,不改贴图内容。
     crate::pin::finish_pin_edit(&app);
     session::close_preview(&app);
+}
+
+#[tauri::command]
+pub fn take_pending_preview_ocr(app: AppHandle) -> bool {
+    session::take_pending_preview_ocr(&app)
 }
 
 #[tauri::command]

@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { t, type CatalogKey } from "../i18n";
+import { icons } from "../icons";
 import "./editor.css";
 
 // R21:预览编辑器与 Wayland Web 覆盖层共用的标注层。
@@ -149,6 +150,13 @@ export const ANNOTATION_TOOLS: AnnotationTool[] = [
   "text",
 ];
 
+/** 预览/覆盖层常驻工具:对齐 Snipaste 一类主栏,少用工具收进「更多」。 */
+export const PRIMARY_TOOLS: AnnotationTool[] = ["arrow", "rect", "ellipse", "pen", "mosaic", "text"];
+
+export const MORE_TOOLS: AnnotationTool[] = ANNOTATION_TOOLS.filter(
+  (tool) => !PRIMARY_TOOLS.includes(tool),
+);
+
 const FALLBACK_STROKE = "#e11d48";
 const FALLBACK_SELECT = "#2563eb";
 export const TEXT_FONT_STACK = '"Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif';
@@ -211,19 +219,20 @@ const TOOL_HINT_KEYS: Partial<Record<AnnotationTool, CatalogKey>> = {
   blur: "preview.note.blur_hint",
 };
 
-const ICONS: Record<AnnotationTool | "undo" | "style", string> = {
-  arrow: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 12.5 12.5 3.5M7 3.5h5.5V9" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
-  rect: `<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="4" width="10" height="8" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>`,
-  ellipse: `<svg viewBox="0 0 16 16" aria-hidden="true"><ellipse cx="8" cy="8" rx="5.4" ry="4" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>`,
-  line: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.8 12.2 12.2 3.8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="3.8" cy="12.2" r="1.3" fill="currentColor"/><circle cx="12.2" cy="3.8" r="1.3" fill="currentColor"/></svg>`,
-  mosaic: `<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2" width="5" height="5" fill="currentColor"/><rect x="9" y="2" width="5" height="5" fill="currentColor" opacity="0.45"/><rect x="2" y="9" width="5" height="5" fill="currentColor" opacity="0.65"/><rect x="9" y="9" width="5" height="5" fill="currentColor" opacity="0.28"/></svg>`,
-  blur: `<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.6" fill="currentColor" opacity="0.18"/><circle cx="8" cy="8" r="3.6" fill="currentColor" opacity="0.32"/><circle cx="8" cy="8" r="1.8" fill="currentColor" opacity="0.6"/></svg>`,
-  highlighter: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 2.6h4.6a1 1 0 0 1 1 1V9H6z" fill="currentColor" opacity="0.55"/><path d="M5.2 9h7.2v1.6a1 1 0 0 1-1 1H6.2a1 1 0 0 1-1-1z" fill="currentColor" opacity="0.85"/><path d="M6 12.4h7" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M4.5 2.6h1.5v6.4H4.5z" fill="currentColor" opacity="0.4"/></svg>`,
-  pen: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 13c2.2-1.2 2.6-3 3.8-4.9C8 6 9.4 4.2 12.8 2.4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M12.8 2.4c-2 1-3.4 2.4-4.5 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>`,
-  number: `<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.6" fill="none" stroke="currentColor" stroke-width="1.6"/><text x="8" y="11.4" text-anchor="middle" font-size="8.4" font-weight="700" fill="currentColor" font-family="sans-serif">1</text></svg>`,
-  text: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4.2h8M8 4.2v8.2M5.5 12.4h5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>`,
-  undo: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 7h6.2a3 3 0 1 1 0 6H9" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M4 7 6.4 4.6M4 7l2.4 2.4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>`,
-  style: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.8a6.2 6.2 0 0 0 0 12.4c.9 0 1.4-.6 1.4-1.3 0-1.1 1-1.4 2.2-1.4h1.1c.9 0 1.5-.7 1.5-1.9A6.2 6.2 0 0 0 8 1.8Z" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="5.2" cy="6.4" r="1" fill="currentColor"/><circle cx="8.6" cy="4.8" r="1" fill="currentColor"/><circle cx="11.4" cy="7.2" r="1" fill="currentColor"/></svg>`,
+const ICONS: Record<AnnotationTool | "undo" | "style" | "more", string> = {
+  arrow: icons.arrow,
+  rect: icons.rect,
+  ellipse: icons.ellipse,
+  line: icons.line,
+  mosaic: icons.mosaic,
+  blur: icons.blur,
+  highlighter: icons.highlighter,
+  pen: icons.pen,
+  number: icons.number,
+  text: icons.text,
+  undo: icons.undo,
+  style: icons.style,
+  more: icons.more,
 };
 
 // add/remove/replace(move、retext)三类动作构成 undo/redo 栈;replace 存前后值快照。
@@ -675,17 +684,20 @@ export function exportableList(annotations: Annotation[]): Annotation[] {
   return annotations.filter((op) => op.type !== "text" || op.text.trim().length > 0);
 }
 
+function toolButton(tool: AnnotationTool): string {
+  return `<button type="button" data-tool="${tool}" data-i18n-title="${TOOL_TITLE_KEYS[tool]}" data-i18n-aria-label="${TOOL_LABEL_KEYS[tool]}" title="${t(TOOL_TITLE_KEYS[tool])}" aria-label="${t(TOOL_LABEL_KEYS[tool])}">${ICONS[tool]}</button>`;
+}
+
 function toolbarMarkup(): string {
-  const buttons = ANNOTATION_TOOLS.map((tool) => {
-    const short =
-      tool === "text"
-        ? `<span data-i18n="preview.tool.text_short">文字</span>`
-        : "";
-    const className = tool === "text" ? "tool-text" : "";
-    return `<button type="button" data-tool="${tool}" class="${className}" data-i18n-title="${TOOL_TITLE_KEYS[tool]}" data-i18n-aria-label="${TOOL_LABEL_KEYS[tool]}" title="${t(TOOL_TITLE_KEYS[tool])}" aria-label="${t(TOOL_LABEL_KEYS[tool])}">${ICONS[tool]}${short}</button>`;
-  }).join("");
+  const primary = PRIMARY_TOOLS.map(toolButton).join("");
+  const extra = MORE_TOOLS.map(toolButton).join("");
   return `
-    ${buttons}
+    ${primary}
+    <div class="annotation-more" data-more-root>
+      <button type="button" data-action="more" data-i18n-title="preview.tool.more_title" data-i18n-aria-label="preview.tool.more" title="更多工具" aria-label="更多" aria-haspopup="true">${ICONS.more}</button>
+      <div class="annotation-more-panel" data-more-panel hidden>${extra}</div>
+    </div>
+    <span class="toolbar-sep" aria-hidden="true"></span>
     <button type="button" data-action="undo" data-i18n-title="preview.tool.undo_title" data-i18n-aria-label="preview.tool.undo" title="撤销 (Ctrl+Z)" aria-label="撤销">${ICONS.undo}</button>
     <div class="annotation-style" data-style-root>
       <button type="button" data-action="style" data-i18n-title="preview.tool.style_title" data-i18n-aria-label="preview.tool.style_title" title="标注样式" aria-label="标注样式" aria-haspopup="true">${ICONS.style}</button>
@@ -765,12 +777,18 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
   const stylePanel = toolbar.querySelector("[data-style-panel]");
   const styleBtn = toolbar.querySelector("[data-action=style]");
   const styleRoot = toolbar.querySelector("[data-style-root]");
+  const morePanel = toolbar.querySelector("[data-more-panel]");
+  const moreBtn = toolbar.querySelector("[data-action=more]");
+  const moreRoot = toolbar.querySelector("[data-more-root]");
   const numberStartInput = toolbar.querySelector("[data-style-number-start]");
   if (
     !(undoBtn instanceof HTMLButtonElement) ||
     !(stylePanel instanceof HTMLElement) ||
     !(styleBtn instanceof HTMLButtonElement) ||
     !(styleRoot instanceof HTMLElement) ||
+    !(morePanel instanceof HTMLElement) ||
+    !(moreBtn instanceof HTMLButtonElement) ||
+    !(moreRoot instanceof HTMLElement) ||
     !(numberStartInput instanceof HTMLInputElement)
   ) {
     return noopEditor();
@@ -1127,6 +1145,7 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     toolbar.querySelectorAll<HTMLButtonElement>("[data-tool]").forEach((button) => {
       button.classList.toggle("active", button.dataset.tool === tool);
     });
+    moreBtn.classList.toggle("active", MORE_TOOLS.includes(tool));
   };
 
   const setTool = (next: AnnotationTool): void => {
@@ -1188,6 +1207,15 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     }
   };
 
+  const toggleMorePanel = (open?: boolean): void => {
+    const next = open ?? morePanel.hidden;
+    morePanel.hidden = !next;
+    moreBtn.setAttribute("aria-expanded", next ? "true" : "false");
+    if (next) {
+      toggleStylePanel(false);
+    }
+  };
+
   const toggleStylePanel = (open?: boolean): void => {
     const next = open ?? stylePanel.hidden;
     if (next) {
@@ -1197,6 +1225,7 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
       moving = false;
       moveState = null;
       redraw();
+      toggleMorePanel(false);
     }
     stylePanel.hidden = !next;
     styleBtn.classList.toggle("active", next);
@@ -1293,13 +1322,12 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     if (!contextMenu.hidden && !(event.target instanceof Node && contextMenu.contains(event.target))) {
       hideContextMenu();
     }
-    if (stylePanel.hidden) {
-      return;
+    if (!stylePanel.hidden && !(event.target instanceof Node && styleRoot.contains(event.target))) {
+      toggleStylePanel(false);
     }
-    if (event.target instanceof Node && styleRoot.contains(event.target)) {
-      return;
+    if (!morePanel.hidden && !(event.target instanceof Node && moreRoot.contains(event.target))) {
+      toggleMorePanel(false);
     }
-    toggleStylePanel(false);
   });
 
   canvas.addEventListener("mousedown", (event) => {
@@ -1363,6 +1391,9 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     hideContextMenu();
     if (!stylePanel.hidden) {
       toggleStylePanel(false);
+    }
+    if (!morePanel.hidden) {
+      toggleMorePanel(false);
     }
     // 与 mousedown 同序:先提交编辑器再算命中。编辑器提交若删除清空标注,
     // 数组索引会前移,先命中后提交会把右键菜单指到错误的标注上。
@@ -1523,6 +1554,13 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     const nextTool = button.dataset.tool;
     if (nextTool && isAnnotationTool(nextTool)) {
       setTool(nextTool);
+      if (MORE_TOOLS.includes(nextTool)) {
+        toggleMorePanel(false);
+      }
+      return;
+    }
+    if (button.dataset.action === "more") {
+      toggleMorePanel();
       return;
     }
     if (button.dataset.action === "undo") {
@@ -1560,6 +1598,11 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
       if (!stylePanel.hidden) {
         event.preventDefault();
         toggleStylePanel(false);
+        return;
+      }
+      if (!morePanel.hidden) {
+        event.preventDefault();
+        toggleMorePanel(false);
         return;
       }
       if (editorOpen()) {

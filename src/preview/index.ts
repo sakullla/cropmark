@@ -9,7 +9,8 @@ import {
   type Annotation,
   type AnnotationEditor,
 } from "../annotation";
-import { t, type CatalogKey } from "../i18n";
+import { applyTranslations, t, type CatalogKey } from "../i18n";
+import { icons } from "../icons";
 import "./preview.css";
 
 interface PreviewFrame {
@@ -61,26 +62,31 @@ export function mountPreview(root: HTMLElement): () => void {
         <span class="name">Cropmark</span>
       </div>
       <p class="preview-note" data-drag-handle data-tauri-drag-region>${t("preview.copied_clean")}</p>
-      <button type="button" class="preview-close" data-action="close" data-i18n-aria-label="preview.close" aria-label="关闭">关闭</button>
+      <button type="button" class="preview-close icon-btn" data-action="close" data-i18n-aria-label="preview.close" aria-label="关闭">${icons.close}</button>
     </header>
     <div class="preview-toolbar">
       <div class="preview-tools" role="toolbar" data-annotation-toolbar data-i18n-aria-label="preview.toolbar_group" aria-label="标注" data-tauri-drag-region="false"></div>
       <div class="preview-actions" data-tauri-drag-region="false">
-        <button type="button" data-tool="ocr" data-i18n-title="preview.action.ocr_title" data-i18n="preview.action.ocr" title="取字 (O)" data-tauri-drag-region="false">取字</button>
-        <button type="button" data-action="copy-ocr-all" hidden data-tauri-drag-region="false" data-i18n="preview.action.copy_all">复制全部</button>
-        <button type="button" data-action="pin" data-i18n-title="preview.action.pin_title" data-i18n="preview.action.pin" title="贴图" data-tauri-drag-region="false">贴图</button>
-        <button type="button" data-action="update-pin" data-i18n-title="preview.action.update_pin_title" data-i18n="preview.action.update_pin" title="更新贴图：确认后写回来源贴图" hidden data-tauri-drag-region="false">更新贴图</button>
-        <div class="style-group" data-save-quality-root>
-          <span class="style-label" data-i18n="preview.quality.label">质量</span>
-          <div class="style-options" role="group" data-i18n-aria-label="preview.quality.group" aria-label="保存质量">
-            ${SAVE_QUALITIES.map(
-              ({ value, labelKey, titleKey }) =>
-                `<button type="button" data-save-quality="${value}" title="${t(titleKey)}">${t(labelKey)}</button>`,
-            ).join("")}
+        <button type="button" class="icon-action" data-tool="ocr" data-i18n-title="preview.action.ocr_title" data-i18n-aria-label="preview.action.ocr" title="取字 (O)" aria-label="取字" data-tauri-drag-region="false">${icons.ocr}</button>
+        <button type="button" class="icon-action" data-action="copy-ocr-all" hidden data-i18n-title="preview.action.copy_all" data-i18n-aria-label="preview.action.copy_all" title="复制全部" aria-label="复制全部" data-tauri-drag-region="false">${icons.copy}</button>
+        <button type="button" class="icon-action" data-action="pin" data-i18n-title="preview.action.pin_title" data-i18n-aria-label="preview.action.pin" title="贴图" aria-label="贴图" data-tauri-drag-region="false">${icons.pin}</button>
+        <button type="button" class="icon-action" data-action="update-pin" data-i18n-title="preview.action.update_pin_title" data-i18n-aria-label="preview.action.update_pin" title="更新贴图：确认后写回来源贴图" aria-label="更新贴图" hidden data-tauri-drag-region="false">${icons.annotate}</button>
+        <div class="preview-save" data-save-quality-root>
+          <div class="preview-save-split">
+            <button type="button" data-action="save" data-i18n-title="preview.action.save_title" title="保存 (Ctrl+S)：扩展名决定格式 PNG/JPEG/WebP" data-tauri-drag-region="false">${icons.save}<span data-i18n="preview.action.save">保存</span></button>
+            <button type="button" class="preview-save-caret" data-action="toggle-quality" data-i18n-title="preview.quality.group" data-i18n-aria-label="preview.quality.group" title="保存质量" aria-label="保存质量" aria-haspopup="true" aria-expanded="false" data-tauri-drag-region="false">${icons.chevronDown}</button>
+          </div>
+          <div class="preview-quality-panel" data-save-quality-panel hidden>
+            <span class="style-label" data-i18n="preview.quality.label">质量</span>
+            <div class="style-options" role="group" data-i18n-aria-label="preview.quality.group" aria-label="保存质量">
+              ${SAVE_QUALITIES.map(
+                ({ value, labelKey, titleKey }) =>
+                  `<button type="button" data-save-quality="${value}" title="${t(titleKey)}">${t(labelKey)}</button>`,
+              ).join("")}
+            </div>
           </div>
         </div>
-        <button type="button" data-action="save" data-i18n-title="preview.action.save_title" data-i18n="preview.action.save" title="保存 (Ctrl+S)：扩展名决定格式 PNG/JPEG/WebP" data-tauri-drag-region="false">保存</button>
-        <button type="button" class="primary" data-action="copy" data-i18n-title="preview.action.copy_title" data-i18n="preview.action.copy" title="复制 (Ctrl+C)" data-tauri-drag-region="false">复制</button>
+        <button type="button" class="primary" data-action="copy" data-i18n-title="preview.action.copy_title" title="复制 (Ctrl+C)" data-tauri-drag-region="false">${icons.copy}<span data-i18n="preview.action.copy">复制</span></button>
       </div>
     </div>
     <div class="preview-stage">
@@ -99,6 +105,8 @@ export function mountPreview(root: HTMLElement): () => void {
   const pinBtn = root.querySelector("[data-action=pin]");
   const updatePinBtn = root.querySelector("[data-action=update-pin]");
   const saveQualityRoot = root.querySelector("[data-save-quality-root]");
+  const saveQualityPanel = root.querySelector("[data-save-quality-panel]");
+  const saveQualityToggle = root.querySelector("[data-action=toggle-quality]");
   if (
     !(canvas instanceof HTMLCanvasElement) ||
     !(note instanceof HTMLElement) ||
@@ -108,7 +116,9 @@ export function mountPreview(root: HTMLElement): () => void {
     !(ocrBtn instanceof HTMLButtonElement) ||
     !(pinBtn instanceof HTMLButtonElement) ||
     !(updatePinBtn instanceof HTMLButtonElement) ||
-    !(saveQualityRoot instanceof HTMLElement)
+    !(saveQualityRoot instanceof HTMLElement) ||
+    !(saveQualityPanel instanceof HTMLElement) ||
+    !(saveQualityToggle instanceof HTMLButtonElement)
   ) {
     return () => undefined;
   }
@@ -265,6 +275,13 @@ export function mountPreview(root: HTMLElement): () => void {
     });
   };
 
+  const toggleQualityPanel = (open?: boolean): void => {
+    const next = open ?? saveQualityPanel.hidden;
+    saveQualityPanel.hidden = !next;
+    saveQualityToggle.classList.toggle("active", next);
+    saveQualityToggle.setAttribute("aria-expanded", next ? "true" : "false");
+  };
+
   editor = mountAnnotationEditor({
     root,
     canvas,
@@ -392,12 +409,38 @@ export function mountPreview(root: HTMLElement): () => void {
     }
   };
 
+  const copyBtn = root.querySelector<HTMLButtonElement>("[data-action=copy]");
+  let copyReset = 0;
+  const flashCopiedButton = (): void => {
+    if (!(copyBtn instanceof HTMLButtonElement)) {
+      return;
+    }
+    copyBtn.classList.add("is-copied");
+    const label = copyBtn.querySelector("span");
+    if (label) {
+      label.textContent = t("preview.action.copied");
+    }
+    window.clearTimeout(copyReset);
+    copyReset = window.setTimeout(() => {
+      copyBtn.classList.remove("is-copied");
+      applyTranslations(copyBtn);
+    }, 1600);
+  };
+
+  const pulseNote = (): void => {
+    note.classList.remove("is-pulse");
+    void note.offsetWidth;
+    note.classList.add("is-pulse");
+  };
+
   const copy = async (): Promise<void> => {
     if (busy) {
+      setNoteKey("preview.note.busy");
       return;
     }
     editor?.commitText();
     busy = true;
+    setNoteKey("preview.note.copying");
     try {
       const annotations = editor?.exportList() ?? [];
       await invoke("copy_preview_png", { annotations });
@@ -407,6 +450,8 @@ export function mountPreview(root: HTMLElement): () => void {
           : { key: "preview.copied_clean", text: "" },
         "success",
       );
+      flashCopiedButton();
+      pulseNote();
     } catch (error) {
       setNote(invokeError(error, t("preview.error.copy_fallback")), "error");
     } finally {
@@ -544,6 +589,11 @@ export function mountPreview(root: HTMLElement): () => void {
     if (nextQuality === "high" || nextQuality === "medium" || nextQuality === "low") {
       saveQuality = nextQuality;
       syncSaveQuality();
+      toggleQualityPanel(false);
+      return;
+    }
+    if (button.dataset.action === "toggle-quality") {
+      toggleQualityPanel();
       return;
     }
     if (button.dataset.action === "copy") {
@@ -572,6 +622,16 @@ export function mountPreview(root: HTMLElement): () => void {
     }
     return target instanceof Node ? target.parentElement : null;
   };
+
+  document.addEventListener("click", (event) => {
+    if (saveQualityPanel.hidden) {
+      return;
+    }
+    if (event.target instanceof Node && saveQualityRoot.contains(event.target)) {
+      return;
+    }
+    toggleQualityPanel(false);
+  });
 
   pinBtn.addEventListener("pointerdown", (event) => event.stopPropagation());
   pinBtn.addEventListener("click", (event) => {
@@ -787,6 +847,13 @@ export function mountPreview(root: HTMLElement): () => void {
         sourceCtx.drawImage(image, 0, 0, payload.width, payload.height);
         // 选区即时标注并入可编辑列表:撤销栈从零开始,序号继续递增。
         editor?.setAnnotations(carried);
+        void invoke<boolean>("take_pending_preview_ocr")
+          .then((startOcr) => {
+            if (generation === previewLoad && startOcr) {
+              activateOcr();
+            }
+          })
+          .catch(() => undefined);
         // 携带说明与复制状态共用同一提示条:先登记携带前缀,再写复制状态,
         // 二者合并可见(review P3:分别写入会互相覆盖)。
         carriedNoteSource =

@@ -91,6 +91,16 @@ pub async fn recognize_preview(app: AppHandle) -> Result<OcrDocument, String> {
 }
 
 fn recognize_blocking(app: &AppHandle, frame: &crate::capture::buffer::Frame) -> Result<OcrDocument, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| recognize_blocking_inner(app, frame)))
+        .unwrap_or_else(|_| {
+            Err(OcrError::Failed.user_message())
+        })
+}
+
+fn recognize_blocking_inner(
+    app: &AppHandle,
+    frame: &crate::capture::buffer::Frame,
+) -> Result<OcrDocument, String> {
     // R24:每次识别读取当前方向纠正开关;设置切换即时生效(无需重载模型)。
     let orientation_enabled = crate::settings::current_features(app).ocr_orientation;
     let runtime = app.state::<OcrRuntime>();

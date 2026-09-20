@@ -79,6 +79,55 @@ fn write_export(
     })
 }
 
+/// 保存对话框默认文件名:本地时间戳,避免每次都叫 `cropmark.png` 互相覆盖。
+/// 形态对齐 Snipaste / ShareX / Flameshot:`Cropmark_2026-09-20_21-45-12.png`。
+pub fn default_capture_file_name(extension: &str) -> String {
+    format!("Cropmark_{}.{}", local_stamp(), extension)
+}
+
+pub fn default_pin_file_name() -> String {
+    format!("Cropmark_pin_{}.png", local_stamp())
+}
+
+fn local_stamp() -> String {
+    let parts = local_date_time();
+    format!(
+        "{:04}-{:02}-{:02}_{:02}-{:02}-{:02}",
+        parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]
+    )
+}
+
+#[cfg(windows)]
+fn local_date_time() -> [u32; 6] {
+    use windows::Win32::System::SystemInformation::GetLocalTime;
+    let now = unsafe { GetLocalTime() };
+    [
+        u32::from(now.wYear),
+        u32::from(now.wMonth),
+        u32::from(now.wDay),
+        u32::from(now.wHour),
+        u32::from(now.wMinute),
+        u32::from(now.wSecond),
+    ]
+}
+
+#[cfg(not(windows))]
+fn local_date_time() -> [u32; 6] {
+    unsafe {
+        let now = libc::time(std::ptr::null_mut());
+        let mut broken = std::mem::zeroed();
+        libc::localtime_r(&now, &mut broken);
+        [
+            (broken.tm_year + 1900) as u32,
+            (broken.tm_mon + 1) as u32,
+            broken.tm_mday as u32,
+            broken.tm_hour as u32,
+            broken.tm_min as u32,
+            broken.tm_sec as u32,
+        ]
+    }
+}
+
 /// 用户输入路径 → 实际保存路径与格式(R3):已知扩展名以用户输入为准
 /// (`jpg`/`jpeg` 都是 JPEG);缺失或未知扩展名回退上次格式并补全规范
 /// 后缀,避免写出扩展名与内容不符的文件。
@@ -139,7 +188,7 @@ pub async fn save_frame_with_dialog(
     let fallback = export.last_format;
     let mut dialog = rfd::AsyncFileDialog::new()
         .add_filter(i18n::t("dialog.images_filter"), &["png", "jpg", "jpeg", "webp"])
-        .set_file_name(format!("cropmark.{}", fallback.extension()))
+        .set_file_name(default_capture_file_name(fallback.extension()))
         .set_title(i18n::t("dialog.save_capture_title"));
     if let Some(directory) = export.existing_directory() {
         dialog = dialog.set_directory(directory);
@@ -263,6 +312,25 @@ mod tests {
         }
         let rendered = rasterize(&frame, &ops).unwrap();
         assert_ne!(rendered.rgba, frame.rgba);
+    }
+
+    #[test]
+    fn default_capture_file_name_uses_local_timestamp() {
+        let name = default_capture_file_name("png");
+        assert!(name.starts_with("Cropmark_"), "{name}");
+        assert!(name.ends_with(".png"), "{name}");
+        let stamp = name
+            .strip_prefix("Cropmark_")
+            .and_then(|rest| rest.strip_suffix(".png"))
+            .expect("stamp");
+        let (date, time) = stamp.split_once('_').expect("date_time");
+        assert_eq!(date.len(), 10, "{date}");
+        assert_eq!(time.len(), 8, "{time}");
+        assert_eq!(date.chars().filter(|ch| *ch == '-').count(), 2);
+        assert_eq!(time.chars().filter(|ch| *ch == '-').count(), 2);
+        let pin = default_pin_file_name();
+        assert!(pin.starts_with("Cropmark_pin_"));
+        assert!(pin.ends_with(".png"));
     }
 
     #[test]

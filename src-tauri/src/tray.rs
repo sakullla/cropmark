@@ -1,4 +1,4 @@
-//! 托盘菜单三平台共用同一份定义(区域/窗口/全屏/延时/设置/历史/退出),
+//! 托盘菜单三平台共用同一份定义(区域/窗口/全屏/延时区域/设置/历史/退出),
 //! 不支持的平台能力(托盘弹窗检测等)由 capture/platform 静默降级,不影响
 //! 此处入口。构建失败(Err 或构建期 panic)不在本模块处理,由 `install_guarded`
 //! 归一后交给 `lib.rs` 记录降级并继续启动(R16)。
@@ -17,7 +17,8 @@ pub const TRAY_ID: &str = "cropmark-tray";
 /// 托盘"上次区域"直取(R6)的菜单 id。
 pub const LAST_REGION_ID: &str = "capture-last-region";
 
-/// 延时一次性延时的档位(秒):保留 3/5/10,另加"使用设置的延时"。
+/// 一次性延时档位(秒):托盘「延时」子菜单,点击即按该秒数做区域截取。
+/// 窗口/全屏延时走设置里的延时秒数,避免 delay×mode 的嵌套菜单。
 pub const FIXED_DELAY_SECONDS: [u64; 3] = [3, 5, 10];
 
 /// 无记录时菜单项禁用且标签即提示(禁用项无法点击,提示只能靠文案承载)。
@@ -84,8 +85,7 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 }
 
 fn install(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
-    let seconds = settings::current_capture(app).delay_seconds;
-    let menu = build_menu(app, seconds)?;
+    let menu = build_menu(app)?;
     let icon = tray_icon()?;
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon)
@@ -98,15 +98,13 @@ fn install(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// 延时设置变化或"上次区域"记录更新后重建托盘菜单:裁剪主项、"使用设置的
-/// 延时(N 秒)"标签与"上次区域"可用状态/标签始终与当前状态一致。
+/// "上次区域"记录或功能开关变化后重建托盘菜单,标签与可用状态与当前状态一致。
 /// 菜单事件按 id 分发,重建不丢处理器。
 pub fn refresh_menu(app: &AppHandle) {
-    let seconds = settings::current_capture(app).delay_seconds;
     let Some(tray) = app.tray_by_id(TRAY_ID) else {
         return;
     };
-    match build_menu(app, seconds) {
+    match build_menu(app) {
         Ok(menu) => {
             let _ = tray.set_menu(Some(menu));
         }
@@ -172,11 +170,11 @@ fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
     }
 }
 
-pub fn configured_delay_label(seconds: u32) -> String {
-    i18n::tp("tray.delay_configured", &[("seconds", &seconds.to_string())])
+fn delay_once_label(seconds: u64) -> String {
+    i18n::tp("tray.delay_once", &[("seconds", &seconds.to_string())])
 }
 
-fn build_menu(app: &AppHandle, configured_seconds: u32) -> tauri::Result<Menu<tauri::Wry>> {
+fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let region = MenuItem::with_id(app, "capture-region", i18n::t("tray.region"), true, None::<&str>)?;
     let features = settings::current_features(app);
     let has_last_region = crate::settings::current_last_region(app).is_some();
@@ -195,20 +193,13 @@ fn build_menu(app: &AppHandle, configured_seconds: u32) -> tauri::Result<Menu<ta
         true,
         None::<&str>,
     )?;
-
-    let mut fixed_delays = Vec::new();
-    for seconds in FIXED_DELAY_SECONDS {
-        fixed_delays.push(fixed_delay_submenu(app, seconds)?);
-    }
-    let delay_configured = configured_delay_submenu(app, configured_seconds)?;
-
-    let mut capture_items: Vec<&dyn IsMenuItem<tauri::Wry>> =
-        vec![&region, &last_region, &window, &fullscreen];
-    for submenu in &fixed_delays {
-        capture_items.push(submenu);
-    }
-    capture_items.push(&delay_configured);
-    let capture = Submenu::with_items(app, i18n::t("tray.capture"), true, &capture_items)?;
+    let delay = delay_submenu(app)?;
+    let capture = Submenu::with_items(
+        app,
+        i18n::t("tray.capture"),
+        true,
+        &[&region, &last_region, &window, &fullscreen, &delay],
+    )?;
     let settings_item = MenuItem::with_id(app, "settings", i18n::t("tray.settings"), true, None::<&str>)?;
     let history_item = MenuItem::with_id(app, "history", i18n::t("tray.history"), true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", i18n::t("tray.quit"), true, None::<&str>)?;
@@ -225,64 +216,25 @@ fn build_menu(app: &AppHandle, configured_seconds: u32) -> tauri::Result<Menu<ta
     )
 }
 
-fn fixed_delay_submenu(app: &AppHandle, seconds: u64) -> tauri::Result<Submenu<tauri::Wry>> {
-    let region = MenuItem::with_id(
-        app,
-        format!("capture-region-delay-{seconds}"),
-        i18n::t("tray.region"),
-        true,
-        None::<&str>,
-    )?;
-    let window = MenuItem::with_id(
-        app,
-        format!("capture-window-delay-{seconds}"),
-        i18n::t("tray.window"),
-        true,
-        None::<&str>,
-    )?;
-    let fullscreen = MenuItem::with_id(
-        app,
-        format!("capture-fullscreen-delay-{seconds}"),
-        i18n::t("tray.fullscreen"),
-        true,
-        None::<&str>,
-    )?;
-    Submenu::with_items(
-        app,
-        i18n::tp("tray.delay_seconds", &[("seconds", &seconds.to_string())]),
-        true,
-        &[&region, &window, &fullscreen],
-    )
-}
-
-fn configured_delay_submenu(app: &AppHandle, seconds: u32) -> tauri::Result<Submenu<tauri::Wry>> {
-    let region = MenuItem::with_id(
-        app,
-        "capture-region-delay-setting",
-        i18n::t("tray.region"),
-        true,
-        None::<&str>,
-    )?;
-    let window = MenuItem::with_id(
-        app,
-        "capture-window-delay-setting",
-        i18n::t("tray.window"),
-        true,
-        None::<&str>,
-    )?;
-    let fullscreen = MenuItem::with_id(
-        app,
-        "capture-fullscreen-delay-setting",
-        i18n::t("tray.fullscreen"),
-        true,
-        None::<&str>,
-    )?;
-    Submenu::with_items(
-        app,
-        configured_delay_label(seconds),
-        true,
-        &[&region, &window, &fullscreen],
-    )
+/// 一次性延时:只挂区域截取。窗口/全屏用设置页的延时,避免每个档位再拆三种模式。
+fn delay_submenu(app: &AppHandle) -> tauri::Result<Submenu<tauri::Wry>> {
+    let items = FIXED_DELAY_SECONDS
+        .into_iter()
+        .map(|seconds| {
+            MenuItem::with_id(
+                app,
+                format!("capture-region-delay-{seconds}"),
+                delay_once_label(seconds),
+                true,
+                None::<&str>,
+            )
+        })
+        .collect::<tauri::Result<Vec<_>>>()?;
+    let refs: Vec<&dyn IsMenuItem<tauri::Wry>> = items
+        .iter()
+        .map(|item| item as &dyn IsMenuItem<tauri::Wry>)
+        .collect();
+    Submenu::with_items(app, i18n::t("tray.delay"), true, &refs)
 }
 
 fn tray_icon() -> Result<Image<'static>, Box<dyn std::error::Error>> {
@@ -348,6 +300,16 @@ mod tests {
     }
 
     #[test]
+    fn tray_delay_menu_uses_region_once_ids() {
+        for seconds in FIXED_DELAY_SECONDS {
+            assert_eq!(
+                menu_action(&format!("capture-region-delay-{seconds}")),
+                Some(action(CaptureMode::Region, DelayChoice::Once(seconds * 1000))),
+            );
+        }
+    }
+
+    #[test]
     fn non_capture_and_malformed_ids_are_ignored() {
         assert_eq!(menu_action("settings"), None);
         assert_eq!(menu_action("quit"), None);
@@ -358,10 +320,10 @@ mod tests {
     }
 
     #[test]
-    fn configured_delay_label_shows_seconds_and_tracks_changes() {
-        assert_eq!(configured_delay_label(0), "使用设置的延时（0 秒）");
-        assert_eq!(configured_delay_label(5), "使用设置的延时（5 秒）");
-        assert_ne!(configured_delay_label(5), configured_delay_label(10));
+    fn delay_once_label_is_just_the_duration() {
+        assert_eq!(delay_once_label(3), "3 秒");
+        assert_eq!(delay_once_label(5), "5 秒");
+        assert_eq!(delay_once_label(10), "10 秒");
     }
 
     #[test]

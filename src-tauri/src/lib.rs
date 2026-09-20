@@ -189,6 +189,7 @@ pub fn run() {
             capture::get_toast_message,
             capture::cancel_capture,
             capture::close_preview,
+            capture::take_pending_preview_ocr,
             capture::close_capture_error,
             capture::get_delay_state,
             capture::get_capture_error,

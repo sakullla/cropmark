@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { autostartHelp, hotkeyErrorText } from "../errors";
 import { t, type CatalogKey } from "../i18n";
+import { icons } from "../icons";
 
 export type CaptureMode = "region" | "window" | "fullscreen";
 
@@ -145,7 +146,7 @@ export function mountSettings(root: HTMLElement): () => void {
           <span class="mark" aria-hidden="true"></span>
           <span class="name">Cropmark</span>
         </div>
-        <button type="button" class="icon-btn" data-action="close" data-i18n-aria-label="settings.close" aria-label="关闭">×</button>
+        <button type="button" class="icon-btn" data-action="close" data-i18n-aria-label="settings.close" aria-label="关闭">${icons.close}</button>
       </header>
       <main class="content">
         <p class="notice" role="alert" hidden></p>
@@ -247,6 +248,7 @@ export function mountSettings(root: HTMLElement): () => void {
         </section>
         <section class="card about" aria-labelledby="about-title">
           <h1 id="about-title" data-i18n="settings.about.title">关于</h1>
+          <span class="mark" aria-hidden="true"></span>
           <p class="about-name">Cropmark</p>
           <p class="hint" data-i18n="settings.about.hint">独立系统截图工具，界面与托盘只使用 Cropmark 名称与图标。</p>
           <div class="setting-row">

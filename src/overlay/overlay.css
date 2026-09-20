@@ -103,15 +103,16 @@
   align-items: center;
   gap: 2px;
   max-width: calc(100% - 32px);
-  padding: 6px;
+  padding: 6px 8px;
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: 16px;
   background: color-mix(in srgb, var(--panel) 94%, transparent);
   box-shadow: var(--shadow);
   pointer-events: auto;
 }
 
-.overlay-tools .annotation-style-panel {
+.overlay-tools .annotation-style-panel,
+.overlay-tools .annotation-more-panel {
   top: auto;
   bottom: calc(100% + 8px);
 }

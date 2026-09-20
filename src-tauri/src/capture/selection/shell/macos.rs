@@ -474,9 +474,14 @@ const MAIN_THREAD_ENTRY_TIMEOUT: Duration = Duration::from_secs(10);
 /// 当前壳的关闭代际(stale 重置/超时兜底):从任意线程递增,泵在下一轮迭代取消。
 /// 用代际而不是布尔标志:旧壳的收尾不会清除新壳的待关闭状态(评审 P3)。
 static SHELL_CLOSE_EPOCH: AtomicU64 = AtomicU64::new(0);
+static SHELL_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// 请求关闭当前选区壳(线程安全,可从任意线程调用):递增关闭代际并经
 /// 主队列唤醒 AppKit 事件泵;泵退出后旧结果由会话层代际校验丢弃(ADR-16)。
+pub fn shell_is_active() -> bool {
+    SHELL_ACTIVE.load(Ordering::SeqCst)
+}
+
 pub fn request_shell_close() {
     SHELL_CLOSE_EPOCH.fetch_add(1, Ordering::SeqCst);
     // 主队列回调只用于唤醒 run loop(泵会顺带服务主队列),不触碰 AppKit 状态。
@@ -667,6 +672,14 @@ fn run_shell(
 ) -> Result<RegionOutcome, CaptureError> {
     // 本次壳的关闭基线:基线之前的关闭请求属于旧壳,不再影响本次(评审 P3)。
     let close_baseline = SHELL_CLOSE_EPOCH.load(Ordering::SeqCst);
+    SHELL_ACTIVE.store(true, Ordering::SeqCst);
+    struct ActiveGuard;
+    impl Drop for ActiveGuard {
+        fn drop(&mut self) {
+            SHELL_ACTIVE.store(false, Ordering::SeqCst);
+        }
+    }
+    let _active_guard = ActiveGuard;
     let timing = timing_enabled();
     let started = Instant::now();
     if timing {

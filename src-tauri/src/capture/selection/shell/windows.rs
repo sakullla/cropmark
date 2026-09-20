@@ -28,10 +28,11 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetCursorPos,
-    GetForegroundWindow, GetMessageW, GetWindowThreadProcessId, LoadCursorW, PostMessageW,
-    PostQuitMessage, RegisterClassExW, SetCursor, SetForegroundWindow,
+    GetForegroundWindow, GetMessageW, GetWindowThreadProcessId, LoadCursorW, PeekMessageW,
+    PostMessageW, PostQuitMessage, RegisterClassExW, SetCursor, SetForegroundWindow,
     SetWindowPos, ShowWindow, TranslateMessage,
     CS_HREDRAW, CS_VREDRAW, HWND_TOPMOST, IDC_ARROW, IDC_CROSS, IDC_HAND, IDC_SIZEALL, IDC_SIZENESW,
+    PM_REMOVE, WM_QUIT,
     IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, MSG, SWP_SHOWWINDOW, SW_SHOW, WM_CHAR, WM_CLOSE,
     WM_DESTROY, WM_ERASEBKGND, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_STARTCOMPOSITION,
     WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT,
@@ -163,6 +164,10 @@ pub fn request_shell_close() {
     }
 }
 
+pub fn shell_is_active() -> bool {
+    ACTIVE_SHELL_HWND.load(Ordering::SeqCst) != 0
+}
+
 fn run_shell(
     frame: &Frame,
     monitor: &MonitorGeom,
@@ -209,8 +214,10 @@ fn run_shell(
     }
     ACTIVE_SHELL_HWND.store(hwnd.0 as isize, Ordering::SeqCst);
     unsafe {
+        drain_thread_quit();
         pump();
         let _ = DestroyWindow(hwnd);
+        drain_thread_quit();
     }
     ACTIVE_SHELL_HWND.store(0, Ordering::SeqCst);
     let state = STATE.with(|slot| slot.borrow_mut().take());
@@ -841,7 +848,12 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         WM_DESTROY => {
+            ACTIVE_SHELL_HWND.store(0, Ordering::SeqCst);
             PostQuitMessage(0);
+            LRESULT(0)
+        }
+        WM_CLOSE => {
+            let _ = DestroyWindow(hwnd);
             LRESULT(0)
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
@@ -926,6 +938,14 @@ unsafe fn pump() {
         let _ = TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
+}
+
+/// 阻塞线程池会复用线程。Esc 时 feed_event 和 WM_DESTROY 各 PostQuitMessage
+/// 一次,第二次 WM_QUIT 留在队列里,下一次 pick_region 的 pump 会立刻退出,
+/// 选区窗闪一下就没了。抽干残留 WM_QUIT。
+unsafe fn drain_thread_quit() {
+    let mut msg = MSG::default();
+    while PeekMessageW(&mut msg, None, WM_QUIT, WM_QUIT, PM_REMOVE).as_bool() {}
 }
 
 #[cfg(test)]

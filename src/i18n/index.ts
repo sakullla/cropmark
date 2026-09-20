@@ -141,6 +141,8 @@ function readParams(element: HTMLElement, datasetKey: string): Record<string, st
 /**
  * 静态标签重渲染:按 `data-i18n` / `data-i18n-title` / `data-i18n-aria-label`
  * 更新文本与属性,`-params` 后缀的 data 属性提供 JSON 占位符参数。
+ * `data-i18n-title` 写入 `data-tooltip`(自绘短延迟提示)而不写 `title`,
+ * 避免系统原生 title 要悬停约 500ms 才出现、在小图标上很难等到。
  * 视图 mount 时调用一次,并在 `onLanguageChanged` 回调中再次调用。
  */
 export function applyTranslations(root: ParentNode = document): void {
@@ -151,10 +153,12 @@ export function applyTranslations(root: ParentNode = document): void {
     );
   });
   root.querySelectorAll<HTMLElement>("[data-i18n-title]").forEach((element) => {
-    element.title = t(
+    const text = t(
       element.dataset.i18nTitle as CatalogKey,
       readParams(element, "i18nTitleParams"),
     );
+    element.dataset.tooltip = text;
+    element.removeAttribute("title");
   });
   root.querySelectorAll<HTMLElement>("[data-i18n-aria-label]").forEach((element) => {
     element.setAttribute(

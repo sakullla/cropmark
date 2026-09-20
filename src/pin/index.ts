@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, LogicalPosition, LogicalSize } from "@tauri-apps/api/window";
 import { t, type CatalogKey } from "../i18n";
+import { icons } from "../icons";
 import "./pin.css";
 
 const MIN_ZOOM = 0.2;
@@ -10,10 +11,11 @@ const MAX_ZOOM = 5;
 const OPACITY_STEPS = [1, 0.75, 0.5, 0.25];
 
 const ICONS = {
-  copy: `<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10.5 5.5v-2a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>`,
-  save: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 2.5h7L13 5v8.5h-9.5z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M5.5 2.5v3.5h5V2.5M5.5 10h5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>`,
-  rotate: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M12.5 8a4.5 4.5 0 1 1-1.4-3.25" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M12.8 1.8v3.4H9.4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
-  annotate: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.8 13.2 3.6 10l7-7a1.2 1.2 0 0 1 1.7 0l.7.7a1.2 1.2 0 0 1 0 1.7l-7 7z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M9.6 4.2l2.2 2.2" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>`,
+  copy: icons.copy,
+  save: icons.save,
+  rotate: icons.rotate,
+  annotate: icons.annotate,
+  close: icons.close,
 };
 
 // 贴图视图:Rust 建好窗口并把源图留在 PinStore 后,前端首载拉取一次;
@@ -32,7 +34,7 @@ export function mountPin(root: HTMLElement): () => void {
       <button type="button" data-action="rotate" data-i18n-title="pin.toolbar.rotate_title" data-i18n-aria-label="pin.toolbar.rotate" title="顺时针旋转 90°" aria-label="旋转 90°">${ICONS.rotate}</button>
       <button type="button" data-action="opacity" class="pin-opacity" data-i18n-title="pin.toolbar.opacity_title" data-i18n-aria-label="pin.toolbar.opacity" title="调整透明度" aria-label="透明度">100%</button>
       <button type="button" data-action="annotate" data-i18n-title="pin.toolbar.annotate_title" data-i18n-aria-label="pin.toolbar.annotate" title="再标注（确认后更新贴图）" aria-label="再标注">${ICONS.annotate}</button>
-      <button type="button" data-action="close" class="pin-close" data-i18n-title="pin.toolbar.close_title" data-i18n-aria-label="pin.toolbar.close" title="关闭贴图" aria-label="关闭贴图">×</button>
+      <button type="button" data-action="close" class="pin-close" data-i18n-title="pin.toolbar.close_title" data-i18n-aria-label="pin.toolbar.close" title="关闭贴图" aria-label="关闭贴图">${ICONS.close}</button>
     </div>
     <div class="pin-menu" data-menu hidden>
       <button type="button" data-menu-action="copy" data-i18n="pin.menu.copy">复制图片</button>
@@ -167,7 +169,7 @@ export function mountPin(root: HTMLElement): () => void {
   };
 
   const close = (): void => {
-    void invoke("close_pin", { label: win.label }).catch(() => win.close());
+    void invoke("close_pin", { label: win.label });
   };
 
   // 以 (anchorX, anchorY)(窗口内 CSS 坐标)为不动点缩放:图像点
@@ -323,11 +325,22 @@ export function mountPin(root: HTMLElement): () => void {
 
   stage.addEventListener("contextmenu", (event) => {
     event.preventDefault();
-    const rect = root.getBoundingClientRect();
+    menu.style.maxHeight = "";
+    menu.style.overflowY = "";
     menu.hidden = false;
-    const menuRect = menu.getBoundingClientRect();
-    menu.style.left = `${Math.max(4, Math.min(event.clientX - rect.left, rect.width - menuRect.width - 4))}px`;
-    menu.style.top = `${Math.max(4, Math.min(event.clientY - rect.top, rect.height - menuRect.height - 4))}px`;
+    const limitW = Math.max(8, root.clientWidth - 8);
+    const limitH = Math.max(8, root.clientHeight - 8);
+    menu.style.maxWidth = `${limitW}px`;
+    if (menu.offsetHeight > limitH) {
+      menu.style.maxHeight = `${limitH}px`;
+      menu.style.overflowY = "auto";
+    }
+    const mw = menu.offsetWidth;
+    const mh = menu.offsetHeight;
+    const x = Math.min(Math.max(4, event.clientX), Math.max(4, root.clientWidth - mw - 4));
+    const y = Math.min(Math.max(4, event.clientY), Math.max(4, root.clientHeight - mh - 4));
+    menu.style.left = `${x}px`;
+    menu.style.top = `${y}px`;
   });
 
   document.addEventListener("click", (event) => {
@@ -405,24 +418,34 @@ export function mountPin(root: HTMLElement): () => void {
     }
   };
 
-  // 再标注确认后 Rust 已把新内容写入源图并广播 pin-reload:
-  // 重新拉图,旋转/透明度已被烘焙进内容,窗口局部状态归零。
+  // 再标注确认或复用池窗口重新展示时 Rust 广播 pin-reload:
+  // 重新拉图,旋转/透明度/缩放置零。首次从空闲池打开不提示「已更新」。
   const reload = async (): Promise<void> => {
     if (busy) {
       return;
     }
+    const hadImage = image !== null;
     busy = true;
+    image = null;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
     try {
       const ok = await loadImage();
       if (!ok) {
-        showNoteKey("pin.note.reload_failed", undefined, true);
+        if (hadImage) {
+          showNoteKey("pin.note.reload_failed", undefined, true);
+        }
         return;
       }
       rotation = 0;
       opacity = 1;
+      zoom = 1;
+      base = { w: Math.max(1, window.innerWidth), h: Math.max(1, window.innerHeight) };
+      root.classList.remove("is-broken");
       render();
       syncUi();
-      showNoteKey("pin.note.updated");
+      if (hadImage) {
+        showNoteKey("pin.note.updated");
+      }
     } finally {
       busy = false;
     }
@@ -434,12 +457,10 @@ export function mountPin(root: HTMLElement): () => void {
 
   base = { w: Math.max(1, window.innerWidth), h: Math.max(1, window.innerHeight) };
   void (async () => {
-    if (!(await loadImage())) {
-      root.classList.add("is-broken");
-      return;
+    if (await loadImage()) {
+      render();
+      syncUi();
     }
-    render();
-    syncUi();
   })();
 
   // 语言切换:重渲染进行中的提示文案;静态标签由 main 应用。

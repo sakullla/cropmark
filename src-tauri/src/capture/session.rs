@@ -56,6 +56,8 @@ struct ActiveSession {
     /// 贴图再标注(R9):预览会话的回写目标 label;普通截取预览为 None,
     /// 会话被替换/关闭时随之失效。
     writeback: Option<String>,
+    /// 选区「取字」打开预览后由前端消费一次,自动进入取字而不是静默退出。
+    pending_ocr: bool,
 }
 
 impl ActiveSession {
@@ -79,6 +81,7 @@ impl ActiveSession {
             generation: next_session_generation(),
             cancel_requested_at: None,
             writeback: None,
+            pending_ocr: false,
         }
     }
 
@@ -102,7 +105,7 @@ const STALE_SESSION_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Cancelling 清理等待上限:触发落在取消清理窗口内时,等待这段时间让清理
 /// 完成后开始新截取;超时给"正在取消"提示,不静默丢弃(ADR-16)。
-const CANCEL_CLEARANCE_TIMEOUT: Duration = Duration::from_millis(500);
+const CANCEL_CLEARANCE_TIMEOUT: Duration = Duration::from_millis(1500);
 /// Cancelling 等待期间的轮询间隔(清理是本进程内的短操作)。
 const CANCEL_CLEARANCE_POLL: Duration = Duration::from_millis(20);
 
@@ -117,13 +120,12 @@ enum BeginDecision {
 
 fn begin_decision(session: Option<&ActiveSession>, now: Instant) -> BeginDecision {
     match session {
-        Some(current) if current.is_cancelling() => {
+        Some(current) if current.busy && current.is_cancelling() => {
             let cancelling_for = current
                 .cancel_requested_at
                 .map(|at| now.saturating_duration_since(at))
                 .unwrap_or_default();
             if cancelling_for > STALE_SESSION_TIMEOUT {
-                // 清理本身也卡死:看门狗兜底重置。
                 BeginDecision::ResetStaleThenBegin
             } else {
                 BeginDecision::WaitForCancelClearance
@@ -247,19 +249,33 @@ async fn run(app: AppHandle, mode: CaptureMode, delay_ms: u64) -> Result<(), Cap
             "Cropmark capture: trigger mode={mode:?} delay_ms={delay_ms} generation={generation}"
         );
     }
+    let result = run_capture(&app, mode, delay_ms, generation).await;
+    if result.as_ref().is_err_and(|error| error.is_cancelled()) {
+        cleanup_cancelled_generation(&app, generation);
+        return Ok(());
+    }
+    result
+}
+
+async fn run_capture(
+    app: &AppHandle,
+    mode: CaptureMode,
+    delay_ms: u64,
+    generation: u64,
+) -> Result<(), CaptureError> {
     let hide_started = Instant::now();
-    hide_product_surfaces(&app, generation)?;
+    hide_product_surfaces(app, generation)?;
     if capture_timing_enabled() {
         eprintln!(
             "Cropmark capture: hide done generation={generation} elapsed={:?}",
             hide_started.elapsed()
         );
     }
-    wait_delay_before_capture(&app, delay_ms, mode, generation).await?;
+    wait_delay_before_capture(app, delay_ms, mode, generation).await?;
     match mode {
-        CaptureMode::Region => capture_region(&app, generation).await,
-        CaptureMode::Window => capture_window_mode(&app, generation).await,
-        CaptureMode::Fullscreen => capture_fullscreen(&app, generation).await,
+        CaptureMode::Region => capture_region(app, generation).await,
+        CaptureMode::Window => capture_window_mode(app, generation).await,
+        CaptureMode::Fullscreen => capture_fullscreen(app, generation).await,
     }
 }
 
@@ -407,7 +423,7 @@ fn local_crop(
 enum BeginStep {
     /// 已占用会话并分配代际,可以继续 hide/截取。
     Begun(u64),
-    /// 另有活跃截取:维持既有静默忽略语义。
+    /// 另有活跃截取:本触发丢弃;若原生壳仍在,顺手发关闭让它自行取消。
     Ignored,
     /// 会话处于 Cancelling:等待清理完成后重试。
     WaitingForCancel,
@@ -418,7 +434,15 @@ enum BeginStep {
 fn begin_capture(app: &AppHandle, mode: CaptureMode, delay_ms: u64) -> BeginStep {
     let now = Instant::now();
     let mut stale: Option<ActiveSession> = None;
+    let overlay_alive = overlay_still_open(app);
     let step = with_session_mut(app, |slot| match begin_decision(slot.as_ref(), now) {
+        BeginDecision::IgnoreBusy | BeginDecision::WaitForCancelClearance if !overlay_alive => {
+            // 实测:Esc 后原生壳窗口已销毁,但取消清理若卡在 Tauri 窗口 API,
+            // 会话仍 busy/cancelling,下一次热键被丢掉。壳已不在就强制开新截取。
+            stale = slot.take();
+            *slot = Some(ActiveSession::new(mode, delay_ms, now));
+            BeginStep::Begun(current_generation(slot))
+        }
         BeginDecision::IgnoreBusy => BeginStep::Ignored,
         BeginDecision::WaitForCancelClearance => BeginStep::WaitingForCancel,
         BeginDecision::ResetStaleThenBegin => {
@@ -443,7 +467,14 @@ fn begin_capture(app: &AppHandle, mode: CaptureMode, delay_ms: u64) -> BeginStep
             set_last_error(app, None);
             BeginStep::Begun(generation)
         }
-        other => other,
+        BeginStep::WaitingForCancel => {
+            close_active_native_shell();
+            BeginStep::WaitingForCancel
+        }
+        BeginStep::Ignored => {
+            close_active_native_shell();
+            BeginStep::Ignored
+        }
     }
 }
 
@@ -463,6 +494,7 @@ fn reset_stale_session(app: &AppHandle, stale: &ActiveSession) {
         ui::show_window(app, &surface.label);
     }
     let _ = app.emit("capture-cancelled", ());
+    crate::pin::restore_after_capture(app);
 }
 
 /// 关闭当前原生选区壳(若有):stale 重置时让旧壳退出,其随后返回的结果
@@ -474,6 +506,28 @@ fn close_active_native_shell() {
 
 #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 fn close_active_native_shell() {}
+
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+fn native_shell_active() -> bool {
+    super::native_overlay::shell_is_active()
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+fn native_shell_active() -> bool {
+    false
+}
+
+fn overlay_still_open(app: &AppHandle) -> bool {
+    if native_shell_active() {
+        return true;
+    }
+    // Windows/macOS 区域截取走原生壳;预创建的 Web overlay 若仍报可见,
+    // 会把「壳已关、会话还忙」误判成还在截取,第二次热键就被丢掉。
+    if region_native_shell() {
+        return false;
+    }
+    ui::is_visible(app, ui::OVERLAY)
+}
 
 /// 占用会话槽位或短时等待取消清理完成;超时 toast 提示"正在取消"(ADR-16)。
 async fn try_begin_with_delay(app: &AppHandle, mode: CaptureMode, delay_ms: u64) -> Option<u64> {
@@ -520,6 +574,7 @@ fn hide_product_surfaces(app: &AppHandle, generation: u64) -> Result<(), Capture
         });
     }
     platform::dismiss_tray_popup();
+    crate::pin::lower_for_capture(app);
     for label in ui::session_window_labels() {
         if label != ui::DELAY && ui::is_visible(app, label) {
             ui::hide_window(app, label);
@@ -700,6 +755,7 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
         if capture_timing_enabled() {
             eprintln!("Cropmark capture: region shell result discarded (stale generation)");
         }
+        cleanup_cancelled_generation(app, generation);
         return Ok(());
     }
     match picked {
@@ -744,6 +800,25 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
         }
         // 操作条/菜单动作:静默完成并执行动作(不开预览);标注先在完成路径
         // 与像素合并,复制/保存/贴图/取字输出与所见一致。
+        RegionOutcome::Quiet(rect, QuietAction::Ocr, annotations) => {
+            // 取字打开预览再识别:后台静默 OCR 会关掉选区、首次加载模型像「退出后无响应」。
+            let handle = app.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                ocr_region_from_shell(
+                    &handle,
+                    RegionSelection {
+                        x: rect.x,
+                        y: rect.y,
+                        width: rect.width,
+                        height: rect.height,
+                    },
+                    annotations,
+                    generation,
+                )
+            })
+            .await
+            .map_err(|_| CaptureError::api("error.capture.thread_failed"))?
+        }
         RegionOutcome::Quiet(rect, action, annotations) => {
             finish_region_with(
                 app,
@@ -760,13 +835,10 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
             .await
         }
         RegionOutcome::Cancelled => {
-            // 立即受理取消(进入 Cancelling),窗口/表面清理在阻塞池完成;
-            // 清理完成前的新触发会短时等待而不是被静默吞掉(ADR-16)。
+            // 壳已经退出,不要再 PostMessage(WM_CLOSE):否则会关掉紧接着
+            // 第二次热键建起来的新选区窗(实测 Esc 后再截覆盖层出不来)。
             if let Some((generation, restore)) = accept_cancel(app, Some(generation)) {
-                let handle = app.clone();
-                tauri::async_runtime::spawn_blocking(move || finish_cancel(&handle, generation, restore))
-                    .await
-                    .map_err(|_| CaptureError::api("error.capture.thread_failed"))?;
+                finish_cancel(app, generation, restore, false);
             }
             Ok(())
         }
@@ -1155,6 +1227,40 @@ fn annotate_region_from_shell(
     .map(|_| ())
 }
 
+/// 选区「取字」:打开预览并记下 pending_ocr,前端加载帧后自动进入取字。
+fn ocr_region_from_shell(
+    app: &AppHandle,
+    selection: RegionSelection,
+    annotations: Vec<Annotation>,
+    generation: u64,
+) -> Result<(), CaptureError> {
+    with_session_mut(app, |session| {
+        if let Some(current) = session.as_mut() {
+            current.pending_ocr = true;
+        }
+    });
+    let result = annotate_region_from_shell(app, selection, annotations, generation);
+    if result.is_err() {
+        with_session_mut(app, |session| {
+            if let Some(current) = session.as_mut() {
+                current.pending_ocr = false;
+            }
+        });
+    }
+    result
+}
+
+/// 预览加载后消费一次「打开即取字」标记。
+pub fn take_pending_preview_ocr(app: &AppHandle) -> bool {
+    with_session_mut(app, |session| {
+        session.as_mut().is_some_and(|current| {
+            let pending = current.pending_ocr;
+            current.pending_ocr = false;
+            pending
+        })
+    })
+}
+
 fn finish_selection(
     app: &AppHandle,
     selection: RegionSelection,
@@ -1419,12 +1525,18 @@ fn accept_cancel(
     with_session_mut(app, |session| take_cancel_request(session, expected))
 }
 
-/// 取消清理完成:关闭可能仍在运行的原生壳、隐藏会话窗、恢复产品表面、
-/// 广播取消并释放槽位。
-fn finish_cancel(app: &AppHandle, generation: u64, restore: Vec<RecordedSurface>) {
-    // 壳自身返回 Cancelled 时已退出(重复请求为 no-op);托盘/命令取消路径
-    // 借此结束仍在运行的原生壳,避免残留窗口。
-    close_active_native_shell();
+/// 取消清理完成:隐藏会话窗、恢复产品表面、广播取消并释放槽位。
+/// `close_shell` 仅在壳可能仍在泵消息时为 true(托盘取消/看门狗);
+/// 壳已经返回 Cancelled 后再关会误伤下一次热键新建的选区窗。
+fn finish_cancel(
+    app: &AppHandle,
+    generation: u64,
+    restore: Vec<RecordedSurface>,
+    close_shell: bool,
+) {
+    if close_shell {
+        close_active_native_shell();
+    }
     for label in ui::session_window_labels() {
         ui::hide_window(app, label);
     }
@@ -1432,6 +1544,14 @@ fn finish_cancel(app: &AppHandle, generation: u64, restore: Vec<RecordedSurface>
         ui::show_window(app, &surface.label);
     }
     let _ = app.emit("capture-cancelled", ());
+    let newer_capture = with_session(app, |session| {
+        session
+            .as_ref()
+            .is_some_and(|current| current.generation != generation && current.busy)
+    });
+    if !newer_capture {
+        crate::pin::restore_after_capture(app);
+    }
     release_cancelled_session(app, generation);
 }
 
@@ -1440,12 +1560,29 @@ fn release_cancelled_session(app: &AppHandle, generation: u64) -> bool {
     with_session_mut(app, |session| release_cancelled(session, generation))
 }
 
+/// 壳还在泵消息时再次热键会把本代际标成 Cancelling;壳返回后必须收尾,
+/// 否则槽位一直占着,新截取只能等到 30s 看门狗。
+fn cleanup_cancelled_generation(app: &AppHandle, generation: u64) {
+    let restore = with_session_mut(app, |session| {
+        session.as_ref().and_then(|current| {
+            if current.generation == generation && current.cancelled {
+                Some(current.hide.restore_on_cancel())
+            } else {
+                None
+            }
+        })
+    });
+    if let Some(restore) = restore {
+        finish_cancel(app, generation, restore, false);
+    }
+}
+
 fn cancel_internal(
     app: &AppHandle,
     expected: Option<u64>,
 ) -> Result<CancelOutcome, CaptureError> {
     if let Some((generation, restore)) = accept_cancel(app, expected) {
-        finish_cancel(app, generation, restore);
+        finish_cancel(app, generation, restore, true);
     }
     // Cancel never writes the clipboard, a file, or a preview window.
     Ok(CancelOutcome::clean())
@@ -1632,6 +1769,7 @@ fn finish_with_ttl(
     // R2:history.enabled 时把最终帧写入本地历史;编码、缩略图与索引写入
     // 全部在 spawn_blocking 内,不阻塞完成路径。
     crate::history::record_capture(app, frame);
+    crate::pin::restore_after_capture(app);
     Ok(FinishSummary { clipboard_written })
 }
 
@@ -1644,6 +1782,7 @@ fn finish_transition(
     frame_ttl: Duration,
 ) {
     session.busy = false;
+    session.cancelled = false;
     session.file_written = false;
     match disposition {
         FinishDisposition::Preview => {
@@ -1883,6 +2022,57 @@ mod tests {
         let steps = session_steps(false, 0);
         assert_eq!(steps.last().copied(), Some(SessionStep::OpenPreview));
         assert!(!steps.contains(&SessionStep::ShowOverlayOnFreeze));
+    }
+
+    #[test]
+    #[test]
+    fn cancel_then_occupy_starts_a_new_region_capture() {
+        let now = Instant::now();
+        let mut slot = Some(ActiveSession::new(CaptureMode::Region, 0, now));
+        let generation = slot.as_ref().unwrap().generation;
+        assert_eq!(begin_decision(slot.as_ref(), now), BeginDecision::IgnoreBusy);
+        assert!(take_cancel_request(&mut slot, Some(generation)).is_some());
+        assert!(release_cancelled(&mut slot, generation));
+        assert!(slot.is_none());
+        assert_eq!(begin_decision(slot.as_ref(), now), BeginDecision::Begin);
+        assert!(occupy_session(&mut slot, CaptureMode::Region, 0, now));
+        assert!(slot.as_ref().unwrap().busy);
+        assert_ne!(slot.as_ref().unwrap().generation, generation);
+    }
+
+    #[test]
+    fn leftover_cancel_flag_on_idle_session_does_not_block_begin() {
+        let now = Instant::now();
+        let mut session = ActiveSession::new(CaptureMode::Region, 0, now);
+        session.busy = false;
+        session.cancelled = true;
+        assert_eq!(begin_decision(Some(&session), now), BeginDecision::Begin);
+    }
+
+    #[test]
+    fn overlapping_busy_capture_is_marked_cancelling() {
+        let now = Instant::now();
+        let mut slot = Some(ActiveSession::new(CaptureMode::Region, 0, now));
+        assert_eq!(
+            begin_decision(slot.as_ref(), now + Duration::from_millis(40)),
+            BeginDecision::IgnoreBusy
+        );
+        assert!(take_cancel_request(&mut slot, None).is_some());
+        assert!(slot.as_ref().unwrap().cancelled);
+        assert_eq!(
+            begin_decision(slot.as_ref(), now + Duration::from_millis(40)),
+            BeginDecision::WaitForCancelClearance
+        );
+    }
+
+    #[test]
+    fn take_pending_preview_ocr_is_consumed_once() {
+        let mut session = ActiveSession::new(CaptureMode::Region, 0, Instant::now());
+        session.busy = false;
+        session.pending_ocr = true;
+        assert!(session.pending_ocr);
+        session.pending_ocr = false;
+        assert!(!session.pending_ocr);
     }
 
     #[test]

@@ -21,7 +21,7 @@ pub fn pin_full_message() -> String {
 fn pin_retry_message() -> String {
     i18n::t("pin.retry")
 }
-const PIN_SAVE_DEFAULT_NAME: &str = "cropmark-pin.png";
+
 
 /// 轮转游标:下一次分配从上一次分配槽位之后开始找空闲标签。
 static NEXT_SLOT: AtomicUsize = AtomicUsize::new(0);
@@ -248,9 +248,62 @@ fn pointer_work_area(app: &AppHandle) -> (Option<LogicalPoint>, Option<LogicalRe
     (Some(cursor_logical), Some(work))
 }
 
-/// 打开一张贴图:轮转分配空闲标签,建置顶无边框、skip_taskbar、不可调
-/// 尺寸的窗口,初始逻辑尺寸为图像逻辑大小,位置在光标附近(钳制在
-/// 工作区内)。源图存入 STORE,前端按需经 `get_pin_image` 拉取。
+/// 启动时预建的空闲贴图窗数量。Windows 上 `WebviewWindowBuilder::build`
+/// 要拉起 WebView2,点选区「贴图」时现建会卡几百毫秒到数秒;池里有窗则只
+/// 换图+显示。占用以 STORE 为准,关闭只隐藏不销毁,下一次复用同一 webview。
+const PIN_PRECREATE: usize = 2;
+
+fn park_pin_window(window: &WebviewWindow) {
+    let _ = window.set_ignore_cursor_events(true);
+    let _ = window.set_always_on_top(false);
+    let _ = window.hide();
+    let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
+        width: 1.0,
+        height: 1.0,
+    }));
+    let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition {
+        x: -32000.0,
+        y: -32000.0,
+    }));
+}
+
+fn ensure_pin_window(app: &AppHandle, slot: usize) -> Result<WebviewWindow, String> {
+    let label = slot_label(slot);
+    if let Some(window) = app.get_webview_window(&label) {
+        return Ok(window);
+    }
+    let window = WebviewWindowBuilder::new(
+        app,
+        label,
+        WebviewUrl::App("index.html?view=pin".into()),
+    )
+    .title("Cropmark")
+    .decorations(false)
+    .shadow(true)
+    .skip_taskbar(true)
+    .resizable(false)
+    .maximizable(false)
+    .minimizable(false)
+    .always_on_top(false)
+    .visible(false)
+    .inner_size(1.0, 1.0)
+    .build()
+    .map_err(|error| i18n::tp("error.pin.window_create", &[("error", &error.to_string())]))?;
+    park_pin_window(&window);
+    Ok(window)
+}
+
+/// 启动期预建空闲贴图窗,让第一次选区贴图不必现拉 WebView2。
+pub fn precreate(app: &AppHandle) {
+    for slot in 0..PIN_PRECREATE {
+        if let Err(error) = ensure_pin_window(app, slot) {
+            eprintln!("Cropmark: 预创建贴图窗口失败 slot={slot}: {error}");
+        }
+    }
+}
+
+/// 打开一张贴图:按 STORE 占用轮转空闲槽;窗口尽量复用预建/已关闭的 webview。
+/// 源图存入 STORE,前端经 `pin-reload` 再拉 `get_pin_image`。
 pub fn open_pin(
     app: &AppHandle,
     frame: Frame,
@@ -258,14 +311,10 @@ pub fn open_pin(
     logical_height: f64,
 ) -> Result<WebviewWindow, String> {
     let cursor = NEXT_SLOT.load(Ordering::SeqCst);
-    // 槽位占用以真实窗口存在性为准:窗口销毁(Destroyed)即视为空闲。
-    let slot = pick_slot(cursor, |slot| {
-        app.get_webview_window(&slot_label(slot)).is_some()
-    })
-    .ok_or_else(pin_full_message)?;
+    let slot = with_store(|slots| pick_slot(cursor, |slot| slots[slot].is_some()))
+        .ok_or_else(pin_full_message)?;
     NEXT_SLOT.store((slot + 1) % PIN_MAX, Ordering::SeqCst);
 
-    let label = slot_label(slot);
     let (cursor_pos, work) = pointer_work_area(app);
     let (width, height) = (logical_width.max(1.0), logical_height.max(1.0));
     let (x, y) = pin_origin(cursor_pos, work, width, height);
@@ -280,35 +329,47 @@ pub fn open_pin(
             logical_height: height,
         });
     });
-    let window = WebviewWindowBuilder::new(
-        app,
-        label.clone(),
-        WebviewUrl::App("index.html?view=pin".into()),
-    )
-    .title("Cropmark")
-    .decorations(false)
-    .shadow(true)
-    .skip_taskbar(true)
-    .resizable(false)
-    .maximizable(false)
-    .minimizable(false)
-    .always_on_top(true)
-    .visible(false)
-    .inner_size(width, height)
-    .build()
-    .map_err(|error| {
-        with_store(|slots| slots[slot] = None);
-        i18n::tp("error.pin.window_create", &[("error", &error.to_string())])
-    })?;
+    let window = match ensure_pin_window(app, slot) {
+        Ok(window) => window,
+        Err(error) => {
+            with_store(|slots| slots[slot] = None);
+            return Err(error);
+        }
+    };
     // 先定位再显示,避免窗口在左上角闪现后再跳到光标附近。
     let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
     let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize { width, height }));
     let _ = window.set_ignore_cursor_events(false);
     let _ = window.set_always_on_top(true);
+    let _ = window.emit("pin-reload", ());
     let _ = window.show();
     let _ = window.unminimize();
     let _ = window.set_focus();
     Ok(window)
+}
+
+/// 截取开始:贴图不要盖在原生选区上面,否则看起来像「选区出不来」。
+pub fn lower_for_capture(app: &AppHandle) {
+    for slot in 0..PIN_MAX {
+        if let Some(window) = app.get_webview_window(&slot_label(slot)) {
+            let _ = window.set_always_on_top(false);
+        }
+    }
+}
+
+/// 截取结束:把仍在用的贴图重新置顶。
+pub fn restore_after_capture(app: &AppHandle) {
+    for slot in 0..PIN_MAX {
+        let in_use = with_store(|slots| slots[slot].is_some());
+        if !in_use {
+            continue;
+        }
+        if let Some(window) = app.get_webview_window(&slot_label(slot)) {
+            if window.is_visible().unwrap_or(false) {
+                let _ = window.set_always_on_top(true);
+            }
+        }
+    }
 }
 
 /// 从已存 PNG(历史记录等外部入口)打开贴图:按工作区适配窗口逻辑尺寸,
@@ -345,7 +406,11 @@ struct PreparedPin {
 /// 从会话保留帧(预览帧或 Quiet TTL 帧)合成帧与窗口尺寸;不含建窗。
 fn prepare_pin(app: &AppHandle, annotations: &[Annotation]) -> Result<PreparedPin, String> {
     let frame = session::current_preview_frame(app).map_err(fail)?;
-    let rendered = rasterize(&frame, annotations).map_err(fail)?;
+    let rendered = if annotations.is_empty() {
+        frame
+    } else {
+        rasterize(&frame, annotations).map_err(fail)?
+    };
     let (_, work) = pointer_work_area(app);
     let (work_w, work_h) = work.map(|(.., w, h)| (w, h)).unwrap_or((1920.0, 1080.0));
     let (width, height) =
@@ -473,7 +538,7 @@ pub async fn save_pin(
 
     let mut dialog = rfd::AsyncFileDialog::new()
         .add_filter(i18n::t("dialog.png_filter"), &["png"])
-        .set_file_name(PIN_SAVE_DEFAULT_NAME)
+        .set_file_name(crate::export::default_pin_file_name())
         .set_title(i18n::t("dialog.save_pin_title"));
     if let Some(directory) = crate::settings::current_export(&app).existing_directory() {
         dialog = dialog.set_directory(directory);
@@ -596,7 +661,7 @@ pub fn close_pin(app: AppHandle, label: String) {
         with_store(|slots| slots[slot] = None);
     }
     if let Some(window) = app.get_webview_window(&label) {
-        let _ = window.close();
+        park_pin_window(&window);
     }
 }
 
@@ -654,6 +719,16 @@ mod tests {
         assert_eq!(pick_slot(3, |slot| (3..8).contains(&slot)), Some(0));
         // 游标 0,只有 0 号占用:顺延到 1。
         assert_eq!(pick_slot(0, |slot| slot == 0), Some(1));
+    }
+
+    #[test]
+    fn pick_slot_treats_cleared_store_as_idle_even_if_window_kept() {
+        // 关闭贴图只清 STORE、窗口仍在:下一张必须能拿到同一槽。
+        let mut store = [true, false, false, false, false, false, false, false];
+        assert_eq!(pick_slot(0, |slot| store[slot]), Some(1));
+        store[1] = true;
+        store[0] = false;
+        assert_eq!(pick_slot(0, |slot| store[slot]), Some(0));
     }
 
     #[test]

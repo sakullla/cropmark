@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { localeTag, t, type CatalogKey } from "../i18n";
+import { icons } from "../icons";
 import "./history.css";
 
 interface HistoryEntryView {
@@ -32,7 +33,7 @@ export function mountHistory(root: HTMLElement): () => void {
         </div>
         <div class="history-toolbar">
           <button type="button" class="choice" data-action="clear" data-i18n="history.clear">清空全部</button>
-          <button type="button" class="icon-btn" data-action="close" data-i18n-aria-label="history.close" aria-label="关闭">×</button>
+          <button type="button" class="icon-btn" data-action="close" data-i18n-aria-label="history.close" aria-label="关闭">${icons.close}</button>
         </div>
       </header>
       <main class="content history-content">

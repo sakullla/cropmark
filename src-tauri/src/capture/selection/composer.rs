@@ -96,8 +96,8 @@ const TOOL_BUTTON: i32 = 24;
 const TOOL_GAP: i32 = 4;
 /// 标注工具条与选区/屏幕边的间距(逻辑)。
 const TOOL_MARGIN: i32 = 8;
-/// 标注工具条图标外接盒边长(逻辑)。
-const TOOL_ICON: i32 = 15;
+/// 标注工具条图标外接盒边长(逻辑);略放大以便圆头描边与箭头头可辨。
+const TOOL_ICON: i32 = 16;
 /// 标注工具条按钮物理边长上限(高 DPI 下按钮不无限放大)。
 const TOOL_BUTTON_MAX: i32 = 36;
 
@@ -1008,6 +1008,9 @@ impl Composer {
                 self.draw_annotation_toolbar(out, w, h, selection, scene, overlay);
             }
         }
+        if let Some((action, rect)) = self.hovered_icon(scene, overlay, w, h) {
+            self.draw_hover_tooltip(out, w, h, action, rect);
+        }
     }
 
     /// 标注层:在选区内烘焙已确认图元(带缓存)、叠加草稿与文本编辑态,
@@ -1170,10 +1173,10 @@ impl Composer {
             return;
         };
         draw_panel_chrome(rgba, w, h, toolbar.panel, metrics.panel_radius);
-        for (action, rect) in toolbar.buttons {
+        for (action, rect) in &toolbar.buttons {
             let (cx, cy) = rect.center();
             let active = match action {
-                SelectionAction::Tool(tool) => overlay.tool == Some(tool),
+                SelectionAction::Tool(tool) => overlay.tool == Some(*tool),
                 SelectionAction::More => scene.annotation_more,
                 _ => false,
             };
@@ -1194,7 +1197,23 @@ impl Composer {
                 (metrics.tool_button / 2 - metrics.tool_gap / 2).max(6),
                 bg,
             );
-            draw_annotation_icon(rgba, w, h, action, rect, ink, metrics.tool_icon);
+            draw_annotation_icon(rgba, w, h, *action, *rect, ink, metrics.tool_icon);
+        }
+        if let Some(undo_i) = toolbar
+            .buttons
+            .iter()
+            .position(|(action, _)| *action == SelectionAction::Undo)
+        {
+            if undo_i > 0 {
+                let left = toolbar.buttons[undo_i - 1].1;
+                let right = toolbar.buttons[undo_i].1;
+                let x = (left.right() + right.x) / 2;
+                let y0 = left.y + left.height / 4;
+                let y1 = left.bottom() - left.height / 4;
+                for y in y0..y1 {
+                    blend(rgba, w, h, x, y, CHROME_BORDER);
+                }
+            }
         }
     }
 
@@ -1271,6 +1290,84 @@ impl Composer {
             fill_circle(rgba, w, h, cx, cy, metrics.rail_button / 2, bg);
             draw_icon(rgba, w, h, action, cx, cy, metrics.toolbar_icon, ICON_INK);
         }
+    }
+
+    fn hovered_icon(
+        &self,
+        scene: &Scene,
+        overlay: Option<&AnnotationOverlay>,
+        w: u32,
+        h: u32,
+    ) -> Option<(SelectionAction, IntRect)> {
+        if scene.menu_open {
+            return None;
+        }
+        if let (Some(selection), Some(overlay)) = (scene.selection, overlay) {
+            if scene.annotation_mode && scene.flags.inline_annotation {
+                if let Some(toolbar) = annotation_toolbar(
+                    self.metrics,
+                    selection,
+                    (w, h),
+                    scene.flags,
+                    overlay.text_input,
+                    scene.annotation_more,
+                    None,
+                ) {
+                    for (action, rect) in toolbar.buttons {
+                        if rect.contains(scene.cursor.0, scene.cursor.1) {
+                            return Some((action, rect));
+                        }
+                    }
+                }
+            }
+        }
+        if scene.toolbar_visible {
+            if let Some(selection) = scene.selection {
+                let buttons = toolbar_buttons(scene.flags);
+                let panel = toolbar_panel(self.metrics, selection, (w, h), &buttons)?;
+                for (action, rect) in toolbar_button_rects(self.metrics, panel, &buttons) {
+                    if rect.contains(scene.cursor.0, scene.cursor.1) {
+                        return Some((action, rect));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn draw_hover_tooltip(
+        &self,
+        rgba: &mut [u8],
+        w: u32,
+        h: u32,
+        action: SelectionAction,
+        anchor: IntRect,
+    ) {
+        let metrics = self.metrics;
+        let label = action_label(action);
+        let font = metrics.menu_font;
+        let Some(text_width) = text::measure_width(&label, font) else {
+            return;
+        };
+        let pad_x = metrics.badge_pad_x.max(8);
+        let pad_y = metrics.badge_pad_y.max(4);
+        let gap = metrics.badge_margin.max(6);
+        let width = (text_width.ceil() as i32 + pad_x * 2).max(24);
+        let height = text::line_height(font).ceil() as i32 + pad_y * 2;
+        let Some(panel) = place_tooltip(anchor, width, height, gap, (w as i32, h as i32)) else {
+            return;
+        };
+        draw_panel_chrome(rgba, w, h, panel, height / 2);
+        text::draw_text(
+            rgba,
+            w,
+            h,
+            (panel.x + pad_x) as f32,
+            (panel.y + pad_y) as f32,
+            &label,
+            font,
+            CHROME_TEXT,
+        );
     }
 
     /// 亮铬右键菜单:左图标 + 右文字;光标悬停项用青绿软底 + 深青绿字;
@@ -1367,6 +1464,53 @@ impl Composer {
 }
 
 /// 亮铬面板统一画法:底部 2px 深色 offset 模拟阴影 → 1px 细描边 → 亮暖白底。
+fn place_tooltip(
+    anchor: IntRect,
+    width: i32,
+    height: i32,
+    gap: i32,
+    screen: (i32, i32),
+) -> Option<IntRect> {
+    let (sw, sh) = screen;
+    if width <= 0 || height <= 0 || width > sw || height > sh {
+        return None;
+    }
+    let (ax, ay) = anchor.center();
+    // 右侧操作条优先出现在按钮左侧,避免贴屏幕右缘时提示跑出画面;
+    // 底部工具条仍优先出现在按钮上方。
+    let candidates = if ax > sw / 2 {
+        [
+            (anchor.x - width - gap, ay - height / 2),
+            (ax - width / 2, anchor.y - height - gap),
+            (ax - width / 2, anchor.bottom() + gap),
+            (anchor.right() + gap, ay - height / 2),
+        ]
+    } else {
+        [
+            (ax - width / 2, anchor.y - height - gap),
+            (anchor.right() + gap, ay - height / 2),
+            (anchor.x - width - gap, ay - height / 2),
+            (ax - width / 2, anchor.bottom() + gap),
+        ]
+    };
+    for (x, y) in candidates {
+        if x >= 0 && y >= 0 && x + width <= sw && y + height <= sh {
+            return Some(IntRect {
+                x,
+                y,
+                width,
+                height,
+            });
+        }
+    }
+    Some(IntRect {
+        x: (ax - width / 2).clamp(0, sw - width),
+        y: (anchor.y - height - gap).clamp(0, sh - height),
+        width,
+        height,
+    })
+}
+
 fn draw_panel_chrome(rgba: &mut [u8], w: u32, h: u32, rect: IntRect, radius: i32) {
     let shadow = IntRect {
         y: rect.y + 2,
@@ -1520,8 +1664,207 @@ fn draw_line(
     }
 }
 
-/// 引擎内绘制的简洁图标字形:(cx, cy) 为中心,size 为外接盒边长。
-/// 复制=双矩形,保存=箭头入盘,贴图=图钉,标注=笔,取字=「字」,取消=×。
+fn paint_sdf(
+    rgba: &mut [u8],
+    w: u32,
+    h: u32,
+    min_x: i32,
+    min_y: i32,
+    max_x: i32,
+    max_y: i32,
+    color: [u8; 4],
+    mut sdf: impl FnMut(f32, f32) -> f32,
+) {
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let dist = sdf(x as f32 + 0.5, y as f32 + 0.5);
+            let cover = (0.5 - dist).clamp(0.0, 1.0);
+            if cover <= 0.004 {
+                continue;
+            }
+            let mut ink = color;
+            ink[3] = (f32::from(color[3]) * cover).round() as u8;
+            blend(rgba, w, h, x, y, ink);
+        }
+    }
+}
+
+fn dist_segment(px: f32, py: f32, x0: f32, y0: f32, x1: f32, y1: f32) -> f32 {
+    let vx = x1 - x0;
+    let vy = y1 - y0;
+    let len2 = vx * vx + vy * vy;
+    let t = if len2 < 1e-8 {
+        0.0
+    } else {
+        ((px - x0) * vx + (py - y0) * vy) / len2
+    }
+    .clamp(0.0, 1.0);
+    let dx = px - (x0 + t * vx);
+    let dy = py - (y0 + t * vy);
+    (dx * dx + dy * dy).sqrt()
+}
+
+fn fill_disk_aa(
+    rgba: &mut [u8],
+    w: u32,
+    h: u32,
+    cx: f32,
+    cy: f32,
+    radius: f32,
+    color: [u8; 4],
+) {
+    let pad = radius + 1.5;
+    paint_sdf(
+        rgba,
+        w,
+        h,
+        (cx - pad).floor() as i32,
+        (cy - pad).floor() as i32,
+        (cx + pad).ceil() as i32,
+        (cy + pad).ceil() as i32,
+        color,
+        |x, y| {
+            let dx = x - cx;
+            let dy = y - cy;
+            (dx * dx + dy * dy).sqrt() - radius
+        },
+    );
+}
+
+fn stroke_capsule_aa(
+    rgba: &mut [u8],
+    w: u32,
+    h: u32,
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+    radius: f32,
+    color: [u8; 4],
+) {
+    let pad = radius + 1.5;
+    paint_sdf(
+        rgba,
+        w,
+        h,
+        (x0.min(x1) - pad).floor() as i32,
+        (y0.min(y1) - pad).floor() as i32,
+        (x0.max(x1) + pad).ceil() as i32,
+        (y0.max(y1) + pad).ceil() as i32,
+        color,
+        |x, y| dist_segment(x, y, x0, y0, x1, y1) - radius,
+    );
+}
+
+fn stroke_round_rect_aa(
+    rgba: &mut [u8],
+    w: u32,
+    h: u32,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    corner: f32,
+    stroke: f32,
+    color: [u8; 4],
+) {
+    if width <= 1.0 || height <= 1.0 {
+        return;
+    }
+    let cx = x + width * 0.5;
+    let cy = y + height * 0.5;
+    let hw = width * 0.5;
+    let hh = height * 0.5;
+    let corner = corner.min(hw).min(hh).max(0.0);
+    let half = stroke * 0.5;
+    let pad = half + 1.5;
+    paint_sdf(
+        rgba,
+        w,
+        h,
+        (x - pad).floor() as i32,
+        (y - pad).floor() as i32,
+        (x + width + pad).ceil() as i32,
+        (y + height + pad).ceil() as i32,
+        color,
+        |px, py| {
+            let dx = (px - cx).abs() - hw + corner;
+            let dy = (py - cy).abs() - hh + corner;
+            let outside = dx.max(0.0).hypot(dy.max(0.0));
+            let inside = dx.min(0.0).max(dy.min(0.0));
+            (outside + inside - corner).abs() - half
+        },
+    );
+}
+
+fn fill_triangle_aa(
+    rgba: &mut [u8],
+    w: u32,
+    h: u32,
+    ax: f32,
+    ay: f32,
+    bx: f32,
+    by: f32,
+    cx: f32,
+    cy: f32,
+    color: [u8; 4],
+) {
+    let edge = |x1: f32, y1: f32, x2: f32, y2: f32, px: f32, py: f32| {
+        let nx = y2 - y1;
+        let ny = x1 - x2;
+        let len = nx.hypot(ny).max(1e-6);
+        ((px - x1) * nx + (py - y1) * ny) / len
+    };
+    let sign = edge(ax, ay, bx, by, cx, cy).signum();
+    if sign == 0.0 {
+        stroke_capsule_aa(rgba, w, h, ax, ay, bx, by, 0.7, color);
+        return;
+    }
+    let pad = 1.5;
+    paint_sdf(
+        rgba,
+        w,
+        h,
+        (ax.min(bx).min(cx) - pad).floor() as i32,
+        (ay.min(by).min(cy) - pad).floor() as i32,
+        (ax.max(bx).max(cx) + pad).ceil() as i32,
+        (ay.max(by).max(cy) + pad).ceil() as i32,
+        color,
+        |px, py| {
+            let d0 = edge(ax, ay, bx, by, px, py) * sign;
+            let d1 = edge(bx, by, cx, cy, px, py) * sign;
+            let d2 = edge(cx, cy, ax, ay, px, py) * sign;
+            -d0.min(d1).min(d2)
+        },
+    );
+}
+
+fn stroke_arc_aa(
+    rgba: &mut [u8],
+    w: u32,
+    h: u32,
+    cx: f32,
+    cy: f32,
+    radius: f32,
+    start: f32,
+    end: f32,
+    stroke: f32,
+    color: [u8; 4],
+) {
+    let steps = ((radius * (end - start).abs()).ceil() as i32).max(8);
+    let mut prev_x = cx + radius * start.cos();
+    let mut prev_y = cy + radius * start.sin();
+    for i in 1..=steps {
+        let t = start + (end - start) * (i as f32 / steps as f32);
+        let x = cx + radius * t.cos();
+        let y = cy + radius * t.sin();
+        stroke_capsule_aa(rgba, w, h, prev_x, prev_y, x, y, stroke * 0.5, color);
+        prev_x = x;
+        prev_y = y;
+    }
+}
+
+/// 引擎内绘制的图标字形:(cx, cy) 为中心,size 为外接盒边长。
 #[allow(clippy::too_many_arguments)]
 fn draw_icon(
     rgba: &mut [u8],
@@ -1533,126 +1876,152 @@ fn draw_icon(
     size: i32,
     ink: [u8; 4],
 ) {
-    let s = size / 2;
+    let cx = cx as f32;
+    let cy = cy as f32;
+    let s = (size as f32 * 0.5).max(6.0);
+    let stroke = (size as f32 * 0.09).clamp(1.35, 2.1);
     match action {
         SelectionAction::Copy => {
-            // 双矩形:后页四边描边,前页实心压住后页右下。
-            let back = IntRect {
-                x: cx - s + 1,
-                y: cy - s,
-                width: s + 2,
-                height: s + 3,
-            };
-            draw_line(rgba, w, h, back.x, back.y, back.right() - 1, back.y, 1, ink);
-            draw_line(rgba, w, h, back.x, back.y, back.x, back.bottom() - 1, 1, ink);
-            draw_line(
-                rgba,
-                w,
-                h,
-                back.right() - 1,
-                back.y,
-                back.right() - 1,
-                back.bottom() - 1,
-                1,
-                ink,
-            );
-            draw_line(
-                rgba,
-                w,
-                h,
-                back.x,
-                back.bottom() - 1,
-                back.right() - 1,
-                back.bottom() - 1,
-                1,
-                ink,
-            );
-            fill_rect(
-                rgba,
-                w,
-                h,
-                IntRect {
-                    x: cx - 2,
-                    y: cy - s + 4,
-                    width: s + 2,
-                    height: s + 3,
-                },
-                ink,
-            );
+            stroke_round_rect_aa(rgba, w, h, cx - s + 1.2, cy - s + 1.0, s + 1.6, s + 2.2, 2.1, stroke, ink);
+            stroke_round_rect_aa(rgba, w, h, cx - 1.6, cy - s + 4.0, s + 2.4, s + 3.0, 2.1, stroke, ink);
         }
         SelectionAction::Save => {
-            // 箭头入盘:竖直箭头 + 底部托盘。
-            draw_line(rgba, w, h, cx, cy - s, cx, cy + 1, 1, ink);
-            draw_line(rgba, w, h, cx - 3, cy - 2, cx, cy + 2, 1, ink);
-            draw_line(rgba, w, h, cx + 3, cy - 2, cx, cy + 2, 1, ink);
-            draw_line(rgba, w, h, cx - s + 1, cy + s - 3, cx + s - 1, cy + s - 3, 1, ink);
-            draw_line(rgba, w, h, cx - s + 1, cy + s - 6, cx - s + 1, cy + s - 3, 1, ink);
-            draw_line(rgba, w, h, cx + s - 1, cy + s - 6, cx + s - 1, cy + s - 3, 1, ink);
+            stroke_capsule_aa(rgba, w, h, cx, cy - s + 1.4, cx, cy + 1.2, stroke * 0.55, ink);
+            stroke_capsule_aa(rgba, w, h, cx, cy + 2.2, cx - 3.6, cy - 1.2, stroke * 0.55, ink);
+            stroke_capsule_aa(rgba, w, h, cx, cy + 2.2, cx + 3.6, cy - 1.2, stroke * 0.55, ink);
+            fill_triangle_aa(rgba, w, h, cx, cy + 3.4, cx - 3.8, cy - 0.4, cx + 3.8, cy - 0.4, ink);
+            stroke_capsule_aa(rgba, w, h, cx - s + 2.0, cy + s - 1.4, cx + s - 2.0, cy + s - 1.4, stroke * 0.55, ink);
+            stroke_capsule_aa(rgba, w, h, cx - s + 2.0, cy + s - 4.2, cx - s + 2.0, cy + s - 1.4, stroke * 0.55, ink);
+            stroke_capsule_aa(rgba, w, h, cx + s - 2.0, cy + s - 4.2, cx + s - 2.0, cy + s - 1.4, stroke * 0.55, ink);
         }
         SelectionAction::Pin => {
-            // 图钉:圆头 + 斜下针尖。
-            fill_circle(rgba, w, h, cx - 3, cy - 4, (s / 2).max(3), ink);
-            draw_line(rgba, w, h, cx - 1, cy - 2, cx + s - 3, cy + s - 2, 1, ink);
+            fill_disk_aa(rgba, w, h, cx, cy - s + 4.2, s * 0.38, ink);
+            fill_triangle_aa(
+                rgba, w, h,
+                cx - s * 0.36, cy - 0.4,
+                cx + s * 0.36, cy - 0.4,
+                cx, cy + s - 1.2,
+                ink,
+            );
         }
         SelectionAction::Annotate => {
-            // 笔:斜向笔身 + 笔尖。
-            draw_line(rgba, w, h, cx - s + 3, cy + s - 3, cx + s - 4, cy - s + 4, 2, ink);
-            draw_line(rgba, w, h, cx - s + 1, cy + s - 1, cx - s + 3, cy + s - 3, 1, ink);
+            stroke_capsule_aa(rgba, w, h, cx - s + 3.2, cy + s - 3.4, cx + s - 3.4, cy - s + 3.2, stroke * 0.7, ink);
+            fill_triangle_aa(
+                rgba, w, h,
+                cx - s + 1.4, cy + s - 1.2,
+                cx - s + 5.2, cy + s - 5.0,
+                cx - s + 5.2, cy + s - 1.2,
+                ink,
+            );
         }
         SelectionAction::Ocr => {
-            // 「字」字形(文字管线,加粗居中)。
-            let font = (size as f32 - 2.0).max(10.0);
-            let text_w = text::measure_width("字", font).unwrap_or(font);
-            let x = cx as f32 - text_w / 2.0;
-            let y = cy as f32 - text::line_height(font) / 2.0;
-            text::draw_text_bold(rgba, w, h, x, y, "字", font, ink);
+            stroke_round_rect_aa(rgba, w, h, cx - s + 2.0, cy - s + 1.2, (s - 2.0) * 2.0, (s - 1.2) * 2.0, 2.0, stroke, ink);
+            stroke_capsule_aa(rgba, w, h, cx - s + 4.6, cy - 1.8, cx + s - 4.6, cy - 1.8, stroke * 0.45, ink);
+            stroke_capsule_aa(rgba, w, h, cx - s + 4.6, cy + 1.0, cx + s - 4.6, cy + 1.0, stroke * 0.45, ink);
+            stroke_capsule_aa(rgba, w, h, cx - s + 4.6, cy + 3.8, cx + 1.2, cy + 3.8, stroke * 0.45, ink);
         }
         SelectionAction::Cancel => {
-            draw_line(rgba, w, h, cx - s + 3, cy - s + 3, cx + s - 3, cy + s - 3, 1, ink);
-            draw_line(rgba, w, h, cx - s + 3, cy + s - 3, cx + s - 3, cy - s + 3, 1, ink);
+            stroke_capsule_aa(rgba, w, h, cx - s + 3.0, cy - s + 3.0, cx + s - 3.0, cy + s - 3.0, stroke * 0.55, ink);
+            stroke_capsule_aa(rgba, w, h, cx - s + 3.0, cy + s - 3.0, cx + s - 3.0, cy - s + 3.0, stroke * 0.55, ink);
         }
         SelectionAction::CopyColor => {
-            // 兜底(不在图标轨/菜单动作集内):实心圆点。
-            fill_circle(rgba, w, h, cx, cy, 3, ink);
+            fill_disk_aa(rgba, w, h, cx, cy, 4.2, ink);
+            fill_disk_aa(rgba, w, h, cx, cy, 1.6, ink);
         }
-        // 标注工具条图标由 `draw_annotation_icon` 绘制。
-        SelectionAction::Tool(_)
-        | SelectionAction::Undo
-        | SelectionAction::Redo
-        | SelectionAction::Delete
-        | SelectionAction::More => {}
+        SelectionAction::Tool(AnnotationTool::Rect) => {
+            stroke_round_rect_aa(rgba, w, h, cx - s + 1.4, cy - s + 2.4, (s - 1.4) * 2.0, (s - 2.4) * 2.0, 2.2, stroke, ink);
+        }
+        SelectionAction::Tool(AnnotationTool::Ellipse) => {
+            let rx = s - 1.4;
+            let ry = s - 2.2;
+            stroke_round_rect_aa(rgba, w, h, cx - rx, cy - ry, rx * 2.0, ry * 2.0, ry, stroke, ink);
+        }
+        SelectionAction::Tool(AnnotationTool::Line) => {
+            stroke_capsule_aa(rgba, w, h, cx - s + 1.6, cy + s - 2.2, cx + s - 1.6, cy - s + 2.2, stroke * 0.5, ink);
+            fill_disk_aa(rgba, w, h, cx - s + 1.6, cy + s - 2.2, stroke * 0.85, ink);
+            fill_disk_aa(rgba, w, h, cx + s - 1.6, cy - s + 2.2, stroke * 0.85, ink);
+        }
+        SelectionAction::Tool(AnnotationTool::Arrow) => {
+            stroke_capsule_aa(rgba, w, h, cx - s + 2.2, cy + s - 2.2, cx + s - 4.6, cy - s + 4.6, stroke * 0.55, ink);
+            fill_triangle_aa(
+                rgba, w, h,
+                cx + s - 1.2, cy - s + 1.2,
+                cx + s - 7.4, cy - s + 2.0,
+                cx + s - 2.0, cy - s + 7.4,
+                ink,
+            );
+        }
+        SelectionAction::Tool(AnnotationTool::Number) => {
+            stroke_round_rect_aa(rgba, w, h, cx - s + 1.6, cy - s + 1.6, (s - 1.6) * 2.0, (s - 1.6) * 2.0, s - 1.6, stroke, ink);
+            stroke_capsule_aa(rgba, w, h, cx - 1.6, cy - s + 3.6, cx, cy - s + 2.6, stroke * 0.5, ink);
+            stroke_capsule_aa(rgba, w, h, cx, cy - s + 2.6, cx, cy + s - 3.2, stroke * 0.5, ink);
+        }
+        SelectionAction::Tool(AnnotationTool::Text) => {
+            stroke_capsule_aa(rgba, w, h, cx - s + 2.0, cy - s + 2.6, cx + s - 2.0, cy - s + 2.6, stroke * 0.55, ink);
+            stroke_capsule_aa(rgba, w, h, cx, cy - s + 2.6, cx, cy + s - 2.8, stroke * 0.55, ink);
+            stroke_capsule_aa(rgba, w, h, cx - 3.2, cy + s - 2.8, cx + 3.2, cy + s - 2.8, stroke * 0.5, ink);
+        }
+        SelectionAction::Tool(AnnotationTool::Pen) => {
+            stroke_capsule_aa(rgba, w, h, cx - s + 3.4, cy + s - 3.6, cx + s - 3.2, cy - s + 3.0, stroke * 0.7, ink);
+            fill_triangle_aa(
+                rgba, w, h,
+                cx - s + 1.4, cy + s - 1.2,
+                cx - s + 5.4, cy + s - 5.2,
+                cx - s + 5.4, cy + s - 1.2,
+                ink,
+            );
+        }
+        SelectionAction::Tool(AnnotationTool::Highlighter) => {
+            stroke_capsule_aa(rgba, w, h, cx - s + 1.6, cy + 1.8, cx + s - 2.0, cy - 2.8, stroke * 1.15, ink);
+            stroke_capsule_aa(rgba, w, h, cx - s + 2.2, cy + s - 2.0, cx + 1.6, cy + 2.8, stroke * 0.5, ink);
+        }
+        SelectionAction::Tool(AnnotationTool::Mosaic) => {
+            let cell = (s * 0.42).max(2.2);
+            let gap = 1.1;
+            let origin_x = cx - (cell * 3.0 + gap * 2.0) * 0.5;
+            let origin_y = cy - (cell * 3.0 + gap * 2.0) * 0.5;
+            let filled = [true, false, true, false, true, false, true, false, true];
+            for row in 0..3 {
+                for col in 0..3 {
+                    let x = origin_x + col as f32 * (cell + gap);
+                    let y = origin_y + row as f32 * (cell + gap);
+                    if filled[row * 3 + col] {
+                        fill_disk_aa(rgba, w, h, x + cell * 0.5, y + cell * 0.5, cell * 0.42, ink);
+                    } else {
+                        stroke_round_rect_aa(rgba, w, h, x, y, cell, cell, 0.8, 1.2, ink);
+                    }
+                }
+            }
+        }
+        SelectionAction::Tool(AnnotationTool::Blur) => {
+            stroke_round_rect_aa(rgba, w, h, cx - s + 1.4, cy - s + 1.4, (s - 1.4) * 2.0, (s - 1.4) * 2.0, s - 1.4, stroke, ink);
+            stroke_round_rect_aa(rgba, w, h, cx - s * 0.45, cy - s * 0.45, s * 0.9, s * 0.9, s * 0.45, 1.2, ink);
+            fill_disk_aa(rgba, w, h, cx, cy, 1.4, ink);
+        }
+        SelectionAction::Undo => {
+            stroke_arc_aa(rgba, w, h, cx + 0.4, cy + 0.6, s - 2.2, 0.55, 5.55, stroke, ink);
+            fill_triangle_aa(rgba, w, h, cx - s + 2.2, cy - 1.6, cx - s + 6.4, cy - 5.0, cx - s + 6.4, cy + 1.6, ink);
+        }
+        SelectionAction::Redo => {
+            stroke_arc_aa(rgba, w, h, cx - 0.4, cy + 0.6, s - 2.2, 3.73, -1.27, stroke, ink);
+            fill_triangle_aa(rgba, w, h, cx + s - 2.2, cy - 1.6, cx + s - 6.4, cy - 5.0, cx + s - 6.4, cy + 1.6, ink);
+        }
+        SelectionAction::Delete => {
+            stroke_capsule_aa(rgba, w, h, cx - 2.2, cy - s + 1.6, cx + 2.2, cy - s + 1.6, stroke * 0.45, ink);
+            stroke_capsule_aa(rgba, w, h, cx - s + 1.4, cy - s + 3.6, cx + s - 1.4, cy - s + 3.6, stroke * 0.55, ink);
+            stroke_capsule_aa(rgba, w, h, cx - s + 2.4, cy - s + 3.6, cx - s + 3.4, cy + s - 2.0, stroke * 0.5, ink);
+            stroke_capsule_aa(rgba, w, h, cx + s - 2.4, cy - s + 3.6, cx + s - 3.4, cy + s - 2.0, stroke * 0.5, ink);
+            stroke_capsule_aa(rgba, w, h, cx - s + 3.4, cy + s - 2.0, cx + s - 3.4, cy + s - 2.0, stroke * 0.5, ink);
+        }
+        SelectionAction::More => {
+            fill_disk_aa(rgba, w, h, cx - s + 2.8, cy, 1.55, ink);
+            fill_disk_aa(rgba, w, h, cx, cy, 1.55, ink);
+            fill_disk_aa(rgba, w, h, cx + s - 2.8, cy, 1.55, ink);
+        }
     }
 }
 
-/// 椭圆描边(细线):按参数曲线采样盖章,用于工具条圆/模糊图标。
-#[allow(clippy::too_many_arguments)]
-fn stroke_ellipse(
-    rgba: &mut [u8],
-    w: u32,
-    h: u32,
-    cx: i32,
-    cy: i32,
-    rx: i32,
-    ry: i32,
-    color: [u8; 4],
-) {
-    let steps = 28;
-    for i in 0..steps {
-        let t = i as f32 / steps as f32 * std::f32::consts::TAU;
-        fill_circle(
-            rgba,
-            w,
-            h,
-            cx + (rx as f32 * t.cos()).round() as i32,
-            cy + (ry as f32 * t.sin()).round() as i32,
-            1,
-            color,
-        );
-    }
-}
-
-/// 标注工具条图标:(cx, cy) 为中心,`size` 为图标外接盒边长。
-/// 工具图标保持简洁几何形,保证 40px 圆形按钮内可辨识。
+/// 标注工具条图标:(cx, cy) 为中心,size 为图标外接盒边长。
 #[allow(clippy::too_many_arguments)]
 fn draw_annotation_icon(
     rgba: &mut [u8],
@@ -1664,131 +2033,7 @@ fn draw_annotation_icon(
     size: i32,
 ) {
     let (cx, cy) = rect.center();
-    let s = (size / 2).max(4);
-    match action {
-        SelectionAction::Tool(AnnotationTool::Rect) => {
-            draw_line(rgba, w, h, cx - s, cy - s, cx + s, cy - s, 1, ink);
-            draw_line(rgba, w, h, cx - s, cy - s, cx - s, cy + s, 1, ink);
-            draw_line(rgba, w, h, cx + s, cy - s, cx + s, cy + s, 1, ink);
-            draw_line(rgba, w, h, cx - s, cy + s, cx + s, cy + s, 1, ink);
-        }
-        SelectionAction::Tool(AnnotationTool::Ellipse) => {
-            stroke_ellipse(rgba, w, h, cx, cy, s, s - 1, ink);
-        }
-        SelectionAction::Tool(AnnotationTool::Line) => {
-            draw_line(rgba, w, h, cx - s, cy + s, cx + s, cy - s, 1, ink);
-        }
-        SelectionAction::Tool(AnnotationTool::Arrow) => {
-            draw_line(rgba, w, h, cx - s, cy + s, cx + s - 3, cy - s + 3, 1, ink);
-            draw_line(rgba, w, h, cx + s, cy - s, cx + s - 5, cy - s + 1, 2, ink);
-            draw_line(rgba, w, h, cx + s, cy - s, cx + s - 1, cy - s + 5, 2, ink);
-        }
-        SelectionAction::Tool(AnnotationTool::Number) => {
-            let font = (size as f32 + 2.0).max(12.0);
-            let label = "1";
-            let text_w = text::measure_width(label, font).unwrap_or(font * 0.6);
-            text::draw_text_bold(
-                rgba,
-                w,
-                h,
-                cx as f32 - text_w / 2.0,
-                cy as f32 - text::line_height(font) / 2.0,
-                label,
-                font,
-                ink,
-            );
-        }
-        SelectionAction::Tool(AnnotationTool::Text) => {
-            let font = (size as f32 + 2.0).max(12.0);
-            let label = "T";
-            let text_w = text::measure_width(label, font).unwrap_or(font * 0.6);
-            text::draw_text_bold(
-                rgba,
-                w,
-                h,
-                cx as f32 - text_w / 2.0,
-                cy as f32 - text::line_height(font) / 2.0,
-                label,
-                font,
-                ink,
-            );
-        }
-        SelectionAction::Tool(AnnotationTool::Pen) => {
-            // 折线笔迹 + 笔尖圆点。
-            draw_line(rgba, w, h, cx - s, cy + 2, cx - 2, cy - s + 2, 1, ink);
-            draw_line(rgba, w, h, cx - 2, cy - s + 2, cx + s, cy + s - 2, 1, ink);
-            fill_circle(rgba, w, h, cx - s, cy + 2, 2, ink);
-        }
-        SelectionAction::Tool(AnnotationTool::Highlighter) => {
-            // 粗横条:荧光笔语义(半透明覆盖在最终渲染里,图标为实心示意)。
-            draw_line(rgba, w, h, cx - s, cy + 2, cx + s, cy - 2, 3, ink);
-        }
-        SelectionAction::Tool(AnnotationTool::Mosaic) => {
-            // 2×2 棋盘格(实心两格 + 描边两格示意像素化)。
-            let cell = (s / 2).max(2);
-            fill_rect(
-                rgba,
-                w,
-                h,
-                IntRect {
-                    x: cx - cell,
-                    y: cy - cell,
-                    width: cell,
-                    height: cell,
-                },
-                ink,
-            );
-            fill_rect(
-                rgba,
-                w,
-                h,
-                IntRect {
-                    x: cx,
-                    y: cy,
-                    width: cell,
-                    height: cell,
-                },
-                ink,
-            );
-            draw_line(rgba, w, h, cx, cy - cell, cx + cell, cy - cell, 1, ink);
-            draw_line(rgba, w, h, cx + cell, cy - cell, cx + cell, cy, 1, ink);
-            draw_line(rgba, w, h, cx - cell, cy, cx - cell, cy + cell, 1, ink);
-            draw_line(rgba, w, h, cx - cell, cy + cell, cx, cy + cell, 1, ink);
-        }
-        SelectionAction::Tool(AnnotationTool::Blur) => {
-            stroke_ellipse(rgba, w, h, cx, cy, s, s - 1, ink);
-            stroke_ellipse(rgba, w, h, cx, cy, s / 2 + 1, s / 2, ink);
-            fill_circle(rgba, w, h, cx, cy, 1, ink);
-        }
-        SelectionAction::Undo | SelectionAction::Redo => {
-            // 弧形箭头:横杆 + 箭头 + 右侧回钩;Redo 水平镜像。
-            let flip = if action == SelectionAction::Redo { -1 } else { 1 };
-            let (ax, bx) = (cx - s * flip, cx + s * flip);
-            draw_line(rgba, w, h, ax, cy, bx, cy, 1, ink);
-            draw_line(rgba, w, h, ax, cy, ax + 4 * flip, cy - 4, 1, ink);
-            draw_line(rgba, w, h, ax, cy, ax + 4 * flip, cy + 4, 1, ink);
-            draw_line(rgba, w, h, bx, cy, bx, cy - s, 1, ink);
-            draw_line(rgba, w, h, bx, cy - s, bx - 3 * flip, cy - s, 1, ink);
-        }
-        SelectionAction::Delete => {
-            // 垃圾桶:盖 + 提手 + 桶身 + 两条内竖线。
-            draw_line(rgba, w, h, cx - s, cy - s + 3, cx + s, cy - s + 3, 1, ink);
-            draw_line(rgba, w, h, cx - 2, cy - s, cx + 2, cy - s, 1, ink);
-            draw_line(rgba, w, h, cx - s + 2, cy - s + 3, cx - s + 2, cy + s - 1, 1, ink);
-            draw_line(rgba, w, h, cx + s - 2, cy - s + 3, cx + s - 2, cy + s - 1, 1, ink);
-            draw_line(rgba, w, h, cx - s + 2, cy + s - 1, cx + s - 2, cy + s - 1, 1, ink);
-            draw_line(rgba, w, h, cx - 1, cy - s + 5, cx - 1, cy + s - 3, 1, ink);
-            draw_line(rgba, w, h, cx + 1, cy - s + 5, cx + 1, cy + s - 3, 1, ink);
-        }
-        SelectionAction::More => {
-            // 横向三点:展开/收起其余工具。
-            let dot = (size / 10).max(1);
-            for dx in [-s + dot, 0, s - dot] {
-                fill_circle(rgba, w, h, cx + dx, cy, dot, ink);
-            }
-        }
-        _ => {}
-    }
+    draw_icon(rgba, w, h, action, cx, cy, size, ink);
 }
 
 #[cfg(test)]
@@ -2212,6 +2457,56 @@ mod tests {
         .expect("corner toolbar");
         assert!(placed.panel.x >= 0 && placed.panel.y >= 0);
         assert!(placed.panel.right() <= 1280 && placed.panel.bottom() <= 800);
+    }
+
+    #[test]
+    fn chrome_icons_paint_ink_inside_their_box() {
+        let (w, h) = (48u32, 48u32);
+        let ink = [255, 255, 255, 255];
+        let rect = IntRect {
+            x: 8,
+            y: 8,
+            width: 32,
+            height: 32,
+        };
+        let actions = [
+            SelectionAction::Copy,
+            SelectionAction::Save,
+            SelectionAction::Pin,
+            SelectionAction::Annotate,
+            SelectionAction::Ocr,
+            SelectionAction::Cancel,
+            SelectionAction::CopyColor,
+            SelectionAction::Undo,
+            SelectionAction::Redo,
+            SelectionAction::Delete,
+            SelectionAction::More,
+            SelectionAction::Tool(AnnotationTool::Rect),
+            SelectionAction::Tool(AnnotationTool::Ellipse),
+            SelectionAction::Tool(AnnotationTool::Line),
+            SelectionAction::Tool(AnnotationTool::Arrow),
+            SelectionAction::Tool(AnnotationTool::Number),
+            SelectionAction::Tool(AnnotationTool::Text),
+            SelectionAction::Tool(AnnotationTool::Pen),
+            SelectionAction::Tool(AnnotationTool::Highlighter),
+            SelectionAction::Tool(AnnotationTool::Mosaic),
+            SelectionAction::Tool(AnnotationTool::Blur),
+        ];
+        for action in actions {
+            let mut buf = vec![0u8; (w * h * 4) as usize];
+            match action {
+                SelectionAction::Tool(_)
+                | SelectionAction::Undo
+                | SelectionAction::Redo
+                | SelectionAction::Delete
+                | SelectionAction::More => {
+                    draw_annotation_icon(&mut buf, w, h, action, rect, ink, 16);
+                }
+                _ => draw_icon(&mut buf, w, h, action, 24, 24, 18, ink),
+            }
+            let painted = buf.chunks_exact(4).filter(|px| px[0] > 0).count();
+            assert!(painted > 8, "{action:?} painted {painted} pixels");
+        }
     }
 
     /// 文本编辑会话按标注色绘制字符并画出光标(无字体环境仅验证不 panic)。
@@ -2701,6 +2996,73 @@ mod tests {
         assert_eq!(read(cx + 12, cy), [0x0F, 0x76, 0x6E]);
         // 描边:选区左边框(避开手柄)为强调色。
         assert_eq!(read(41, 90), [ACCENT[0], ACCENT[1], ACCENT[2]]);
+    }
+
+    #[test]
+    fn hover_tooltip_prefers_above_and_stays_on_screen() {
+        let anchor = IntRect {
+            x: 100,
+            y: 80,
+            width: 40,
+            height: 40,
+        };
+        let panel = place_tooltip(anchor, 48, 24, 6, (320, 200)).unwrap();
+        assert_eq!(panel.y, 80 - 24 - 6);
+        assert!(panel.x >= 0 && panel.right() <= 320);
+        let tight = IntRect {
+            x: 4,
+            y: 4,
+            width: 24,
+            height: 24,
+        };
+        let flipped = place_tooltip(tight, 60, 22, 6, (200, 120)).unwrap();
+        assert!(flipped.x >= 0 && flipped.y >= 0);
+        assert!(flipped.right() <= 200 && flipped.bottom() <= 120);
+    }
+
+    #[test]
+    fn hover_tooltip_paints_chrome_near_rail_button() {
+        let frame = solid_frame(320, 200, [10, 200, 90, 255]);
+        let composer = Composer::new(&frame).unwrap();
+        let selection = PhysicalRect {
+            x: 40,
+            y: 30,
+            width: 161,
+            height: 91,
+        };
+        let flags = no_magnifier_flags();
+        let buttons = toolbar_buttons(flags);
+        let panel = toolbar_panel(composer.metrics, selection, (320, 200), &buttons).unwrap();
+        let (_, rect) = toolbar_button_rects(composer.metrics, panel, &buttons)
+            .first()
+            .copied()
+            .unwrap();
+        let (cx, cy) = rect.center();
+        let mut scene = Scene {
+            selection: Some(selection),
+            cursor: (cx, cy),
+            flags,
+            toolbar_visible: true,
+            menu_open: false,
+            menu_anchor: (0, 0),
+            annotation_mode: false,
+            annotation_more: false,
+        };
+        assert!(composer.hovered_icon(&scene, None, 320, 200).is_some());
+        let hovered = composer.compose(&scene);
+        scene.cursor = (8, 8);
+        let idle = composer.compose(&scene);
+        let bright = |buf: &[u8]| {
+            buf.chunks_exact(4)
+                .filter(|px| px[0] > 240 && px[1] > 240 && px[2] > 230)
+                .count()
+        };
+        assert!(
+            bright(&hovered) > bright(&idle),
+            "hover {} idle {}",
+            bright(&hovered),
+            bright(&idle)
+        );
     }
 
     #[test]

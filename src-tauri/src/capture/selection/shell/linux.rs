@@ -158,6 +158,10 @@ static ACTIVE_SHELL_CANCEL_ATOM: AtomicU32 = AtomicU32::new(0);
 
 /// 请求关闭当前选区壳(线程安全,可从任意线程调用):向壳窗口发送取消
 /// ClientMessage;无活动壳时为 no-op。壳结果由会话层代际校验丢弃(ADR-16)。
+pub fn shell_is_active() -> bool {
+    ACTIVE_SHELL_WINDOW.load(Ordering::SeqCst) != 0
+}
+
 pub fn request_shell_close() {
     let window = ACTIVE_SHELL_WINDOW.load(Ordering::SeqCst);
     let atom = ACTIVE_SHELL_CANCEL_ATOM.load(Ordering::SeqCst);

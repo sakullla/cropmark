@@ -44,21 +44,19 @@
 
 .preview-close {
   flex: 0 0 auto;
-  height: 28px;
-  padding: 0 12px;
-  border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
-  border-radius: 999px;
-  background: var(--danger-soft);
-  color: var(--danger);
-  font: inherit;
-  font-size: 13px;
-  font-weight: 600;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
   cursor: pointer;
 }
 
 .preview-close:hover {
-  border-color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 22%, transparent);
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 
 .preview-note {
@@ -82,6 +80,22 @@
   color: var(--ok);
 }
 
+.preview-note.is-pulse {
+  animation: preview-note-pulse 0.4s ease;
+}
+
+@keyframes preview-note-pulse {
+  0% {
+    transform: scale(1);
+  }
+  35% {
+    transform: scale(1.03);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
 .preview-note.is-feedback {
   background: var(--accent-soft);
   border-color: color-mix(in srgb, var(--accent) 40%, transparent);
@@ -99,7 +113,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   padding: 6px 10px;
   border-bottom: 1px solid var(--line);
   flex: 0 0 auto;
@@ -153,6 +167,16 @@
   border: 1px solid var(--line);
   border-radius: 999px;
   background: color-mix(in srgb, var(--panel) 80%, transparent);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.preview-actions button svg {
+  width: 15px;
+  height: 15px;
+  display: block;
+  flex: 0 0 auto;
 }
 
 .preview-actions .primary {
@@ -165,6 +189,87 @@
 
 .preview-actions .primary:hover {
   filter: brightness(1.06);
+}
+
+.preview-actions .primary:active {
+  filter: brightness(0.94);
+}
+
+.preview-actions .primary.is-copied {
+  background: var(--ok);
+  border-color: var(--ok);
+}
+
+.preview-actions button.icon-action {
+  width: 32px;
+  min-width: 32px;
+  padding: 0;
+  border-radius: 10px;
+  justify-content: center;
+  line-height: 0;
+}
+
+.preview-save {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.preview-save-split {
+  display: inline-flex;
+  align-items: stretch;
+  height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel) 80%, transparent);
+  overflow: hidden;
+}
+
+.preview-save-split > button {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  height: 32px;
+}
+
+.preview-save-split > [data-action="save"] {
+  padding: 0 8px 0 12px;
+}
+
+.preview-save-caret {
+  width: 28px;
+  min-width: 28px;
+  padding: 0;
+  border-left: 1px solid var(--line);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.preview-save-caret svg {
+  width: 12px;
+  height: 12px;
+  display: block;
+}
+
+.preview-quality-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 168px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.preview-quality-panel[hidden] {
+  display: none;
 }
 
 .preview-stage {

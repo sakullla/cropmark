@@ -11,24 +11,51 @@
   border-radius: 10px;
   -webkit-app-region: no-drag;
   app-region: no-drag;
-  min-width: 32px;
-  height: 32px;
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  padding: 0 8px;
-}
-
-.annotation-tools button.tool-text {
-  min-width: 64px;
-  font-size: 12px;
+  padding: 0;
 }
 
 .annotation-tools button svg {
   width: 18px;
   height: 18px;
   display: block;
+}
+
+.annotation-tools .toolbar-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 4px;
+  background: var(--line);
+  flex: 0 0 auto;
+}
+
+.annotation-more {
+  position: relative;
+  display: inline-flex;
+}
+
+.annotation-more-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.annotation-more-panel[hidden] {
+  display: none;
 }
 
 .annotation-tools button:hover {

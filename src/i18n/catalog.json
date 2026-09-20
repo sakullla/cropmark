@@ -23,13 +23,13 @@
     "zh-CN": "上次区域（暂无记录）",
     "en": "Last region (no record)"
   },
-  "tray.delay_seconds": {
-    "zh-CN": "延时 {seconds} 秒",
-    "en": "Delay {seconds}s"
+  "tray.delay": {
+    "zh-CN": "延时",
+    "en": "Delay"
   },
-  "tray.delay_configured": {
-    "zh-CN": "使用设置的延时（{seconds} 秒）",
-    "en": "Configured delay ({seconds}s)"
+  "tray.delay_once": {
+    "zh-CN": "{seconds} 秒",
+    "en": "{seconds}s"
   },
   "tray.settings": {
     "zh-CN": "设置",
@@ -1055,6 +1055,14 @@
     "zh-CN": "标注样式",
     "en": "Annotation style"
   },
+  "preview.tool.more": {
+    "zh-CN": "更多",
+    "en": "More"
+  },
+  "preview.tool.more_title": {
+    "zh-CN": "更多工具",
+    "en": "More tools"
+  },
   "preview.style.color": {
     "zh-CN": "颜色",
     "en": "Color"
@@ -1190,6 +1198,14 @@
   "preview.action.copy_title": {
     "zh-CN": "复制 (Ctrl+C)",
     "en": "Copy (Ctrl+C)"
+  },
+  "preview.action.copied": {
+    "zh-CN": "已复制",
+    "en": "Copied"
+  },
+  "preview.note.copying": {
+    "zh-CN": "正在复制…",
+    "en": "Copying…"
   },
   "preview.action.copy": {
     "zh-CN": "复制",

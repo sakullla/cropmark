@@ -20,4 +20,4 @@ mod imp;
 #[path = "selection/shell/linux.rs"]
 mod imp;
 
-pub use imp::{pick_region, request_shell_close, RegionOutcome, ShellHooks};
+pub use imp::{pick_region, request_shell_close, shell_is_active, RegionOutcome, ShellHooks};
