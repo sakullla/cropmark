@@ -572,6 +572,17 @@ mod tests {
     }
 
     #[test]
+    fn printed_sample_stays_square_so_rotated_frames_keep_detect_margin() {
+        let frame = printed_sample();
+        assert_eq!(frame.width, frame.height);
+        assert!(
+            frame.width >= 240,
+            "90°/270° 后短边仍需大于检测 padding,避免窄条误检"
+        );
+        assert!(!printed_sample_text().is_empty());
+    }
+
+    #[test]
     fn recognize_printed_sample_or_skip() {
         let dir = crate_model_dir();
         if !models_present(&dir) {
@@ -598,21 +609,32 @@ mod tests {
     }
 
     fn printed_sample() -> Frame {
+        // 正方画布:360×72 横条在 Rotate90/270 后只剩 72px 宽,Linux ONNX 会把
+        // 窄条噪声认成额外 "00",与正置结果对不上。两边都给足检测边距。
         let width = 360;
-        let height = 72;
+        let height = 360;
         let mut bytes = vec![255u8; (width * height * 4) as usize];
         for px in bytes.chunks_exact_mut(4) {
             px[3] = 255;
         }
         let frame = accept_buffer(RawBuffer::ready(width, height, bytes)).unwrap();
         let ops = vec![Annotation::Text {
-            x: 12.0,
-            y: 18.0,
-            text: "Hello 中文".into(),
-            size: 28.0,
+            x: 48.0,
+            y: 150.0,
+            text: printed_sample_text().into(),
+            size: 36.0,
             color: crate::annotate::DEFAULT_COLOR.into(),
         }];
         rasterize(&frame, &ops).unwrap_or(frame)
+    }
+
+    /// Linux CI 往往没有 CJK 字体;缺字会画出 .notdef 方框,旋转后被认成 "00"。
+    fn printed_sample_text() -> &'static str {
+        use ab_glyph::Font;
+        match crate::annotate::raster::ui_font() {
+            Some(font) if font.glyph_id('中').0 != 0 => "Hello 中文",
+            _ => "Hello",
+        }
     }
 
     /// 把栅格化样例整体旋转,模拟倒置/侧向截图(R11)。

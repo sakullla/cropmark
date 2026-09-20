@@ -1762,9 +1762,13 @@ mod tests {
             .with_scale(frame.scale)
     }
 
+    const XK_D_LOWER: u32 = 0x64;
+    const XK_Q_LOWER: u32 = 0x71;
+
     /// min_keycode=8、每键 2 列的小键盘表:8=Return,9=Esc,10/11/12/13=方向,
-    /// 14=c,17-21=Keypad Enter/方向,22='B';shift 列(奇数索引)填 NoSymbol
+    /// 14=c,17-21=Keypad Enter/方向,22='Q';shift 列(奇数索引)填 NoSymbol
     /// 验证回退,15 的第 0 列无效、16/22 不在引擎语义内。
+    /// 'A'/'B' 已是工具快捷键,未映射字母改用 'D'/'Q'。
     fn test_keyboard_map() -> KeyboardMap {
         KeyboardMap {
             min_keycode: 8,
@@ -1772,8 +1776,8 @@ mod tests {
             keysyms: vec![
                 XK_RETURN, NO_SYMBOL, XK_ESCAPE, NO_SYMBOL, XK_LEFT, NO_SYMBOL, XK_UP, NO_SYMBOL,
                 XK_RIGHT, NO_SYMBOL, XK_DOWN, NO_SYMBOL, XK_C_LOWER, NO_SYMBOL, NO_SYMBOL,
-                XK_C_UPPER, NO_SYMBOL, 0x0041, XK_KP_ENTER, NO_SYMBOL, XK_KP_LEFT, NO_SYMBOL,
-                XK_KP_UP, NO_SYMBOL, XK_KP_RIGHT, NO_SYMBOL, XK_KP_DOWN, NO_SYMBOL, 0x0042,
+                XK_C_UPPER, NO_SYMBOL, XK_D_LOWER, XK_KP_ENTER, NO_SYMBOL, XK_KP_LEFT, NO_SYMBOL,
+                XK_KP_UP, NO_SYMBOL, XK_KP_RIGHT, NO_SYMBOL, XK_KP_DOWN, NO_SYMBOL, XK_Q_LOWER,
                 NO_SYMBOL,
             ],
         }
@@ -1791,19 +1795,91 @@ mod tests {
         assert_eq!(map.logical_key(14), Some(LogicalKey::CopyColor));
         // 15:第 0 列 NoSymbol 回退到第 1 列(大写 C 同样是取字键)。
         assert_eq!(map.logical_key(15), Some(LogicalKey::CopyColor));
-        // 16:'A' 不在引擎语义内;17-21:数字小键盘的 Enter/方向键与主键盘同义。
+        // 16:'D' 不在引擎语义内;17-21:数字小键盘的 Enter/方向键与主键盘同义。
         assert_eq!(map.logical_key(16), None);
         assert_eq!(map.logical_key(17), Some(LogicalKey::Enter));
         assert_eq!(map.logical_key(18), Some(LogicalKey::ArrowLeft));
         assert_eq!(map.logical_key(19), Some(LogicalKey::ArrowUp));
         assert_eq!(map.logical_key(20), Some(LogicalKey::ArrowRight));
         assert_eq!(map.logical_key(21), Some(LogicalKey::ArrowDown));
-        // 22:'B' 不在引擎语义内;23:超出表尾。
+        // 22:'Q' 不在引擎语义内;23:超出表尾。
         assert_eq!(map.logical_key(22), None);
         assert_eq!(map.logical_key(23), None);
         // 超出键盘表范围。
         assert_eq!(map.logical_key(7), None);
         assert_eq!(map.logical_key(100), None);
+    }
+
+    #[test]
+    fn tool_keysyms_map_to_annotation_tools() {
+        let map = KeyboardMap {
+            min_keycode: 8,
+            per_keycode: 1,
+            keysyms: vec![
+                XK_R_LOWER,
+                XK_E_LOWER,
+                XK_L_LOWER,
+                XK_A_LOWER,
+                XK_N_LOWER,
+                XK_T_LOWER,
+                XK_P_LOWER,
+                XK_H_LOWER,
+                XK_M_LOWER,
+                XK_B_LOWER,
+                XK_A_UPPER,
+                XK_B_UPPER,
+                XK_D_LOWER,
+            ],
+        };
+        assert_eq!(
+            map.logical_key(8),
+            Some(LogicalKey::Tool(AnnotationTool::Rect))
+        );
+        assert_eq!(
+            map.logical_key(9),
+            Some(LogicalKey::Tool(AnnotationTool::Ellipse))
+        );
+        assert_eq!(
+            map.logical_key(10),
+            Some(LogicalKey::Tool(AnnotationTool::Line))
+        );
+        assert_eq!(
+            map.logical_key(11),
+            Some(LogicalKey::Tool(AnnotationTool::Arrow))
+        );
+        assert_eq!(
+            map.logical_key(12),
+            Some(LogicalKey::Tool(AnnotationTool::Number))
+        );
+        assert_eq!(
+            map.logical_key(13),
+            Some(LogicalKey::Tool(AnnotationTool::Text))
+        );
+        assert_eq!(
+            map.logical_key(14),
+            Some(LogicalKey::Tool(AnnotationTool::Pen))
+        );
+        assert_eq!(
+            map.logical_key(15),
+            Some(LogicalKey::Tool(AnnotationTool::Highlighter))
+        );
+        assert_eq!(
+            map.logical_key(16),
+            Some(LogicalKey::Tool(AnnotationTool::Mosaic))
+        );
+        assert_eq!(
+            map.logical_key(17),
+            Some(LogicalKey::Tool(AnnotationTool::Blur))
+        );
+        assert_eq!(
+            map.logical_key(18),
+            Some(LogicalKey::Tool(AnnotationTool::Arrow))
+        );
+        assert_eq!(
+            map.logical_key(19),
+            Some(LogicalKey::Tool(AnnotationTool::Blur))
+        );
+        assert_eq!(map.logical_key(20), None);
     }
 
     #[test]
