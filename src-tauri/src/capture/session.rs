@@ -2025,7 +2025,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn cancel_then_occupy_starts_a_new_region_capture() {
         let now = Instant::now();
         let mut slot = Some(ActiveSession::new(CaptureMode::Region, 0, now));
