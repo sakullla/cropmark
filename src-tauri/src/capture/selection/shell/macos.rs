@@ -17,8 +17,9 @@
 //! 鼠标坐标用 `NSEvent.mouseLocation`(AppKit 左下原点)换到引擎左上原点;事件泵
 //! 像 Windows 壳的窗口过程一样直接转发,不把输入只交给 NSView 响应链.
 //! 光标提示按引擎 `cursor_for` 映射:选区内部→开手(拖移中闭合手)、手柄/边→
-//! resize(SF Symbol 自绘)、chrome→箭头、空白→十字;符号不可用时退回十字,
-//! 光标切换不阻断选择/确认/取消(ADR-5).
+//! resize(SF Symbol 自绘)、chrome→箭头、空白→双色十字(深色芯+浅色描边);
+//! 符号不可用时退回该双色十字,不使用系统 `crosshairCursor`(ADR-1/ADR-5).
+//! 光标切换不阻断选择/确认/取消.
 //! 文本输入(R21):文本工具激活时 `keyDown:` 经 `interpretKeyEvents:` 交给系统
 //! 输入上下文,视图实现 `NSTextInputClient`(insertText/setMarkedText/候选窗定位),
 //! IME 组合串作为 preedit 交给引擎绘制、提交串走 Text 事件;输入法不可用时
@@ -36,6 +37,7 @@ use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use block2::{DynBlock, RcBlock};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
 use objc2::{define_class, msg_send, sel, AnyThread, MainThreadMarker, MainThreadOnly};
@@ -45,9 +47,8 @@ use objc2_app_kit::{
     NSResponder, NSScreen, NSTextInputClient, NSView, NSWindowCollectionBehavior,
     NSWindowStyleMask,
 };
-use block2::{DynBlock, RcBlock};
 use objc2_core_foundation::{
-    kCFRunLoopCommonModes, CFRetained, CFRunLoop, CFType, CGPoint, CGRect, CGSize, CGFloat,
+    kCFRunLoopCommonModes, CFRetained, CFRunLoop, CFType, CGFloat, CGPoint, CGRect, CGSize,
 };
 use objc2_core_graphics::{
     kCGScreenSaverWindowLevel, CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGContext,
@@ -58,10 +59,10 @@ use objc2_foundation::{
     NSString,
 };
 
+use crate::annotate::Annotation;
 use crate::capture::buffer::Frame;
 use crate::capture::error::CaptureError;
 use crate::capture::geometry::{self, MonitorGeom, PhysicalRect};
-use crate::annotate::Annotation;
 use crate::capture::selection::composer::{self, Composer};
 use crate::capture::selection::{
     AnnotationOptions, AnnotationTool, CursorHint, EngineOutcome, EngineState, FeatureFlags,
@@ -238,6 +239,170 @@ fn build_resize_cursor(kind: CursorKind) -> Option<Retained<NSCursor>> {
         &image,
         hot_spot,
     ))
+}
+
+/// 双色十字像素:深色芯 + 浅色描边;Empty 为透明。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CrosshairPixel {
+    Empty,
+    Core,
+    Outline,
+}
+
+/// 运行时十字规格(奇数边长,热点在交叉点)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CrosshairSprite {
+    size: usize,
+    arm: usize,
+}
+
+impl CrosshairSprite {
+    const fn primary() -> Self {
+        Self { size: 25, arm: 10 }
+    }
+
+    const fn fallback() -> Self {
+        Self { size: 9, arm: 3 }
+    }
+
+    fn hotspot(self) -> (usize, usize) {
+        let center = self.size / 2;
+        (center, center)
+    }
+
+    fn is_core(self, x: usize, y: usize) -> bool {
+        let center = self.size / 2;
+        (x == center && y.abs_diff(center) <= self.arm)
+            || (y == center && x.abs_diff(center) <= self.arm)
+    }
+
+    fn pixel(self, x: usize, y: usize) -> CrosshairPixel {
+        if x >= self.size || y >= self.size {
+            return CrosshairPixel::Empty;
+        }
+        if self.is_core(x, y) {
+            return CrosshairPixel::Core;
+        }
+        let x0 = x.saturating_sub(1);
+        let y0 = y.saturating_sub(1);
+        let x1 = (x + 1).min(self.size - 1);
+        let y1 = (y + 1).min(self.size - 1);
+        for nx in x0..=x1 {
+            for ny in y0..=y1 {
+                if (nx != x || ny != y) && self.is_core(nx, ny) {
+                    return CrosshairPixel::Outline;
+                }
+            }
+        }
+        CrosshairPixel::Empty
+    }
+
+    fn rgba(self) -> Vec<u8> {
+        let mut out = vec![0u8; self.size * self.size * 4];
+        for y in 0..self.size {
+            for x in 0..self.size {
+                let i = (y * self.size + x) * 4;
+                match self.pixel(x, y) {
+                    CrosshairPixel::Core => {
+                        out[i] = 0x14;
+                        out[i + 1] = 0x14;
+                        out[i + 2] = 0x14;
+                        out[i + 3] = 0xff;
+                    }
+                    CrosshairPixel::Outline => {
+                        out[i] = 0xf7;
+                        out[i + 1] = 0xf7;
+                        out[i + 2] = 0xf7;
+                        out[i + 3] = 0xff;
+                    }
+                    CrosshairPixel::Empty => {}
+                }
+            }
+        }
+        out
+    }
+}
+
+unsafe extern "C-unwind" fn release_rgba_vec(
+    info: *mut c_void,
+    _data: NonNull<c_void>,
+    _size: usize,
+) {
+    if !info.is_null() {
+        drop(Box::from_raw(info.cast::<Vec<u8>>()));
+    }
+}
+
+fn nsimage_from_rgba(pixels: Vec<u8>, size: usize) -> Option<Retained<NSImage>> {
+    let mut boxed = Box::new(pixels);
+    let data_ptr = boxed.as_ptr();
+    let data_len = boxed.len();
+    let info = Box::into_raw(boxed).cast::<c_void>();
+    let Some(provider) = (unsafe {
+        CGDataProvider::with_data(
+            info,
+            data_ptr.cast::<c_void>(),
+            data_len,
+            Some(release_rgba_vec),
+        )
+    }) else {
+        unsafe { drop(Box::from_raw(info.cast::<Vec<u8>>())) };
+        return None;
+    };
+    let space = CGColorSpace::new_device_rgb()?;
+    let bitmap_info = CGBitmapInfo(CGImageAlphaInfo::Last.0 | CGImageByteOrderInfo::Order32Big.0);
+    let cg_image = unsafe {
+        CGImage::new(
+            size,
+            size,
+            8,
+            32,
+            size * 4,
+            Some(&space),
+            bitmap_info,
+            Some(&provider),
+            std::ptr::null::<CGFloat>(),
+            false,
+            CGColorRenderingIntent::RenderingIntentDefault,
+        )
+    }?;
+    let ns_size = NSSize {
+        width: size as f64,
+        height: size as f64,
+    };
+    let image: Retained<NSImage> =
+        unsafe { msg_send![NSImage::alloc(), initWithCGImage: &*cg_image, size: ns_size] };
+    Some(image)
+}
+
+fn cursor_from_sprite(sprite: CrosshairSprite) -> Option<Retained<NSCursor>> {
+    let image = nsimage_from_rgba(sprite.rgba(), sprite.size)?;
+    let (hot_x, hot_y) = sprite.hotspot();
+    Some(NSCursor::initWithImage_hotSpot(
+        NSCursor::alloc(),
+        &image,
+        NSPoint {
+            x: hot_x as f64,
+            y: hot_y as f64,
+        },
+    ))
+}
+
+/// Crosshair 提示使用的双色十字;主规格失败则用最小双色位图,
+/// 不退回 `NSCursor::crosshairCursor`(ADR-1)。
+fn dual_crosshair_cursor() -> Retained<NSCursor> {
+    thread_local! {
+        static CACHED: RefCell<Option<Retained<NSCursor>>> = const { RefCell::new(None) };
+    }
+    CACHED.with(|slot| {
+        if slot.borrow().is_none() {
+            let cursor = cursor_from_sprite(CrosshairSprite::primary())
+                .or_else(|| cursor_from_sprite(CrosshairSprite::fallback()))
+                .expect("最小双色十字位图应能生成 NSCursor");
+            *slot.borrow_mut() = Some(cursor);
+        }
+        slot.borrow().clone().expect("双色十字已缓存")
+    })
 }
 
 /// resize 自绘光标缓存;首次使用时构建,构建失败保持 None。
@@ -706,7 +871,7 @@ fn start_shell(
     let content_view: &NSView = &view;
     window.setContentView(Some(content_view));
     window.setFrame_display(frame, true);
-    NSCursor::crosshairCursor().set();
+    dual_crosshair_cursor().set();
     STATE.with(|slot| {
         *slot.borrow_mut() = Some(ShellState {
             hooks,
@@ -774,7 +939,8 @@ fn install_input_monitor() -> Option<Retained<AnyObject>> {
         // AppKit 回调不可 panic。先 clone 视图再放掉 STATE 借用,避免
         // route_input 里 borrow_mut 重入 RefCell 直接 abort。
         let handled = catch_unwind(AssertUnwindSafe(|| {
-            let view = STATE.with(|slot| slot.borrow().as_ref().and_then(|state| state.view.clone()));
+            let view =
+                STATE.with(|slot| slot.borrow().as_ref().and_then(|state| state.view.clone()));
             view.map(|view| route_input(&view, unsafe { event.as_ref() }))
                 .unwrap_or(false)
         }))
@@ -946,9 +1112,9 @@ fn forward_mouse(view: &SelectionView, event: &NSEvent, kind: MouseInput) {
 fn event_point(view: &SelectionView, event: &NSEvent) -> (i32, i32) {
     let (engine_w, engine_h) = STATE
         .with(|slot| {
-            slot.borrow().as_ref().map(|state| {
-                (state.canvas.width as f64, state.canvas.height as f64)
-            })
+            slot.borrow()
+                .as_ref()
+                .map(|state| (state.canvas.width as f64, state.canvas.height as f64))
         })
         .unwrap_or((1.0, 1.0));
     let in_view = if event.windowNumber() != 0 {
@@ -1005,7 +1171,7 @@ fn dispatch_input(view: &SelectionView, event: InputEvent) {
 }
 
 /// 依引擎当前提示切换系统光标;形态未变化时跳过 set。resize 提示用 SF
-/// Symbol 自绘,符号不可用时退回十字;光标切换不影响选择/确认/取消。
+/// Symbol 自绘,符号不可用时退回双色十字;光标切换不影响选择/确认/取消。
 fn apply_cursor(state: &mut ShellState) {
     let kind = {
         let engine = &state.canvas.engine;
@@ -1017,14 +1183,14 @@ fn apply_cursor(state: &mut ShellState) {
     }
     state.applied_cursor = Some(kind);
     let cursor = match kind {
-        CursorKind::Crosshair => NSCursor::crosshairCursor(),
+        CursorKind::Crosshair => dual_crosshair_cursor(),
         CursorKind::OpenHand => NSCursor::openHandCursor(),
         CursorKind::ClosedHand => NSCursor::closedHandCursor(),
         CursorKind::Arrow => NSCursor::arrowCursor(),
         resize => state
             .resize_cursors
             .get(resize)
-            .unwrap_or_else(NSCursor::crosshairCursor),
+            .unwrap_or_else(dual_crosshair_cursor),
     };
     cursor.set();
 }
@@ -1082,9 +1248,9 @@ fn feed_event(state: &mut ShellState, event: InputEvent, view: &SelectionView) {
 
 /// 「标注」动作到壳结果的映射:引擎尚无选区时返回 None,会话继续等待。
 fn annotate_outcome(engine: &SelectionEngine) -> Option<RegionOutcome> {
-    engine.selection().map(|rect| {
-        RegionOutcome::Annotate(rect, engine.annotations().to_vec())
-    })
+    engine
+        .selection()
+        .map(|rect| RegionOutcome::Annotate(rect, engine.annotations().to_vec()))
 }
 
 /// 操作条/菜单动作到静默完成动作的映射;标注/取消/复制色值与标注工具条
@@ -1171,7 +1337,8 @@ fn handle_key(view: &SelectionView, event: &NSEvent) {
     let code = event.keyCode();
     let flags = event.modifierFlags();
     let shift = flags.contains(NSEventModifierFlags::Shift);
-    let command = flags.intersects(NSEventModifierFlags::Command.union(NSEventModifierFlags::Control));
+    let command =
+        flags.intersects(NSEventModifierFlags::Command.union(NSEventModifierFlags::Control));
     if command {
         if let Some(key) = shortcut_key(code, shift) {
             dispatch_input(view, InputEvent::Key { key, shift });
@@ -1340,8 +1507,11 @@ fn present(state: &mut ShellState, view: &SelectionView) {
     }
     if let Some(started) = started {
         let now = Instant::now();
-        if should_log_present(state.last_present_log.is_none(), state.last_present_log, now)
-        {
+        if should_log_present(
+            state.last_present_log.is_none(),
+            state.last_present_log,
+            now,
+        ) {
             eprintln!(
                 "Cropmark overlay {}x{} present: compose={:?}, total={:?}",
                 state.canvas.width,
@@ -1375,9 +1545,7 @@ fn rebuild_image(state: &mut ShellState) {
         return;
     };
     // 内存布局 R,G,B,A:Last + 32Big,免去每帧 RGBA→BGRA swizzle。
-    let bitmap_info = CGBitmapInfo(
-        CGImageAlphaInfo::Last.0 | CGImageByteOrderInfo::Order32Big.0,
-    );
+    let bitmap_info = CGBitmapInfo(CGImageAlphaInfo::Last.0 | CGImageByteOrderInfo::Order32Big.0);
     state.image = unsafe {
         CGImage::new(
             w,
@@ -1671,6 +1839,42 @@ mod tests {
         assert_eq!(resize_symbol(CursorKind::OpenHand), None);
         assert_eq!(resize_symbol(CursorKind::ClosedHand), None);
         assert_eq!(resize_symbol(CursorKind::Arrow), None);
+    }
+
+    fn assert_dual_color_crosshair(sprite: CrosshairSprite) {
+        let (cx, cy) = sprite.hotspot();
+        assert_eq!(sprite.size % 2, 1);
+        assert_eq!((cx, cy), (sprite.size / 2, sprite.size / 2));
+        assert_eq!(sprite.pixel(cx, cy), CrosshairPixel::Core);
+        assert_eq!(sprite.pixel(cx + 1, cy), CrosshairPixel::Core);
+        assert_eq!(sprite.pixel(cx, cy + 1), CrosshairPixel::Core);
+        assert_eq!(sprite.pixel(cx + 1, cy + 1), CrosshairPixel::Outline);
+        assert_eq!(
+            sprite.pixel(cx, cy.saturating_sub(sprite.arm + 1)),
+            CrosshairPixel::Outline
+        );
+        assert_eq!(sprite.pixel(0, 0), CrosshairPixel::Empty);
+        let rgba = sprite.rgba();
+        let core = (cy * sprite.size + cx) * 4;
+        assert_eq!(&rgba[core..core + 4], &[0x14, 0x14, 0x14, 0xff]);
+        let outline = ((cy + 1) * sprite.size + cx + 1) * 4;
+        assert_eq!(&rgba[outline..outline + 4], &[0xf7, 0xf7, 0xf7, 0xff]);
+    }
+
+    #[test]
+    fn dual_color_crosshair_has_dark_core_and_light_outline() {
+        assert_dual_color_crosshair(CrosshairSprite::primary());
+        assert_dual_color_crosshair(CrosshairSprite::fallback());
+    }
+
+    #[test]
+    fn crosshair_hint_does_not_use_system_crosshair_cursor() {
+        let src = include_str!("macos.rs");
+        let forbidden = concat!("NSCursor::", "crosshairCursor()");
+        assert!(
+            !src.contains(forbidden),
+            "Crosshair must use the dual-color sprite, not system crosshairCursor"
+        );
     }
 
     #[test]

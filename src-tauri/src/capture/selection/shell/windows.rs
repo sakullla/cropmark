@@ -8,36 +8,36 @@
 use std::cell::RefCell;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    GetDC, ReleaseDC, ScreenToClient, SetDIBitsToDevice, SetStretchBltMode, StretchDIBits,
-    UpdateWindow, ValidateRect, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, COLORONCOLOR, DIB_RGB_COLORS,
-    RGBQUAD, SRCCOPY,
+    CreateBitmap, CreateDIBSection, DeleteObject, GetDC, ReleaseDC, ScreenToClient,
+    SetDIBitsToDevice, SetStretchBltMode, StretchDIBits, UpdateWindow, ValidateRect, BITMAPINFO,
+    BITMAPINFOHEADER, BI_RGB, COLORONCOLOR, DIB_RGB_COLORS, RGBQUAD, SRCCOPY,
 };
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{
     GetAwarenessFromDpiAwarenessContext, GetThreadDpiAwarenessContext,
 };
 use windows::Win32::UI::Input::Ime::{
-    ImmGetCompositionStringW, ImmGetContext, ImmReleaseContext, ImmSetCompositionWindow,
-    COMPOSITIONFORM, CFS_POINT, GCS_COMPSTR, GCS_RESULTSTR, HIMC, IME_COMPOSITION_STRING,
+    ImmGetCompositionStringW, ImmGetContext, ImmReleaseContext, ImmSetCompositionWindow, CFS_POINT,
+    COMPOSITIONFORM, GCS_COMPSTR, GCS_RESULTSTR, HIMC, IME_COMPOSITION_STRING,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetCursorPos,
-    GetForegroundWindow, GetMessageW, GetWindowThreadProcessId, LoadCursorW, PeekMessageW,
-    PostMessageW, PostQuitMessage, RegisterClassExW, SetCursor, SetForegroundWindow,
-    SetWindowPos, ShowWindow, TranslateMessage,
-    CS_HREDRAW, CS_VREDRAW, HWND_TOPMOST, IDC_ARROW, IDC_CROSS, IDC_HAND, IDC_SIZEALL, IDC_SIZENESW,
-    PM_REMOVE, WM_QUIT,
-    IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, MSG, SWP_SHOWWINDOW, SW_SHOW, WM_CHAR, WM_CLOSE,
-    WM_DESTROY, WM_ERASEBKGND, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_STARTCOMPOSITION,
-    WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT,
-    WM_RBUTTONDOWN, WM_SETCURSOR, WM_SETFOCUS, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-    WS_POPUP,
+    CreateCursor, CreateIconIndirect, CreateWindowExW, DefWindowProcW, DestroyWindow,
+    DispatchMessageW, GetClientRect, GetCursorPos, GetForegroundWindow, GetMessageW,
+    GetSystemMetrics, GetWindowThreadProcessId, LoadCursorW, PeekMessageW, PostMessageW,
+    PostQuitMessage, RegisterClassExW, SetCursor, SetForegroundWindow, SetWindowPos, ShowWindow,
+    TranslateMessage, CS_HREDRAW, CS_VREDRAW, HCURSOR, HWND_TOPMOST, ICONINFO, IDC_ARROW, IDC_HAND,
+    IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, MSG, PM_REMOVE, SM_CXCURSOR,
+    SM_CYCURSOR, SWP_SHOWWINDOW, SW_SHOW, WM_CHAR, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND,
+    WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KEYUP,
+    WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_QUIT, WM_RBUTTONDOWN,
+    WM_SETCURSOR, WM_SETFOCUS, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 use crate::annotate::Annotation;
@@ -160,7 +160,12 @@ pub fn request_shell_close() {
         return;
     }
     unsafe {
-        let _ = PostMessageW(Some(HWND(value as *mut c_void)), WM_CLOSE, WPARAM(0), LPARAM(0));
+        let _ = PostMessageW(
+            Some(HWND(value as *mut c_void)),
+            WM_CLOSE,
+            WPARAM(0),
+            LPARAM(0),
+        );
     }
 }
 
@@ -307,9 +312,9 @@ fn foreground_belongs_to_self() -> bool {
 
 /// 「标注」动作到壳结果的映射:引擎尚无选区时返回 None,会话继续等待。
 fn annotate_outcome(engine: &SelectionEngine) -> Option<RegionOutcome> {
-    engine.selection().map(|rect| {
-        RegionOutcome::Annotate(rect, engine.annotations().to_vec())
-    })
+    engine
+        .selection()
+        .map(|rect| RegionOutcome::Annotate(rect, engine.annotations().to_vec()))
 }
 
 /// 操作条/菜单动作到静默完成动作的映射;标注/取消/复制色值/标注工具条
@@ -340,18 +345,225 @@ fn copy_color_value(state: &mut ShellState) {
     (state.hooks.copy_color)(&text, &hex);
 }
 
-/// 引擎光标提示 → Win32 系统光标资源。
-fn cursor_resource(hint: CursorHint) -> PCWSTR {
-    match hint {
-        CursorHint::Move => IDC_SIZEALL,
-        CursorHint::ResizeNS => IDC_SIZENS,
-        CursorHint::ResizeEW => IDC_SIZEWE,
-        CursorHint::ResizeNWSE => IDC_SIZENWSE,
-        CursorHint::ResizeNESW => IDC_SIZENESW,
-        CursorHint::Pointer => IDC_HAND,
-        CursorHint::Arrow => IDC_ARROW,
-        CursorHint::Crosshair => IDC_CROSS,
+/// 双色十字像素:深色芯 + 浅色描边;Empty 为透明。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CrosshairPixel {
+    Empty,
+    Core,
+    Outline,
+}
+
+/// 运行时十字规格(奇数边长,热点在交叉点)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CrosshairSprite {
+    size: usize,
+    arm: usize,
+}
+
+impl CrosshairSprite {
+    const fn primary() -> Self {
+        Self { size: 25, arm: 10 }
     }
+
+    const fn fallback() -> Self {
+        Self { size: 9, arm: 3 }
+    }
+
+    fn hotspot(self) -> (usize, usize) {
+        let center = self.size / 2;
+        (center, center)
+    }
+
+    fn is_core(self, x: usize, y: usize) -> bool {
+        let center = self.size / 2;
+        (x == center && y.abs_diff(center) <= self.arm)
+            || (y == center && x.abs_diff(center) <= self.arm)
+    }
+
+    fn pixel(self, x: usize, y: usize) -> CrosshairPixel {
+        if x >= self.size || y >= self.size {
+            return CrosshairPixel::Empty;
+        }
+        if self.is_core(x, y) {
+            return CrosshairPixel::Core;
+        }
+        let x0 = x.saturating_sub(1);
+        let y0 = y.saturating_sub(1);
+        let x1 = (x + 1).min(self.size - 1);
+        let y1 = (y + 1).min(self.size - 1);
+        for nx in x0..=x1 {
+            for ny in y0..=y1 {
+                if (nx != x || ny != y) && self.is_core(nx, ny) {
+                    return CrosshairPixel::Outline;
+                }
+            }
+        }
+        CrosshairPixel::Empty
+    }
+
+    fn rgba(self) -> Vec<u8> {
+        let mut out = vec![0u8; self.size * self.size * 4];
+        for y in 0..self.size {
+            for x in 0..self.size {
+                let i = (y * self.size + x) * 4;
+                match self.pixel(x, y) {
+                    CrosshairPixel::Core => {
+                        out[i] = 0x14;
+                        out[i + 1] = 0x14;
+                        out[i + 2] = 0x14;
+                        out[i + 3] = 0xff;
+                    }
+                    CrosshairPixel::Outline => {
+                        out[i] = 0xf7;
+                        out[i + 1] = 0xf7;
+                        out[i + 2] = 0xf7;
+                        out[i + 3] = 0xff;
+                    }
+                    CrosshairPixel::Empty => {}
+                }
+            }
+        }
+        out
+    }
+}
+
+/// 引擎光标提示 → Win32 系统光标资源。Crosshair 走运行时双色十字,
+/// 不映射 IDC_CROSS(ADR-1)。
+fn cursor_resource(hint: CursorHint) -> Option<PCWSTR> {
+    match hint {
+        CursorHint::Move => Some(IDC_SIZEALL),
+        CursorHint::ResizeNS => Some(IDC_SIZENS),
+        CursorHint::ResizeEW => Some(IDC_SIZEWE),
+        CursorHint::ResizeNWSE => Some(IDC_SIZENWSE),
+        CursorHint::ResizeNESW => Some(IDC_SIZENESW),
+        CursorHint::Pointer => Some(IDC_HAND),
+        CursorHint::Arrow => Some(IDC_ARROW),
+        CursorHint::Crosshair => None,
+    }
+}
+
+/// Crosshair 提示(及窗口类默认光标)使用的双色十字;创建失败时仍回退到
+/// 更小的双色位图/单色 AND-XOR 十字,绝不 LoadCursorW(IDC_CROSS)。
+fn crosshair_cursor() -> HCURSOR {
+    static HANDLE: OnceLock<isize> = OnceLock::new();
+    HCURSOR(*HANDLE.get_or_init(|| create_dual_crosshair_cursor().0 as isize) as *mut c_void)
+}
+
+fn cursor_handle(hint: CursorHint) -> Option<HCURSOR> {
+    match cursor_resource(hint) {
+        Some(resource) => unsafe { LoadCursorW(None, resource).ok() },
+        None => {
+            let cursor = crosshair_cursor();
+            (!cursor.is_invalid()).then_some(cursor)
+        }
+    }
+}
+
+fn create_dual_crosshair_cursor() -> HCURSOR {
+    unsafe {
+        create_color_cursor(CrosshairSprite::primary())
+            .or_else(|| create_color_cursor(CrosshairSprite::fallback()))
+            .or_else(|| create_mono_cursor(CrosshairSprite::primary()))
+            .or_else(|| create_mono_cursor(CrosshairSprite::fallback()))
+            .unwrap_or_default()
+    }
+}
+
+/// 32bpp ARGB 彩色光标(深色芯 + 浅色描边,透明底)。
+unsafe fn create_color_cursor(sprite: CrosshairSprite) -> Option<HCURSOR> {
+    let size = sprite.size as i32;
+    let rgba = sprite.rgba();
+    let info = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: size,
+            biHeight: -size,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            ..Default::default()
+        },
+        bmiColors: [RGBQUAD::default(); 1],
+    };
+    let mut bits: *mut c_void = std::ptr::null_mut();
+    let color = CreateDIBSection(None, &info, DIB_RGB_COLORS, &mut bits, None, 0).ok()?;
+    if bits.is_null() {
+        let _ = DeleteObject(color.into());
+        return None;
+    }
+    {
+        let dest = std::slice::from_raw_parts_mut(bits.cast::<u8>(), sprite.size * sprite.size * 4);
+        for (src, dst) in rgba.chunks_exact(4).zip(dest.chunks_exact_mut(4)) {
+            dst[0] = src[2];
+            dst[1] = src[1];
+            dst[2] = src[0];
+            dst[3] = src[3];
+        }
+    }
+    let stride = sprite.size.div_ceil(16) * 2;
+    let and_bits = vec![0xffu8; stride * sprite.size];
+    let mask = CreateBitmap(size, size, 1, 1, Some(and_bits.as_ptr().cast::<c_void>()));
+    if mask.is_invalid() {
+        let _ = DeleteObject(color.into());
+        return None;
+    }
+    let (hot_x, hot_y) = sprite.hotspot();
+    let icon_info = ICONINFO {
+        fIcon: false.into(),
+        xHotspot: hot_x as u32,
+        yHotspot: hot_y as u32,
+        hbmMask: mask,
+        hbmColor: color,
+    };
+    let icon = CreateIconIndirect(&icon_info);
+    let _ = DeleteObject(color.into());
+    let _ = DeleteObject(mask.into());
+    icon.ok().map(|handle| HCURSOR(handle.0))
+}
+
+/// 彩色光标失败时的最小双色回退:AND/XOR 平面(黑芯白边)。
+unsafe fn create_mono_cursor(sprite: CrosshairSprite) -> Option<HCURSOR> {
+    let cx = GetSystemMetrics(SM_CXCURSOR).max(sprite.size as i32);
+    let cy = GetSystemMetrics(SM_CYCURSOR).max(sprite.size as i32);
+    if cx <= 0 || cy <= 0 {
+        return None;
+    }
+    let width = cx as usize;
+    let height = cy as usize;
+    let stride = width.div_ceil(16) * 2;
+    let mut and_plane = vec![0xffu8; stride * height];
+    let mut xor_plane = vec![0u8; stride * height];
+    let (hot_x, hot_y) = sprite.hotspot();
+    let origin_x = width.saturating_sub(sprite.size) / 2;
+    let origin_y = height.saturating_sub(sprite.size) / 2;
+    for y in 0..sprite.size {
+        for x in 0..sprite.size {
+            let px = origin_x + x;
+            let py = origin_y + y;
+            let bit = 7 - (px % 8);
+            let index = py * stride + px / 8;
+            match sprite.pixel(x, y) {
+                CrosshairPixel::Empty => {}
+                CrosshairPixel::Core => {
+                    and_plane[index] &= !(1 << bit);
+                }
+                CrosshairPixel::Outline => {
+                    and_plane[index] &= !(1 << bit);
+                    xor_plane[index] |= 1 << bit;
+                }
+            }
+        }
+    }
+    CreateCursor(
+        None,
+        (origin_x + hot_x) as i32,
+        (origin_y + hot_y) as i32,
+        cx,
+        cy,
+        and_plane.as_ptr().cast::<c_void>(),
+        xor_plane.as_ptr().cast::<c_void>(),
+    )
+    .ok()
 }
 
 fn map_virtual_key(vk: u32) -> Option<LogicalKey> {
@@ -535,7 +747,8 @@ unsafe fn log_present_diagnostics(hwnd: HWND, frame: (u32, u32), monitor: (u32, 
 }
 
 unsafe fn create_overlay_window(x: i32, y: i32, w: i32, h: i32) -> Result<HWND, CaptureError> {
-    let instance = GetModuleHandleW(None).map_err(|_| CaptureError::api("error.capture.window_create"))?;
+    let instance =
+        GetModuleHandleW(None).map_err(|_| CaptureError::api("error.capture.window_create"))?;
     let serial = CLASS_SERIAL.fetch_add(1, Ordering::Relaxed);
     let class_name: Vec<u16> = format!("{CLASS}{serial}\0").encode_utf16().collect();
     let class = WNDCLASSEXW {
@@ -543,7 +756,7 @@ unsafe fn create_overlay_window(x: i32, y: i32, w: i32, h: i32) -> Result<HWND, 
         style: CS_HREDRAW | CS_VREDRAW,
         lpfnWndProc: Some(wnd_proc),
         hInstance: instance.into(),
-        hCursor: LoadCursorW(None, IDC_CROSS).unwrap_or_default(),
+        hCursor: crosshair_cursor(),
         lpszClassName: PCWSTR(class_name.as_ptr()),
         ..Default::default()
     };
@@ -589,10 +802,7 @@ fn map_client_to_engine(x: i32, y: i32, client: RECT, engine_w: i32, engine_h: i
     if cw == ew && ch == eh {
         return (x, y);
     }
-    (
-        (x as i64 * ew / cw) as i32,
-        (y as i64 * eh / ch) as i32,
-    )
+    ((x as i64 * ew / cw) as i32, (y as i64 * eh / ch) as i32)
 }
 
 /// 优先 GetCursorPos + ScreenToClient(物理像素、捕获后窗外仍准);
@@ -671,15 +881,14 @@ unsafe extern "system" fn wnd_proc(
         }
         WM_SETCURSOR => {
             // 引擎光标提示(chrome 优先):菜单项/图标轨按钮→手型,放大镜面板→
-            // 箭头,手柄/边→resize 箭头,选区内部→移动,其他→十字。
+            // 箭头,手柄/边→resize 箭头,选区内部→移动,其他→双色十字(ADR-1)。
             let hint = STATE.with(|slot| {
                 slot.borrow().as_ref().map(|state| {
                     let (x, y) = state.canvas.engine.cursor();
                     state.canvas.engine.cursor_for(x, y)
                 })
             });
-            let resource = cursor_resource(hint.unwrap_or(CursorHint::Crosshair));
-            if let Ok(cursor) = LoadCursorW(None, resource) {
+            if let Some(cursor) = cursor_handle(hint.unwrap_or(CursorHint::Crosshair)) {
                 let _ = SetCursor(Some(cursor));
             }
             LRESULT(1)
@@ -906,13 +1115,7 @@ unsafe fn position_composition_window(hwnd: HWND) {
 }
 
 /// 引擎物理像素 → 客户区坐标(DPI 拉伸下与 `map_client_to_engine` 互逆)。
-fn map_engine_to_client(
-    x: i32,
-    y: i32,
-    client: RECT,
-    engine_w: i32,
-    engine_h: i32,
-) -> (i32, i32) {
+fn map_engine_to_client(x: i32, y: i32, client: RECT, engine_w: i32, engine_h: i32) -> (i32, i32) {
     let cw = (client.right - client.left).max(1) as i64;
     let ch = (client.bottom - client.top).max(1) as i64;
     let ew = engine_w.max(1) as i64;
@@ -953,6 +1156,7 @@ mod tests {
     use super::*;
     use crate::capture::buffer::{accept_buffer, RawBuffer};
     use crate::capture::selection::AnnotationTool;
+    use windows::Win32::UI::WindowsAndMessaging::IDC_CROSS;
 
     /// 合成壳状态:真实引擎+合成器,空 hwnd(blit 守卫跳过真实呈现)。
     /// wnd_proc 只做消息→InputEvent 映射,集成测试直接驱动 feed_event 即
@@ -972,7 +1176,12 @@ mod tests {
 
     fn test_state_with_flags(width: u32, height: u32, flags: FeatureFlags) -> ShellState {
         fn noop_copy_color(_text: &str, _hex: &str) {}
-        let frame = accept_buffer(RawBuffer::ready(width, height, vec![60u8; (width * height * 4) as usize])).unwrap();
+        let frame = accept_buffer(RawBuffer::ready(
+            width,
+            height,
+            vec![60u8; (width * height * 4) as usize],
+        ))
+        .unwrap();
         let bytes = frame.rgba.len();
         ShellState {
             hooks: ShellHooks {
@@ -1009,8 +1218,16 @@ mod tests {
         let mut state = test_state(320, 200);
         let hwnd = HWND::default();
         // down→up 零位移:微选区被丢弃,会话继续(不终态)。
-        assert!(!feed_event(&mut state, InputEvent::LeftDown { x: 50, y: 50 }, hwnd));
-        assert!(!feed_event(&mut state, InputEvent::LeftUp { x: 50, y: 50 }, hwnd));
+        assert!(!feed_event(
+            &mut state,
+            InputEvent::LeftDown { x: 50, y: 50 },
+            hwnd
+        ));
+        assert!(!feed_event(
+            &mut state,
+            InputEvent::LeftUp { x: 50, y: 50 },
+            hwnd
+        ));
         assert!(state.outcome.is_none());
         // Esc 兜底退出。
         assert!(feed_event(&mut state, key(LogicalKey::Escape), hwnd));
@@ -1021,13 +1238,21 @@ mod tests {
     fn drag_then_enter_confirms_and_terminates() {
         let mut state = test_state(320, 200);
         let hwnd = HWND::default();
-        assert!(!feed_event(&mut state, InputEvent::LeftDown { x: 40, y: 30 }, hwnd));
+        assert!(!feed_event(
+            &mut state,
+            InputEvent::LeftDown { x: 40, y: 30 },
+            hwnd
+        ));
         assert!(!feed_event(
             &mut state,
             InputEvent::PointerMove { x: 200, y: 120 },
             hwnd
         ));
-        assert!(!feed_event(&mut state, InputEvent::LeftUp { x: 200, y: 120 }, hwnd));
+        assert!(!feed_event(
+            &mut state,
+            InputEvent::LeftUp { x: 200, y: 120 },
+            hwnd
+        ));
         assert!(feed_event(&mut state, key(LogicalKey::Enter), hwnd));
         assert_eq!(
             state.outcome,
@@ -1070,14 +1295,27 @@ mod tests {
         }
         let items = composer::menu_items(state.canvas.engine.flags());
         let metrics = composer::ChromeMetrics::for_scale(1.0);
-        let panel = composer::menu_panel(metrics, state.canvas.engine.menu_anchor(), (320, 200), &items);
+        let panel = composer::menu_panel(
+            metrics,
+            state.canvas.engine.menu_anchor(),
+            (320, 200),
+            &items,
+        );
         let (_, copy_rect) = composer::menu_item_rects(metrics, panel, &items)
             .into_iter()
             .find(|(action, _)| *action == SelectionAction::Copy)
             .unwrap();
         let (cx, cy) = copy_rect.center();
-        assert!(!feed_event(&mut state, InputEvent::LeftDown { x: cx, y: cy }, hwnd));
-        assert!(feed_event(&mut state, InputEvent::LeftUp { x: cx, y: cy }, hwnd));
+        assert!(!feed_event(
+            &mut state,
+            InputEvent::LeftDown { x: cx, y: cy },
+            hwnd
+        ));
+        assert!(feed_event(
+            &mut state,
+            InputEvent::LeftUp { x: cx, y: cy },
+            hwnd
+        ));
         assert_eq!(
             state.outcome,
             Some(RegionOutcome::Quiet(
@@ -1107,14 +1345,27 @@ mod tests {
         }
         let items = composer::menu_items(state.canvas.engine.flags());
         let metrics = composer::ChromeMetrics::for_scale(1.0);
-        let panel = composer::menu_panel(metrics, state.canvas.engine.menu_anchor(), (320, 200), &items);
+        let panel = composer::menu_panel(
+            metrics,
+            state.canvas.engine.menu_anchor(),
+            (320, 200),
+            &items,
+        );
         let (_, annotate_rect) = composer::menu_item_rects(metrics, panel, &items)
             .into_iter()
             .find(|(action, _)| *action == SelectionAction::Annotate)
             .unwrap();
         let (cx, cy) = annotate_rect.center();
-        assert!(!feed_event(&mut state, InputEvent::LeftDown { x: cx, y: cy }, hwnd));
-        assert!(feed_event(&mut state, InputEvent::LeftUp { x: cx, y: cy }, hwnd));
+        assert!(!feed_event(
+            &mut state,
+            InputEvent::LeftDown { x: cx, y: cy },
+            hwnd
+        ));
+        assert!(feed_event(
+            &mut state,
+            InputEvent::LeftUp { x: cx, y: cy },
+            hwnd
+        ));
         // 「标注」必须与 Enter 确认区分:会话层据此强制打开预览编辑器。
         assert_eq!(
             state.outcome,
@@ -1161,13 +1412,21 @@ mod tests {
             assert!(!feed_event(&mut state, event, hwnd));
         }
         // 边缘拖拽,up 落在画布外坐标(钳制):回 Selected,不终态。
-        assert!(!feed_event(&mut state, InputEvent::LeftDown { x: 203, y: 100 }, hwnd));
+        assert!(!feed_event(
+            &mut state,
+            InputEvent::LeftDown { x: 203, y: 100 },
+            hwnd
+        ));
         assert!(!feed_event(
             &mut state,
             InputEvent::PointerMove { x: 999, y: 100 },
             hwnd
         ));
-        assert!(!feed_event(&mut state, InputEvent::LeftUp { x: 999, y: 100 }, hwnd));
+        assert!(!feed_event(
+            &mut state,
+            InputEvent::LeftUp { x: 999, y: 100 },
+            hwnd
+        ));
         // EdgeResize 中 Esc 也能直接终态(另起会话验证 Enter 路径前先看钳制)。
         assert!(feed_event(&mut state, key(LogicalKey::Enter), hwnd));
         assert!(matches!(state.outcome, Some(RegionOutcome::Preview(..))));
@@ -1193,7 +1452,11 @@ mod tests {
         let mut state = test_state(320, 200);
         let hwnd = HWND::default();
         // 拖到一半失焦(Alt+Tab/Win+D/点击另一屏):必须退出而非永挂。
-        assert!(!feed_event(&mut state, InputEvent::LeftDown { x: 40, y: 30 }, hwnd));
+        assert!(!feed_event(
+            &mut state,
+            InputEvent::LeftDown { x: 40, y: 30 },
+            hwnd
+        ));
         assert!(!feed_event(
             &mut state,
             InputEvent::PointerMove { x: 120, y: 90 },
@@ -1207,14 +1470,47 @@ mod tests {
 
     #[test]
     fn cursor_hints_map_to_win32_cursor_resources() {
-        assert_eq!(cursor_resource(CursorHint::Pointer), IDC_HAND);
-        assert_eq!(cursor_resource(CursorHint::Arrow), IDC_ARROW);
-        assert_eq!(cursor_resource(CursorHint::Crosshair), IDC_CROSS);
-        assert_eq!(cursor_resource(CursorHint::Move), IDC_SIZEALL);
-        assert_eq!(cursor_resource(CursorHint::ResizeNS), IDC_SIZENS);
-        assert_eq!(cursor_resource(CursorHint::ResizeEW), IDC_SIZEWE);
-        assert_eq!(cursor_resource(CursorHint::ResizeNWSE), IDC_SIZENWSE);
-        assert_eq!(cursor_resource(CursorHint::ResizeNESW), IDC_SIZENESW);
+        assert_eq!(cursor_resource(CursorHint::Pointer), Some(IDC_HAND));
+        assert_eq!(cursor_resource(CursorHint::Arrow), Some(IDC_ARROW));
+        assert_eq!(cursor_resource(CursorHint::Crosshair), None);
+        assert_eq!(cursor_resource(CursorHint::Move), Some(IDC_SIZEALL));
+        assert_eq!(cursor_resource(CursorHint::ResizeNS), Some(IDC_SIZENS));
+        assert_eq!(cursor_resource(CursorHint::ResizeEW), Some(IDC_SIZEWE));
+        assert_eq!(cursor_resource(CursorHint::ResizeNWSE), Some(IDC_SIZENWSE));
+        assert_eq!(cursor_resource(CursorHint::ResizeNESW), Some(IDC_SIZENESW));
+        let custom = cursor_handle(CursorHint::Crosshair).expect("双色十字光标");
+        let system = unsafe { LoadCursorW(None, IDC_CROSS) }.expect("系统十字");
+        assert_ne!(custom.0, system.0);
+        assert!(!custom.is_invalid());
+    }
+
+    fn assert_dual_color_crosshair(sprite: CrosshairSprite) {
+        let (cx, cy) = sprite.hotspot();
+        assert_eq!(sprite.size % 2, 1);
+        assert_eq!((cx, cy), (sprite.size / 2, sprite.size / 2));
+        assert_eq!(sprite.pixel(cx, cy), CrosshairPixel::Core);
+        assert_eq!(sprite.pixel(cx + 1, cy), CrosshairPixel::Core);
+        assert_eq!(sprite.pixel(cx, cy + 1), CrosshairPixel::Core);
+        assert_eq!(sprite.pixel(cx + 1, cy + 1), CrosshairPixel::Outline);
+        assert_eq!(
+            sprite.pixel(cx, cy.saturating_sub(sprite.arm + 1)),
+            CrosshairPixel::Outline
+        );
+        assert_eq!(sprite.pixel(0, 0), CrosshairPixel::Empty);
+        let rgba = sprite.rgba();
+        let core = (cy * sprite.size + cx) * 4;
+        assert_eq!(&rgba[core..core + 4], &[0x14, 0x14, 0x14, 0xff]);
+        let outline = ((cy + 1) * sprite.size + cx + 1) * 4;
+        assert_eq!(&rgba[outline..outline + 4], &[0xf7, 0xf7, 0xf7, 0xff]);
+    }
+
+    #[test]
+    fn dual_color_crosshair_has_dark_core_and_light_outline() {
+        assert_dual_color_crosshair(CrosshairSprite::primary());
+        assert_dual_color_crosshair(CrosshairSprite::fallback());
+        let fallback = unsafe { create_color_cursor(CrosshairSprite::fallback()) }
+            .or_else(|| unsafe { create_mono_cursor(CrosshairSprite::fallback()) });
+        assert!(fallback.is_some_and(|cursor| !cursor.is_invalid()));
     }
 
     #[test]
@@ -1384,8 +1680,16 @@ mod tests {
             .find(|(action, _)| *action == SelectionAction::Copy)
             .unwrap();
         let (cx, cy) = copy_rect.center();
-        assert!(!feed_event(&mut state, InputEvent::LeftDown { x: cx, y: cy }, hwnd));
-        assert!(feed_event(&mut state, InputEvent::LeftUp { x: cx, y: cy }, hwnd));
+        assert!(!feed_event(
+            &mut state,
+            InputEvent::LeftDown { x: cx, y: cy },
+            hwnd
+        ));
+        assert!(feed_event(
+            &mut state,
+            InputEvent::LeftUp { x: cx, y: cy },
+            hwnd
+        ));
         match &state.outcome {
             Some(RegionOutcome::Quiet(rect, QuietAction::Copy, annotations)) => {
                 assert_eq!(rect.width, 721);
@@ -1470,8 +1774,16 @@ mod tests {
             .find(|(action, _)| *action == SelectionAction::Annotate)
             .expect("annotate item");
         let (cx, cy) = rect.center();
-        assert!(!feed_event(state, InputEvent::LeftDown { x: cx, y: cy }, hwnd));
-        assert!(!feed_event(state, InputEvent::LeftUp { x: cx, y: cy }, hwnd));
+        assert!(!feed_event(
+            state,
+            InputEvent::LeftDown { x: cx, y: cy },
+            hwnd
+        ));
+        assert!(!feed_event(
+            state,
+            InputEvent::LeftUp { x: cx, y: cy },
+            hwnd
+        ));
         assert!(
             state.canvas.engine.annotation_mode(),
             "「标注」应进入标注模式"
@@ -1494,8 +1806,16 @@ mod tests {
                 .find(|(candidate, _)| *candidate == action)
                 .expect("button present");
             let (cx, cy) = rect.center();
-            assert!(!feed_event(state, InputEvent::LeftDown { x: cx, y: cy }, hwnd));
-            assert!(!feed_event(state, InputEvent::LeftUp { x: cx, y: cy }, hwnd));
+            assert!(!feed_event(
+                state,
+                InputEvent::LeftDown { x: cx, y: cy },
+                hwnd
+            ));
+            assert!(!feed_event(
+                state,
+                InputEvent::LeftUp { x: cx, y: cy },
+                hwnd
+            ));
         };
         let target = SelectionAction::Tool(tool);
         let visible = state
@@ -1539,13 +1859,29 @@ mod tests {
         let selection = state.canvas.engine.selection().unwrap();
         let metrics = state.canvas.engine.metrics();
         let rail_buttons = composer::toolbar_buttons(state.canvas.engine.flags());
-        let rail = composer::toolbar_panel(metrics, selection, state.canvas.engine.size(), &rail_buttons)
-            .unwrap();
+        let rail = composer::toolbar_panel(
+            metrics,
+            selection,
+            state.canvas.engine.size(),
+            &rail_buttons,
+        )
+        .unwrap();
         let (_, rail_rect) = composer::toolbar_button_rects(metrics, rail, &rail_buttons)[0];
         let (rx, ry) = rail_rect.center();
-        assert!(!feed_event(&mut state, InputEvent::LeftDown { x: rx, y: ry }, hwnd));
-        assert!(!feed_event(&mut state, InputEvent::LeftUp { x: rx, y: ry }, hwnd));
-        assert!(state.outcome.is_none(), "隐藏的操作条不得结束会话或产出动作");
+        assert!(!feed_event(
+            &mut state,
+            InputEvent::LeftDown { x: rx, y: ry },
+            hwnd
+        ));
+        assert!(!feed_event(
+            &mut state,
+            InputEvent::LeftUp { x: rx, y: ry },
+            hwnd
+        ));
+        assert!(
+            state.outcome.is_none(),
+            "隐藏的操作条不得结束会话或产出动作"
+        );
         // 「更多」展开/收起其余工具。
         assert!(!state.canvas.engine.annotation_more());
         click_engine_action(&mut state, hwnd, SelectionAction::More);
@@ -1572,8 +1908,16 @@ mod tests {
             .find(|(candidate, _)| *candidate == action)
             .expect("button present");
         let (cx, cy) = rect.center();
-        assert!(!feed_event(state, InputEvent::LeftDown { x: cx, y: cy }, hwnd));
-        assert!(!feed_event(state, InputEvent::LeftUp { x: cx, y: cy }, hwnd));
+        assert!(!feed_event(
+            state,
+            InputEvent::LeftDown { x: cx, y: cy },
+            hwnd
+        ));
+        assert!(!feed_event(
+            state,
+            InputEvent::LeftUp { x: cx, y: cy },
+            hwnd
+        ));
     }
 
     #[test]

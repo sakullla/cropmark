@@ -11,11 +11,13 @@
 //! max-request-length)。像素打包按根视觉的 R/G/B 掩码与服务器字节序生成,
 //! 常见 LSBFirst + {R<<16,G<<8,B} 布局等价于 Windows 壳的 BGRA 呈现缓冲。
 //!
-//! 光标提示(ADR-5):引擎 `cursor_for` 的提示经 "cursor" 字体字形
+//! 光标提示(ADR-5/ADR-1):引擎 `cursor_for` 的提示经 "cursor" 字体字形
 //! (`XCreateFontCursor` 语义:source=glyph、mask=glyph+1)映射为 fleur/resize
-//! 箭头/默认指针/十字,输入事件后按提示变化切换(窗口属性等价 XDefineCursor;
-//! 活动抓取另经 `ChangeActivePointerGrab` 立即换光标)。字体或单个字形不可用时
-//! 该提示退回服务器默认指针,不阻断选择/确认/取消。
+//! 箭头/默认指针;Crosshair 使用 pixmap 双色十字(深色芯+浅色描边),不把
+//! 单色 `XC_CROSSHAIR` 当作浅色底上的唯一指示。输入事件后按提示变化切换
+//! (窗口属性等价 XDefineCursor;活动抓取另经 `ChangeActivePointerGrab` 立即
+//! 换光标)。字体或单个字形不可用时该提示退回服务器默认指针;Crosshair
+//! pixmap 失败则用更小的双色位图,仍不回退单色字形。不阻断选择/确认/取消。
 //!
 //! 键盘:keycode→keysym 用核心协议 GetKeyboardMapping 的第 0 列(无修饰
 //! 键位),方向键/Enter/Esc/C 与布局无关;Shift 状态取事件 state 的
@@ -54,10 +56,10 @@ use x11rb::protocol::Event as XEvent;
 use x11rb::rust_connection::RustConnection;
 use x11rb::{COPY_DEPTH_FROM_PARENT, COPY_FROM_PARENT, CURRENT_TIME, NONE, NO_SYMBOL};
 
+use crate::annotate::Annotation;
 use crate::capture::buffer::Frame;
 use crate::capture::error::CaptureError;
 use crate::capture::geometry::{MonitorGeom, PhysicalRect};
-use crate::annotate::Annotation;
 use crate::capture::selection::composer::{self, Composer};
 use crate::capture::selection::{
     AnnotationOptions, AnnotationTool, CursorHint, EngineOutcome, FeatureFlags, InputEvent,
@@ -110,6 +112,7 @@ const XK_T_UPPER: u32 = 0x54;
 
 // "cursor" 字体中的标准字形(X11/cursorfont.h 的 XC_* 常量)。每个光标占两个
 // 字符码:source=glyph、mask=glyph+1(XCreateFontCursor 语义)。
+#[cfg(test)]
 const XC_CROSSHAIR: u16 = 34;
 const XC_FLEUR: u16 = 52;
 const XC_LEFT_PTR: u16 = 68;
@@ -122,17 +125,98 @@ const XC_TOP_RIGHT_CORNER: u16 = 136;
 const CURSOR_SLOT_COUNT: usize = 7;
 
 /// 引擎光标提示 → "cursor" 字体字形。Pointer(可点击 chrome)与 Arrow
-/// (放大镜面板)在 X11 下都使用默认箭头。
-fn cursor_glyph(hint: CursorHint) -> u16 {
+/// (放大镜面板)在 X11 下都使用默认箭头。Crosshair 走 pixmap 双色十字,
+/// 不映射 XC_CROSSHAIR(ADR-1)。
+fn cursor_glyph(hint: CursorHint) -> Option<u16> {
     match hint {
-        CursorHint::Crosshair => XC_CROSSHAIR,
-        CursorHint::Move => XC_FLEUR,
-        CursorHint::ResizeNS => XC_SB_V_DOUBLE_ARROW,
-        CursorHint::ResizeEW => XC_SB_H_DOUBLE_ARROW,
-        CursorHint::ResizeNWSE => XC_TOP_LEFT_CORNER,
-        CursorHint::ResizeNESW => XC_TOP_RIGHT_CORNER,
-        CursorHint::Pointer | CursorHint::Arrow => XC_LEFT_PTR,
+        CursorHint::Crosshair => None,
+        CursorHint::Move => Some(XC_FLEUR),
+        CursorHint::ResizeNS => Some(XC_SB_V_DOUBLE_ARROW),
+        CursorHint::ResizeEW => Some(XC_SB_H_DOUBLE_ARROW),
+        CursorHint::ResizeNWSE => Some(XC_TOP_LEFT_CORNER),
+        CursorHint::ResizeNESW => Some(XC_TOP_RIGHT_CORNER),
+        CursorHint::Pointer | CursorHint::Arrow => Some(XC_LEFT_PTR),
     }
+}
+
+/// 双色十字像素:深色芯 + 浅色描边;Empty 为透明。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CrosshairPixel {
+    Empty,
+    Core,
+    Outline,
+}
+
+/// 运行时十字规格(奇数边长,热点在交叉点)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CrosshairSprite {
+    size: usize,
+    arm: usize,
+}
+
+impl CrosshairSprite {
+    const fn primary() -> Self {
+        Self { size: 25, arm: 10 }
+    }
+
+    const fn fallback() -> Self {
+        Self { size: 9, arm: 3 }
+    }
+
+    fn hotspot(self) -> (usize, usize) {
+        let center = self.size / 2;
+        (center, center)
+    }
+
+    fn is_core(self, x: usize, y: usize) -> bool {
+        let center = self.size / 2;
+        (x == center && y.abs_diff(center) <= self.arm)
+            || (y == center && x.abs_diff(center) <= self.arm)
+    }
+
+    fn pixel(self, x: usize, y: usize) -> CrosshairPixel {
+        if x >= self.size || y >= self.size {
+            return CrosshairPixel::Empty;
+        }
+        if self.is_core(x, y) {
+            return CrosshairPixel::Core;
+        }
+        let x0 = x.saturating_sub(1);
+        let y0 = y.saturating_sub(1);
+        let x1 = (x + 1).min(self.size - 1);
+        let y1 = (y + 1).min(self.size - 1);
+        for nx in x0..=x1 {
+            for ny in y0..=y1 {
+                if (nx != x || ny != y) && self.is_core(nx, ny) {
+                    return CrosshairPixel::Outline;
+                }
+            }
+        }
+        CrosshairPixel::Empty
+    }
+}
+
+/// 1-bit XYBitmap 打包:按 setup 的 bit order 与 scanline pad。
+fn pack_bitmap(
+    size: usize,
+    mut set: impl FnMut(usize, usize) -> bool,
+    lsb_first: bool,
+    scanline_pad_bits: u8,
+) -> Vec<u8> {
+    let pad = usize::from(scanline_pad_bits.max(8));
+    let stride_bits = size.div_ceil(pad) * pad;
+    let stride = stride_bits / 8;
+    let mut data = vec![0u8; stride * size];
+    for y in 0..size {
+        for x in 0..size {
+            if !set(x, y) {
+                continue;
+            }
+            let bit = if lsb_first { x % 8 } else { 7 - (x % 8) };
+            data[y * stride + x / 8] |= 1 << bit;
+        }
+    }
+    data
 }
 
 fn cursor_slot(hint: CursorHint) -> usize {
@@ -320,8 +404,10 @@ struct ShellState {
     xim: Option<XimSession>,
 }
 
-/// 一次会话预建的字体光标集。字体或单个字形创建失败时对应项为 NONE
-/// (显示服务器默认指针),任何失败都不阻断选择/确认/取消。
+/// 一次会话预建的光标集。Crosshair 为 pixmap 双色十字;其余为字体字形。
+/// 字体或单个字形创建失败时对应项为 NONE(显示服务器默认指针);
+/// Crosshair 创建失败回退更小的双色 pixmap,不使用 XC_CROSSHAIR。
+/// 任何失败都不阻断选择/确认/取消。
 struct CursorSet {
     font: xproto::Font,
     font_open: bool,
@@ -329,13 +415,19 @@ struct CursorSet {
 }
 
 impl CursorSet {
-    /// 打开 "cursor" 字体并预建全部字形;每一步失败都只退化对应槽位。
+    /// 预建 Crosshair pixmap,再打开 "cursor" 字体建其余字形;
+    /// 每一步失败都只退化对应槽位。
     fn build(conn: &RustConnection) -> Self {
         let mut set = Self {
             font: NONE,
             font_open: false,
             cursors: [NONE; CURSOR_SLOT_COUNT],
         };
+        if let Ok(cursor) = conn.generate_id() {
+            if build_pixmap_crosshair(conn, cursor) {
+                set.cursors[cursor_slot(CursorHint::Crosshair)] = cursor;
+            }
+        }
         let Ok(font) = conn.generate_id() else {
             return set;
         };
@@ -345,7 +437,6 @@ impl CursorSet {
         set.font = font;
         set.font_open = true;
         for hint in [
-            CursorHint::Crosshair,
             CursorHint::Move,
             CursorHint::ResizeNS,
             CursorHint::ResizeEW,
@@ -357,10 +448,13 @@ impl CursorSet {
             if set.cursors[slot] != NONE {
                 continue; // Pointer/Arrow 共槽,已建。
             }
+            let Some(glyph) = cursor_glyph(hint) else {
+                continue;
+            };
             let Ok(cursor) = conn.generate_id() else {
                 continue;
             };
-            if build_font_cursor(conn, font, cursor, cursor_glyph(hint)) {
+            if build_font_cursor(conn, font, cursor, glyph) {
                 set.cursors[slot] = cursor;
             }
         }
@@ -382,6 +476,113 @@ impl CursorSet {
             let _ = conn.close_font(self.font);
         }
     }
+}
+
+/// 建 Crosshair pixmap 光标:主规格失败则用最小双色位图,不使用 XC_CROSSHAIR。
+fn build_pixmap_crosshair(conn: &RustConnection, cursor: xproto::Cursor) -> bool {
+    build_pixmap_crosshair_sized(conn, cursor, CrosshairSprite::primary())
+        || build_pixmap_crosshair_sized(conn, cursor, CrosshairSprite::fallback())
+}
+
+fn build_pixmap_crosshair_sized(
+    conn: &RustConnection,
+    cursor: xproto::Cursor,
+    sprite: CrosshairSprite,
+) -> bool {
+    let Some(root) = conn.setup().roots.first().map(|screen| screen.root) else {
+        return false;
+    };
+    let Ok(source) = conn.generate_id() else {
+        return false;
+    };
+    let Ok(mask) = conn.generate_id() else {
+        return false;
+    };
+    let Ok(gc) = conn.generate_id() else {
+        return false;
+    };
+    let size = sprite.size as u16;
+    let drawable = xproto::Drawable::from(root);
+    let created = (|| {
+        conn.create_pixmap(1, source, drawable, size, size)
+            .ok()?
+            .check()
+            .ok()?;
+        conn.create_pixmap(1, mask, drawable, size, size)
+            .ok()?
+            .check()
+            .ok()?;
+        conn.create_gc(gc, source, &CreateGCAux::new().foreground(1).background(0))
+            .ok()?
+            .check()
+            .ok()?;
+        let lsb_first = conn.setup().bitmap_format_bit_order == ImageOrder::LSB_FIRST;
+        let pad = conn.setup().bitmap_format_scanline_pad;
+        let source_bits = pack_bitmap(
+            sprite.size,
+            |x, y| sprite.pixel(x, y) == CrosshairPixel::Core,
+            lsb_first,
+            pad,
+        );
+        let mask_bits = pack_bitmap(
+            sprite.size,
+            |x, y| sprite.pixel(x, y) != CrosshairPixel::Empty,
+            lsb_first,
+            pad,
+        );
+        conn.put_image(
+            ImageFormat::XY_BITMAP,
+            source,
+            gc,
+            size,
+            size,
+            0,
+            0,
+            0,
+            1,
+            &source_bits,
+        )
+        .ok()?
+        .check()
+        .ok()?;
+        conn.put_image(
+            ImageFormat::XY_BITMAP,
+            mask,
+            gc,
+            size,
+            size,
+            0,
+            0,
+            0,
+            1,
+            &mask_bits,
+        )
+        .ok()?
+        .check()
+        .ok()?;
+        let (hot_x, hot_y) = sprite.hotspot();
+        conn.create_cursor(
+            cursor,
+            source,
+            mask,
+            0x1414,
+            0x1414,
+            0x1414,
+            0xf7f7,
+            0xf7f7,
+            0xf7f7,
+            hot_x as u16,
+            hot_y as u16,
+        )
+        .ok()?
+        .check()
+        .ok()?;
+        Some(())
+    })();
+    let _ = conn.free_gc(gc);
+    let _ = conn.free_pixmap(source);
+    let _ = conn.free_pixmap(mask);
+    created.is_some()
 }
 
 /// 建单个字体光标:`XCreateFontCursor` 语义(source=glyph、mask=glyph+1,
@@ -480,10 +681,7 @@ impl KeyboardMap {
         let index = keycode.checked_sub(self.min_keycode)? as usize;
         let base = index.checked_mul(self.per_keycode)?;
         let list = self.keysyms.get(base..base + self.per_keycode)?;
-        let primary = list
-            .get(usize::from(shift))
-            .copied()
-            .unwrap_or(NO_SYMBOL);
+        let primary = list.get(usize::from(shift)).copied().unwrap_or(NO_SYMBOL);
         if primary != NO_SYMBOL {
             return Some(primary);
         }
@@ -808,7 +1006,8 @@ impl XimSession {
                 revents: 0,
             })
             .collect();
-        let ready = unsafe { libc::poll(pfds.as_mut_ptr(), pfds.len() as libc::nfds_t, timeout_ms) };
+        let ready =
+            unsafe { libc::poll(pfds.as_mut_ptr(), pfds.len() as libc::nfds_t, timeout_ms) };
         if ready <= 0 {
             return false;
         }
@@ -975,7 +1174,9 @@ pub fn pick_region(
         .find(|format| format.depth == depth)
         .ok_or_else(|| CaptureError::api("error.capture.x11_pixel_format"))?;
     if format.bits_per_pixel != 32 || format.scanline_pad != 32 {
-        return Err(CaptureError::api("error.capture.x11_pixel_format_unsupported"));
+        return Err(CaptureError::api(
+            "error.capture.x11_pixel_format_unsupported",
+        ));
     }
     let layout = root_visual_layout(conn.setup(), screen)
         .ok_or_else(|| CaptureError::api("error.capture.x11_visual_format"))?;
@@ -1022,7 +1223,7 @@ pub fn pick_region(
         .check()
         .map_err(|_| window_failed())?;
 
-    // 光标集:按引擎提示预建字形光标,抓取期间与窗口属性都使用它;
+    // 光标集:Crosshair 为 pixmap 双色十字,其余为字体字形;
     // 字体/字形缺失时对应提示退回服务器默认指针(不阻断交互)。
     let cursors = CursorSet::build(&conn);
     let grab_cursor = cursors.cursor(CursorHint::Crosshair);
@@ -1151,14 +1352,18 @@ fn grab_inputs(conn: &RustConnection, window: xproto::Window, cursor: xproto::Cu
         .and_then(|cookie| cookie.reply().ok())
         .map(|reply| reply.status == GrabStatus::SUCCESS);
     let keyboard = conn
-        .grab_keyboard(false, window, CURRENT_TIME, GrabMode::ASYNC, GrabMode::ASYNC)
+        .grab_keyboard(
+            false,
+            window,
+            CURRENT_TIME,
+            GrabMode::ASYNC,
+            GrabMode::ASYNC,
+        )
         .ok()
         .and_then(|cookie| cookie.reply().ok())
         .map(|reply| reply.status == GrabStatus::SUCCESS);
     if std::env::var_os("CROPMARK_CAPTURE_TIMING").is_some() {
-        eprintln!(
-            "Cropmark X11 grabs: pointer={pointer:?}, keyboard={keyboard:?}"
-        );
+        eprintln!("Cropmark X11 grabs: pointer={pointer:?}, keyboard={keyboard:?}");
     }
 }
 
@@ -1441,7 +1646,14 @@ fn handle_key_event(
             }
         });
     if let Some(logical) = logical {
-        if feed_event(state, surface, InputEvent::Key { key: logical, shift }) {
+        if feed_event(
+            state,
+            surface,
+            InputEvent::Key {
+                key: logical,
+                shift,
+            },
+        ) {
             return true;
         }
     }
@@ -1573,9 +1785,9 @@ fn feed_event(state: &mut ShellState, surface: &Surface<'_>, event: InputEvent) 
 
 /// 「标注」动作到壳结果的映射:引擎尚无选区时返回 None,会话继续等待。
 fn annotate_outcome(engine: &SelectionEngine) -> Option<RegionOutcome> {
-    engine.selection().map(|rect| {
-        RegionOutcome::Annotate(rect, engine.annotations().to_vec())
-    })
+    engine
+        .selection()
+        .map(|rect| RegionOutcome::Annotate(rect, engine.annotations().to_vec()))
 }
 
 /// 操作条/菜单动作到静默完成动作的映射;标注/取消/复制色值与标注工具条
@@ -1774,10 +1986,35 @@ mod tests {
             min_keycode: 8,
             per_keycode: 2,
             keysyms: vec![
-                XK_RETURN, NO_SYMBOL, XK_ESCAPE, NO_SYMBOL, XK_LEFT, NO_SYMBOL, XK_UP, NO_SYMBOL,
-                XK_RIGHT, NO_SYMBOL, XK_DOWN, NO_SYMBOL, XK_C_LOWER, NO_SYMBOL, NO_SYMBOL,
-                XK_C_UPPER, NO_SYMBOL, XK_D_LOWER, XK_KP_ENTER, NO_SYMBOL, XK_KP_LEFT, NO_SYMBOL,
-                XK_KP_UP, NO_SYMBOL, XK_KP_RIGHT, NO_SYMBOL, XK_KP_DOWN, NO_SYMBOL, XK_Q_LOWER,
+                XK_RETURN,
+                NO_SYMBOL,
+                XK_ESCAPE,
+                NO_SYMBOL,
+                XK_LEFT,
+                NO_SYMBOL,
+                XK_UP,
+                NO_SYMBOL,
+                XK_RIGHT,
+                NO_SYMBOL,
+                XK_DOWN,
+                NO_SYMBOL,
+                XK_C_LOWER,
+                NO_SYMBOL,
+                NO_SYMBOL,
+                XK_C_UPPER,
+                NO_SYMBOL,
+                XK_D_LOWER,
+                XK_KP_ENTER,
+                NO_SYMBOL,
+                XK_KP_LEFT,
+                NO_SYMBOL,
+                XK_KP_UP,
+                NO_SYMBOL,
+                XK_KP_RIGHT,
+                NO_SYMBOL,
+                XK_KP_DOWN,
+                NO_SYMBOL,
+                XK_Q_LOWER,
                 NO_SYMBOL,
             ],
         }
@@ -1816,19 +2053,8 @@ mod tests {
             min_keycode: 8,
             per_keycode: 1,
             keysyms: vec![
-                XK_R_LOWER,
-                XK_E_LOWER,
-                XK_L_LOWER,
-                XK_A_LOWER,
-                XK_N_LOWER,
-                XK_T_LOWER,
-                XK_P_LOWER,
-                XK_H_LOWER,
-                XK_M_LOWER,
-                XK_B_LOWER,
-                XK_A_UPPER,
-                XK_B_UPPER,
-                XK_D_LOWER,
+                XK_R_LOWER, XK_E_LOWER, XK_L_LOWER, XK_A_LOWER, XK_N_LOWER, XK_T_LOWER, XK_P_LOWER,
+                XK_H_LOWER, XK_M_LOWER, XK_B_LOWER, XK_A_UPPER, XK_B_UPPER, XK_D_LOWER,
             ],
         };
         assert_eq!(
@@ -1888,7 +2114,12 @@ mod tests {
             min_keycode: 8,
             per_keycode: 2,
             keysyms: vec![
-                XK_BACKSPACE, NO_SYMBOL, XK_DELETE, NO_SYMBOL, XK_RETURN, NO_SYMBOL,
+                XK_BACKSPACE,
+                NO_SYMBOL,
+                XK_DELETE,
+                NO_SYMBOL,
+                XK_RETURN,
+                NO_SYMBOL,
             ],
         };
         assert_eq!(map.logical_key(8), Some(LogicalKey::Delete));
@@ -2018,15 +2249,65 @@ mod tests {
 
     #[test]
     fn cursor_glyphs_map_hints_to_cursor_font_shapes() {
-        assert_eq!(cursor_glyph(CursorHint::Crosshair), XC_CROSSHAIR);
-        assert_eq!(cursor_glyph(CursorHint::Move), XC_FLEUR);
-        assert_eq!(cursor_glyph(CursorHint::ResizeNS), XC_SB_V_DOUBLE_ARROW);
-        assert_eq!(cursor_glyph(CursorHint::ResizeEW), XC_SB_H_DOUBLE_ARROW);
-        assert_eq!(cursor_glyph(CursorHint::ResizeNWSE), XC_TOP_LEFT_CORNER);
-        assert_eq!(cursor_glyph(CursorHint::ResizeNESW), XC_TOP_RIGHT_CORNER);
+        assert_eq!(cursor_glyph(CursorHint::Crosshair), None);
+        assert_ne!(cursor_glyph(CursorHint::Crosshair), Some(XC_CROSSHAIR));
+        assert_eq!(cursor_glyph(CursorHint::Move), Some(XC_FLEUR));
+        assert_eq!(
+            cursor_glyph(CursorHint::ResizeNS),
+            Some(XC_SB_V_DOUBLE_ARROW)
+        );
+        assert_eq!(
+            cursor_glyph(CursorHint::ResizeEW),
+            Some(XC_SB_H_DOUBLE_ARROW)
+        );
+        assert_eq!(
+            cursor_glyph(CursorHint::ResizeNWSE),
+            Some(XC_TOP_LEFT_CORNER)
+        );
+        assert_eq!(
+            cursor_glyph(CursorHint::ResizeNESW),
+            Some(XC_TOP_RIGHT_CORNER)
+        );
         // 可点击 chrome 与放大镜面板都用默认箭头。
-        assert_eq!(cursor_glyph(CursorHint::Pointer), XC_LEFT_PTR);
-        assert_eq!(cursor_glyph(CursorHint::Arrow), XC_LEFT_PTR);
+        assert_eq!(cursor_glyph(CursorHint::Pointer), Some(XC_LEFT_PTR));
+        assert_eq!(cursor_glyph(CursorHint::Arrow), Some(XC_LEFT_PTR));
+    }
+
+    fn assert_dual_color_crosshair(sprite: CrosshairSprite) {
+        let (cx, cy) = sprite.hotspot();
+        assert_eq!(sprite.size % 2, 1);
+        assert_eq!((cx, cy), (sprite.size / 2, sprite.size / 2));
+        assert_eq!(sprite.pixel(cx, cy), CrosshairPixel::Core);
+        assert_eq!(sprite.pixel(cx + 1, cy), CrosshairPixel::Core);
+        assert_eq!(sprite.pixel(cx, cy + 1), CrosshairPixel::Core);
+        assert_eq!(sprite.pixel(cx + 1, cy + 1), CrosshairPixel::Outline);
+        assert_eq!(
+            sprite.pixel(cx, cy.saturating_sub(sprite.arm + 1)),
+            CrosshairPixel::Outline
+        );
+        assert_eq!(sprite.pixel(0, 0), CrosshairPixel::Empty);
+    }
+
+    #[test]
+    fn dual_color_crosshair_has_dark_core_and_light_outline() {
+        assert_dual_color_crosshair(CrosshairSprite::primary());
+        assert_dual_color_crosshair(CrosshairSprite::fallback());
+        let sprite = CrosshairSprite::fallback();
+        let source = pack_bitmap(
+            sprite.size,
+            |x, y| sprite.pixel(x, y) == CrosshairPixel::Core,
+            true,
+            32,
+        );
+        let mask = pack_bitmap(
+            sprite.size,
+            |x, y| sprite.pixel(x, y) != CrosshairPixel::Empty,
+            true,
+            32,
+        );
+        assert!(source.iter().any(|byte| *byte != 0));
+        assert!(mask.iter().any(|byte| *byte != 0));
+        assert_ne!(source, mask);
     }
 
     #[test]
@@ -2227,12 +2508,18 @@ mod tests {
 
         let buttons = composer::toolbar_buttons(engine.flags());
         let metrics = composer::ChromeMetrics::for_scale(1.5);
-        let panel =
-            composer::toolbar_panel(metrics, engine.selection().unwrap(), engine.size(), &buttons).unwrap();
+        let panel = composer::toolbar_panel(
+            metrics,
+            engine.selection().unwrap(),
+            engine.size(),
+            &buttons,
+        )
+        .unwrap();
+        // 选贴图(非末项取消:取消走 Cancelled),验证松开才产出 Action。
         let (expected, rect) = composer::toolbar_button_rects(metrics, panel, &buttons)
-            .last()
-            .copied()
-            .unwrap();
+            .into_iter()
+            .find(|(action, _)| *action == SelectionAction::Pin)
+            .expect("pin button");
         let (cx, cy) = rect.center();
         assert_eq!(
             engine.handle_event(InputEvent::LeftDown { x: cx, y: cy }),
