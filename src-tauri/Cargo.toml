@@ -1,6 +1,6 @@
 [package]
 name = "cropmark"
-version = "0.2.8"
+version = "0.2.9"
 description = "Cropmark screenshot tool"
 authors = ["Cropmark"]
 license = "GPL-3.0-only"
