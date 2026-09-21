@@ -97,7 +97,7 @@ const TOOL_GAP: i32 = 4;
 /// 标注工具条与选区/屏幕边的间距(逻辑)。
 const TOOL_MARGIN: i32 = 8;
 /// 标注工具条图标外接盒边长(逻辑);略放大以便圆头描边与箭头头可辨。
-const TOOL_ICON: i32 = 16;
+const TOOL_ICON: i32 = 18;
 /// 标注工具条按钮物理边长上限(高 DPI 下按钮不无限放大)。
 const TOOL_BUTTON_MAX: i32 = 36;
 
@@ -182,7 +182,7 @@ impl ChromeMetrics {
             tool_button: scaled(TOOL_BUTTON).min(TOOL_BUTTON_MAX),
             tool_gap: ((TOOL_GAP as f32) * scale).round().clamp(3.0, 6.0) as i32,
             tool_margin: scaled(TOOL_MARGIN),
-            tool_icon: scaled(TOOL_ICON).clamp(12, 22),
+            tool_icon: scaled(TOOL_ICON).clamp(14, 22),
             handle_radius: scaled(HANDLE_RADIUS as i32),
             handle_hit_radius: scaled(HANDLE_HIT_RADIUS),
             edge_hit_radius: scaled(EDGE_HIT_RADIUS),
@@ -255,6 +255,60 @@ impl IntRect {
 
     pub fn center(&self) -> (i32, i32) {
         (self.x + self.width / 2, self.y + self.height / 2)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.width <= 0 || self.height <= 0
+    }
+
+    pub fn union(self, other: Self) -> Self {
+        if self.is_empty() {
+            return other;
+        }
+        if other.is_empty() {
+            return self;
+        }
+        let x = self.x.min(other.x);
+        let y = self.y.min(other.y);
+        Self {
+            x,
+            y,
+            width: self.right().max(other.right()) - x,
+            height: self.bottom().max(other.bottom()) - y,
+        }
+    }
+
+    pub fn intersect(self, other: Self) -> Self {
+        let x = self.x.max(other.x);
+        let y = self.y.max(other.y);
+        Self {
+            x,
+            y,
+            width: (self.right().min(other.right()) - x).max(0),
+            height: (self.bottom().min(other.bottom()) - y).max(0),
+        }
+    }
+
+    pub fn inflate(self, by: i32) -> Self {
+        Self {
+            x: self.x - by,
+            y: self.y - by,
+            width: (self.width + by * 2).max(0),
+            height: (self.height + by * 2).max(0),
+        }
+    }
+
+    pub fn clamp_to(self, screen: (i32, i32)) -> Self {
+        let x = self.x.clamp(0, screen.0.max(0));
+        let y = self.y.clamp(0, screen.1.max(0));
+        let right = self.right().clamp(x, screen.0.max(0));
+        let bottom = self.bottom().clamp(y, screen.1.max(0));
+        Self {
+            x,
+            y,
+            width: right - x,
+            height: bottom - y,
+        }
     }
 }
 
@@ -959,7 +1013,7 @@ impl Composer {
     /// 合成顺序:暗幕→开洞→标注内容→描边→手柄→徽标→操作条/菜单→放大镜
     /// →标注工具条。
     pub fn compose_into(&self, scene: &Scene, out: &mut [u8]) {
-        self.compose_into_inner(scene, None, out);
+        self.compose_into_inner(scene, None, out, None);
     }
 
     /// 叠加标注层版本的就地合成;标注层先于全部 chrome 绘制(见 `compose_into`)。
@@ -969,7 +1023,91 @@ impl Composer {
         overlay: &AnnotationOverlay,
         out: &mut [u8],
     ) {
-        self.compose_into_inner(scene, Some(overlay), out);
+        self.compose_into_inner(scene, Some(overlay), out, None);
+    }
+
+    /// 脏矩形合成:只从暗幕恢复 `prev` 与当前场景的视觉差集,再重绘 chrome。
+    /// `out` 必须仍是上一帧合成结果(或首帧未初始化时 `prev=None` 走整帧)。
+    /// 返回需要呈现的脏矩形(已钳制在屏内)。
+    pub fn compose_into_dirty(
+        &self,
+        scene: &Scene,
+        overlay: &AnnotationOverlay,
+        out: &mut [u8],
+        prev: Option<&Scene>,
+    ) -> IntRect {
+        let screen = (self.width as i32, self.height as i32);
+        let annotating = overlay.draft.is_some() || overlay.text.is_some();
+        let dirty = self.dirty_rect(scene, Some(overlay), prev, screen, annotating);
+        let cursor_follow = !annotating
+            && prev.is_some_and(|prev| {
+                prev.selection == scene.selection
+                    && prev.toolbar_visible == scene.toolbar_visible
+                    && prev.menu_open == scene.menu_open
+                    && prev.menu_anchor == scene.menu_anchor
+                    && prev.annotation_mode == scene.annotation_mode
+                    && prev.annotation_more == scene.annotation_more
+                    && prev.flags == scene.flags
+            });
+        let mut dirty = dirty;
+        if cursor_follow {
+            let chrome = self.scene_visual_bounds(scene, Some(overlay), screen);
+            if !chrome.intersect(dirty).is_empty() {
+                dirty = dirty.union(chrome).inflate(2).clamp_to(screen);
+            }
+            restore_rect(out, &self.dimmed, self.width as usize, dirty);
+            if let Some(selection) = scene.selection {
+                punch_hole(
+                    out,
+                    &self.original,
+                    self.width as usize,
+                    selection,
+                    Some(dirty),
+                );
+                // 光标跟随也会开洞/恢复暗幕;不重贴标注层就会把刚画的矩形擦掉,
+                // 最终复制仍走完整合成所以导出图上有、屏幕上一闪而过。
+                self.draw_annotations(out, selection, overlay);
+                if !chrome.intersect(dirty).is_empty() {
+                    outline_selection(out, self.width, self.height, selection);
+                    self.draw_handles(out, self.width, self.height, selection);
+                    self.draw_size_badge(out, self.width, self.height, selection);
+                    if scene.toolbar_visible {
+                        self.draw_toolbar(
+                            out,
+                            self.width,
+                            self.height,
+                            selection,
+                            scene.flags,
+                            scene.cursor,
+                        );
+                    }
+                    if scene.annotation_mode && scene.flags.inline_annotation {
+                        self.draw_annotation_toolbar(
+                            out,
+                            self.width,
+                            self.height,
+                            selection,
+                            scene,
+                            overlay,
+                        );
+                    }
+                }
+            }
+            if scene.menu_open {
+                self.draw_menu(out, self.width, self.height, scene);
+            }
+            if scene.flags.magnifier {
+                self.draw_magnifier(out, self.width, self.height, scene.cursor);
+            }
+            if let Some((action, rect)) =
+                self.hovered_icon(scene, Some(overlay), self.width, self.height)
+            {
+                self.draw_hover_tooltip(out, self.width, self.height, action, rect);
+            }
+        } else {
+            self.compose_into_inner(scene, Some(overlay), out, Some(dirty));
+        }
+        dirty
     }
 
     /// 合成实现:标注是选区**内容**,在开洞后、全部 chrome 之前绘制——
@@ -980,11 +1118,16 @@ impl Composer {
         scene: &Scene,
         overlay: Option<&AnnotationOverlay>,
         out: &mut [u8],
+        dirty: Option<IntRect>,
     ) {
-        out.copy_from_slice(&self.dimmed);
         let (w, h) = (self.width, self.height);
+        if let Some(dirty) = dirty {
+            restore_rect(out, &self.dimmed, w as usize, dirty);
+        } else {
+            out.copy_from_slice(&self.dimmed);
+        }
         if let Some(selection) = scene.selection {
-            punch_hole(out, &self.original, w as usize, selection);
+            punch_hole(out, &self.original, w as usize, selection, dirty);
             if let Some(overlay) = overlay {
                 self.draw_annotations(out, selection, overlay);
             }
@@ -1009,6 +1152,131 @@ impl Composer {
         if let Some((action, rect)) = self.hovered_icon(scene, overlay, w, h) {
             self.draw_hover_tooltip(out, w, h, action, rect);
         }
+    }
+
+    /// 两帧之间需要重绘的屏内矩形。选区几何未变时只含放大镜与 hover 提示。
+    fn dirty_rect(
+        &self,
+        scene: &Scene,
+        overlay: Option<&AnnotationOverlay>,
+        prev: Option<&Scene>,
+        screen: (i32, i32),
+        annotating: bool,
+    ) -> IntRect {
+        let full = IntRect {
+            x: 0,
+            y: 0,
+            width: screen.0,
+            height: screen.1,
+        };
+        let Some(prev) = prev else {
+            return full;
+        };
+        let cursor_only = !annotating
+            && prev.selection == scene.selection
+            && prev.toolbar_visible == scene.toolbar_visible
+            && prev.menu_open == scene.menu_open
+            && prev.menu_anchor == scene.menu_anchor
+            && prev.annotation_mode == scene.annotation_mode
+            && prev.annotation_more == scene.annotation_more
+            && prev.flags == scene.flags;
+        let mut dirty = if cursor_only {
+            IntRect {
+                x: 0,
+                y: 0,
+                width: 0,
+                height: 0,
+            }
+        } else {
+            self.scene_visual_bounds(prev, overlay, screen)
+                .union(self.scene_visual_bounds(scene, overlay, screen))
+        };
+        if scene.flags.magnifier || prev.flags.magnifier {
+            dirty = dirty
+                .union(magnifier_rect(prev.cursor, (self.width, self.height), self.scale))
+                .union(magnifier_rect(scene.cursor, (self.width, self.height), self.scale));
+        }
+        dirty = dirty
+            .union(self.hover_bounds(prev, overlay, screen))
+            .union(self.hover_bounds(scene, overlay, screen));
+        if dirty.is_empty() {
+            return full;
+        }
+        dirty.inflate(2).clamp_to(screen)
+    }
+
+    fn scene_visual_bounds(
+        &self,
+        scene: &Scene,
+        overlay: Option<&AnnotationOverlay>,
+        screen: (i32, i32),
+    ) -> IntRect {
+        let mut bounds = IntRect {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        };
+        if let Some(selection) = scene.selection {
+            let pad = self
+                .metrics
+                .handle_hit_radius
+                .max(self.metrics.rail_button + self.metrics.rail_margin_v)
+                .max(self.metrics.tool_button + self.metrics.tool_margin)
+                .max(self.metrics.badge_margin + 36);
+            bounds = bounds.union(IntRect::from(selection).inflate(pad));
+            if scene.toolbar_visible {
+                let buttons = toolbar_buttons(scene.flags);
+                if let Some(panel) =
+                    toolbar_panel(self.metrics, selection, (self.width, self.height), &buttons)
+                {
+                    bounds = bounds.union(panel);
+                }
+            }
+            if scene.annotation_mode {
+                if let Some(overlay) = overlay {
+                    if let Some(toolbar) = annotation_toolbar(
+                        self.metrics,
+                        selection,
+                        (self.width, self.height),
+                        scene.flags,
+                        overlay.text_input,
+                        scene.annotation_more,
+                        None,
+                    ) {
+                        bounds = bounds.union(toolbar.panel);
+                    }
+                }
+            }
+        }
+        if scene.menu_open {
+            let items = menu_items(scene.flags);
+            bounds = bounds.union(menu_panel(
+                self.metrics,
+                scene.menu_anchor,
+                (self.width, self.height),
+                &items,
+            ));
+        }
+        bounds.clamp_to(screen)
+    }
+
+    fn hover_bounds(
+        &self,
+        scene: &Scene,
+        overlay: Option<&AnnotationOverlay>,
+        screen: (i32, i32),
+    ) -> IntRect {
+        let empty = IntRect {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        };
+        let Some((_, anchor)) = self.hovered_icon(scene, overlay, self.width, self.height) else {
+            return empty;
+        };
+        anchor.inflate(80).clamp_to(screen)
     }
 
     /// 标注层:在选区内烘焙已确认图元(带缓存)、叠加草稿与文本编辑态,
@@ -1150,8 +1418,9 @@ impl Composer {
         }
     }
 
-    /// 标注工具条(R21 修订):亮铬面板 + 紧凑圆形按钮,当前工具用亮 accent 底;
-    /// 默认单行(4 主工具 + 撤销/重做/删除/更多),「更多」展开其余工具行。
+    /// 标注工具条:亮铬面板 + 深色线标。默认不铺青绿圆底(避免一排同色圆点);
+    /// 当前工具才用 accent 底+白标,hover 用软底。默认单行(4 主工具 + 撤销/
+    /// 重做/删除/更多),「更多」展开其余工具行。
     fn draw_annotation_toolbar(
         &self,
         rgba: &mut [u8],
@@ -1183,22 +1452,13 @@ impl Composer {
                 _ => false,
             };
             let hover = rect.contains(scene.cursor.0, scene.cursor.1);
-            let (bg, ink) = if active {
-                (ACCENT, ACCENT_DEEP)
+            let radius = (metrics.tool_button / 2 - 2).max(6);
+            let ink = if active { ICON_INK } else { CHROME_TEXT };
+            if active {
+                fill_circle(rgba, w, h, cx, cy, radius, ACCENT);
             } else if hover {
-                (ACCENT_DARK, ICON_INK)
-            } else {
-                (ACCENT_DEEP, ICON_INK)
-            };
-            fill_circle(
-                rgba,
-                w,
-                h,
-                cx,
-                cy,
-                (metrics.tool_button / 2 - metrics.tool_gap / 2).max(6),
-                bg,
-            );
+                fill_round_blend(rgba, w, h, inset(*rect, 2), radius - 1, ACTIVE_BG);
+            }
             draw_annotation_icon(rgba, w, h, *action, *rect, ink, metrics.tool_icon);
         }
         if let Some(undo_i) = toolbar
@@ -1532,12 +1792,32 @@ fn inset(rect: IntRect, by: i32) -> IntRect {
     }
 }
 
-fn punch_hole(rgba: &mut [u8], original: &[u8], stride_px: usize, rect: PhysicalRect) {
+fn restore_rect(dst: &mut [u8], src: &[u8], stride_px: usize, rect: IntRect) {
+    if rect.is_empty() {
+        return;
+    }
     for row in 0..rect.height as usize {
         let offset = ((rect.y as usize + row) * stride_px + rect.x as usize) * 4;
         let count = rect.width as usize * 4;
-        rgba[offset..offset + count].copy_from_slice(&original[offset..offset + count]);
+        if offset + count <= dst.len() && offset + count <= src.len() {
+            dst[offset..offset + count].copy_from_slice(&src[offset..offset + count]);
+        }
     }
+}
+
+fn punch_hole(
+    rgba: &mut [u8],
+    original: &[u8],
+    stride_px: usize,
+    rect: PhysicalRect,
+    clip: Option<IntRect>,
+) {
+    let hole = IntRect::from(rect);
+    let hole = match clip {
+        Some(clip) => hole.intersect(clip),
+        None => hole,
+    };
+    restore_rect(rgba, original, stride_px, hole);
 }
 
 /// 选区描边:青绿 2px。
@@ -1853,7 +2133,7 @@ fn draw_icon(
     let cx = cx as f32;
     let cy = cy as f32;
     let s = (size as f32 * 0.5).max(6.0);
-    let stroke = (size as f32 * 0.09).clamp(1.35, 2.1);
+    let stroke = (size as f32 * 0.12).clamp(1.55, 2.45);
     let mut buf = PixelBuf { rgba, w, h };
     match action {
         SelectionAction::Copy => {
@@ -2489,28 +2769,50 @@ mod tests {
             scene.annotation_more = more;
             scene
         };
-        let count_deep = |bytes: &[u8]| {
-            bytes
-                .chunks_exact(4)
-                .filter(|px| {
-                    px[0] == ACCENT_DEEP[0] && px[1] == ACCENT_DEEP[1] && px[2] == ACCENT_DEEP[2]
-                })
-                .count()
+        let panel_ink = |bytes: &[u8], more: bool| {
+            let toolbar = annotation_toolbar(
+                ChromeMetrics::for_scale(1.0),
+                selection,
+                (800, 600),
+                enabled,
+                true,
+                more,
+                None,
+            )
+            .expect("toolbar");
+            let panel = toolbar.panel;
+            let mut n = 0usize;
+            for y in panel.y..panel.bottom() {
+                for x in panel.x..panel.right() {
+                    let i = ((y as u32 * 800 + x as u32) * 4) as usize;
+                    if bytes[i] == CHROME_TEXT[0]
+                        && bytes[i + 1] == CHROME_TEXT[1]
+                        && bytes[i + 2] == CHROME_TEXT[2]
+                    {
+                        n += 1;
+                    }
+                }
+            }
+            n
         };
         // 默认轻量态(annotation_mode=false):不出现标注工具条。
         let light = composer.compose_with_overlay(
             &annotation_scene(selection, enabled),
             &annotation_overlay(&empty, None, None, 0),
         );
-        assert_eq!(count_deep(&light), 0, "默认态不得铺开标注工具");
-        // 标注模式:单行精简工具条。
+        assert_eq!(
+            panel_ink(&light, false),
+            0,
+            "默认态不得铺开标注工具"
+        );
+        // 标注模式:单行精简工具条(深色线标,不是一排青绿圆)。
         let with_tools = composer.compose_with_overlay(
             &mode_scene(selection, enabled, false),
             &annotation_overlay(&empty, None, None, 0),
         );
         assert!(
-            count_deep(&with_tools) > 0,
-            "toolbar buttons should be drawn"
+            panel_ink(&with_tools, false) > 40,
+            "toolbar outline icons should be drawn"
         );
         // 关闭 inlineAnnotation:即使处于标注模式也不绘制。
         let without_tools = composer.compose_with_overlay(
@@ -2518,19 +2820,36 @@ mod tests {
             &annotation_overlay(&empty, None, None, 0),
         );
         assert_eq!(
-            count_deep(&without_tools),
+            panel_ink(&without_tools, true),
             0,
             "disabled flag keeps the frame free of toolbar chrome"
         );
         assert_eq!(without_tools.len(), with_tools.len());
-        // 展开「更多」:第二行按钮出现(深色圆底像素增多)。
+        // 展开「更多」:第二行线标像素增多。
         let expanded = composer.compose_with_overlay(
             &mode_scene(selection, enabled, true),
             &annotation_overlay(&empty, None, None, 0),
         );
         assert!(
-            count_deep(&expanded) > count_deep(&with_tools),
+            panel_ink(&expanded, true) > panel_ink(&with_tools, false),
             "expanded row must add visible buttons"
+        );
+        // 选中工具才出现 accent 圆底。
+        let selected = composer.compose_with_overlay(
+            &mode_scene(selection, enabled, false),
+            &annotation_overlay(&empty, None, Some(AnnotationTool::Rect), 0),
+        );
+        let accent = selected
+            .chunks_exact(4)
+            .filter(|px| px[0] == ACCENT[0] && px[1] == ACCENT[1] && px[2] == ACCENT[2])
+            .count();
+        let idle_accent = with_tools
+            .chunks_exact(4)
+            .filter(|px| px[0] == ACCENT[0] && px[1] == ACCENT[1] && px[2] == ACCENT[2])
+            .count();
+        assert!(
+            accent > idle_accent,
+            "active tool should use accent fill, idle tools should not"
         );
     }
 
@@ -2945,6 +3264,123 @@ mod tests {
         };
         // 150% 下放大区仍是原始帧真实色彩(90,160,220),不是压暗值。
         assert_eq!(read(px + 1, py + 1), [90, 160, 220]);
+    }
+
+    #[test]
+    fn dirty_compose_matches_full_compose_and_cursor_follow_stays_local() {
+        let frame = solid_frame(640, 400, [80, 120, 40, 255]);
+        let composer = Composer::new(&frame).unwrap();
+        let overlay = annotation_overlay(&[], None, None, 0);
+        let selection = PhysicalRect {
+            x: 80,
+            y: 60,
+            width: 200,
+            height: 120,
+        };
+        let selected = Scene {
+            selection: Some(selection),
+            cursor: (40, 40),
+            flags: FeatureFlags::default(),
+            toolbar_visible: true,
+            menu_open: false,
+            menu_anchor: (0, 0),
+            annotation_mode: false,
+            annotation_more: false,
+        };
+        let full_selected = composer.compose_with_overlay(&selected, &overlay);
+        let mut dirty_buf = composer.dimmed.clone();
+        let first = composer.compose_into_dirty(&selected, &overlay, &mut dirty_buf, None);
+        assert_eq!(first, IntRect { x: 0, y: 0, width: 640, height: 400 });
+        assert_eq!(dirty_buf, full_selected);
+
+        let idle_a = Scene {
+            selection: None,
+            cursor: (80, 80),
+            flags: FeatureFlags::default(),
+            toolbar_visible: false,
+            menu_open: false,
+            menu_anchor: (0, 0),
+            annotation_mode: false,
+            annotation_more: false,
+        };
+        let idle_b = Scene {
+            cursor: (100, 90),
+            ..idle_a
+        };
+        let full_idle_a = composer.compose_with_overlay(&idle_a, &overlay);
+        dirty_buf.copy_from_slice(&full_idle_a);
+        let full_idle_b = composer.compose_with_overlay(&idle_b, &overlay);
+        let rect = composer.compose_into_dirty(&idle_b, &overlay, &mut dirty_buf, Some(&idle_a));
+        assert!(
+            rect.width * rect.height < 640 * 400 / 4,
+            "idle cursor-only dirty {rect:?}"
+        );
+        let pixel = |buf: &[u8], x: i32, y: i32| {
+            let i = ((y as u32 * 640 + x as u32) * 4) as usize;
+            [buf[i], buf[i + 1], buf[i + 2], buf[i + 3]]
+        };
+        for y in 0..400 {
+            for x in 0..640 {
+                if rect.contains(x, y) {
+                    assert_eq!(
+                        pixel(&dirty_buf, x, y),
+                        pixel(&full_idle_b, x, y),
+                        "inside dirty {x},{y}"
+                    );
+                } else {
+                    assert_eq!(
+                        pixel(&dirty_buf, x, y),
+                        pixel(&full_idle_a, x, y),
+                        "outside dirty {x},{y}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dirty_cursor_follow_keeps_baked_annotations() {
+        let frame = solid_frame(400, 300, [40, 80, 120, 255]);
+        let composer = Composer::new(&frame).unwrap();
+        let selection = PhysicalRect {
+            x: 40,
+            y: 40,
+            width: 160,
+            height: 120,
+        };
+        let annotations = vec![Annotation::Rect {
+            x: 60.0,
+            y: 60.0,
+            width: 80.0,
+            height: 50.0,
+            color: "#e11d48".into(),
+            stroke_width: Some(4.0),
+        }];
+        let overlay = annotation_overlay(&annotations, None, None, 1);
+        let flags = no_magnifier_flags();
+        let scene_a = Scene {
+            selection: Some(selection),
+            cursor: (300, 40),
+            flags,
+            toolbar_visible: false,
+            menu_open: false,
+            menu_anchor: (0, 0),
+            annotation_mode: true,
+            annotation_more: false,
+        };
+        let scene_b = Scene {
+            cursor: (320, 50),
+            ..scene_a
+        };
+        let full_a = composer.compose_with_overlay(&scene_a, &overlay);
+        let mut dirty_buf = composer.dimmed.clone();
+        let _ = composer.compose_into_dirty(&scene_a, &overlay, &mut dirty_buf, None);
+        let _ = composer.compose_into_dirty(&scene_b, &overlay, &mut dirty_buf, Some(&scene_a));
+        let full_b = composer.compose_with_overlay(&scene_b, &overlay);
+        let i = ((70u32 * 400 + 70) * 4) as usize;
+        assert_eq!(&dirty_buf[i..i + 3], &[225, 29, 72], "baked rect vanished after cursor follow");
+        assert_eq!(&dirty_buf[i..i + 3], &full_b[i..i + 3]);
+        assert_eq!(&full_a[i..i + 3], &[225, 29, 72]);
     }
 
     #[test]

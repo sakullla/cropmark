@@ -254,6 +254,8 @@ fn pointer_work_area(app: &AppHandle) -> (Option<LogicalPoint>, Option<LogicalRe
 const PIN_PRECREATE: usize = 2;
 
 fn park_pin_window(window: &WebviewWindow) {
+    // GTK 窗未 realize 时 tao 会对 GdkWindow unwrap 崩掉。
+    #[cfg(not(target_os = "linux"))]
     let _ = window.set_ignore_cursor_events(true);
     let _ = window.set_always_on_top(false);
     let _ = window.hide();

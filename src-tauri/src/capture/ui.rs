@@ -416,6 +416,7 @@ fn dismiss_session_overlay(app: &AppHandle) {
 }
 
 fn dismiss_session_overlay_window(window: &WebviewWindow) {
+    #[cfg(not(target_os = "linux"))]
     let _ = window.set_ignore_cursor_events(true);
     let _ = window.set_always_on_top(false);
     let _ = window.hide();

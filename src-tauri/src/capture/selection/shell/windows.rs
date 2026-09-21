@@ -33,7 +33,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, GetWindowThreadProcessId, LoadCursorW, PeekMessageW, PostMessageW,
     PostQuitMessage, RegisterClassExW, SetCursor, SetForegroundWindow, SetWindowPos, ShowWindow,
     TranslateMessage, CS_HREDRAW, CS_VREDRAW, HCURSOR, HWND_TOPMOST, ICONINFO, IDC_ARROW, IDC_HAND,
-    IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, MSG, PM_REMOVE, SM_CXCURSOR,
+    IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, MSG, PM_NOREMOVE, PM_REMOVE,
+    SM_CXCURSOR,
     SM_CYCURSOR, SWP_SHOWWINDOW, SW_SHOW, WM_CHAR, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND,
     WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KEYUP,
     WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_QUIT, WM_RBUTTONDOWN,
@@ -47,7 +48,7 @@ use crate::capture::geometry::{MonitorGeom, PhysicalRect};
 use crate::capture::selection::composer::{self, Composer};
 use crate::capture::selection::{
     AnnotationOptions, AnnotationTool, CursorHint, EngineOutcome, FeatureFlags, InputEvent,
-    LogicalKey, SelectionAction, SelectionEngine,
+    LogicalKey, Scene, SelectionAction, SelectionEngine,
 };
 use crate::capture::session::QuietAction;
 
@@ -109,6 +110,8 @@ struct Canvas {
     present_buf: Vec<u8>,
     width: i32,
     height: i32,
+    /// 上一帧场景;脏矩形合成用。首帧为 None。
+    last_scene: Option<Scene>,
 }
 
 /// 壳侧回调:色值复制等副作用由会话层注入,壳不直接触碰 tauri 运行时
@@ -198,6 +201,7 @@ fn run_shell(
                 present_buf: vec![0; bytes],
                 width,
                 height,
+                last_scene: None,
             },
             shift_down: false,
             ctrl_down: false,
@@ -594,7 +598,7 @@ fn map_virtual_key(vk: u32) -> Option<LogicalKey> {
 }
 
 /// 单次合成耗时(仅 Redraw 路径调用;ADR-007 护栏的可观察基线)。
-fn compose_canvas(canvas: &mut Canvas) -> Option<Duration> {
+fn compose_canvas(canvas: &mut Canvas) -> Option<(Duration, composer::IntRect)> {
     let started = Instant::now();
     let (w, h) = canvas.composer.size();
     let expected = w as usize * h as usize * 4;
@@ -603,36 +607,88 @@ fn compose_canvas(canvas: &mut Canvas) -> Option<Duration> {
     if canvas.scratch.len() == expected && canvas.present_buf.len() == expected {
         let scene = canvas.engine.scene();
         let overlay = canvas.engine.annotation_overlay();
-        canvas
-            .composer
-            .compose_into_with_overlay(&scene, &overlay, &mut canvas.scratch);
-        swizzle_rgba_to_bgra(&canvas.scratch, &mut canvas.present_buf);
-        return Some(started.elapsed());
+        let dirty = canvas.composer.compose_into_dirty(
+            &scene,
+            &overlay,
+            &mut canvas.scratch,
+            canvas.last_scene.as_ref(),
+        );
+        swizzle_rect(
+            &canvas.scratch,
+            &mut canvas.present_buf,
+            w as i32,
+            h as i32,
+            dirty,
+        );
+        canvas.last_scene = Some(scene);
+        return Some((started.elapsed(), dirty));
     }
     None
 }
 
 /// RGBA→BGRA 通道交换,输出到呈现缓冲。
+#[cfg(test)]
 fn swizzle_rgba_to_bgra(src: &[u8], dst: &mut [u8]) {
-    for (s, d) in src.chunks_exact(4).zip(dst.chunks_exact_mut(4)) {
-        d[0] = s[2];
-        d[1] = s[1];
-        d[2] = s[0];
-        d[3] = 255;
+    let pixels = (src.len().min(dst.len()) / 4) as i32;
+    swizzle_rect(
+        src,
+        dst,
+        pixels.max(1),
+        1,
+        composer::IntRect {
+            x: 0,
+            y: 0,
+            width: pixels.max(1),
+            height: 1,
+        },
+    );
+}
+
+/// 只交换脏矩形内的 R/B,避免每次鼠标移动扫完整屏。
+fn swizzle_rect(src: &[u8], dst: &mut [u8], width: i32, height: i32, rect: composer::IntRect) {
+    if width <= 0 || height <= 0 || rect.is_empty() {
+        return;
+    }
+    let stride = width as usize * 4;
+    let y0 = rect.y.max(0) as usize;
+    let y1 = rect.bottom().min(height) as usize;
+    let x0 = rect.x.max(0) as usize;
+    let x1 = rect.right().min(width) as usize;
+    if y0 >= y1 || x0 >= x1 {
+        return;
+    }
+    for y in y0..y1 {
+        let row = y * stride;
+        let start = row + x0 * 4;
+        let end = row + x1 * 4;
+        if end > src.len() || end > dst.len() {
+            break;
+        }
+        for (s, d) in src[start..end]
+            .chunks_exact(4)
+            .zip(dst[start..end].chunks_exact_mut(4))
+        {
+            d[0] = s[2];
+            d[1] = s[1];
+            d[2] = s[0];
+            d[3] = 255;
+        }
     }
 }
 
 /// 仅在引擎要求 Redraw 时重合成;WM_PAINT 直接呈现缓存位图(ADR-007)。
 fn present(timing: bool, hwnd: HWND, canvas: &mut Canvas) {
     let started = if timing { Some(Instant::now()) } else { None };
-    let compose_at = compose_canvas(canvas);
-    unsafe { blit(hwnd, canvas.width, canvas.height, &canvas.present_buf) };
+    let composed = compose_canvas(canvas);
+    if let Some((_, dirty)) = composed {
+        unsafe { blit_dirty(hwnd, canvas.width, canvas.height, &canvas.present_buf, dirty) };
+    }
     if let Some(started) = started {
         eprintln!(
             "Cropmark overlay {}x{} present: compose+swizzle={:?}, total={:?}",
             canvas.width,
             canvas.height,
-            compose_at,
+            composed.map(|(elapsed, _)| elapsed),
             started.elapsed()
         );
     }
@@ -722,6 +778,71 @@ unsafe fn blit(hwnd: HWND, width: i32, height: i32, bgra: &[u8]) {
             );
         }
     }
+    let _ = ReleaseDC(Some(hwnd), hdc);
+}
+
+/// 只把脏行带送到窗口。客户区与帧不一致时退回整帧 blit。
+unsafe fn blit_dirty(
+    hwnd: HWND,
+    width: i32,
+    height: i32,
+    bgra: &[u8],
+    dirty: composer::IntRect,
+) {
+    if hwnd.0.is_null() {
+        return;
+    }
+    let mut client = RECT::default();
+    let _ = GetClientRect(hwnd, &mut client);
+    let dest_w = (client.right - client.left).max(1);
+    let dest_h = (client.bottom - client.top).max(1);
+    if blit_plan((dest_w, dest_h), (width, height)) != BlitPlan::Exact
+        || dirty.is_empty()
+        || (dirty.x <= 0 && dirty.y <= 0 && dirty.right() >= width && dirty.bottom() >= height)
+    {
+        blit(hwnd, width, height, bgra);
+        return;
+    }
+    let y = dirty.y.clamp(0, height.max(0));
+    let band_h = (dirty.bottom().min(height) - y).max(0);
+    if band_h <= 0 {
+        return;
+    }
+    let stride = width as usize * 4;
+    let offset = y as usize * stride;
+    if offset >= bgra.len() {
+        return;
+    }
+    let hdc = GetDC(Some(hwnd));
+    if hdc.0.is_null() {
+        return;
+    }
+    let info = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: width,
+            biHeight: -band_h,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            ..Default::default()
+        },
+        bmiColors: [RGBQUAD::default(); 1],
+    };
+    let _ = SetDIBitsToDevice(
+        hdc,
+        0,
+        y,
+        width as u32,
+        band_h as u32,
+        0,
+        0,
+        0,
+        band_h as u32,
+        bgra[offset..].as_ptr().cast::<c_void>(),
+        &info,
+        DIB_RGB_COLORS,
+    );
     let _ = ReleaseDC(Some(hwnd), hdc);
 }
 
@@ -1138,8 +1259,31 @@ unsafe fn pump() {
         if result.0 <= 0 {
             break;
         }
+        coalesce_mouse_move(&mut msg);
         let _ = TranslateMessage(&msg);
         DispatchMessageW(&msg);
+    }
+}
+
+/// 合并队列里连续的 WM_MOUSEMOVE,只处理最后一次坐标,避免拖选时每条移动
+/// 都同步全屏合成。遇到其它消息立即停,不越过按下/抬起。
+unsafe fn coalesce_mouse_move(msg: &mut MSG) {
+    if msg.message != WM_MOUSEMOVE {
+        return;
+    }
+    let hwnd = msg.hwnd;
+    let mut next = MSG::default();
+    loop {
+        if !PeekMessageW(&mut next, None, 0, 0, PM_NOREMOVE).as_bool() {
+            break;
+        }
+        if next.message != WM_MOUSEMOVE || next.hwnd != hwnd {
+            break;
+        }
+        if !PeekMessageW(&mut next, None, 0, 0, PM_REMOVE).as_bool() {
+            break;
+        }
+        *msg = next;
     }
 }
 
@@ -1199,6 +1343,7 @@ mod tests {
                 present_buf: vec![0; bytes],
                 width: width as i32,
                 height: height as i32,
+                last_scene: None,
             },
             shift_down: false,
             ctrl_down: false,
@@ -1979,6 +2124,7 @@ mod tests {
             present_buf: vec![0; 8], // 故意错误长度:防御路径返回 None 且不 panic。
             width: 4,
             height: 4,
+            last_scene: None,
         };
         assert!(compose_canvas(&mut canvas).is_none());
     }
@@ -2000,6 +2146,7 @@ mod tests {
             present_buf: vec![0u8; frame.rgba.len()],
             width: w as i32,
             height: h as i32,
+            last_scene: None,
         };
         canvas
             .engine
@@ -2021,7 +2168,7 @@ mod tests {
         let mut total = Duration::ZERO;
         let rounds = 60;
         for _ in 0..rounds {
-            let elapsed = compose_canvas(&mut canvas).expect("lengths match");
+            let (elapsed, _) = compose_canvas(&mut canvas).expect("lengths match");
             worst = worst.max(elapsed);
             total += elapsed;
         }
