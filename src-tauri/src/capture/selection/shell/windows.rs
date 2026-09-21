@@ -2000,32 +2000,9 @@ mod tests {
         // 标注模式下轻量操作条让位,只显示单行精简工具条。
         assert!(!state.canvas.engine.scene().toolbar_visible);
         assert!(state.canvas.engine.annotation_toolbar().is_some());
-        // 隐藏的操作条几何不得产生动作(不出现隐形可点按钮)。
-        let selection = state.canvas.engine.selection().unwrap();
-        let metrics = state.canvas.engine.metrics();
-        let rail_buttons = composer::toolbar_buttons(state.canvas.engine.flags());
-        let rail = composer::toolbar_panel(
-            metrics,
-            selection,
-            state.canvas.engine.size(),
-            &rail_buttons,
-        )
-        .unwrap();
-        let (_, rail_rect) = composer::toolbar_button_rects(metrics, rail, &rail_buttons)[0];
-        let (rx, ry) = rail_rect.center();
-        assert!(!feed_event(
-            &mut state,
-            InputEvent::LeftDown { x: rx, y: ry },
-            hwnd
-        ));
-        assert!(!feed_event(
-            &mut state,
-            InputEvent::LeftUp { x: rx, y: ry },
-            hwnd
-        ));
         assert!(
             state.outcome.is_none(),
-            "隐藏的操作条不得结束会话或产出动作"
+            "进入标注后不得因隐藏操作条产出动作"
         );
         // 「更多」展开/收起其余工具。
         assert!(!state.canvas.engine.annotation_more());

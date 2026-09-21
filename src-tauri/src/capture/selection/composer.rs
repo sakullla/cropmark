@@ -3377,10 +3377,24 @@ mod tests {
         let _ = composer.compose_into_dirty(&scene_a, &overlay, &mut dirty_buf, None);
         let _ = composer.compose_into_dirty(&scene_b, &overlay, &mut dirty_buf, Some(&scene_a));
         let full_b = composer.compose_with_overlay(&scene_b, &overlay);
-        let i = ((70u32 * 400 + 70) * 4) as usize;
-        assert_eq!(&dirty_buf[i..i + 3], &[225, 29, 72], "baked rect vanished after cursor follow");
+        let find_stroke = |buf: &[u8]| {
+            for y in 60u32..110 {
+                for x in 60u32..140 {
+                    let i = ((y * 400 + x) * 4) as usize;
+                    if buf[i] == 225 && buf[i + 1] == 29 && buf[i + 2] == 72 {
+                        return Some(i);
+                    }
+                }
+            }
+            None
+        };
+        let i = find_stroke(&full_a).expect("rect stroke visible in full compose");
+        assert_eq!(
+            &dirty_buf[i..i + 3],
+            &[225, 29, 72],
+            "baked rect vanished after cursor follow"
+        );
         assert_eq!(&dirty_buf[i..i + 3], &full_b[i..i + 3]);
-        assert_eq!(&full_a[i..i + 3], &[225, 29, 72]);
     }
 
     #[test]
