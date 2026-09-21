@@ -195,11 +195,11 @@ impl ChromeMetrics {
     }
 }
 
-/// 放大镜:源采样窗口 (2*MAG_HALF+1)=23 物理 px 直径,MAG_ZOOM=8 倍最近邻
-/// 放大(有效倍率 ~8x,像素格清晰可辨),放大区边长 23×8=184 ≤ MAG_MAX_EDGE。
-const MAG_HALF: i32 = 11;
-pub const MAG_ZOOM: i32 = 8;
-const MAG_MAX_EDGE: i32 = 220;
+/// 放大镜:源采样窗口 (2*MAG_HALF+1)=21 物理 px 直径,MAG_ZOOM=5 倍最近邻
+/// 放大(有效倍率 ~5x,像素格清晰可辨),放大区边长 21×5=105 ≤ MAG_MAX_EDGE。
+const MAG_HALF: i32 = 10;
+pub const MAG_ZOOM: i32 = 5;
+const MAG_MAX_EDGE: i32 = 140;
 /// 放大镜面板宽度上限(物理 px);读数字号过宽时自动收缩以守住上限。
 const MAG_PANEL_MAX: i32 = 200;
 const MAG_FONT: f32 = 11.0;
@@ -298,33 +298,36 @@ pub fn action_label(action: SelectionAction) -> String {
     })
 }
 
-/// 操作条按钮集(随 FeatureFlags 变化;复制/保存/贴图对应三个开关)。
-pub fn toolbar_buttons(flags: FeatureFlags) -> Vec<SelectionAction> {
-    let mut buttons = Vec::new();
+/// 捕获操作条与右键菜单共用的动作过滤(顺序固定):
+/// Copy←`toolbar_copy`, Save←`toolbar_save`, Pin←`toolbar_pin && pin_entry`,
+/// Annotate 恒在, Ocr←`ocr_entry`, Cancel 恒在。
+fn capture_actions(flags: FeatureFlags) -> Vec<SelectionAction> {
+    let mut actions = Vec::with_capacity(6);
     if flags.toolbar_copy {
-        buttons.push(SelectionAction::Copy);
+        actions.push(SelectionAction::Copy);
     }
     if flags.toolbar_save {
-        buttons.push(SelectionAction::Save);
+        actions.push(SelectionAction::Save);
     }
-    if flags.toolbar_pin {
-        buttons.push(SelectionAction::Pin);
+    if flags.toolbar_pin && flags.pin_entry {
+        actions.push(SelectionAction::Pin);
     }
-    buttons
+    actions.push(SelectionAction::Annotate);
+    if flags.ocr_entry {
+        actions.push(SelectionAction::Ocr);
+    }
+    actions.push(SelectionAction::Cancel);
+    actions
 }
 
-/// 右键菜单动作集:复制/保存/贴图/标注/取字/取消;贴图与取字受开关控制。
+/// 操作条按钮集(与 `menu_items` 同源过滤)。
+pub fn toolbar_buttons(flags: FeatureFlags) -> Vec<SelectionAction> {
+    capture_actions(flags)
+}
+
+/// 右键菜单动作集(与 `toolbar_buttons` 同源过滤)。
 pub fn menu_items(flags: FeatureFlags) -> Vec<SelectionAction> {
-    let mut items = vec![SelectionAction::Copy, SelectionAction::Save];
-    if flags.pin_entry {
-        items.push(SelectionAction::Pin);
-    }
-    items.push(SelectionAction::Annotate);
-    if flags.ocr_entry {
-        items.push(SelectionAction::Ocr);
-    }
-    items.push(SelectionAction::Cancel);
-    items
+    capture_actions(flags)
 }
 
 /// 即时标注工具条按钮集(R21 修订):主行固定为 4 个常用工具 + 撤销/重做/
@@ -703,7 +706,8 @@ fn mag_layout(scale: f32) -> MagLayout {
     } else {
         1.0
     };
-    // 像素级放大:块边长固定 8 物理 px(有效倍率 ~8x),源窗口 23px 直径。
+    // 像素级放大:块边长固定 MAG_ZOOM 物理 px(有效倍率 ~5x),源窗口 21px
+    // 直径;块边长不随 DPI scale 放大,避免回弹到旧体量。
     let block = MAG_ZOOM;
     let half = MAG_HALF
         .min((MAG_MAX_EDGE / block).saturating_sub(1) / 2)
@@ -2383,9 +2387,10 @@ mod tests {
         let composed = composer.compose_with_overlay(&scene, &overlay);
         let panel = magnifier_rect(cursor, (w, h), 1.0);
         let layout = mag_layout(1.0);
+        let px = panel.x + (panel.width - layout.edge) / 2;
         let cross_y = panel.y + layout.pad + layout.half * layout.block + layout.block / 2;
         assert_eq!(
-            read(&composed, panel.x + layout.pad + 10, cross_y),
+            read(&composed, px + 10, cross_y),
             [ACCENT[0], ACCENT[1], ACCENT[2]],
             "magnifier crosshair must survive the annotation layer"
         );
@@ -2846,13 +2851,13 @@ mod tests {
     }
 
     #[test]
-    fn magnifier_samples_pixel_grid_at_8x_within_panel_cap() {
-        // 像素级放大:源窗口 23px 直径、块 8 物理 px(有效 ~8x),与 scale 无关。
+    fn magnifier_samples_pixel_grid_at_5x_within_panel_cap() {
+        // 像素级放大:源窗口 21px 直径、块 5 物理 px(有效 ~5x),与 scale 无关。
         for scale in [0.5, 1.0, 1.5, 2.0, 3.0, 4.0] {
             let layout = mag_layout(scale);
-            assert_eq!(layout.half * 2 + 1, 23, "scale {scale}: 源采样窗口直径");
-            assert_eq!(layout.block, 8, "scale {scale}: 放大块边长");
-            assert_eq!(layout.edge, 184, "scale {scale}: 放大区边长");
+            assert_eq!(layout.half * 2 + 1, 21, "scale {scale}: 源采样窗口直径");
+            assert_eq!(layout.block, 5, "scale {scale}: 放大块边长");
+            assert_eq!(layout.edge, 105, "scale {scale}: 放大区边长");
             assert!(layout.edge <= MAG_MAX_EDGE);
         }
         // 面板宽度上限 200 物理 px(读数字号自动收缩)。
@@ -2897,12 +2902,12 @@ mod tests {
                 composed[i + 3],
             ]
         };
-        // 放大区左上角对应源 (189,139):原始纯色(200,100,50),不是压暗后的 (104,52,26)。
+        // 放大区左上角对应源 (cursor - half):原始纯色,不是压暗后的 (104,52,26)。
         assert_eq!(read(px, py), [200, 100, 50, 255]);
         // 中心块内部对应光标源像素 (200,150)(避开十字准星行列)。
         let block = px + layout.half * layout.block;
         let block_y = py + layout.half * layout.block;
-        assert_eq!(read(block + 2, block_y + 2), [1, 2, 3, 255]);
+        assert_eq!(read(block + 1, block_y + 1), [1, 2, 3, 255]);
         // 十字准星:放大区中心行/列为强调色。
         let cross_x = px + layout.half * layout.block + layout.block / 2;
         let cross_y = py + layout.half * layout.block + layout.block / 2;
@@ -2928,7 +2933,8 @@ mod tests {
         let composed = composer.compose(&scene);
         let panel = magnifier_rect((300, 200), (600, 400), 1.5);
         let layout = mag_layout(1.5);
-        assert_eq!(layout.edge, 184);
+        assert_eq!(layout.edge, 105);
+        assert_eq!(layout.block, 5);
         assert!(layout.edge <= MAG_MAX_EDGE);
         assert!(panel.width <= MAG_PANEL_MAX);
         let px = panel.x + (panel.width - layout.edge) / 2;
@@ -2939,6 +2945,36 @@ mod tests {
         };
         // 150% 下放大区仍是原始帧真实色彩(90,160,220),不是压暗值。
         assert_eq!(read(px + 1, py + 1), [90, 160, 220]);
+    }
+
+    #[test]
+    fn magnifier_flag_disables_panel() {
+        let frame = solid_frame(400, 300, [200, 100, 50, 255]);
+        let composer = Composer::new(&frame).unwrap();
+        let cursor = (200, 150);
+        let scene = |flags| Scene {
+            selection: None,
+            cursor,
+            flags,
+            toolbar_visible: false,
+            menu_open: false,
+            menu_anchor: (0, 0),
+            annotation_mode: false,
+            annotation_more: false,
+        };
+        let panel = magnifier_rect(cursor, (400, 300), 1.0);
+        let layout = mag_layout(1.0);
+        let px = panel.x + (panel.width - layout.edge) / 2;
+        let py = panel.y + layout.pad;
+        let read = |buf: &[u8], x: i32, y: i32| {
+            let i = ((y as u32 * 400 + x as u32) * 4) as usize;
+            [buf[i], buf[i + 1], buf[i + 2]]
+        };
+        let on = composer.compose(&scene(FeatureFlags::default()));
+        assert_eq!(read(&on, px, py), [200, 100, 50]);
+        let off = composer.compose(&scene(no_magnifier_flags()));
+        // 关闭后该处是压暗原像素,不再画放大镜面板。
+        assert_eq!(read(&off, px, py), [104, 52, 26]);
     }
 
     #[test]
@@ -3017,7 +3053,15 @@ mod tests {
             ..FeatureFlags::default()
         };
         let buttons = toolbar_buttons(flags);
-        assert_eq!(buttons, vec![SelectionAction::Copy]);
+        assert_eq!(
+            buttons,
+            vec![
+                SelectionAction::Copy,
+                SelectionAction::Annotate,
+                SelectionAction::Ocr,
+                SelectionAction::Cancel,
+            ]
+        );
         // 选区贴近屏幕右下角:右轨/底排都放不下 → 左侧竖排轨,不压选区左边框。
         let selection = PhysicalRect {
             x: 180,
@@ -3025,67 +3069,78 @@ mod tests {
             width: 15,
             height: 15,
         };
-        let panel = toolbar_panel(metrics_1(), selection, (200, 150), &buttons).unwrap();
+        let screen = (200, 220);
+        let panel = toolbar_panel(metrics_1(), selection, screen, &buttons).unwrap();
         assert!(panel.x >= 0 && panel.y >= 0);
-        assert!(panel.right() <= 200 && panel.bottom() <= 150);
+        assert!(panel.right() <= screen.0 as i32 && panel.bottom() <= screen.1 as i32);
         assert!(panel.right() <= selection.x as i32);
         assert_eq!(panel.width, RAIL_BUTTON);
         let rects = toolbar_button_rects(metrics_1(), panel, &buttons);
-        assert_eq!(rects.len(), 1);
+        assert_eq!(rects.len(), 4);
         assert_eq!(rects[0].1.width, RAIL_BUTTON);
         assert_eq!(rects[0].1.height, RAIL_BUTTON);
         assert!(panel.contains(rects[0].1.x, rects[0].1.y));
-        // 全关时无面板。
+        // 只关 toolbar_* 时标注/取字/取消仍在,条与菜单同源且仍有面板。
         let off = FeatureFlags {
             toolbar_copy: false,
             toolbar_save: false,
             toolbar_pin: false,
             ..FeatureFlags::default()
         };
-        assert!(toolbar_panel(metrics_1(), selection, (200, 150), &toolbar_buttons(off)).is_none());
+        let off_buttons = toolbar_buttons(off);
+        assert_eq!(
+            off_buttons,
+            vec![
+                SelectionAction::Annotate,
+                SelectionAction::Ocr,
+                SelectionAction::Cancel,
+            ]
+        );
+        assert_eq!(menu_items(off), off_buttons);
+        assert!(toolbar_panel(metrics_1(), selection, screen, &off_buttons).is_some());
     }
 
     #[test]
     fn rail_prefers_right_then_bottom_then_left_and_wraps_rows() {
         let buttons = toolbar_buttons(FeatureFlags::default());
-        assert_eq!(buttons.len(), 3);
+        assert_eq!(buttons.len(), 6);
         // ① 右侧竖排轨优先:垂直居中、与选区间距 10px、单列。
         let selection = PhysicalRect {
             x: 40,
-            y: 60,
+            y: 160,
             width: 100,
             height: 80,
         };
-        let panel = toolbar_panel(metrics_1(), selection, (400, 300), &buttons).unwrap();
+        let panel = toolbar_panel(metrics_1(), selection, (400, 500), &buttons).unwrap();
         assert_eq!(panel.x, 140 + RAIL_MARGIN_V);
         assert_eq!(panel.width, RAIL_BUTTON);
-        assert_eq!(panel.height, 3 * RAIL_BUTTON + 2 * RAIL_GAP);
+        assert_eq!(panel.height, 6 * RAIL_BUTTON + 5 * RAIL_GAP);
         let rail_center = panel.y + panel.height / 2;
-        assert!((rail_center - (60 + 40)).abs() <= 1);
+        assert!((rail_center - (160 + 40)).abs() <= 1);
         let rects = toolbar_button_rects(metrics_1(), panel, &buttons);
         assert!(rects.windows(2).all(|pair| pair[1].1.y > pair[0].1.y));
         assert!(rects.iter().all(|(_, rect)| rect.x == panel.x));
-        // ② 右缘不足 → 底部水平排;窄选区自动折行(每行 1 个,共 3 行居中)。
+        // ② 右缘不足 → 底部水平排;窄选区自动折行(每行 1 个,共 6 行居中)。
         let narrow = PhysicalRect {
             x: 340,
             y: 40,
             width: 50,
             height: 20,
         };
-        let panel = toolbar_panel(metrics_1(), narrow, (400, 300), &buttons).unwrap();
+        let panel = toolbar_panel(metrics_1(), narrow, (400, 500), &buttons).unwrap();
         assert_eq!(panel.y, 60 + RAIL_MARGIN_H);
-        assert_eq!(panel.height, 3 * RAIL_BUTTON + 2 * RAIL_GAP);
+        assert_eq!(panel.height, 6 * RAIL_BUTTON + 5 * RAIL_GAP);
         let rects = toolbar_button_rects(metrics_1(), panel, &buttons);
-        assert_eq!(rects.len(), 3);
+        assert_eq!(rects.len(), 6);
         assert!(rects.windows(2).all(|pair| pair[1].1.y > pair[0].1.y));
         // ③ 宽选区底部水平排:单行容纳全部按钮。
         let wide = PhysicalRect {
-            x: 430,
+            x: 80,
             y: 40,
-            width: 200,
+            width: 280,
             height: 20,
         };
-        let panel = toolbar_panel(metrics_1(), wide, (640, 480), &buttons).unwrap();
+        let panel = toolbar_panel(metrics_1(), wide, (400, 500), &buttons).unwrap();
         assert_eq!(panel.y, 60 + RAIL_MARGIN_H);
         assert_eq!(panel.height, RAIL_BUTTON);
         let rects = toolbar_button_rects(metrics_1(), panel, &buttons);
@@ -3093,7 +3148,7 @@ mod tests {
         assert!(rects.windows(2).all(|pair| pair[1].1.x > pair[0].1.x));
         // 单行整体居中于选区。
         let row_center = panel.x + panel.width / 2;
-        assert!((row_center - (430 + 100)).abs() <= 1);
+        assert!((row_center - (80 + 140)).abs() <= 1);
     }
 
     #[test]
@@ -3123,9 +3178,16 @@ mod tests {
 
     #[test]
     fn menu_items_respect_feature_flags() {
-        let default_items = menu_items(FeatureFlags::default());
-        assert_eq!(default_items.len(), 6);
-        assert_eq!(*default_items.last().unwrap(), SelectionAction::Cancel);
+        let default_items = vec![
+            SelectionAction::Copy,
+            SelectionAction::Save,
+            SelectionAction::Pin,
+            SelectionAction::Annotate,
+            SelectionAction::Ocr,
+            SelectionAction::Cancel,
+        ];
+        assert_eq!(menu_items(FeatureFlags::default()), default_items);
+        assert_eq!(toolbar_buttons(FeatureFlags::default()), default_items);
         let flags = FeatureFlags {
             ocr_entry: false,
             pin_entry: false,
@@ -3134,7 +3196,40 @@ mod tests {
         let items = menu_items(flags);
         assert!(!items.contains(&SelectionAction::Ocr));
         assert!(!items.contains(&SelectionAction::Pin));
-        assert_eq!(items.len(), 4);
+        assert_eq!(
+            items,
+            vec![
+                SelectionAction::Copy,
+                SelectionAction::Save,
+                SelectionAction::Annotate,
+                SelectionAction::Cancel,
+            ]
+        );
+        assert_eq!(toolbar_buttons(flags), items);
+        // 关闭操作条复制/保存/贴图后,条与菜单都不再出现对应项;标注与取消恒在。
+        let toolbar_off = FeatureFlags {
+            toolbar_copy: false,
+            toolbar_save: false,
+            toolbar_pin: false,
+            ocr_entry: false,
+            ..FeatureFlags::default()
+        };
+        let filtered = vec![SelectionAction::Annotate, SelectionAction::Cancel];
+        assert_eq!(toolbar_buttons(toolbar_off), filtered);
+        assert_eq!(menu_items(toolbar_off), filtered);
+        // 贴图需 toolbar_pin 与 pin_entry 同时开启。
+        let pin_entry_only = FeatureFlags {
+            toolbar_pin: false,
+            ..FeatureFlags::default()
+        };
+        assert!(!toolbar_buttons(pin_entry_only).contains(&SelectionAction::Pin));
+        assert!(!menu_items(pin_entry_only).contains(&SelectionAction::Pin));
+        let toolbar_pin_only = FeatureFlags {
+            pin_entry: false,
+            ..FeatureFlags::default()
+        };
+        assert!(!toolbar_buttons(toolbar_pin_only).contains(&SelectionAction::Pin));
+        assert!(!menu_items(toolbar_pin_only).contains(&SelectionAction::Pin));
     }
 
     #[test]
@@ -3172,11 +3267,11 @@ mod tests {
         // 图标轨按钮 hitbox 内是 accent 圆形按钮(避开中央白色字形取偏心点)。
         let buttons = toolbar_buttons(flags);
         let panel = toolbar_panel(metrics_1(), selection, (320, 200), &buttons).unwrap();
-        let (_, last) = toolbar_button_rects(metrics_1(), panel, &buttons)
-            .last()
+        let (_, first) = toolbar_button_rects(metrics_1(), panel, &buttons)
+            .first()
             .copied()
             .unwrap();
-        let (cx, cy) = last.center();
+        let (cx, cy) = first.center();
         assert_eq!(read(cx + 12, cy), [0x0F, 0x76, 0x6E]);
         // 描边:选区左边框(避开手柄)为强调色。
         assert_eq!(read(41, 90), [ACCENT[0], ACCENT[1], ACCENT[2]]);
@@ -3319,12 +3414,12 @@ mod tests {
             assert_eq!(panel.width, metrics.rail_button);
             assert_eq!(
                 panel.height,
-                3 * metrics.rail_button + 2 * metrics.rail_gap,
+                6 * metrics.rail_button + 5 * metrics.rail_gap,
                 "scale {scale}"
             );
             assert_eq!(panel.x, 140 + metrics.rail_margin_v);
             let rects = toolbar_button_rects(metrics, panel, &buttons);
-            assert_eq!(rects.len(), 3);
+            assert_eq!(rects.len(), 6);
             assert!(rects
                 .iter()
                 .all(|(_, rect)| rect.width == metrics.rail_button
@@ -3409,11 +3504,11 @@ mod tests {
         // 操作条按钮中心区仍是 accent 圆(取偏心点避开白色图标)。
         let buttons = toolbar_buttons(flags);
         let panel = toolbar_panel(metrics, selection, (640, 400), &buttons).unwrap();
-        let (_, last) = toolbar_button_rects(metrics, panel, &buttons)
-            .last()
+        let (_, first) = toolbar_button_rects(metrics, panel, &buttons)
+            .first()
             .copied()
             .unwrap();
-        let (cx, cy) = last.center();
+        let (cx, cy) = first.center();
         let inset = metrics.rail_button / 2 - 4;
         assert_eq!(read(cx + inset, cy), [0x0F, 0x76, 0x6E]);
         // 手柄视觉半径也随 scale 放大:距锚点 1.0 基准半径外、缩放半径内仍为强调色。

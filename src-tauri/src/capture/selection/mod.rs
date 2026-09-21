@@ -24,7 +24,6 @@ pub const KEY_STEP_LARGE: i32 = 10;
 /// 拖动式标注草稿的最小边长(物理像素),与预览编辑器 `MIN_DRAW_SIZE` 对齐。
 pub const MIN_DRAW_SIZE: i32 = 3;
 
-
 /// 选区即时标注工具(R21);工具集与预览编辑器一致。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnnotationTool {
@@ -293,11 +292,26 @@ pub enum EngineOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputEvent {
-    PointerMove { x: i32, y: i32 },
-    LeftDown { x: i32, y: i32 },
-    LeftUp { x: i32, y: i32 },
-    RightDown { x: i32, y: i32 },
-    Key { key: LogicalKey, shift: bool },
+    PointerMove {
+        x: i32,
+        y: i32,
+    },
+    LeftDown {
+        x: i32,
+        y: i32,
+    },
+    LeftUp {
+        x: i32,
+        y: i32,
+    },
+    RightDown {
+        x: i32,
+        y: i32,
+    },
+    Key {
+        key: LogicalKey,
+        shift: bool,
+    },
     /// 文本输入(WM_CHAR 直入或 IME 已提交结果)。
     Text(String),
     /// IME 组合串更新(未提交);空串表示组合结束。
@@ -442,7 +456,7 @@ impl SelectionEngine {
         self.annotation_more
     }
 
-    /// 轻量操作条(复制/保存/贴图)是否可见:仅默认选中态,标注模式下隐藏,
+    /// 捕获操作条是否可见:仅默认选中态,标注模式下隐藏,
     /// 避免与标注工具条形成双工具条。
     fn rail_visible(&self) -> bool {
         matches!(
@@ -805,7 +819,8 @@ impl SelectionEngine {
                 if self.is_internal_annotation_action(action) {
                     let still = self.hit_annotation_toolbar(x, y) == Some(action)
                         || (action == SelectionAction::Annotate
-                            && self.hit_menu(x, y) == Some(action));
+                            && (self.hit_menu(x, y) == Some(action)
+                                || self.hit_toolbar(x, y) == Some(action)));
                     self.state = if self.selection.is_some() {
                         EngineState::Selected
                     } else {
@@ -816,8 +831,8 @@ impl SelectionEngine {
                     }
                     return EngineOutcome::Redraw;
                 }
-                let still = self.hit_toolbar(x, y) == Some(action)
-                    || self.hit_menu(x, y) == Some(action);
+                let still =
+                    self.hit_toolbar(x, y) == Some(action) || self.hit_menu(x, y) == Some(action);
                 self.state = if self.selection.is_some() {
                     EngineState::Selected
                 } else {
@@ -961,7 +976,8 @@ impl SelectionEngine {
             return None;
         }
         let buttons = composer::toolbar_buttons(self.flags);
-        let panel = composer::toolbar_panel(self.metrics(), self.selection?, self.size(), &buttons)?;
+        let panel =
+            composer::toolbar_panel(self.metrics(), self.selection?, self.size(), &buttons)?;
         composer::toolbar_button_rects(self.metrics(), panel, &buttons)
             .into_iter()
             .find(|(_, rect)| rect.contains(x, y))
@@ -1367,11 +1383,18 @@ impl SelectionEngine {
 
     /// 光标下最上层图元的索引(按外接框判定;用于删除)。
     fn annotation_at(&self, x: i32, y: i32) -> Option<usize> {
-        self.annotations.iter().enumerate().rev().find_map(|(index, op)| {
-            let (min_x, min_y, max_x, max_y) = annotation_bounds(op)?;
-            ((x as f64) >= min_x && (x as f64) <= max_x && (y as f64) >= min_y && (y as f64) <= max_y)
-                .then_some(index)
-        })
+        self.annotations
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, op)| {
+                let (min_x, min_y, max_x, max_y) = annotation_bounds(op)?;
+                ((x as f64) >= min_x
+                    && (x as f64) <= max_x
+                    && (y as f64) >= min_y
+                    && (y as f64) <= max_y)
+                    .then_some(index)
+            })
     }
 
     fn begin_text_edit(&mut self, x: i32, y: i32) {
@@ -1611,17 +1634,15 @@ fn annotation_bounds(op: &Annotation) -> Option<(f64, f64, f64, f64)> {
             from.x.max(to.x),
             from.y.max(to.y),
         )),
-        Annotation::Text { x, y, text, size, .. } => {
+        Annotation::Text {
+            x, y, text, size, ..
+        } => {
             let size = (*size as f32).max(10.0);
             let width = text::measure_width(text, size).unwrap_or(0.0) as f64;
             Some((*x, *y, x + width, y + text::line_height(size) as f64))
         }
         Annotation::Number {
-            x,
-            y,
-            value,
-            size,
-            ..
+            x, y, value, size, ..
         } => {
             let size = (*size as f32).max(10.0);
             let width = text::measure_width(&value.to_string(), size).unwrap_or(0.0) as f64;
@@ -1880,11 +1901,20 @@ mod tests {
         drag(&mut engine, (40, 30), (200, 120));
         let flags = engine.flags();
         let buttons = composer::toolbar_buttons(flags);
-        let panel =
-            composer::toolbar_panel(engine.metrics(), engine.selection().unwrap(), engine.size(), &buttons).unwrap();
+        let panel = composer::toolbar_panel(
+            engine.metrics(),
+            engine.selection().unwrap(),
+            engine.size(),
+            &buttons,
+        )
+        .unwrap();
         let rects = composer::toolbar_button_rects(engine.metrics(), panel, &buttons);
-        // 选第三个按钮(贴图),避开光标处放大镜面板。
-        let (expected, rect) = rects.last().copied().unwrap();
+        // 选贴图按钮(非末项取消,取消走 Cancelled),避开光标处放大镜面板。
+        let (expected, rect) = rects
+            .iter()
+            .find(|(action, _)| *action == SelectionAction::Pin)
+            .copied()
+            .unwrap();
         let (cx, cy) = rect.center();
         assert_eq!(
             engine.handle_event(InputEvent::LeftDown { x: cx, y: cy }),
@@ -1908,18 +1938,19 @@ mod tests {
         let buttons = composer::toolbar_buttons(off);
         assert!(!buttons.contains(&SelectionAction::Copy));
         // 首位变为保存:按共享布局取首个按钮中心命中。
-        let panel =
-            composer::toolbar_panel(restricted.metrics(), restricted.selection().unwrap(), restricted.size(), &buttons)
-                .unwrap();
+        let panel = composer::toolbar_panel(
+            restricted.metrics(),
+            restricted.selection().unwrap(),
+            restricted.size(),
+            &buttons,
+        )
+        .unwrap();
         let (_, first) = composer::toolbar_button_rects(restricted.metrics(), panel, &buttons)
             .first()
             .copied()
             .unwrap();
         let (fx, fy) = first.center();
-        assert_eq!(
-            restricted.hit_toolbar(fx, fy),
-            Some(SelectionAction::Save)
-        );
+        assert_eq!(restricted.hit_toolbar(fx, fy), Some(SelectionAction::Save));
     }
 
     #[test]
@@ -1934,7 +1965,12 @@ mod tests {
         assert_eq!(engine.state(), &EngineState::Menu);
         assert_eq!(engine.menu_anchor(), (150, 100));
         let items = composer::menu_items(engine.flags());
-        let panel = composer::menu_panel(engine.metrics(), engine.menu_anchor(), engine.size(), &items);
+        let panel = composer::menu_panel(
+            engine.metrics(),
+            engine.menu_anchor(),
+            engine.size(),
+            &items,
+        );
         let rects = composer::menu_item_rects(engine.metrics(), panel, &items);
         // 点击"取字"。
         let ocr = rects
@@ -1983,10 +2019,15 @@ mod tests {
         let mut engine = new_engine();
         drag(&mut engine, (40, 30), (200, 120));
         let buttons = composer::toolbar_buttons(engine.flags());
-        let panel =
-            composer::toolbar_panel(engine.metrics(), engine.selection().unwrap(), engine.size(), &buttons).unwrap();
+        let panel = composer::toolbar_panel(
+            engine.metrics(),
+            engine.selection().unwrap(),
+            engine.size(),
+            &buttons,
+        )
+        .unwrap();
         let (expected, rect) = composer::toolbar_button_rects(engine.metrics(), panel, &buttons)
-            .last()
+            .first()
             .copied()
             .unwrap();
         let (cx, cy) = rect.center();
@@ -2032,7 +2073,7 @@ mod tests {
     fn edge_drag_resizes_along_single_axis_and_clamps() {
         let mut engine = new_engine();
         drag(&mut engine, (40, 30), (200, 120)); // (40,30)-(200,120)
-        // 拖右边线(±6px 带内、手柄半径外):只改宽度。
+                                                 // 拖右边线(±6px 带内、手柄半径外):只改宽度。
         assert_eq!(
             engine.handle_event(InputEvent::LeftDown { x: 203, y: 100 }),
             EngineOutcome::Redraw
@@ -2101,7 +2142,7 @@ mod tests {
         // 无选区:crosshair。
         assert_eq!(engine.cursor_for(10, 10), CursorHint::Crosshair);
         drag(&mut engine, (40, 30), (200, 120)); // (40,30)-(200,120)
-        // 角/边手柄 → 对应斜向/轴向 resize。
+                                                 // 角/边手柄 → 对应斜向/轴向 resize。
         assert_eq!(engine.cursor_for(40, 30), CursorHint::ResizeNWSE);
         assert_eq!(engine.cursor_for(200, 120), CursorHint::ResizeNWSE);
         assert_eq!(engine.cursor_for(200, 30), CursorHint::ResizeNESW);
@@ -2133,10 +2174,15 @@ mod tests {
         };
         let mut engine = SelectionEngine::new(320, 200, flags);
         drag(&mut engine, (40, 30), (200, 120)); // (40,30)-(200,120),320×200
-        // 图标轨按钮上 → 手型(即使该点也在选区边带/内部附近)。
+                                                 // 图标轨按钮上 → 手型(即使该点也在选区边带/内部附近)。
         let buttons = composer::toolbar_buttons(engine.flags());
-        let panel =
-            composer::toolbar_panel(engine.metrics(), engine.selection().unwrap(), engine.size(), &buttons).unwrap();
+        let panel = composer::toolbar_panel(
+            engine.metrics(),
+            engine.selection().unwrap(),
+            engine.size(),
+            &buttons,
+        )
+        .unwrap();
         let (_, first) = composer::toolbar_button_rects(engine.metrics(), panel, &buttons)
             .first()
             .copied()
@@ -2154,7 +2200,12 @@ mod tests {
         engine.handle_event(InputEvent::RightDown { x: 150, y: 100 });
         assert_eq!(engine.state(), &EngineState::Menu);
         let items = composer::menu_items(engine.flags());
-        let panel = composer::menu_panel(engine.metrics(), engine.menu_anchor(), engine.size(), &items);
+        let panel = composer::menu_panel(
+            engine.metrics(),
+            engine.menu_anchor(),
+            engine.size(),
+            &items,
+        );
         let (_, first) = composer::menu_item_rects(engine.metrics(), panel, &items)
             .first()
             .copied()
@@ -2208,8 +2259,13 @@ mod tests {
         assert_eq!(off.cursor_for(10, 10), CursorHint::Crosshair);
         // 操作条按钮与菜单项也不切手型。
         let buttons = composer::toolbar_buttons(off.flags());
-        let panel =
-            composer::toolbar_panel(off.metrics(), off.selection().unwrap(), off.size(), &buttons).unwrap();
+        let panel = composer::toolbar_panel(
+            off.metrics(),
+            off.selection().unwrap(),
+            off.size(),
+            &buttons,
+        )
+        .unwrap();
         let (_, toolbar_rect) = composer::toolbar_button_rects(off.metrics(), panel, &buttons)[0];
         let (bx, by) = toolbar_rect.center();
         assert_eq!(off.cursor_for(bx, by), CursorHint::Crosshair);
@@ -2308,7 +2364,7 @@ mod tests {
         let scene = engine.scene();
         assert!(scene.menu_open && !scene.toolbar_visible);
         assert_eq!(scene.menu_anchor, (100, 60));
-        // 关闭全部操作条开关后场景不再显示操作条。
+        // 只关 toolbar_* 时标注/取消仍在,默认选中态操作条仍可见。
         let off = FeatureFlags {
             toolbar_copy: false,
             toolbar_save: false,
@@ -2317,7 +2373,11 @@ mod tests {
         };
         let mut bare = SelectionEngine::new(320, 200, off);
         drag(&mut bare, (40, 30), (200, 120));
-        assert!(!bare.scene().toolbar_visible);
+        assert!(bare.scene().toolbar_visible);
+        assert!(!composer::toolbar_buttons(off).contains(&SelectionAction::Copy));
+        assert!(!composer::toolbar_buttons(off).contains(&SelectionAction::Save));
+        assert!(!composer::toolbar_buttons(off).contains(&SelectionAction::Pin));
+        assert_eq!(composer::toolbar_buttons(off), composer::menu_items(off));
     }
 
     #[test]
@@ -2333,7 +2393,8 @@ mod tests {
             let metrics = engine.metrics();
             let buttons = composer::toolbar_buttons(engine.flags());
             let selection = engine.selection().unwrap();
-            let panel = composer::toolbar_panel(metrics, selection, engine.size(), &buttons).unwrap();
+            let panel =
+                composer::toolbar_panel(metrics, selection, engine.size(), &buttons).unwrap();
             let (action, rect) = composer::toolbar_button_rects(metrics, panel, &buttons)[0];
             let (cx, cy) = rect.center();
             assert_eq!(engine.hit_toolbar(cx, cy), Some(action), "scale {scale}");
@@ -2344,7 +2405,10 @@ mod tests {
             let base_rect = composer::toolbar_button_rects(base_metrics, base_panel, &buttons)[0].1;
             assert!(base_rect.contains(base_panel.x + 1, base_panel.y + 30));
             let (px, py) = (base_panel.x + 1, base_panel.y + 30);
-            assert!(!rect.contains(px, py), "scale {scale}: 探针应在新按钮矩形外");
+            assert!(
+                !rect.contains(px, py),
+                "scale {scale}: 探针应在新按钮矩形外"
+            );
             assert_ne!(engine.hit_toolbar(px, py), Some(action), "scale {scale}");
             // 手柄命中半径随 scale 放大(1.0 基准半径外、缩放半径内仍命中)。
             let probe = selection.x as i32 + metrics.handle_hit_radius;
@@ -2382,6 +2446,28 @@ mod tests {
 
     fn drag_selection(engine: &mut SelectionEngine, from: (i32, i32), to: (i32, i32)) {
         drag(engine, from, to);
+    }
+
+    /// 点击可见捕获操作条上指定动作的按钮中心,返回本次点击的引擎结果。
+    fn click_toolbar_action(
+        engine: &mut SelectionEngine,
+        action: SelectionAction,
+    ) -> EngineOutcome {
+        let buttons = composer::toolbar_buttons(engine.flags());
+        let panel = composer::toolbar_panel(
+            engine.metrics(),
+            engine.selection().expect("selection"),
+            engine.size(),
+            &buttons,
+        )
+        .expect("capture toolbar");
+        let (_, rect) = composer::toolbar_button_rects(engine.metrics(), panel, &buttons)
+            .into_iter()
+            .find(|(candidate, _)| *candidate == action)
+            .expect("toolbar button present");
+        let (cx, cy) = rect.center();
+        engine.handle_event(InputEvent::LeftDown { x: cx, y: cy });
+        engine.handle_event(InputEvent::LeftUp { x: cx, y: cy })
     }
 
     /// 打开右键菜单并点击指定菜单项,返回本次点击的引擎结果。
@@ -2635,6 +2721,30 @@ mod tests {
     }
 
     #[test]
+    fn toolbar_annotate_enters_mode_and_hides_capture_rail() {
+        let mut engine = inline_engine(800, 600);
+        drag_selection(&mut engine, (40, 30), (400, 280));
+        assert!(engine.scene().toolbar_visible);
+        assert_eq!(
+            click_toolbar_action(&mut engine, SelectionAction::Annotate),
+            EngineOutcome::Redraw
+        );
+        assert!(engine.annotation_mode());
+        assert!(!engine.scene().toolbar_visible);
+        assert!(engine.annotation_toolbar().is_some());
+    }
+
+    #[test]
+    fn toolbar_cancel_cancels_session() {
+        let mut engine = inline_engine(800, 600);
+        drag_selection(&mut engine, (40, 30), (400, 280));
+        assert_eq!(
+            click_toolbar_action(&mut engine, SelectionAction::Cancel),
+            EngineOutcome::Cancelled
+        );
+    }
+
+    #[test]
     fn annotate_menu_action_toggles_annotation_mode_and_keeps_annotations() {
         let mut engine = inline_engine(800, 600);
         drag_selection(&mut engine, (40, 30), (760, 480));
@@ -2734,7 +2844,10 @@ mod tests {
             other => panic!("expected pen, got {other:?}"),
         }
 
-        click_annotation_button(&mut engine, SelectionAction::Tool(AnnotationTool::Highlighter));
+        click_annotation_button(
+            &mut engine,
+            SelectionAction::Tool(AnnotationTool::Highlighter),
+        );
         engine.handle_event(InputEvent::LeftDown { x: 200, y: 400 });
         engine.handle_event(InputEvent::PointerMove { x: 320, y: 430 });
         engine.handle_event(InputEvent::LeftUp { x: 320, y: 430 });
@@ -2844,7 +2957,13 @@ mod tests {
         // 选区外按下:退出工具并重新拖选。
         engine.handle_event(InputEvent::LeftDown { x: 5, y: 5 });
         assert_eq!(engine.tool(), None);
-        assert_eq!(engine.state(), &EngineState::Dragging { anchor_x: 5, anchor_y: 5 });
+        assert_eq!(
+            engine.state(),
+            &EngineState::Dragging {
+                anchor_x: 5,
+                anchor_y: 5
+            }
+        );
         assert!(engine.selection().is_none());
     }
 
