@@ -2547,20 +2547,13 @@ mod tests {
         engine.handle_event(InputEvent::LeftUp { x: 200, y: 120 });
         assert!(engine.scene().toolbar_visible);
 
-        let buttons = composer::toolbar_buttons(engine.flags());
-        let metrics = composer::ChromeMetrics::for_scale(1.5);
-        let panel = composer::toolbar_panel(
-            metrics,
-            engine.selection().unwrap(),
-            engine.size(),
-            &buttons,
-        )
-        .unwrap();
-        // 选贴图(非末项取消:取消走 Cancelled),验证松开才产出 Action。
-        let (expected, rect) = composer::toolbar_button_rects(metrics, panel, &buttons)
+        // 主行复制(非取消:取消走 Cancelled),验证松开才产出 Action。
+        let toolbar = engine.unified_toolbar().expect("toolbar");
+        let (expected, rect) = toolbar
+            .buttons
             .into_iter()
-            .find(|(action, _)| *action == SelectionAction::Pin)
-            .expect("pin button");
+            .find(|(action, _)| *action == SelectionAction::Copy)
+            .expect("copy button");
         let (cx, cy) = rect.center();
         assert_eq!(
             engine.handle_event(InputEvent::LeftDown { x: cx, y: cy }),

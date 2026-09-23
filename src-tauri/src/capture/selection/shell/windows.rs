@@ -1850,7 +1850,7 @@ mod tests {
         }
 
         // 右键菜单「复制」:Quiet 结果同样携带图元(输出合并后再执行动作)。
-        // 标注模式下轻量操作条让位,复制/保存经右键菜单完成。
+        // 统一横条在选中工具后仍可见,复制/保存也可经右键菜单完成。
         let mut state = test_state_with_flags(800, 600, FeatureFlags::default());
         for event in [
             InputEvent::LeftDown { x: 40, y: 30 },
@@ -1867,7 +1867,7 @@ mod tests {
         ] {
             assert!(!feed_event(&mut state, event, hwnd));
         }
-        assert!(!state.canvas.engine.scene().toolbar_visible);
+        assert!(state.canvas.engine.scene().toolbar_visible);
         assert!(!feed_event(
             &mut state,
             InputEvent::RightDown { x: 600, y: 300 },
@@ -1949,142 +1949,9 @@ mod tests {
         }
     }
 
-    /// 经右键菜单「标注」进入标注模式(与用户路径一致)。
-    fn enter_annotation_mode(state: &mut ShellState, hwnd: HWND) {
-        if state.canvas.engine.annotation_mode() {
-            return;
-        }
-        let items = composer::menu_items(state.canvas.engine.flags());
-        let metrics = state.canvas.engine.metrics();
-        let selection = state.canvas.engine.selection().expect("selection");
-        let anchor = (
-            selection.x as i32 + selection.width as i32 / 2,
-            selection.y as i32 + selection.height as i32 / 2,
-        );
-        assert!(!feed_event(
-            state,
-            InputEvent::RightDown {
-                x: anchor.0,
-                y: anchor.1
-            },
-            hwnd
-        ));
-        let panel = composer::menu_panel(
-            metrics,
-            state.canvas.engine.menu_anchor(),
-            state.canvas.engine.size(),
-            &items,
-        );
-        let (_, rect) = composer::menu_item_rects(metrics, panel, &items)
-            .into_iter()
-            .find(|(action, _)| *action == SelectionAction::Annotate)
-            .expect("annotate item");
-        let (cx, cy) = rect.center();
-        assert!(!feed_event(
-            state,
-            InputEvent::LeftDown { x: cx, y: cy },
-            hwnd
-        ));
-        assert!(!feed_event(
-            state,
-            InputEvent::LeftUp { x: cx, y: cy },
-            hwnd
-        ));
-        assert!(
-            state.canvas.engine.annotation_mode(),
-            "「标注」应进入标注模式"
-        );
-    }
-
-    /// 点击标注工具条上指定工具的按钮中心(引擎内部消费该动作);
-    /// 工具在「更多」展开行时先展开。
-    fn click_engine_tool(state: &mut ShellState, hwnd: HWND, tool: AnnotationTool) {
-        enter_annotation_mode(state, hwnd);
-        let click = |state: &mut ShellState, hwnd: HWND, action: SelectionAction| {
-            let toolbar = state
-                .canvas
-                .engine
-                .annotation_toolbar()
-                .expect("annotation toolbar");
-            let (_, rect) = toolbar
-                .buttons
-                .into_iter()
-                .find(|(candidate, _)| *candidate == action)
-                .expect("button present");
-            let (cx, cy) = rect.center();
-            assert!(!feed_event(
-                state,
-                InputEvent::LeftDown { x: cx, y: cy },
-                hwnd
-            ));
-            assert!(!feed_event(
-                state,
-                InputEvent::LeftUp { x: cx, y: cy },
-                hwnd
-            ));
-        };
-        let target = SelectionAction::Tool(tool);
-        let visible = state
-            .canvas
-            .engine
-            .annotation_toolbar()
-            .map(|toolbar| {
-                toolbar
-                    .buttons
-                    .iter()
-                    .any(|(candidate, _)| *candidate == target)
-            })
-            .unwrap_or(false);
-        if visible {
-            click(state, hwnd, target);
-        } else {
-            click(state, hwnd, SelectionAction::More);
-            assert!(state.canvas.engine.annotation_more(), "「更多」应展开");
-            click(state, hwnd, target);
-        }
-        assert_eq!(state.canvas.engine.tool(), Some(tool));
-    }
-
-    #[test]
-    fn annotation_mode_hides_rail_and_more_toggles_tools() {
-        let mut state = test_state_with_flags(800, 600, FeatureFlags::default());
-        let hwnd = HWND::default();
-        for event in [
-            InputEvent::LeftDown { x: 40, y: 30 },
-            InputEvent::PointerMove { x: 760, y: 480 },
-            InputEvent::LeftUp { x: 760, y: 480 },
-        ] {
-            assert!(!feed_event(&mut state, event, hwnd));
-        }
-        assert!(state.canvas.engine.scene().toolbar_visible);
-        enter_annotation_mode(&mut state, hwnd);
-        // 标注模式下轻量操作条让位,只显示单行精简工具条。
-        assert!(!state.canvas.engine.scene().toolbar_visible);
-        assert!(state.canvas.engine.annotation_toolbar().is_some());
-        assert!(
-            state.outcome.is_none(),
-            "进入标注后不得因隐藏操作条产出动作"
-        );
-        // 「更多」展开/收起其余工具。
-        assert!(!state.canvas.engine.annotation_more());
-        click_engine_action(&mut state, hwnd, SelectionAction::More);
-        assert!(state.canvas.engine.annotation_more());
-        click_engine_action(&mut state, hwnd, SelectionAction::More);
-        assert!(!state.canvas.engine.annotation_more());
-        // Esc 先退出标注模式,再 Esc 取消会话。
-        assert!(!feed_event(&mut state, key(LogicalKey::Escape), hwnd));
-        assert!(!state.canvas.engine.annotation_mode());
-        assert!(feed_event(&mut state, key(LogicalKey::Escape), hwnd));
-        assert_eq!(state.outcome, Some(RegionOutcome::Cancelled));
-    }
-
-    /// 点击标注工具条上指定动作的按钮中心。
+    /// 点击统一横条主行上指定动作的按钮中心(引擎内部消费该动作)。
     fn click_engine_action(state: &mut ShellState, hwnd: HWND, action: SelectionAction) {
-        let toolbar = state
-            .canvas
-            .engine
-            .annotation_toolbar()
-            .expect("annotation toolbar");
+        let toolbar = state.canvas.engine.unified_toolbar().expect("toolbar");
         let (_, rect) = toolbar
             .buttons
             .into_iter()
@@ -2101,6 +1968,85 @@ mod tests {
             InputEvent::LeftUp { x: cx, y: cy },
             hwnd
         ));
+    }
+
+    /// 展开「更多」面板。
+    fn open_engine_more(state: &mut ShellState, hwnd: HWND) {
+        if state.canvas.engine.more_open() {
+            return;
+        }
+        click_engine_action(state, hwnd, SelectionAction::More);
+        assert!(state.canvas.engine.more_open(), "「更多」应展开");
+    }
+
+    /// 点击统一横条/「更多」面板上指定工具的按钮中心(引擎内部消费该动作)。
+    fn click_engine_tool(state: &mut ShellState, hwnd: HWND, tool: AnnotationTool) {
+        let target = SelectionAction::Tool(tool);
+        let on_bar = state
+            .canvas
+            .engine
+            .unified_toolbar()
+            .map(|toolbar| {
+                toolbar
+                    .buttons
+                    .iter()
+                    .any(|(candidate, _)| *candidate == target)
+            })
+            .unwrap_or(false);
+        if on_bar {
+            click_engine_action(state, hwnd, target);
+        } else {
+            open_engine_more(state, hwnd);
+            let (_, items) = state.canvas.engine.more_panel().expect("more panel");
+            let (_, rect) = items
+                .into_iter()
+                .find(|(candidate, _)| *candidate == target)
+                .expect("more item present");
+            let (cx, cy) = rect.center();
+            assert!(!feed_event(
+                state,
+                InputEvent::LeftDown { x: cx, y: cy },
+                hwnd
+            ));
+            assert!(!feed_event(
+                state,
+                InputEvent::LeftUp { x: cx, y: cy },
+                hwnd
+            ));
+        }
+        assert_eq!(state.canvas.engine.tool(), Some(tool));
+    }
+
+    #[test]
+    fn unified_toolbar_stays_visible_and_more_toggles_panel() {
+        let mut state = test_state_with_flags(800, 600, FeatureFlags::default());
+        let hwnd = HWND::default();
+        for event in [
+            InputEvent::LeftDown { x: 40, y: 30 },
+            InputEvent::PointerMove { x: 760, y: 480 },
+            InputEvent::LeftUp { x: 760, y: 480 },
+        ] {
+            assert!(!feed_event(&mut state, event, hwnd));
+        }
+        // 有效选区固定后单条横条可见。
+        assert!(state.canvas.engine.scene().toolbar_visible);
+        assert!(state.canvas.engine.unified_toolbar().is_some());
+        // 选中工具后横条仍可见(单一 chrome,无双条切换)。
+        click_engine_tool(&mut state, hwnd, AnnotationTool::Rect);
+        assert!(state.canvas.engine.scene().toolbar_visible);
+        assert!(state.outcome.is_none(), "选工具不得产出会话层动作");
+        // 「更多」展开/收起动作面板。
+        assert!(!state.canvas.engine.more_open());
+        click_engine_action(&mut state, hwnd, SelectionAction::More);
+        assert!(state.canvas.engine.more_open());
+        assert!(state.canvas.engine.more_panel().is_some());
+        click_engine_action(&mut state, hwnd, SelectionAction::More);
+        assert!(!state.canvas.engine.more_open());
+        // Esc 分层:先取消工具选中,再取消会话。
+        assert!(!feed_event(&mut state, key(LogicalKey::Escape), hwnd));
+        assert_eq!(state.canvas.engine.tool(), None);
+        assert!(feed_event(&mut state, key(LogicalKey::Escape), hwnd));
+        assert_eq!(state.outcome, Some(RegionOutcome::Cancelled));
     }
 
     #[test]
