@@ -34,6 +34,17 @@ pub fn line_height(size: f32) -> f32 {
     size * LINE_HEIGHT
 }
 
+/// 使单行文字「墨迹垂直中心」落在 `center_y` 时的绘制 y(首字符左上角)。
+/// 按 ascent/descent 计算;无字体时回退行高居中。
+pub fn y_for_center(center_y: f32, size: f32) -> f32 {
+    let Some(font) = ui_font() else {
+        return center_y - line_height(size) / 2.0;
+    };
+    let scaled = font.as_scaled(PxScale::from(size));
+    // ab_glyph descent 为负值;墨迹中心 = y + (ascent + descent)/2。
+    center_y - (scaled.ascent() + scaled.descent()) / 2.0
+}
+
 /// 在 (x, y)(首字符左上角)绘制单行文字;无字体时返回 false 且不落笔。
 #[allow(clippy::too_many_arguments)]
 pub fn draw_text(

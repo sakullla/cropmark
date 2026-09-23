@@ -110,6 +110,11 @@
 }
 
 .preview-toolbar {
+  /* 抬升整个工具条为独立堆叠上下文:悬停按钮的 filter 会把 tooltip 锁进
+     按钮级上下文,导致自绘提示被 stage 画布内容盖住(z-order 低于画布
+     合成层)。这里整体提到画布之上,提示溢出到图片区也保持可见。 */
+  position: relative;
+  z-index: 10;
   display: flex;
   align-items: center;
   gap: 8px;

@@ -166,23 +166,57 @@ impl IconName {
             .or_insert_with(|| Box::leak(load(self, tier)))
     }
 
-    /// 目标尺寸 + 墨色 → 预合成 RGBA 字形(尺寸 × 尺寸,按档缩放源位图)。
+    /// 目标尺寸 + 墨色 → 预合成 RGBA 字形。源档按目标尺寸选(>24 用 48 档),
+    /// 下缩放走盒式面积平均(细描边不丢像素、边缘平滑),上缩放走双线性;
+    /// 与目标同档时直接着色。
     fn tinted(self, size: u32, ink: [u8; 4]) -> &'static [u8] {
         fn render(name: IconName, size: u32, ink: [u8; 4]) -> Box<[u8]> {
-            let tier = if size <= 32 { 24 } else { 48 };
+            let tier = if size <= 24 { 24 } else { 48 };
             let src = name.coverage(tier);
             let tier = u32::from(tier);
-            // 选定 24/48 档位源图,按最近邻采样缩放到目标尺寸。
             let mut out = vec![0u8; (size * size) as usize * 4];
             if size == tier {
                 tint_into(src, &mut out, ink);
                 return out.into_boxed_slice();
             }
+            if size < tier {
+                // 盒式过滤:每个输出像素取源图上对应矩形(可跨像素)的覆盖度
+                // 平均值。相比最近邻,1.75px 细描边在 18/14px 目标下不会
+                // 断裂发虚(观感「模糊」的根因)。
+                for y in 0..size {
+                    let sy0 = (y * tier) as f32 / size as f32;
+                    let sy1 = ((y + 1) * tier) as f32 / size as f32;
+                    for x in 0..size {
+                        let sx0 = (x * tier) as f32 / size as f32;
+                        let sx1 = ((x + 1) * tier) as f32 / size as f32;
+                        let cover = area_average(src, tier, sx0, sy0, sx1, sy1);
+                        let i = (y * size + x) as usize * 4;
+                        out[i] = ink[0];
+                        out[i + 1] = ink[1];
+                        out[i + 2] = ink[2];
+                        out[i + 3] = (u16::from(ink[3]) * u16::from(cover) / 255) as u8;
+                    }
+                }
+                return out.into_boxed_slice();
+            }
+            // 上采样(>48px,高倍缩放):双线性插值,避免块状锯齿。
             for y in 0..size {
+                let sy = (y as f32 + 0.5) * tier as f32 / size as f32 - 0.5;
+                let y0 = sy.max(0.0) as u32;
+                let y1 = (y0 + 1).min(tier - 1);
+                let fy = (sy - y0 as f32).clamp(0.0, 1.0);
                 for x in 0..size {
-                    let sx = ((x * tier + tier / 2) / size).min(tier - 1);
-                    let sy = ((y * tier + tier / 2) / size).min(tier - 1);
-                    let cover = src[(sy * tier + sx) as usize];
+                    let sx = (x as f32 + 0.5) * tier as f32 / size as f32 - 0.5;
+                    let x0 = sx.max(0.0) as u32;
+                    let x1 = (x0 + 1).min(tier - 1);
+                    let fx = (sx - x0 as f32).clamp(0.0, 1.0);
+                    let c00 = u16::from(src[(y0 * tier + x0) as usize]);
+                    let c10 = u16::from(src[(y0 * tier + x1) as usize]);
+                    let c01 = u16::from(src[(y1 * tier + x0) as usize]);
+                    let c11 = u16::from(src[(y1 * tier + x1) as usize]);
+                    let top = c00 as f32 * (1.0 - fx) + c10 as f32 * fx;
+                    let bottom = c01 as f32 * (1.0 - fx) + c11 as f32 * fx;
+                    let cover = (top * (1.0 - fy) + bottom * fy).round() as u8;
                     let i = (y * size + x) as usize * 4;
                     out[i] = ink[0];
                     out[i + 1] = ink[1];
@@ -236,6 +270,35 @@ fn tint_into(src: &[u8], out: &mut [u8], ink: [u8; 4]) {
         out[i + 2] = ink[2];
         out[i + 3] = (u16::from(ink[3]) * u16::from(cover) / 255) as u8;
     }
+}
+
+/// 覆盖度位图上矩形区域 [x0,x1)×[y0,y1)(允许跨像素边界)的面积平均。
+fn area_average(src: &[u8], tier: u32, x0: f32, y0: f32, x1: f32, y1: f32) -> u8 {
+    let mut sum = 0.0f32;
+    let mut weight = 0.0f32;
+    let iy0 = y0.floor() as u32;
+    let iy1 = y1.ceil() as u32;
+    let ix0 = x0.floor() as u32;
+    let ix1 = x1.ceil() as u32;
+    for sy in iy0..iy1.min(tier) {
+        let syf = sy as f32;
+        let oy = ((syf + 1.0).min(y1) - syf).max(0.0) - (y0 - syf).max(0.0);
+        let oy = oy.max(0.0);
+        for sx in ix0..ix1.min(tier) {
+            let sxf = sx as f32;
+            let ox = ((sxf + 1.0).min(x1) - sxf).max(0.0) - (x0 - sxf).max(0.0);
+            let ox = ox.max(0.0);
+            let w = ox * oy;
+            if w > 0.0 {
+                sum += f32::from(src[(sy * tier + sx) as usize]) * w;
+                weight += w;
+            }
+        }
+    }
+    if weight <= 0.0 {
+        return src[((y0 as u32).min(tier - 1) * tier + (x0 as u32).min(tier - 1)) as usize];
+    }
+    (sum / weight).round() as u8
 }
 
 /// 以 (cx, cy) 为中心、外接盒边长 `size` 绘制动作图标(位图资产,
@@ -349,6 +412,22 @@ mod tests {
                 "ink must stay inside the {size}px box"
             );
         }
+    }
+
+    /// 下采样质量(盒式过滤):48→18 的细描边核心保持实色、不断裂发虚。
+    #[test]
+    fn downscale_keeps_stroke_cores_solid() {
+        for name in [IconName::Rect, IconName::Line, IconName::Copy] {
+            let glyph = name.tinted(18, INK);
+            let max_cover = glyph.chunks_exact(4).map(|px| px[3]).max().unwrap_or(0);
+            assert!(max_cover >= 200, "{name:?}@18 stroke core faded: {max_cover}");
+            let painted = glyph.chunks_exact(4).filter(|px| px[3] > 0).count();
+            assert!(painted >= 30, "{name:?}@18 lost strokes: {painted}");
+        }
+        // 14px 菜单档同验(收缩最狠的目标尺寸)。
+        let glyph = IconName::Rect.tinted(14, INK);
+        let painted = glyph.chunks_exact(4).filter(|px| px[3] > 0).count();
+        assert!(painted >= 20, "rect@14 lost strokes: {painted}");
     }
 
     /// 每个会出现在操作条/菜单/标注工具条上的动作都有资产;键盘动作

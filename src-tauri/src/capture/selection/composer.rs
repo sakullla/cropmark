@@ -63,8 +63,8 @@ const BADGE_MARGIN: i32 = 6;
 const BAR_BUTTON: i32 = 40;
 /// 统一横条与选区间的间距。
 const BAR_MARGIN: i32 = 8;
-/// 统一横条按钮图标外接盒边长。
-const BAR_ICON: i32 = 18;
+/// 统一横条按钮图标外接盒边长(2px 描边稿在 20px 下仍清晰)。
+const BAR_ICON: i32 = 20;
 
 const MENU_ITEM_W: i32 = 168;
 const MENU_ITEM_H: i32 = 36;
@@ -80,7 +80,7 @@ const MENU_FONT: f32 = 14.0;
 /// 菜单项 hover 软底圆角(1.0 基准)。
 const MENU_HOVER_RADIUS: i32 = 8;
 /// 菜单项图标外接盒边长(1.0 基准)。
-const MENU_ICON: i32 = 14;
+const MENU_ICON: i32 = 16;
 /// 浮层圆角逻辑半径(× scale,钳制 8..=32)。
 const PANEL_RADIUS: f32 = 10.0;
 
@@ -408,10 +408,11 @@ pub struct UnifiedToolbar {
 
 /// 统一横条布局:恒为单行,取代右侧图标轨与第二阶段标注条。
 ///
-/// 放置顺序:选区下缘外侧(水平居中,间距 8px)→ 上缘外侧 → 右侧面 →
-/// 左侧面;候选都保持在选区外、屏幕内。小选区/贴边时按「不压选区」优先,
-/// 四个候选都放不进选区外时(选区几乎占满屏幕)选重叠最小的位置,最后兜底
-/// 下方位置钳制屏内,保证横条可见可点且尽量少遮挡、不压选区边框。
+/// 放置:候选须在选区外、屏幕内。下缘是强默认(人体工学:靠近拖选区结
+/// 束位置的光标);仅下缘放不下时翻上缘;竖直都不行再按「剩余空间大者
+/// 优先、平局保右侧」选水平侧;四面候选都与选区相交时选重叠最小者,
+/// 最后兜底下方钳制屏内(Snipaste/ShareX/macOS 通行行为:不是哪边空间
+/// 大就翻哪边,避免选区在屏幕中下部时工具栏频繁跳到远处上方)。
 /// 返回 None 表示无按钮。
 pub fn unified_toolbar(
     metrics: ChromeMetrics,
@@ -471,11 +472,34 @@ pub fn unified_toolbar(
         let y = (panel.bottom().min(sel.bottom()) - panel.y.max(sel.y)).max(0);
         i64::from(x) * i64::from(y)
     };
+    // 候选在该侧方向上的剩余空间(选区边到屏幕边)。
+    let free_right = sw - sel.right();
+    let free_left = sel.x;
     let candidates = [below, above, right, left];
-    let panel = candidates
+    let usable: Vec<(usize, IntRect)> = candidates
         .iter()
         .copied()
-        .find(|panel| fits(*panel) && clear(*panel))
+        .enumerate()
+        .filter(|(_, panel)| fits(*panel) && clear(*panel))
+        .collect();
+    // 人体工学:下缘是强默认(靠近拖选区结束位置的光标,阅读流下方);
+    // 仅当下缘放不下时才翻上缘;竖直都不行再按剩余空间大者优先选水平侧
+    // (Snipaste/ShareX/macOS 通行行为——不是哪边空间大都翻,避免选区在
+    // 屏幕中下部时工具栏频繁跳到远处上方)。
+    let panel = usable
+        .iter()
+        .find(|(index, _)| *index == 0)
+        .or_else(|| usable.iter().find(|(index, _)| *index == 1))
+        .or_else(|| {
+            usable
+                .iter()
+                .filter(|(index, _)| *index >= 2)
+                .max_by_key(|(index, _)| {
+                    let free = if *index == 2 { free_right } else { free_left };
+                    (free, -(*index as i64))
+                })
+        })
+        .map(|(_, panel)| *panel)
         .or_else(|| {
             candidates
                 .iter()
@@ -1315,12 +1339,19 @@ impl Composer {
             let hover = rect.contains(scene.cursor.0, scene.cursor.1);
             let selected_tool = matches!(action, SelectionAction::Tool(tool)
                 if overlay.is_some_and(|overlay| overlay.tool == Some(*tool)));
-            // 仅复制为 accent 填充;选中工具同样 accent 填充(独立选中态)。
-            let filled = *action == SelectionAction::Copy || selected_tool;
-            let ink = if filled { ICON_INK } else { CHROME_TEXT };
+            // 仅复制为 accent 实心填充(白图标);选中工具是独立选中态:
+            // accent 软底 + accent 墨色,与复制的实心填充一眼可辨。
+            let filled = *action == SelectionAction::Copy;
+            let ink = if filled {
+                ICON_INK
+            } else if selected_tool {
+                ACCENT
+            } else {
+                CHROME_TEXT
+            };
             if filled {
                 fill_round(rgba, w, h, inset(*rect, 4), radius, ACCENT);
-            } else if hover {
+            } else if selected_tool || hover {
                 fill_round_blend(rgba, w, h, inset(*rect, 4), radius, ACTIVE_BG);
             }
             icons::draw(rgba, w, h, *action, cx, cy, metrics.bar_icon, ink);
@@ -1343,7 +1374,6 @@ impl Composer {
         }
         let panel = more_panel(metrics, *more_rect, Some(toolbar.panel), (w, h), &items);
         draw_panel_chrome(rgba, w, h, panel, metrics.panel_radius);
-        let line = text::line_height(metrics.menu_font);
         for (action, rect) in more_item_rects(metrics, panel, &items) {
             let hover = rect.contains(scene.cursor.0, scene.cursor.1);
             if hover {
@@ -1366,7 +1396,7 @@ impl Composer {
                 w,
                 h,
                 (rect.x + metrics.menu_text_x) as f32,
-                rect.y as f32 + (rect.height as f32 - line).max(0.0) / 2.0,
+                text::y_for_center(cy as f32, metrics.menu_font),
                 &action_label(action),
                 metrics.menu_font,
                 color,
@@ -1493,7 +1523,7 @@ impl Composer {
             w,
             h,
             (panel.x + pad_x) as f32,
-            (panel.y + pad_y) as f32,
+            text::y_for_center(panel.center().1 as f32, font),
             &label,
             font,
             CHROME_TEXT,
@@ -1513,7 +1543,6 @@ impl Composer {
                 blend(rgba, w, h, x, sep_y, CHROME_BORDER);
             }
         }
-        let line = text::line_height(metrics.menu_font);
         for (action, rect) in menu_item_rects(metrics, panel, &items) {
             let hover = rect.contains(scene.cursor.0, scene.cursor.1);
             if hover {
@@ -1537,7 +1566,7 @@ impl Composer {
                 w,
                 h,
                 (rect.x + metrics.menu_text_x) as f32,
-                rect.y as f32 + (rect.height as f32 - line).max(0.0) / 2.0,
+                text::y_for_center(cy as f32, metrics.menu_font),
                 &label,
                 metrics.menu_font,
                 color,
@@ -2141,9 +2170,10 @@ mod tests {
             for y in region.y..region.bottom() {
                 for x in region.x..region.right() {
                     let i = ((y as u32 * 800 + x as u32) * 4) as usize;
-                    if bytes[i] == CHROME_TEXT[0]
-                        && bytes[i + 1] == CHROME_TEXT[1]
-                        && bytes[i + 2] == CHROME_TEXT[2]
+                    // 盒式过滤下采样后描边核心非精确墨色,按近色容差计数。
+                    if bytes[i] <= CHROME_TEXT[0] + 14
+                        && bytes[i + 1] <= CHROME_TEXT[1] + 14
+                        && bytes[i + 2] <= CHROME_TEXT[2] + 14
                     {
                         n += 1;
                     }
@@ -2193,8 +2223,9 @@ mod tests {
             panel_ink(&light, false) > 20,
             "annotate-form toolbar should draw icons"
         );
-        // 选中工具才出现 accent 填充(复制恒为 accent 填充,基线已含一个
-        // accent 按钮;选中工具后 accent 像素增多)。
+        // 选中工具出现 accent 墨色字形(独立选中态:accent 软底 + accent
+        // 图标,与复制的实心 accent 填充区分;基线字形为深色,accent 近色
+        // 像素只来自复制按钮,选中后增多)。
         let selected = composer.compose_with_overlay(
             &mode_scene(selection, enabled, false),
             &overlay(Some(AnnotationTool::Rect)),
@@ -2202,12 +2233,12 @@ mod tests {
         let accent_pixels = |bytes: &[u8]| {
             bytes
                 .chunks_exact(4)
-                .filter(|px| px[0] == ACCENT[0] && px[1] == ACCENT[1] && px[2] == ACCENT[2])
+                .filter(|px| px[0] < 100 && px[1] > 150 && px[2] > 140)
                 .count()
         };
         assert!(
             accent_pixels(&selected) > accent_pixels(&with_tools),
-            "selected tool should use accent fill"
+            "selected tool should paint its glyph in accent ink"
         );
         // 复制按钮中心区为 accent 填充。
         let copy_rect = toolbar
@@ -2402,6 +2433,64 @@ mod tests {
         let placed =
             unified_toolbar(metrics, full, (1280, 800), flags, true).expect("full toolbar");
         assert!(placed.panel.x >= 0 && placed.panel.right() <= 1280);
+    }
+
+    /// 放置语义:下缘强默认(人体工学,靠近拖选区结束位置的光标),选区在
+    /// 屏幕中下部也保下缘;仅下缘放不下才翻上缘;竖直都不行时水平侧按
+    /// 剩余空间大者优先。
+    #[test]
+    fn unified_toolbar_bottom_is_strong_default_and_flips_only_when_unfit() {
+        let metrics = metrics_1();
+        let flags = FeatureFlags::default();
+        // 选区在屏幕下半部,但下缘仍放得下 → 保下缘(不翻到上方)。
+        let lower = PhysicalRect {
+            x: 200,
+            y: 600,
+            width: 300,
+            height: 100,
+        };
+        let toolbar =
+            unified_toolbar(metrics, lower, (1280, 800), flags, true).expect("toolbar");
+        assert_eq!(
+            toolbar.panel.y,
+            lower.y as i32 + lower.height as i32 + BAR_MARGIN
+        );
+        // 选区贴上边缘:上缘外侧放不下 → 保下缘。
+        let upper = PhysicalRect {
+            x: 200,
+            y: 6,
+            width: 300,
+            height: 100,
+        };
+        let toolbar =
+            unified_toolbar(metrics, upper, (1280, 800), flags, true).expect("toolbar");
+        assert_eq!(
+            toolbar.panel.y,
+            upper.y as i32 + upper.height as i32 + BAR_MARGIN
+        );
+        // 下缘外侧被屏幕底裁掉 → 翻上缘。
+        let bottom = PhysicalRect {
+            x: 200,
+            y: 740,
+            width: 300,
+            height: 50,
+        };
+        let toolbar =
+            unified_toolbar(metrics, bottom, (1280, 800), flags, true).expect("toolbar");
+        assert_eq!(toolbar.panel.bottom(), bottom.y as i32 - BAR_MARGIN);
+        // 竖直都不行 → 水平侧按剩余空间大者优先(右侧空间大)。
+        let tall = PhysicalRect {
+            x: 100,
+            y: 20,
+            width: 600,
+            height: 760,
+        };
+        let toolbar = unified_toolbar(metrics, tall, (1280, 800), flags, true).expect("toolbar");
+        assert!(
+            toolbar.panel.x >= tall.x as i32 + tall.width as i32,
+            "space-aware side pick prefers right: {:?}",
+            toolbar.panel
+        );
     }
 
     #[test]

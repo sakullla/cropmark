@@ -446,13 +446,13 @@ impl SelectionEngine {
         self.more_open
     }
 
-    /// 统一横条是否可见:有效选区固定后(含按按钮/绘制中)恒为单条横条。
+    /// 统一横条是否可见:有效选区固定后(含按按钮)恒为单条横条。
+    /// 初次拖出/手柄调整/整体移动期间隐藏(Snipaste/macOS 通行做法),
+    /// 松开后按可用空间重新选边出现,避免拖动时横条跳动占位。
     fn toolbar_visible(&self) -> bool {
         matches!(
             self.state,
-            EngineState::Selected
-                | EngineState::PressingChrome { .. }
-                | EngineState::Drawing { .. }
+            EngineState::Selected | EngineState::PressingChrome { .. }
         ) && self.selection.is_some()
             && !composer::toolbar_buttons(self.flags, self.options.text_input).is_empty()
     }
@@ -2754,6 +2754,29 @@ mod tests {
             EngineOutcome::Redraw
         );
         assert!(engine.scene().toolbar_visible);
+    }
+
+    /// 标注草稿绘制中横条隐藏,松开后恢复(Snipaste/macOS 通行做法,
+    /// 避免拖动时横条跳动占位);初次拖选区(Dragging)与手柄调整同理隐藏。
+    #[test]
+    fn toolbar_hides_while_drawing_and_reappears_on_release() {
+        let mut engine = inline_engine(800, 600);
+        drag_selection(&mut engine, (40, 30), (760, 480));
+        assert!(engine.scene().toolbar_visible);
+        click_action(&mut engine, SelectionAction::Tool(AnnotationTool::Rect));
+        engine.handle_event(InputEvent::LeftDown { x: 200, y: 200 });
+        assert!(matches!(engine.state(), EngineState::Drawing { .. }));
+        assert!(
+            !engine.scene().toolbar_visible,
+            "drawing draft hides the toolbar"
+        );
+        engine.handle_event(InputEvent::PointerMove { x: 320, y: 320 });
+        assert!(!engine.scene().toolbar_visible);
+        engine.handle_event(InputEvent::LeftUp { x: 320, y: 320 });
+        assert!(
+            engine.scene().toolbar_visible,
+            "toolbar returns after release"
+        );
     }
 
     #[test]
