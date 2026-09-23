@@ -17,7 +17,7 @@
 //! 鼠标坐标用 `NSEvent.mouseLocation`(AppKit 左下原点)换到引擎左上原点;事件泵
 //! 像 Windows 壳的窗口过程一样直接转发,不把输入只交给 NSView 响应链.
 //! 光标提示按引擎 `cursor_for` 映射:选区内部→开手(拖移中闭合手)、手柄/边→
-//! resize(SF Symbol 自绘)、chrome→箭头、空白→双色十字(深色芯+浅色描边);
+//! resize(SF Symbol 自绘)、chrome→箭头、空白→双色十字(浅芯深描边、热点镂空);
 //! 符号不可用时退回该双色十字,不使用系统 `crosshairCursor`(ADR-1/ADR-5).
 //! 光标切换不阻断选择/确认/取消.
 //! 文本输入(R21):文本工具激活时 `keyDown:` 经 `interpretKeyEvents:` 交给系统
@@ -29,6 +29,7 @@
 //! windows.rs 逐块对照 + `geometry::appkit_global_to_physical` 测试为准.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr::NonNull;
@@ -135,6 +136,8 @@ struct ShellState {
     canvas: Canvas,
     /// 逻辑点→物理像素换算系数(取自捕获时的屏幕 backingScale)。
     scale: f64,
+    /// 冻结帧 DPI 缩放(frame.scale):十字光标按它 keyed 重建。
+    frame_scale: f64,
     /// 选区窗 AppKit 框(左下原点),供 `NSEvent.mouseLocation` 换算兜底.
     frame_x: f64,
     frame_y: f64,
@@ -241,7 +244,7 @@ fn build_resize_cursor(kind: CursorKind) -> Option<Retained<NSCursor>> {
     ))
 }
 
-/// 双色十字像素:深色芯 + 浅色描边;Empty 为透明。
+/// 双色十字像素:浅色线芯 + 深色描边;Empty 为透明。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CrosshairPixel {
     Empty,
@@ -257,12 +260,22 @@ struct CrosshairSprite {
 }
 
 impl CrosshairSprite {
-    const fn primary() -> Self {
-        Self { size: 25, arm: 10 }
-    }
+    /// 1x 基准臂长(物理像素);实际臂长按 frame.scale 缩放。
+    const BASE_ARM: usize = 10;
 
+    /// 最小双色位图(光标创建失败时的兜底规格)。
     const fn fallback() -> Self {
         Self { size: 9, arm: 3 }
+    }
+
+    /// 按冻结帧 DPI 缩放生成规格:臂长随 frame.scale 缩放(200% 时
+    /// 翻倍),线芯恒 1 物理像素;边长保持奇数,热点在交叉点。
+    fn for_scale(scale: f64) -> Self {
+        let arm = ((Self::BASE_ARM as f64) * scale.max(0.1)).round().max(3.0) as usize;
+        Self {
+            size: arm * 2 + 5,
+            arm,
+        }
     }
 
     fn hotspot(self) -> (usize, usize) {
@@ -270,14 +283,27 @@ impl CrosshairSprite {
         (center, center)
     }
 
+    /// 线芯:横竖臂上距中心 1..=arm 的像素。中心热点像素镂空,
+    /// 指针像素经镂空处直接可见;芯宽恒 1 物理像素。
     fn is_core(self, x: usize, y: usize) -> bool {
         let center = self.size / 2;
-        (x == center && y.abs_diff(center) <= self.arm)
-            || (y == center && x.abs_diff(center) <= self.arm)
+        let dist = if x == center {
+            y.abs_diff(center)
+        } else if y == center {
+            x.abs_diff(center)
+        } else {
+            return false;
+        };
+        (1..=self.arm).contains(&dist)
     }
 
     fn pixel(self, x: usize, y: usize) -> CrosshairPixel {
         if x >= self.size || y >= self.size {
+            return CrosshairPixel::Empty;
+        }
+        let center = self.size / 2;
+        // 中心热点像素镂空:热点仍对准指针像素,但该像素透明。
+        if x == center && y == center {
             return CrosshairPixel::Empty;
         }
         if self.is_core(x, y) {
@@ -304,15 +330,15 @@ impl CrosshairSprite {
                 let i = (y * self.size + x) * 4;
                 match self.pixel(x, y) {
                     CrosshairPixel::Core => {
-                        out[i] = 0x14;
-                        out[i + 1] = 0x14;
-                        out[i + 2] = 0x14;
-                        out[i + 3] = 0xff;
-                    }
-                    CrosshairPixel::Outline => {
                         out[i] = 0xf7;
                         out[i + 1] = 0xf7;
                         out[i + 2] = 0xf7;
+                        out[i + 3] = 0xff;
+                    }
+                    CrosshairPixel::Outline => {
+                        out[i] = 0x14;
+                        out[i + 1] = 0x14;
+                        out[i + 2] = 0x14;
                         out[i + 3] = 0xff;
                     }
                     CrosshairPixel::Empty => {}
@@ -333,7 +359,11 @@ unsafe extern "C-unwind" fn release_rgba_vec(
     }
 }
 
-fn nsimage_from_rgba(pixels: Vec<u8>, size: usize) -> Option<Retained<NSImage>> {
+fn nsimage_from_rgba(
+    pixels: Vec<u8>,
+    size: usize,
+    point_size: f64,
+) -> Option<Retained<NSImage>> {
     let mut boxed = Box::new(pixels);
     let data_ptr = boxed.as_ptr();
     let data_len = boxed.len();
@@ -367,41 +397,52 @@ fn nsimage_from_rgba(pixels: Vec<u8>, size: usize) -> Option<Retained<NSImage>> 
         )
     }?;
     let ns_size = NSSize {
-        width: size as f64,
-        height: size as f64,
+        width: point_size,
+        height: point_size,
     };
     let image: Retained<NSImage> =
         unsafe { msg_send![NSImage::alloc(), initWithCGImage: &*cg_image, size: ns_size] };
     Some(image)
 }
 
-fn cursor_from_sprite(sprite: CrosshairSprite) -> Option<Retained<NSCursor>> {
-    let image = nsimage_from_rgba(sprite.rgba(), sprite.size)?;
+/// 由十字规格生成 NSCursor。位图按物理像素生成,NSImage 尺寸按
+/// frame.scale 折算为点,使线芯在屏幕上恒 1 物理像素。
+fn cursor_from_sprite(sprite: CrosshairSprite, scale: f64) -> Option<Retained<NSCursor>> {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    let image = nsimage_from_rgba(sprite.rgba(), sprite.size, sprite.size as f64 / scale)?;
     let (hot_x, hot_y) = sprite.hotspot();
     Some(NSCursor::initWithImage_hotSpot(
         NSCursor::alloc(),
         &image,
         NSPoint {
-            x: hot_x as f64,
-            y: hot_y as f64,
+            x: hot_x as f64 / scale,
+            y: hot_y as f64 / scale,
         },
     ))
 }
 
-/// Crosshair 提示使用的双色十字;主规格失败则用最小双色位图,
-/// 不退回 `NSCursor::crosshairCursor`(ADR-1)。
-fn dual_crosshair_cursor() -> Retained<NSCursor> {
+/// Crosshair 提示使用的双色十字;按 frame.scale keyed 缓存,缩放变化时
+/// 重建而非进程级单例。主规格失败则用最小双色位图,不退回
+/// `NSCursor::crosshairCursor`(ADR-1)。
+fn dual_crosshair_cursor(scale: f64) -> Retained<NSCursor> {
     thread_local! {
-        static CACHED: RefCell<Option<Retained<NSCursor>>> = const { RefCell::new(None) };
+        static CACHED: RefCell<HashMap<u64, Retained<NSCursor>>> =
+            RefCell::new(HashMap::new());
     }
     CACHED.with(|slot| {
-        if slot.borrow().is_none() {
-            let cursor = cursor_from_sprite(CrosshairSprite::primary())
-                .or_else(|| cursor_from_sprite(CrosshairSprite::fallback()))
-                .expect("最小双色十字位图应能生成 NSCursor");
-            *slot.borrow_mut() = Some(cursor);
-        }
-        slot.borrow().clone().expect("双色十字已缓存")
+        let mut cache = slot.borrow_mut();
+        cache
+            .entry(scale.to_bits())
+            .or_insert_with(|| {
+                cursor_from_sprite(CrosshairSprite::for_scale(scale), scale)
+                    .or_else(|| cursor_from_sprite(CrosshairSprite::fallback(), scale))
+                    .expect("最小双色十字位图应能生成 NSCursor")
+            })
+            .clone()
     })
 }
 
@@ -676,6 +717,8 @@ struct ShellGeometry {
     logical_width: u32,
     logical_height: u32,
     scale: f64,
+    /// 冻结帧 DPI 缩放(frame.scale):十字光标按它重建。
+    frame_scale: f64,
 }
 
 /// 驱动一次区域选区:在指针所在屏创建无边框置顶窗并泵事件直到终态。
@@ -712,6 +755,7 @@ pub fn pick_region(
         } else {
             1.0
         },
+        frame_scale: frame.scale,
     };
     // 选区壳必须在主线程建窗,但不能在主线程(或 GCD/runloop 回调里)
     // 嵌套 nextEventMatchingMask:macOS 27 上会把主线程打满并卡住。
@@ -871,12 +915,13 @@ fn start_shell(
     let content_view: &NSView = &view;
     window.setContentView(Some(content_view));
     window.setFrame_display(frame, true);
-    dual_crosshair_cursor().set();
+    dual_crosshair_cursor(geometry.frame_scale).set();
     STATE.with(|slot| {
         *slot.borrow_mut() = Some(ShellState {
             hooks,
             canvas,
             scale: geometry.scale,
+            frame_scale: geometry.frame_scale,
             frame_x: frame.origin.x,
             frame_y: frame.origin.y,
             frame_h: frame.size.height,
@@ -1182,15 +1227,16 @@ fn apply_cursor(state: &mut ShellState) {
         return;
     }
     state.applied_cursor = Some(kind);
+    let frame_scale = state.frame_scale;
     let cursor = match kind {
-        CursorKind::Crosshair => dual_crosshair_cursor(),
+        CursorKind::Crosshair => dual_crosshair_cursor(frame_scale),
         CursorKind::OpenHand => NSCursor::openHandCursor(),
         CursorKind::ClosedHand => NSCursor::closedHandCursor(),
         CursorKind::Arrow => NSCursor::arrowCursor(),
         resize => state
             .resize_cursors
             .get(resize)
-            .unwrap_or_else(dual_crosshair_cursor),
+            .unwrap_or_else(|| dual_crosshair_cursor(frame_scale)),
     };
     cursor.set();
 }
@@ -1845,7 +1891,9 @@ mod tests {
         let (cx, cy) = sprite.hotspot();
         assert_eq!(sprite.size % 2, 1);
         assert_eq!((cx, cy), (sprite.size / 2, sprite.size / 2));
-        assert_eq!(sprite.pixel(cx, cy), CrosshairPixel::Core);
+        // 中心热点像素镂空:热点仍对准指针像素,但该像素透明。
+        assert_eq!(sprite.pixel(cx, cy), CrosshairPixel::Empty);
+        // 芯从距中心 1 像素处开始,恒 1 物理像素宽。
         assert_eq!(sprite.pixel(cx + 1, cy), CrosshairPixel::Core);
         assert_eq!(sprite.pixel(cx, cy + 1), CrosshairPixel::Core);
         assert_eq!(sprite.pixel(cx + 1, cy + 1), CrosshairPixel::Outline);
@@ -1855,16 +1903,30 @@ mod tests {
         );
         assert_eq!(sprite.pixel(0, 0), CrosshairPixel::Empty);
         let rgba = sprite.rgba();
-        let core = (cy * sprite.size + cx) * 4;
-        assert_eq!(&rgba[core..core + 4], &[0x14, 0x14, 0x14, 0xff]);
+        let core = (cy * sprite.size + cx + 1) * 4;
+        assert_eq!(&rgba[core..core + 4], &[0xf7, 0xf7, 0xf7, 0xff]);
         let outline = ((cy + 1) * sprite.size + cx + 1) * 4;
-        assert_eq!(&rgba[outline..outline + 4], &[0xf7, 0xf7, 0xf7, 0xff]);
+        assert_eq!(&rgba[outline..outline + 4], &[0x14, 0x14, 0x14, 0xff]);
     }
 
     #[test]
-    fn dual_color_crosshair_has_dark_core_and_light_outline() {
-        assert_dual_color_crosshair(CrosshairSprite::primary());
+    fn dual_color_crosshair_has_light_core_and_dark_outline() {
+        assert_dual_color_crosshair(CrosshairSprite::for_scale(1.0));
         assert_dual_color_crosshair(CrosshairSprite::fallback());
+    }
+
+    #[test]
+    fn crosshair_sprite_scales_arm_with_frame_scale() {
+        let base = CrosshairSprite::for_scale(1.0);
+        assert_eq!(base.arm, CrosshairSprite::BASE_ARM);
+        // 200% 时臂长翻倍,边长仍为奇数,芯恒 1 物理像素。
+        let scaled = CrosshairSprite::for_scale(2.0);
+        assert_eq!(scaled.arm, base.arm * 2);
+        assert_eq!(scaled.size % 2, 1);
+        assert_dual_color_crosshair(scaled);
+        let (cx, cy) = scaled.hotspot();
+        assert_eq!(scaled.pixel(cx, cy + 2), CrosshairPixel::Core);
+        assert_eq!(scaled.pixel(cx + 1, cy + 2), CrosshairPixel::Outline);
     }
 
     #[test]

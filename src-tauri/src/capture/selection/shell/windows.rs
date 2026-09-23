@@ -6,9 +6,10 @@
 //! Esc=取消;Enter 确认;操作条/菜单动作经 `RegionOutcome` 交回会话层分发。
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use windows::core::PCWSTR;
@@ -132,6 +133,8 @@ struct ShellState {
     ctrl_down: bool,
     outcome: Option<RegionOutcome>,
     timing: bool,
+    /// 冻结帧 DPI 缩放(frame.scale):十字光标按它 keyed 重建。
+    scale: f64,
     /// 是否曾真正获得焦点:仅"获得过焦点后又失去"才触发失焦取消,
     /// 防止建窗时 SetForegroundWindow 被前台锁拒绝/焦点弹跳导致的
     /// 建窗即 KILLFOCUS 误取消(用户表现为"触发后毫无反应")。
@@ -207,12 +210,14 @@ fn run_shell(
             ctrl_down: false,
             outcome: None,
             timing: std::env::var_os("CROPMARK_CAPTURE_TIMING").is_some(),
+            scale: frame.scale,
             had_focus: false,
             created_at: Instant::now(),
         });
     });
-    let hwnd =
-        unsafe { create_overlay_window(monitor.physical_x, monitor.physical_y, width, height)? };
+    let hwnd = unsafe {
+        create_overlay_window(monitor.physical_x, monitor.physical_y, width, height, frame.scale)?
+    };
     unsafe {
         log_present_diagnostics(
             hwnd,
@@ -349,7 +354,7 @@ fn copy_color_value(state: &mut ShellState) {
     (state.hooks.copy_color)(&text, &hex);
 }
 
-/// 双色十字像素:深色芯 + 浅色描边;Empty 为透明。
+/// 双色十字像素:浅色线芯 + 深色描边;Empty 为透明。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CrosshairPixel {
     Empty,
@@ -365,12 +370,22 @@ struct CrosshairSprite {
 }
 
 impl CrosshairSprite {
-    const fn primary() -> Self {
-        Self { size: 25, arm: 10 }
-    }
+    /// 1x 基准臂长(物理像素);实际臂长按 frame.scale 缩放。
+    const BASE_ARM: usize = 10;
 
+    /// 最小双色位图(光标创建失败时的兜底规格)。
     const fn fallback() -> Self {
         Self { size: 9, arm: 3 }
+    }
+
+    /// 按冻结帧 DPI 缩放生成规格:臂长随 frame.scale 缩放(200% 时
+    /// 翻倍),线芯恒 1 物理像素;边长保持奇数,热点在交叉点。
+    fn for_scale(scale: f64) -> Self {
+        let arm = ((Self::BASE_ARM as f64) * scale.max(0.1)).round().max(3.0) as usize;
+        Self {
+            size: arm * 2 + 5,
+            arm,
+        }
     }
 
     fn hotspot(self) -> (usize, usize) {
@@ -378,14 +393,27 @@ impl CrosshairSprite {
         (center, center)
     }
 
+    /// 线芯:横竖臂上距中心 1..=arm 的像素。中心热点像素镂空,
+    /// 指针像素经镂空处直接可见;芯宽恒 1 物理像素。
     fn is_core(self, x: usize, y: usize) -> bool {
         let center = self.size / 2;
-        (x == center && y.abs_diff(center) <= self.arm)
-            || (y == center && x.abs_diff(center) <= self.arm)
+        let dist = if x == center {
+            y.abs_diff(center)
+        } else if y == center {
+            x.abs_diff(center)
+        } else {
+            return false;
+        };
+        (1..=self.arm).contains(&dist)
     }
 
     fn pixel(self, x: usize, y: usize) -> CrosshairPixel {
         if x >= self.size || y >= self.size {
+            return CrosshairPixel::Empty;
+        }
+        let center = self.size / 2;
+        // 中心热点像素镂空:热点仍对准指针像素,但该像素透明。
+        if x == center && y == center {
             return CrosshairPixel::Empty;
         }
         if self.is_core(x, y) {
@@ -412,15 +440,15 @@ impl CrosshairSprite {
                 let i = (y * self.size + x) * 4;
                 match self.pixel(x, y) {
                     CrosshairPixel::Core => {
-                        out[i] = 0x14;
-                        out[i + 1] = 0x14;
-                        out[i + 2] = 0x14;
-                        out[i + 3] = 0xff;
-                    }
-                    CrosshairPixel::Outline => {
                         out[i] = 0xf7;
                         out[i + 1] = 0xf7;
                         out[i + 2] = 0xf7;
+                        out[i + 3] = 0xff;
+                    }
+                    CrosshairPixel::Outline => {
+                        out[i] = 0x14;
+                        out[i + 1] = 0x14;
+                        out[i + 2] = 0x14;
                         out[i + 3] = 0xff;
                     }
                     CrosshairPixel::Empty => {}
@@ -446,34 +474,40 @@ fn cursor_resource(hint: CursorHint) -> Option<PCWSTR> {
     }
 }
 
-/// Crosshair 提示(及窗口类默认光标)使用的双色十字;创建失败时仍回退到
+/// Crosshair 提示(及窗口类默认光标)使用的双色十字;按 frame.scale
+/// keyed 缓存,缩放变化时重建而非进程级单例。创建失败时仍回退到
 /// 更小的双色位图/单色 AND-XOR 十字,绝不 LoadCursorW(IDC_CROSS)。
-fn crosshair_cursor() -> HCURSOR {
-    static HANDLE: OnceLock<isize> = OnceLock::new();
-    HCURSOR(*HANDLE.get_or_init(|| create_dual_crosshair_cursor().0 as isize) as *mut c_void)
+fn crosshair_cursor(scale: f64) -> HCURSOR {
+    static HANDLES: OnceLock<Mutex<HashMap<u64, isize>>> = OnceLock::new();
+    let cache = HANDLES.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut cache = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let value = *cache
+        .entry(scale.to_bits())
+        .or_insert_with(|| create_dual_crosshair_cursor(scale).0 as isize);
+    HCURSOR(value as *mut c_void)
 }
 
-fn cursor_handle(hint: CursorHint) -> Option<HCURSOR> {
+fn cursor_handle(hint: CursorHint, scale: f64) -> Option<HCURSOR> {
     match cursor_resource(hint) {
         Some(resource) => unsafe { LoadCursorW(None, resource).ok() },
         None => {
-            let cursor = crosshair_cursor();
+            let cursor = crosshair_cursor(scale);
             (!cursor.is_invalid()).then_some(cursor)
         }
     }
 }
 
-fn create_dual_crosshair_cursor() -> HCURSOR {
+fn create_dual_crosshair_cursor(scale: f64) -> HCURSOR {
     unsafe {
-        create_color_cursor(CrosshairSprite::primary())
+        create_color_cursor(CrosshairSprite::for_scale(scale))
             .or_else(|| create_color_cursor(CrosshairSprite::fallback()))
-            .or_else(|| create_mono_cursor(CrosshairSprite::primary()))
+            .or_else(|| create_mono_cursor(CrosshairSprite::for_scale(scale)))
             .or_else(|| create_mono_cursor(CrosshairSprite::fallback()))
             .unwrap_or_default()
     }
 }
 
-/// 32bpp ARGB 彩色光标(深色芯 + 浅色描边,透明底)。
+/// 32bpp ARGB 彩色光标(浅色芯 + 深色描边,透明底)。
 unsafe fn create_color_cursor(sprite: CrosshairSprite) -> Option<HCURSOR> {
     let size = sprite.size as i32;
     let rgba = sprite.rgba();
@@ -525,7 +559,7 @@ unsafe fn create_color_cursor(sprite: CrosshairSprite) -> Option<HCURSOR> {
     icon.ok().map(|handle| HCURSOR(handle.0))
 }
 
-/// 彩色光标失败时的最小双色回退:AND/XOR 平面(黑芯白边)。
+/// 彩色光标失败时的最小双色回退:AND/XOR 平面(白芯黑边)。
 unsafe fn create_mono_cursor(sprite: CrosshairSprite) -> Option<HCURSOR> {
     let cx = GetSystemMetrics(SM_CXCURSOR).max(sprite.size as i32);
     let cy = GetSystemMetrics(SM_CYCURSOR).max(sprite.size as i32);
@@ -548,12 +582,14 @@ unsafe fn create_mono_cursor(sprite: CrosshairSprite) -> Option<HCURSOR> {
             let index = py * stride + px / 8;
             match sprite.pixel(x, y) {
                 CrosshairPixel::Empty => {}
+                // 浅芯:AND 清零 + XOR 置位 → 白色。
                 CrosshairPixel::Core => {
                     and_plane[index] &= !(1 << bit);
+                    xor_plane[index] |= 1 << bit;
                 }
+                // 深描边:仅 AND 清零 → 黑色。
                 CrosshairPixel::Outline => {
                     and_plane[index] &= !(1 << bit);
-                    xor_plane[index] |= 1 << bit;
                 }
             }
         }
@@ -867,7 +903,13 @@ unsafe fn log_present_diagnostics(hwnd: HWND, frame: (u32, u32), monitor: (u32, 
     );
 }
 
-unsafe fn create_overlay_window(x: i32, y: i32, w: i32, h: i32) -> Result<HWND, CaptureError> {
+unsafe fn create_overlay_window(
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    scale: f64,
+) -> Result<HWND, CaptureError> {
     let instance =
         GetModuleHandleW(None).map_err(|_| CaptureError::api("error.capture.window_create"))?;
     let serial = CLASS_SERIAL.fetch_add(1, Ordering::Relaxed);
@@ -877,7 +919,7 @@ unsafe fn create_overlay_window(x: i32, y: i32, w: i32, h: i32) -> Result<HWND, 
         style: CS_HREDRAW | CS_VREDRAW,
         lpfnWndProc: Some(wnd_proc),
         hInstance: instance.into(),
-        hCursor: crosshair_cursor(),
+        hCursor: crosshair_cursor(scale),
         lpszClassName: PCWSTR(class_name.as_ptr()),
         ..Default::default()
     };
@@ -1003,13 +1045,15 @@ unsafe extern "system" fn wnd_proc(
         WM_SETCURSOR => {
             // 引擎光标提示(chrome 优先):菜单项/图标轨按钮→手型,放大镜面板→
             // 箭头,手柄/边→resize 箭头,选区内部→移动,其他→双色十字(ADR-1)。
-            let hint = STATE.with(|slot| {
-                slot.borrow().as_ref().map(|state| {
-                    let (x, y) = state.canvas.engine.cursor();
-                    state.canvas.engine.cursor_for(x, y)
+            let (hint, scale) = STATE
+                .with(|slot| {
+                    slot.borrow().as_ref().map(|state| {
+                        let (x, y) = state.canvas.engine.cursor();
+                        (state.canvas.engine.cursor_for(x, y), state.scale)
+                    })
                 })
-            });
-            if let Some(cursor) = cursor_handle(hint.unwrap_or(CursorHint::Crosshair)) {
+                .unwrap_or((CursorHint::Crosshair, 1.0));
+            if let Some(cursor) = cursor_handle(hint, scale) {
                 let _ = SetCursor(Some(cursor));
             }
             LRESULT(1)
@@ -1349,6 +1393,7 @@ mod tests {
             ctrl_down: false,
             outcome: None,
             timing: false,
+            scale: frame.scale,
             had_focus: true,
             created_at: Instant::now() - Duration::from_secs(1),
         }
@@ -1623,7 +1668,7 @@ mod tests {
         assert_eq!(cursor_resource(CursorHint::ResizeEW), Some(IDC_SIZEWE));
         assert_eq!(cursor_resource(CursorHint::ResizeNWSE), Some(IDC_SIZENWSE));
         assert_eq!(cursor_resource(CursorHint::ResizeNESW), Some(IDC_SIZENESW));
-        let custom = cursor_handle(CursorHint::Crosshair).expect("双色十字光标");
+        let custom = cursor_handle(CursorHint::Crosshair, 1.0).expect("双色十字光标");
         let system = unsafe { LoadCursorW(None, IDC_CROSS) }.expect("系统十字");
         assert_ne!(custom.0, system.0);
         assert!(!custom.is_invalid());
@@ -1633,7 +1678,9 @@ mod tests {
         let (cx, cy) = sprite.hotspot();
         assert_eq!(sprite.size % 2, 1);
         assert_eq!((cx, cy), (sprite.size / 2, sprite.size / 2));
-        assert_eq!(sprite.pixel(cx, cy), CrosshairPixel::Core);
+        // 中心热点像素镂空:热点仍对准指针像素,但该像素透明。
+        assert_eq!(sprite.pixel(cx, cy), CrosshairPixel::Empty);
+        // 芯从距中心 1 像素处开始,恒 1 物理像素宽。
         assert_eq!(sprite.pixel(cx + 1, cy), CrosshairPixel::Core);
         assert_eq!(sprite.pixel(cx, cy + 1), CrosshairPixel::Core);
         assert_eq!(sprite.pixel(cx + 1, cy + 1), CrosshairPixel::Outline);
@@ -1643,19 +1690,33 @@ mod tests {
         );
         assert_eq!(sprite.pixel(0, 0), CrosshairPixel::Empty);
         let rgba = sprite.rgba();
-        let core = (cy * sprite.size + cx) * 4;
-        assert_eq!(&rgba[core..core + 4], &[0x14, 0x14, 0x14, 0xff]);
+        let core = (cy * sprite.size + cx + 1) * 4;
+        assert_eq!(&rgba[core..core + 4], &[0xf7, 0xf7, 0xf7, 0xff]);
         let outline = ((cy + 1) * sprite.size + cx + 1) * 4;
-        assert_eq!(&rgba[outline..outline + 4], &[0xf7, 0xf7, 0xf7, 0xff]);
+        assert_eq!(&rgba[outline..outline + 4], &[0x14, 0x14, 0x14, 0xff]);
     }
 
     #[test]
-    fn dual_color_crosshair_has_dark_core_and_light_outline() {
-        assert_dual_color_crosshair(CrosshairSprite::primary());
+    fn dual_color_crosshair_has_light_core_and_dark_outline() {
+        assert_dual_color_crosshair(CrosshairSprite::for_scale(1.0));
         assert_dual_color_crosshair(CrosshairSprite::fallback());
         let fallback = unsafe { create_color_cursor(CrosshairSprite::fallback()) }
             .or_else(|| unsafe { create_mono_cursor(CrosshairSprite::fallback()) });
         assert!(fallback.is_some_and(|cursor| !cursor.is_invalid()));
+    }
+
+    #[test]
+    fn crosshair_sprite_scales_arm_with_frame_scale() {
+        let base = CrosshairSprite::for_scale(1.0);
+        assert_eq!(base.arm, CrosshairSprite::BASE_ARM);
+        // 200% 时臂长翻倍,边长仍为奇数,芯恒 1 物理像素。
+        let scaled = CrosshairSprite::for_scale(2.0);
+        assert_eq!(scaled.arm, base.arm * 2);
+        assert_eq!(scaled.size % 2, 1);
+        assert_dual_color_crosshair(scaled);
+        let (cx, cy) = scaled.hotspot();
+        assert_eq!(scaled.pixel(cx, cy + 2), CrosshairPixel::Core);
+        assert_eq!(scaled.pixel(cx + 1, cy + 2), CrosshairPixel::Outline);
     }
 
     #[test]
@@ -2156,7 +2217,7 @@ mod tests {
         );
         // 可选的真实窗口 blit:创建失败(无交互桌面)时跳过并说明。
         unsafe {
-            match create_overlay_window(0, 0, w as i32, h as i32) {
+            match create_overlay_window(0, 0, w as i32, h as i32, 1.0) {
                 Ok(hwnd) => {
                     let mut worst = Duration::ZERO;
                     let mut total = Duration::ZERO;
