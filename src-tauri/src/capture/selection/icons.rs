@@ -172,7 +172,7 @@ impl IconName {
             let tier = if size <= 32 { 24 } else { 48 };
             let src = name.coverage(tier);
             let tier = u32::from(tier);
-            // 双线性缩放到目标尺寸,保留抗锯齿边缘。
+            // 选定 24/48 档位源图,按最近邻采样缩放到目标尺寸。
             let mut out = vec![0u8; (size * size) as usize * 4];
             if size == tier {
                 tint_into(src, &mut out, ink);
