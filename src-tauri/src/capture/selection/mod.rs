@@ -10,6 +10,7 @@
 #![allow(dead_code)]
 
 pub mod composer;
+pub(crate) mod icons;
 mod text;
 
 use crate::annotate::{Annotation, Point, DEFAULT_COLOR};
