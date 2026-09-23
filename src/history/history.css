@@ -134,6 +134,14 @@
   padding: 6px 10px;
 }
 
+.history-toolbar .choice,
+.history-toolbar .icon-btn,
+.history-actions .choice,
+.history-confirm-actions .choice {
+  min-width: 24px;
+  min-height: 24px;
+}
+
 .history-delete {
   color: var(--danger);
 }

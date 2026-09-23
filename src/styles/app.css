@@ -1,19 +1,27 @@
 :root {
   color-scheme: light dark;
-  --bg: #f6f1e8;
-  --panel: rgba(255, 252, 247, 0.96);
+  --bg: #f3eee6;
+  --panel: #fffcf7;
+  --card: #f7f2ea;
   --ink: #1c1917;
-  --muted: #6d6761;
-  --line: rgba(28, 25, 23, 0.1);
-  --accent: #0f766e;
-  --accent-soft: rgba(15, 118, 110, 0.12);
-  --on-accent: #f5fffd;
-  --danger: #b42318;
-  --danger-soft: rgba(180, 35, 24, 0.1);
+  --muted: #5c5650;
+  --line: #867f76;
+  --control-fill: #fffcf7;
+  --accent: #0e6d66;
+  --accent-soft: #d7efec;
+  --on-accent: #f4fffd;
+  --danger: #a61b12;
+  --danger-soft: #f8e0dc;
   --on-danger: #ffffff;
-  --ok: #15803d;
-  --ok-soft: rgba(21, 128, 61, 0.12);
+  --ok: #0f6a36;
+  --ok-soft: #d7f0e0;
   --knob: #ffffff;
+  --track: #5e5954;
+  --focus: #1c1917;
+  --focus-gap: #ffffff;
+  --overlay-bg: #111110;
+  --tooltip-bg: #1c1917;
+  --tooltip-ink: #fff8f0;
   --stroke: #e11d48;
   --ocr-hl: #0ea5e9;
   --ocr-hl-strong: #0369a1;
@@ -23,20 +31,25 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #161412;
-    --panel: rgba(28, 26, 23, 0.96);
-    --ink: #f5f0e8;
-    --muted: #a8a29e;
-    --line: rgba(245, 240, 232, 0.12);
+    --bg: #141210;
+    --panel: #1c1a17;
+    --card: #26231f;
+    --ink: #f7f2ea;
+    --muted: #c8c0b6;
+    --line: #8f877d;
+    --control-fill: #2c2824;
     --accent: #2dd4bf;
-    --accent-soft: rgba(45, 212, 191, 0.14);
-    --on-accent: #161412;
-    --danger: #f97066;
-    --danger-soft: rgba(249, 112, 102, 0.14);
+    --accent-soft: #12332f;
+    --on-accent: #08211e;
+    --danger: #ff8d84;
+    --danger-soft: #4a2420;
     --on-danger: #2b0603;
     --ok: #4ade80;
-    --ok-soft: rgba(74, 222, 128, 0.16);
-    --knob: #f5f0e8;
+    --ok-soft: #123828;
+    --knob: #1a1816;
+    --track: #c9c1b6;
+    --focus: #f7f2ea;
+    --focus-gap: #141210;
     --stroke: #fb7185;
     --ocr-hl: #38bdf8;
     --ocr-hl-strong: #7dd3fc;
@@ -53,9 +66,11 @@
   display: none !important;
 }
 
+/* 内描边落在控件盒内，避免被 .shell 的 overflow:hidden 裁掉。 */
 :focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+  box-shadow: inset 0 0 0 4px var(--focus-gap);
 }
 
 button:disabled {
@@ -78,6 +93,11 @@ html[data-view="preview"] #app {
   color: var(--ink);
 }
 
+html[data-view="overlay"],
+html[data-view="overlay"] body {
+  background: var(--overlay-bg);
+}
+
 .shell {
   height: 100%;
   display: flex;
@@ -93,7 +113,7 @@ html[data-view="preview"] #app {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 10px 10px 16px;
+  padding: 12px 12px 12px 16px;
   border-bottom: 1px solid var(--line);
   user-select: none;
 }
@@ -112,8 +132,18 @@ html[data-view="preview"] #app {
 }
 
 .name {
+  font-size: 15px;
   font-weight: 650;
   letter-spacing: 0.02em;
+}
+
+.icon-btn,
+.hotkey-btn,
+.choice,
+.switch,
+.number-input {
+  min-width: 24px;
+  min-height: 24px;
 }
 
 .icon-btn {
@@ -136,34 +166,32 @@ html[data-view="preview"] #app {
   display: block;
 }
 
-.icon-btn:hover {
-  background: var(--accent-soft);
-}
-
+.icon-btn:hover,
 .icon-btn:active {
-  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
 
 .content {
-  padding: 16px;
+  padding: 18px 16px 20px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 16px;
   overflow: auto;
 }
 
 .card {
-  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  background: var(--card);
   border: 1px solid var(--line);
   border-radius: 14px;
-  padding: 14px 16px 16px;
+  padding: 16px 16px 18px;
 }
 
 h1 {
-  margin: 0 0 6px;
-  font-size: 13px;
+  margin: 0 0 4px;
+  font-size: 12px;
   font-weight: 650;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--muted);
 }
@@ -171,30 +199,31 @@ h1 {
 .hint {
   margin: 0;
   color: var(--muted);
-  font-size: 12px;
-  line-height: 1.45;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .notice,
 .error {
   margin: 8px 0 0;
   color: var(--danger);
-  font-size: 12px;
-  line-height: 1.4;
+  font-size: 13px;
+  line-height: 1.45;
 }
 
 .notice {
   margin: 0;
   padding: 10px 12px;
   background: var(--danger-soft);
+  border: 1px solid var(--danger);
   border-radius: 10px;
 }
 
 .rows {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  margin-top: 12px;
+  gap: 12px;
+  margin-top: 14px;
 }
 
 .hotkey-row {
@@ -207,40 +236,40 @@ h1 {
 
 .label {
   grid-area: label;
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.35;
 }
 
 .hotkey-btn {
   grid-area: btn;
   min-width: 148px;
   border: 1px solid var(--line);
-  background: color-mix(in srgb, var(--panel) 80%, transparent);
+  background: var(--control-fill);
   color: var(--ink);
   border-radius: 999px;
   padding: 7px 12px;
   font: inherit;
-  font-size: 12px;
+  font-size: 13px;
+  line-height: 1.3;
   font-variant-numeric: tabular-nums;
   cursor: pointer;
 }
 
 .hotkey-btn:hover,
-.hotkey-btn.recording {
+.hotkey-btn.recording,
+.hotkey-btn:active {
   border-color: var(--accent);
   background: var(--accent-soft);
 }
 
-.hotkey-btn:active {
-  background: color-mix(in srgb, var(--accent) 20%, transparent);
-}
-
-.hotkey-btn:focus-visible {
-  outline-offset: 1px;
-}
-
-.hotkey-row.has-error .hotkey-btn {
+.hotkey-row.has-error .hotkey-btn,
+.hotkey-row.has-error .hotkey-btn:hover,
+.hotkey-row.has-error .hotkey-btn.recording,
+.hotkey-row.has-error .hotkey-btn:active {
   border-color: var(--danger);
+  background: var(--danger-soft);
+  color: var(--ink);
 }
 
 .hotkey-row .error {
@@ -257,8 +286,8 @@ h1 {
 }
 
 .feature-rows {
-  margin-top: 10px;
-  gap: 12px;
+  margin-top: 14px;
+  gap: 14px;
 }
 
 .feature-row {
@@ -277,12 +306,12 @@ h1 {
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
-  margin-top: 12px;
+  margin-top: 14px;
 }
 
 .setting-row .label {
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 15px;
+  font-weight: 650;
 }
 
 .setting-row .hint {
@@ -296,15 +325,12 @@ h1 {
   border-radius: 10px;
   padding: 7px 10px;
   font: inherit;
-  font-size: 13px;
+  font-size: 14px;
+  line-height: 1.3;
   font-variant-numeric: tabular-nums;
   text-align: center;
   color: var(--ink);
-  background: color-mix(in srgb, var(--panel) 80%, transparent);
-}
-
-.number-input:focus-visible {
-  outline-offset: 1px;
+  background: var(--control-fill);
 }
 
 .number-input[aria-invalid="true"] {
@@ -322,22 +348,26 @@ h1 {
   border-radius: 999px;
   padding: 7px 12px;
   font: inherit;
-  font-size: 12px;
+  font-size: 13px;
+  line-height: 1.3;
   color: var(--ink);
-  background: color-mix(in srgb, var(--panel) 80%, transparent);
+  background: var(--control-fill);
   cursor: pointer;
 }
 
-.choice:hover:not(:disabled) {
+.choice:hover:not(:disabled),
+.choice:active:not(:disabled) {
   border-color: var(--accent);
   background: var(--accent-soft);
 }
 
-.choice.selected {
+.choice.selected,
+.choice.selected:hover:not(:disabled),
+.choice.selected:active:not(:disabled) {
   border-color: var(--accent);
   background: var(--accent-soft);
   color: var(--accent);
-  font-weight: 600;
+  font-weight: 650;
 }
 
 .choice:disabled {
@@ -345,13 +375,15 @@ h1 {
   cursor: default;
 }
 
-.choice.danger {
+.choice.danger,
+.choice.danger:hover:not(:disabled),
+.choice.danger:active:not(:disabled) {
   color: var(--danger);
-  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+  border-color: var(--danger);
 }
 
-.choice.danger:hover:not(:disabled) {
-  border-color: var(--danger);
+.choice.danger:hover:not(:disabled),
+.choice.danger:active:not(:disabled) {
   background: var(--danger-soft);
 }
 
@@ -360,14 +392,10 @@ h1 {
   height: 26px;
   border: 0;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--muted) 35%, transparent);
+  background: var(--track);
   position: relative;
   cursor: pointer;
   flex: 0 0 auto;
-}
-
-.switch:hover {
-  background: color-mix(in srgb, var(--muted) 45%, transparent);
 }
 
 .switch .knob {
@@ -419,8 +447,8 @@ h1 {
   z-index: 40;
   padding: 4px 8px;
   border-radius: 8px;
-  background: #1c1917;
-  color: #fff8f0;
+  background: var(--tooltip-bg);
+  color: var(--tooltip-ink);
   font-size: 12px;
   font-weight: 600;
   line-height: 1.3;
@@ -438,4 +466,21 @@ h1 {
 
 .annotation-more-panel [data-tooltip]::after {
   z-index: 50;
+}
+
+.icon-btn:focus-visible,
+.hotkey-btn:focus-visible,
+.choice:focus-visible,
+.switch:focus-visible,
+.number-input:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+  box-shadow: inset 0 0 0 4px var(--focus-gap);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .switch .knob,
+  [data-tooltip]::after {
+    transition: none;
+  }
 }

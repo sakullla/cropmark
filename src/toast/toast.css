@@ -15,11 +15,11 @@
 
 .toast-message {
   margin: 0;
+  max-width: 100%;
   color: var(--ink);
   font: inherit;
   font-size: 13px;
   line-height: 1.4;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
