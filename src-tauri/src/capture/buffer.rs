@@ -231,17 +231,21 @@ fn rgba_image(frame: &Frame) -> Result<image::RgbaImage, CaptureError> {
         .ok_or_else(|| CaptureError::invalid_buffer("error.capture.buffer_uninitialized"))
 }
 
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-pub fn decode_png(bytes: &[u8]) -> Result<Frame, CaptureError> {
+/// 任意编码图像字节解码为 RGBA 像素(图标资产解码共用此入口)。
+pub fn decode_rgba(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), CaptureError> {
     if bytes.is_empty() {
         return Err(CaptureError::invalid_buffer("error.capture.buffer_empty"));
     }
     let image = image::load_from_memory(bytes)
         .map_err(|_| CaptureError::api("error.capture.decode"))?
         .to_rgba8();
-    let width = image.width();
-    let height = image.height();
-    accept_buffer(RawBuffer::ready(width, height, image.into_raw()))
+    Ok((image.width(), image.height(), image.into_raw()))
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn decode_png(bytes: &[u8]) -> Result<Frame, CaptureError> {
+    let (width, height, rgba) = decode_rgba(bytes)?;
+    accept_buffer(RawBuffer::ready(width, height, rgba))
 }
 
 #[cfg(test)]

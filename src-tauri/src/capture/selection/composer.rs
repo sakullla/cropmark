@@ -9,6 +9,7 @@
 
 use std::cell::RefCell;
 
+use super::icons;
 use super::text;
 use super::{
     AnnotationOverlay, AnnotationTool, EdgeKind, FeatureFlags, HandleKind, Scene, SelectionAction,
@@ -1459,7 +1460,8 @@ impl Composer {
             } else if hover {
                 fill_round_blend(rgba, w, h, inset(*rect, 2), radius - 1, ACTIVE_BG);
             }
-            draw_annotation_icon(rgba, w, h, *action, *rect, ink, metrics.tool_icon);
+            let (cx, cy) = rect.center();
+            icons::draw(rgba, w, h, *action, cx, cy, metrics.tool_icon, ink);
         }
         if let Some(undo_i) = toolbar
             .buttons
@@ -1550,7 +1552,7 @@ impl Composer {
             let hover = rect.contains(cursor.0, cursor.1);
             let bg = if hover { ACCENT_DARK } else { ACCENT_DEEP };
             fill_circle(rgba, w, h, cx, cy, metrics.rail_button / 2, bg);
-            draw_icon(rgba, w, h, action, cx, cy, metrics.toolbar_icon, ICON_INK);
+            icons::draw(rgba, w, h, action, cx, cy, metrics.toolbar_icon, ICON_INK);
         }
     }
 
@@ -1653,7 +1655,7 @@ impl Composer {
             }
             let color = if hover { ACCENT_DEEP } else { CHROME_TEXT };
             let (_, cy) = rect.center();
-            draw_icon(
+            icons::draw(
                 rgba,
                 w,
                 h,
@@ -1850,7 +1852,8 @@ fn put(rgba: &mut [u8], w: u32, h: u32, x: i32, y: i32, color: [u8; 4]) {
     }
 }
 
-fn blend(rgba: &mut [u8], w: u32, h: u32, x: i32, y: i32, color: [u8; 4]) {
+/// alpha 叠加合成(图标字形等预乘覆盖度的位图经此落笔);`icons` 模块复用。
+pub(super) fn blend(rgba: &mut [u8], w: u32, h: u32, x: i32, y: i32, color: [u8; 4]) {
     if x < 0 || y < 0 || x >= w as i32 || y >= h as i32 {
         return;
     }
@@ -1944,539 +1947,6 @@ fn draw_line(
             color,
         );
     }
-}
-
-fn dist_segment(px: f32, py: f32, x0: f32, y0: f32, x1: f32, y1: f32) -> f32 {
-    let vx = x1 - x0;
-    let vy = y1 - y0;
-    let len2 = vx * vx + vy * vy;
-    let t = if len2 < 1e-8 {
-        0.0
-    } else {
-        ((px - x0) * vx + (py - y0) * vy) / len2
-    }
-    .clamp(0.0, 1.0);
-    let dx = px - (x0 + t * vx);
-    let dy = py - (y0 + t * vy);
-    (dx * dx + dy * dy).sqrt()
-}
-
-/// 可变 RGBA 扫描缓冲:把 `rgba/w/h` 收成绘制目标,抗锯齿图元走方法以免
-/// 每个图元函数都超过 clippy 参数上限。
-struct PixelBuf<'a> {
-    rgba: &'a mut [u8],
-    w: u32,
-    h: u32,
-}
-
-impl PixelBuf<'_> {
-    fn paint_sdf(
-        &mut self,
-        min_x: i32,
-        min_y: i32,
-        max_x: i32,
-        max_y: i32,
-        color: [u8; 4],
-        mut sdf: impl FnMut(f32, f32) -> f32,
-    ) {
-        for y in min_y..=max_y {
-            for x in min_x..=max_x {
-                let dist = sdf(x as f32 + 0.5, y as f32 + 0.5);
-                let cover = (0.5 - dist).clamp(0.0, 1.0);
-                if cover <= 0.004 {
-                    continue;
-                }
-                let mut ink = color;
-                ink[3] = (f32::from(color[3]) * cover).round() as u8;
-                blend(self.rgba, self.w, self.h, x, y, ink);
-            }
-        }
-    }
-
-    fn fill_disk_aa(&mut self, cx: f32, cy: f32, radius: f32, color: [u8; 4]) {
-        let pad = radius + 1.5;
-        self.paint_sdf(
-            (cx - pad).floor() as i32,
-            (cy - pad).floor() as i32,
-            (cx + pad).ceil() as i32,
-            (cy + pad).ceil() as i32,
-            color,
-            |x, y| {
-                let dx = x - cx;
-                let dy = y - cy;
-                (dx * dx + dy * dy).sqrt() - radius
-            },
-        );
-    }
-
-    fn stroke_capsule_aa(
-        &mut self,
-        x0: f32,
-        y0: f32,
-        x1: f32,
-        y1: f32,
-        radius: f32,
-        color: [u8; 4],
-    ) {
-        let pad = radius + 1.5;
-        self.paint_sdf(
-            (x0.min(x1) - pad).floor() as i32,
-            (y0.min(y1) - pad).floor() as i32,
-            (x0.max(x1) + pad).ceil() as i32,
-            (y0.max(y1) + pad).ceil() as i32,
-            color,
-            |x, y| dist_segment(x, y, x0, y0, x1, y1) - radius,
-        );
-    }
-
-    fn stroke_round_rect_aa(
-        &mut self,
-        rect: (f32, f32, f32, f32),
-        corner: f32,
-        stroke: f32,
-        color: [u8; 4],
-    ) {
-        let (x, y, width, height) = rect;
-        if width <= 1.0 || height <= 1.0 {
-            return;
-        }
-        let cx = x + width * 0.5;
-        let cy = y + height * 0.5;
-        let hw = width * 0.5;
-        let hh = height * 0.5;
-        let corner = corner.min(hw).min(hh).max(0.0);
-        let half = stroke * 0.5;
-        let pad = half + 1.5;
-        self.paint_sdf(
-            (x - pad).floor() as i32,
-            (y - pad).floor() as i32,
-            (x + width + pad).ceil() as i32,
-            (y + height + pad).ceil() as i32,
-            color,
-            |px, py| {
-                let dx = (px - cx).abs() - hw + corner;
-                let dy = (py - cy).abs() - hh + corner;
-                let outside = dx.max(0.0).hypot(dy.max(0.0));
-                let inside = dx.min(0.0).max(dy.min(0.0));
-                (outside + inside - corner).abs() - half
-            },
-        );
-    }
-
-    fn fill_triangle_aa(&mut self, a: (f32, f32), b: (f32, f32), c: (f32, f32), color: [u8; 4]) {
-        let (ax, ay) = a;
-        let (bx, by) = b;
-        let (cx, cy) = c;
-        let edge = |x1: f32, y1: f32, x2: f32, y2: f32, px: f32, py: f32| {
-            let nx = y2 - y1;
-            let ny = x1 - x2;
-            let len = nx.hypot(ny).max(1e-6);
-            ((px - x1) * nx + (py - y1) * ny) / len
-        };
-        let sign = edge(ax, ay, bx, by, cx, cy).signum();
-        if sign == 0.0 {
-            self.stroke_capsule_aa(ax, ay, bx, by, 0.7, color);
-            return;
-        }
-        let pad = 1.5;
-        self.paint_sdf(
-            (ax.min(bx).min(cx) - pad).floor() as i32,
-            (ay.min(by).min(cy) - pad).floor() as i32,
-            (ax.max(bx).max(cx) + pad).ceil() as i32,
-            (ay.max(by).max(cy) + pad).ceil() as i32,
-            color,
-            |px, py| {
-                let d0 = edge(ax, ay, bx, by, px, py) * sign;
-                let d1 = edge(bx, by, cx, cy, px, py) * sign;
-                let d2 = edge(cx, cy, ax, ay, px, py) * sign;
-                -d0.min(d1).min(d2)
-            },
-        );
-    }
-
-    fn stroke_arc_aa(
-        &mut self,
-        center: (f32, f32),
-        radius: f32,
-        start: f32,
-        end: f32,
-        stroke: f32,
-        color: [u8; 4],
-    ) {
-        let (cx, cy) = center;
-        let steps = ((radius * (end - start).abs()).ceil() as i32).max(8);
-        let mut prev_x = cx + radius * start.cos();
-        let mut prev_y = cy + radius * start.sin();
-        for i in 1..=steps {
-            let t = start + (end - start) * (i as f32 / steps as f32);
-            let x = cx + radius * t.cos();
-            let y = cy + radius * t.sin();
-            self.stroke_capsule_aa(prev_x, prev_y, x, y, stroke * 0.5, color);
-            prev_x = x;
-            prev_y = y;
-        }
-    }
-}
-
-/// 引擎内绘制的图标字形:(cx, cy) 为中心,size 为外接盒边长。
-#[allow(clippy::too_many_arguments)]
-fn draw_icon(
-    rgba: &mut [u8],
-    w: u32,
-    h: u32,
-    action: SelectionAction,
-    cx: i32,
-    cy: i32,
-    size: i32,
-    ink: [u8; 4],
-) {
-    let cx = cx as f32;
-    let cy = cy as f32;
-    let s = (size as f32 * 0.5).max(6.0);
-    let stroke = (size as f32 * 0.12).clamp(1.55, 2.45);
-    let mut buf = PixelBuf { rgba, w, h };
-    match action {
-        SelectionAction::Copy => {
-            buf.stroke_round_rect_aa(
-                (cx - s + 1.2, cy - s + 1.0, s + 1.6, s + 2.2),
-                2.1,
-                stroke,
-                ink,
-            );
-            buf.stroke_round_rect_aa((cx - 1.6, cy - s + 4.0, s + 2.4, s + 3.0), 2.1, stroke, ink);
-        }
-        SelectionAction::Save => {
-            buf.stroke_capsule_aa(cx, cy - s + 1.4, cx, cy + 1.2, stroke * 0.55, ink);
-            buf.stroke_capsule_aa(cx, cy + 2.2, cx - 3.6, cy - 1.2, stroke * 0.55, ink);
-            buf.stroke_capsule_aa(cx, cy + 2.2, cx + 3.6, cy - 1.2, stroke * 0.55, ink);
-            buf.fill_triangle_aa(
-                (cx, cy + 3.4),
-                (cx - 3.8, cy - 0.4),
-                (cx + 3.8, cy - 0.4),
-                ink,
-            );
-            buf.stroke_capsule_aa(
-                cx - s + 2.0,
-                cy + s - 1.4,
-                cx + s - 2.0,
-                cy + s - 1.4,
-                stroke * 0.55,
-                ink,
-            );
-            buf.stroke_capsule_aa(
-                cx - s + 2.0,
-                cy + s - 4.2,
-                cx - s + 2.0,
-                cy + s - 1.4,
-                stroke * 0.55,
-                ink,
-            );
-            buf.stroke_capsule_aa(
-                cx + s - 2.0,
-                cy + s - 4.2,
-                cx + s - 2.0,
-                cy + s - 1.4,
-                stroke * 0.55,
-                ink,
-            );
-        }
-        SelectionAction::Pin => {
-            buf.fill_disk_aa(cx, cy - s + 4.2, s * 0.38, ink);
-            buf.fill_triangle_aa(
-                (cx - s * 0.36, cy - 0.4),
-                (cx + s * 0.36, cy - 0.4),
-                (cx, cy + s - 1.2),
-                ink,
-            );
-        }
-        SelectionAction::Annotate => {
-            buf.stroke_capsule_aa(
-                cx - s + 3.2,
-                cy + s - 3.4,
-                cx + s - 3.4,
-                cy - s + 3.2,
-                stroke * 0.7,
-                ink,
-            );
-            buf.fill_triangle_aa(
-                (cx - s + 1.4, cy + s - 1.2),
-                (cx - s + 5.2, cy + s - 5.0),
-                (cx - s + 5.2, cy + s - 1.2),
-                ink,
-            );
-        }
-        SelectionAction::Ocr => {
-            buf.stroke_round_rect_aa(
-                (cx - s + 2.0, cy - s + 1.2, (s - 2.0) * 2.0, (s - 1.2) * 2.0),
-                2.0,
-                stroke,
-                ink,
-            );
-            buf.stroke_capsule_aa(
-                cx - s + 4.6,
-                cy - 1.8,
-                cx + s - 4.6,
-                cy - 1.8,
-                stroke * 0.45,
-                ink,
-            );
-            buf.stroke_capsule_aa(
-                cx - s + 4.6,
-                cy + 1.0,
-                cx + s - 4.6,
-                cy + 1.0,
-                stroke * 0.45,
-                ink,
-            );
-            buf.stroke_capsule_aa(
-                cx - s + 4.6,
-                cy + 3.8,
-                cx + 1.2,
-                cy + 3.8,
-                stroke * 0.45,
-                ink,
-            );
-        }
-        SelectionAction::Cancel => {
-            buf.stroke_capsule_aa(
-                cx - s + 3.0,
-                cy - s + 3.0,
-                cx + s - 3.0,
-                cy + s - 3.0,
-                stroke * 0.55,
-                ink,
-            );
-            buf.stroke_capsule_aa(
-                cx - s + 3.0,
-                cy + s - 3.0,
-                cx + s - 3.0,
-                cy - s + 3.0,
-                stroke * 0.55,
-                ink,
-            );
-        }
-        SelectionAction::CopyColor => {
-            buf.fill_disk_aa(cx, cy, 4.2, ink);
-            buf.fill_disk_aa(cx, cy, 1.6, ink);
-        }
-        SelectionAction::Tool(AnnotationTool::Rect) => {
-            buf.stroke_round_rect_aa(
-                (cx - s + 1.4, cy - s + 2.4, (s - 1.4) * 2.0, (s - 2.4) * 2.0),
-                2.2,
-                stroke,
-                ink,
-            );
-        }
-        SelectionAction::Tool(AnnotationTool::Ellipse) => {
-            let rx = s - 1.4;
-            let ry = s - 2.2;
-            buf.stroke_round_rect_aa((cx - rx, cy - ry, rx * 2.0, ry * 2.0), ry, stroke, ink);
-        }
-        SelectionAction::Tool(AnnotationTool::Line) => {
-            buf.stroke_capsule_aa(
-                cx - s + 1.6,
-                cy + s - 2.2,
-                cx + s - 1.6,
-                cy - s + 2.2,
-                stroke * 0.5,
-                ink,
-            );
-            buf.fill_disk_aa(cx - s + 1.6, cy + s - 2.2, stroke * 0.85, ink);
-            buf.fill_disk_aa(cx + s - 1.6, cy - s + 2.2, stroke * 0.85, ink);
-        }
-        SelectionAction::Tool(AnnotationTool::Arrow) => {
-            buf.stroke_capsule_aa(
-                cx - s + 2.2,
-                cy + s - 2.2,
-                cx + s - 4.6,
-                cy - s + 4.6,
-                stroke * 0.55,
-                ink,
-            );
-            buf.fill_triangle_aa(
-                (cx + s - 1.2, cy - s + 1.2),
-                (cx + s - 7.4, cy - s + 2.0),
-                (cx + s - 2.0, cy - s + 7.4),
-                ink,
-            );
-        }
-        SelectionAction::Tool(AnnotationTool::Number) => {
-            buf.stroke_round_rect_aa(
-                (cx - s + 1.6, cy - s + 1.6, (s - 1.6) * 2.0, (s - 1.6) * 2.0),
-                s - 1.6,
-                stroke,
-                ink,
-            );
-            buf.stroke_capsule_aa(cx - 1.6, cy - s + 3.6, cx, cy - s + 2.6, stroke * 0.5, ink);
-            buf.stroke_capsule_aa(cx, cy - s + 2.6, cx, cy + s - 3.2, stroke * 0.5, ink);
-        }
-        SelectionAction::Tool(AnnotationTool::Text) => {
-            buf.stroke_capsule_aa(
-                cx - s + 2.0,
-                cy - s + 2.6,
-                cx + s - 2.0,
-                cy - s + 2.6,
-                stroke * 0.55,
-                ink,
-            );
-            buf.stroke_capsule_aa(cx, cy - s + 2.6, cx, cy + s - 2.8, stroke * 0.55, ink);
-            buf.stroke_capsule_aa(
-                cx - 3.2,
-                cy + s - 2.8,
-                cx + 3.2,
-                cy + s - 2.8,
-                stroke * 0.5,
-                ink,
-            );
-        }
-        SelectionAction::Tool(AnnotationTool::Pen) => {
-            buf.stroke_capsule_aa(
-                cx - s + 3.4,
-                cy + s - 3.6,
-                cx + s - 3.2,
-                cy - s + 3.0,
-                stroke * 0.7,
-                ink,
-            );
-            buf.fill_triangle_aa(
-                (cx - s + 1.4, cy + s - 1.2),
-                (cx - s + 5.4, cy + s - 5.2),
-                (cx - s + 5.4, cy + s - 1.2),
-                ink,
-            );
-        }
-        SelectionAction::Tool(AnnotationTool::Highlighter) => {
-            buf.stroke_capsule_aa(
-                cx - s + 1.6,
-                cy + 1.8,
-                cx + s - 2.0,
-                cy - 2.8,
-                stroke * 1.15,
-                ink,
-            );
-            buf.stroke_capsule_aa(
-                cx - s + 2.2,
-                cy + s - 2.0,
-                cx + 1.6,
-                cy + 2.8,
-                stroke * 0.5,
-                ink,
-            );
-        }
-        SelectionAction::Tool(AnnotationTool::Mosaic) => {
-            let cell = (s * 0.42).max(2.2);
-            let gap = 1.1;
-            let origin_x = cx - (cell * 3.0 + gap * 2.0) * 0.5;
-            let origin_y = cy - (cell * 3.0 + gap * 2.0) * 0.5;
-            let filled = [true, false, true, false, true, false, true, false, true];
-            for row in 0..3 {
-                for col in 0..3 {
-                    let x = origin_x + col as f32 * (cell + gap);
-                    let y = origin_y + row as f32 * (cell + gap);
-                    if filled[row * 3 + col] {
-                        buf.fill_disk_aa(x + cell * 0.5, y + cell * 0.5, cell * 0.42, ink);
-                    } else {
-                        buf.stroke_round_rect_aa((x, y, cell, cell), 0.8, 1.2, ink);
-                    }
-                }
-            }
-        }
-        SelectionAction::Tool(AnnotationTool::Blur) => {
-            buf.stroke_round_rect_aa(
-                (cx - s + 1.4, cy - s + 1.4, (s - 1.4) * 2.0, (s - 1.4) * 2.0),
-                s - 1.4,
-                stroke,
-                ink,
-            );
-            buf.stroke_round_rect_aa(
-                (cx - s * 0.45, cy - s * 0.45, s * 0.9, s * 0.9),
-                s * 0.45,
-                1.2,
-                ink,
-            );
-            buf.fill_disk_aa(cx, cy, 1.4, ink);
-        }
-        SelectionAction::Undo => {
-            buf.stroke_arc_aa((cx + 0.4, cy + 0.6), s - 2.2, 0.55, 5.55, stroke, ink);
-            buf.fill_triangle_aa(
-                (cx - s + 2.2, cy - 1.6),
-                (cx - s + 6.4, cy - 5.0),
-                (cx - s + 6.4, cy + 1.6),
-                ink,
-            );
-        }
-        SelectionAction::Redo => {
-            buf.stroke_arc_aa((cx - 0.4, cy + 0.6), s - 2.2, 3.73, -1.27, stroke, ink);
-            buf.fill_triangle_aa(
-                (cx + s - 2.2, cy - 1.6),
-                (cx + s - 6.4, cy - 5.0),
-                (cx + s - 6.4, cy + 1.6),
-                ink,
-            );
-        }
-        SelectionAction::Delete => {
-            buf.stroke_capsule_aa(
-                cx - 2.2,
-                cy - s + 1.6,
-                cx + 2.2,
-                cy - s + 1.6,
-                stroke * 0.45,
-                ink,
-            );
-            buf.stroke_capsule_aa(
-                cx - s + 1.4,
-                cy - s + 3.6,
-                cx + s - 1.4,
-                cy - s + 3.6,
-                stroke * 0.55,
-                ink,
-            );
-            buf.stroke_capsule_aa(
-                cx - s + 2.4,
-                cy - s + 3.6,
-                cx - s + 3.4,
-                cy + s - 2.0,
-                stroke * 0.5,
-                ink,
-            );
-            buf.stroke_capsule_aa(
-                cx + s - 2.4,
-                cy - s + 3.6,
-                cx + s - 3.4,
-                cy + s - 2.0,
-                stroke * 0.5,
-                ink,
-            );
-            buf.stroke_capsule_aa(
-                cx - s + 3.4,
-                cy + s - 2.0,
-                cx + s - 3.4,
-                cy + s - 2.0,
-                stroke * 0.5,
-                ink,
-            );
-        }
-        SelectionAction::More => {
-            buf.fill_disk_aa(cx - s + 2.8, cy, 1.55, ink);
-            buf.fill_disk_aa(cx, cy, 1.55, ink);
-            buf.fill_disk_aa(cx + s - 2.8, cy, 1.55, ink);
-        }
-    }
-}
-
-/// 标注工具条图标:(cx, cy) 为中心,size 为图标外接盒边长。
-#[allow(clippy::too_many_arguments)]
-fn draw_annotation_icon(
-    rgba: &mut [u8],
-    w: u32,
-    h: u32,
-    action: SelectionAction,
-    rect: IntRect,
-    ink: [u8; 4],
-    size: i32,
-) {
-    let (cx, cy) = rect.center();
-    draw_icon(rgba, w, h, action, cx, cy, size, ink);
 }
 
 #[cfg(test)]
@@ -2952,6 +2422,7 @@ mod tests {
             width: 32,
             height: 32,
         };
+        // 位图资产经 icons 模块渲染;CopyColor 是键盘动作、无资产,不落笔。
         let actions = [
             SelectionAction::Copy,
             SelectionAction::Save,
@@ -2959,7 +2430,6 @@ mod tests {
             SelectionAction::Annotate,
             SelectionAction::Ocr,
             SelectionAction::Cancel,
-            SelectionAction::CopyColor,
             SelectionAction::Undo,
             SelectionAction::Redo,
             SelectionAction::Delete,
@@ -2977,16 +2447,8 @@ mod tests {
         ];
         for action in actions {
             let mut buf = vec![0u8; (w * h * 4) as usize];
-            match action {
-                SelectionAction::Tool(_)
-                | SelectionAction::Undo
-                | SelectionAction::Redo
-                | SelectionAction::Delete
-                | SelectionAction::More => {
-                    draw_annotation_icon(&mut buf, w, h, action, rect, ink, 16);
-                }
-                _ => draw_icon(&mut buf, w, h, action, 24, 24, 18, ink),
-            }
+            let (cx, cy) = rect.center();
+            icons::draw(&mut buf, w, h, action, cx, cy, 16, ink);
             let painted = buf.chunks_exact(4).filter(|px| px[0] > 0).count();
             assert!(painted > 8, "{action:?} painted {painted} pixels");
         }
