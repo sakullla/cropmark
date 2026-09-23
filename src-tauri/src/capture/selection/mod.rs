@@ -551,10 +551,11 @@ impl SelectionEngine {
                 {
                     return CursorHint::Arrow;
                 }
-                if self.toolbar_visible() && self.hit_toolbar(x, y).is_some() {
+                // 与 on_left_down 一致:面板在横条之上,先判面板。
+                if self.hit_more_panel(x, y).is_some() {
                     return CursorHint::Pointer;
                 }
-                if self.hit_more_panel(x, y).is_some() {
+                if self.toolbar_visible() && self.hit_toolbar(x, y).is_some() {
                     return CursorHint::Pointer;
                 }
                 if let Some(selection) = self.selection {
@@ -706,11 +707,13 @@ impl SelectionEngine {
             }
             EngineState::Dragging { .. } => EngineOutcome::Redraw,
             EngineState::Selected => {
-                if let Some(action) = self.hit_toolbar(x, y) {
+                // 「更多」面板绘制在横条之上(顶边重叠时面板可见),
+                // 命中顺序必须与绘制顺序一致:先面板后横条。
+                if let Some(action) = self.hit_more_panel(x, y) {
                     self.state = EngineState::PressingChrome { action };
                     return EngineOutcome::Redraw;
                 }
-                if let Some(action) = self.hit_more_panel(x, y) {
+                if let Some(action) = self.hit_toolbar(x, y) {
                     self.state = EngineState::PressingChrome { action };
                     return EngineOutcome::Redraw;
                 }
@@ -1000,7 +1003,13 @@ impl SelectionEngine {
         }
         let toolbar = self.unified_toolbar()?;
         let (_, more_rect) = *toolbar.buttons.last()?;
-        let panel = composer::more_panel(self.metrics(), more_rect, self.size(), &items);
+        let panel = composer::more_panel(
+            self.metrics(),
+            more_rect,
+            Some(toolbar.panel),
+            self.size(),
+            &items,
+        );
         Some((
             panel,
             composer::more_item_rects(self.metrics(), panel, &items),
@@ -3004,6 +3013,61 @@ mod tests {
             shift: false,
         });
         assert!(engine.annotations().is_empty());
+    }
+
+    /// 顶边重叠回归:横条贴屏幕顶缘(近全屏选区)且「更多」面板因屏高不足
+    /// 仍与横条重叠时,点击同时落在面板项与横条按钮上的点必须触发面板动作
+    /// (面板绘制在横条之上,命中顺序与绘制顺序一致),而不是底下的横条按钮。
+    #[test]
+    fn more_panel_wins_hit_test_overlapping_toolbar_button() {
+        let mut engine = inline_engine(1920, 410);
+        // 选区几乎占满屏幕:下缘放不下(候选被钳回屏内仍压选区),
+        // 横条按最小重叠翻上缘并被钳到 y=0;屏高不足以把「更多」面板
+        // 下移到横条之下,重叠保留,命中顺序必须让可见的面板项获胜。
+        drag_selection(&mut engine, (0, 39), (1910, 400));
+        let toolbar = engine.unified_toolbar().expect("toolbar");
+        assert_eq!(toolbar.panel.y, 0, "横条应被钳到屏幕顶缘");
+        open_more_panel(&mut engine);
+        let (panel, items) = engine.more_panel().expect("more panel");
+        assert!(
+            items.iter().any(|(_, rect)| {
+                toolbar
+                    .buttons
+                    .iter()
+                    .any(|(_, b)| composer::IntRect::intersect(*rect, *b).width > 0)
+            }),
+            "本场景应存在面板项与横条按钮的几何重叠: {panel:?}"
+        );
+        // 找一个同时在面板项与横条按钮内的点。
+        let (expected, point) = items
+            .iter()
+            .find_map(|(action, rect)| {
+                toolbar.buttons.iter().find_map(|(_, b)| {
+                    let hit = composer::IntRect::intersect(*rect, *b);
+                    (!hit.is_empty()).then_some((*action, hit.center()))
+                })
+            })
+            .expect("overlapping panel item");
+        assert_eq!(
+            engine.cursor_for(point.0, point.1),
+            CursorHint::Pointer,
+            "重叠区光标应为手型"
+        );
+        engine.handle_event(InputEvent::PointerMove {
+            x: point.0,
+            y: point.1,
+        });
+        engine.handle_event(InputEvent::LeftDown {
+            x: point.0,
+            y: point.1,
+        });
+        match engine.state {
+            EngineState::PressingChrome { action } => assert_eq!(
+                action, expected,
+                "重叠区点击必须命中可见的面板项,而非底下的横条按钮"
+            ),
+            other => panic!("应按下面板项进入 PressingChrome,实际 {other:?}"),
+        }
     }
 
     /// 「更多」面板内点工具:立即选中并关闭面板。

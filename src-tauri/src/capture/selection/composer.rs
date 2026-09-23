@@ -508,20 +508,30 @@ pub fn unified_toolbar(
 
 /// 「更多」面板矩形:垂直动作列表,底边对齐「更多」按钮底边、右缘对齐按钮
 /// 右缘(向上向左展开),钳制在屏幕内。几何与右键菜单同构(menu_item 尺寸)。
+/// `toolbar` 为横条面板矩形:顶边横条被钳到屏幕顶缘时,向上弹出的面板会与
+/// 横条重叠;若下方放得下,把面板下移到横条之下避免遮挡(绘制与命中共用本
+/// 几何)。放不下时保留屏内位置,由命中顺序(面板优先)保证可点。
 pub fn more_panel(
     metrics: ChromeMetrics,
     anchor: IntRect,
+    toolbar: Option<IntRect>,
     screen: (u32, u32),
     items: &[SelectionAction],
 ) -> IntRect {
     let width = metrics.menu_item_w + metrics.menu_pad * 2;
     let height = items.len() as i32 * metrics.menu_item_h + metrics.menu_pad * 2;
-    IntRect {
+    let mut panel = IntRect {
         x: (anchor.right() - width).clamp(0, (screen.0 as i32 - width).max(0)),
         y: (anchor.y - height).clamp(0, (screen.1 as i32 - height).max(0)),
         width,
         height,
+    };
+    if let Some(toolbar) = toolbar {
+        if intersects(panel, toolbar) && toolbar.bottom() + height <= screen.1 as i32 {
+            panel.y = toolbar.bottom();
+        }
     }
+    panel
 }
 
 /// 「更多」面板逐动作矩形,顺序与 `items` 一致(与绘制共用,保证 hitbox 一致)。
@@ -1094,6 +1104,7 @@ impl Composer {
                             let panel = more_panel(
                                 self.metrics,
                                 toolbar.buttons.last().expect("more button").1,
+                                Some(toolbar.panel),
                                 (self.width, self.height),
                                 &items,
                             );
@@ -1330,7 +1341,7 @@ impl Composer {
         if items.is_empty() {
             return;
         }
-        let panel = more_panel(metrics, *more_rect, (w, h), &items);
+        let panel = more_panel(metrics, *more_rect, Some(toolbar.panel), (w, h), &items);
         draw_panel_chrome(rgba, w, h, panel, metrics.panel_radius);
         let line = text::line_height(metrics.menu_font);
         for (action, rect) in more_item_rects(metrics, panel, &items) {
@@ -1436,6 +1447,7 @@ impl Composer {
                 let panel = more_panel(
                     self.metrics,
                     toolbar.buttons.last().expect("more button").1,
+                    Some(toolbar.panel),
                     (w, h),
                     &items,
                 );
@@ -2119,6 +2131,7 @@ mod tests {
                 let more_panel = more_panel(
                     ChromeMetrics::for_scale(1.0),
                     toolbar.buttons.last().unwrap().1,
+                    Some(toolbar.panel),
                     (800, 600),
                     &items,
                 );
@@ -3023,7 +3036,7 @@ mod tests {
             width: BAR_BUTTON,
             height: BAR_BUTTON,
         };
-        let panel = more_panel(metrics, anchor, (1280, 800), &items);
+        let panel = more_panel(metrics, anchor, None, (1280, 800), &items);
         assert_eq!(panel.width, metrics.menu_item_w + metrics.menu_pad * 2);
         assert_eq!(
             panel.height,
@@ -3055,9 +3068,39 @@ mod tests {
             width: BAR_BUTTON,
             height: BAR_BUTTON,
         };
-        let flipped = more_panel(metrics, tight, (200, 120), &short);
+        let flipped = more_panel(metrics, tight, None, (200, 120), &short);
         assert!(flipped.x >= 0 && flipped.y >= 0);
         assert!(flipped.right() <= 200 && flipped.bottom() <= 120);
+    }
+
+    /// 顶边横条(y=0)向上弹出的「更多」面板不得与横条重叠:放得下时下移到
+    /// 横条之下且仍在屏内;屏高不足时保留屏内位置(命中顺序兜底)。
+    #[test]
+    fn more_panel_avoids_overlapping_top_edge_toolbar() {
+        let metrics = metrics_1();
+        let items = more_panel_buttons(FeatureFlags::default());
+        let toolbar = IntRect {
+            x: 775,
+            y: 0,
+            width: 9 * BAR_BUTTON,
+            height: BAR_BUTTON,
+        };
+        let anchor = IntRect {
+            x: toolbar.right() - BAR_BUTTON,
+            y: 0,
+            width: BAR_BUTTON,
+            height: BAR_BUTTON,
+        };
+        let panel = more_panel(metrics, anchor, Some(toolbar), (1920, 1080), &items);
+        assert!(
+            !intersects(panel, toolbar),
+            "面板应下移到横条之下: {panel:?}"
+        );
+        assert!(panel.bottom() <= 1080, "面板必须在屏内: {panel:?}");
+        // 屏高不足以避开时:保持屏内,命中顺序(面板优先)保证可点。
+        let short_screen = more_panel(metrics, anchor, Some(toolbar), (1920, 400), &items);
+        assert!(short_screen.y >= 0 && short_screen.bottom() <= 400);
+        assert!(intersects(short_screen, toolbar));
     }
 
     /// 合成像素与统一横条 hitbox 布局一致(亮铬面板 + accent 复制按钮)。
@@ -3324,6 +3367,7 @@ mod tests {
             let m_panel = more_panel(
                 metrics,
                 toolbar.buttons.last().unwrap().1,
+                Some(toolbar.panel),
                 (800, 600),
                 &more,
             );
