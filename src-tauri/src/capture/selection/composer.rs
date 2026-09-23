@@ -1635,21 +1635,24 @@ fn place_tooltip(
         return None;
     }
     let (ax, ay) = anchor.center();
+    // Keep above/below candidates on screen when font metrics make the tooltip
+    // wider than a button near an edge. A side candidate can cover the toolbar.
+    let centered_x = (ax - width / 2).clamp(0, sw - width);
     // 右侧操作条优先出现在按钮左侧,避免贴屏幕右缘时提示跑出画面;
     // 底部工具条仍优先出现在按钮上方。
     let candidates = if ax > sw / 2 {
         [
             (anchor.x - width - gap, ay - height / 2),
-            (ax - width / 2, anchor.y - height - gap),
-            (ax - width / 2, anchor.bottom() + gap),
+            (centered_x, anchor.y - height - gap),
+            (centered_x, anchor.bottom() + gap),
             (anchor.right() + gap, ay - height / 2),
         ]
     } else {
         [
-            (ax - width / 2, anchor.y - height - gap),
+            (centered_x, anchor.y - height - gap),
             (anchor.right() + gap, ay - height / 2),
             (anchor.x - width - gap, ay - height / 2),
-            (ax - width / 2, anchor.bottom() + gap),
+            (centered_x, anchor.bottom() + gap),
         ]
     };
     for (x, y) in candidates {
@@ -3267,6 +3270,15 @@ mod tests {
         let panel = place_tooltip(anchor, 48, 24, 6, (320, 200)).unwrap();
         assert_eq!(panel.y, 80 - 24 - 6);
         assert!(panel.x >= 0 && panel.right() <= 320);
+        let edge = IntRect {
+            x: 0,
+            y: 129,
+            width: 40,
+            height: 40,
+        };
+        let clamped = place_tooltip(edge, 48, 24, 6, (320, 200)).unwrap();
+        assert_eq!(clamped.x, 0);
+        assert_eq!(clamped.bottom(), edge.y - 6);
         let tight = IntRect {
             x: 4,
             y: 4,
@@ -3326,6 +3338,7 @@ mod tests {
             (320, 200),
         )
         .expect("tooltip fits");
+        assert!(tip.bottom() <= anchor.y, "tooltip should stay above the toolbar: {tip:?}");
         let bright_in = |buf: &[u8], region: IntRect| {
             let mut n = 0usize;
             for y in region.y.max(0)..region.bottom().min(200) {
