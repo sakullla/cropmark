@@ -11,6 +11,8 @@
   position: relative;
   cursor: crosshair;
   background: #000;
+  --selection-stroke: var(--accent);
+  --selection-halo: var(--focus-gap);
 }
 
 /* 窗口模式:整帧压暗 + 描边高亮(画布内绘制,不挖洞),光标用指针表达可点。*/
@@ -59,6 +61,8 @@
   cursor: pointer;
   border: 1px solid var(--line);
   border-radius: 999px;
+  min-width: 24px;
+  min-height: 24px;
   padding: 8px 14px;
   background: color-mix(in srgb, var(--panel) 92%, transparent);
   color: var(--ink);
@@ -79,6 +83,8 @@
   cursor: pointer;
   border: 1px solid transparent;
   border-radius: 999px;
+  min-width: 24px;
+  min-height: 24px;
   padding: 8px 16px;
   background: var(--accent);
   color: var(--on-accent);
@@ -141,6 +147,8 @@
   cursor: pointer;
   border: 1px solid var(--line);
   border-radius: 999px;
+  min-width: 24px;
+  min-height: 24px;
   padding: 8px 12px;
   background: color-mix(in srgb, var(--panel) 92%, transparent);
   color: var(--muted);
@@ -256,6 +264,8 @@
   background: color-mix(in srgb, var(--panel) 92%, transparent);
   color: var(--ink);
   border-radius: 12px;
+  min-width: 24px;
+  min-height: 24px;
   padding: 10px 12px;
   font: inherit;
   cursor: pointer;
@@ -314,6 +324,8 @@
 .error-root button {
   border: 0;
   border-radius: 999px;
+  min-width: 24px;
+  min-height: 24px;
   background: var(--accent-soft);
   color: var(--ink);
   font: inherit;

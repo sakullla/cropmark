@@ -6,6 +6,13 @@ const appCss = readFileSync(new URL("../../src/styles/app.css", import.meta.url)
 const historyCss = readFileSync(new URL("../../src/history/history.css", import.meta.url), "utf8");
 const toastCss = readFileSync(new URL("../../src/toast/toast.css", import.meta.url), "utf8");
 const indexHtml = readFileSync(new URL("../../src/index.html", import.meta.url), "utf8");
+const overlayCss = readFileSync(new URL("../../src/overlay/overlay.css", import.meta.url), "utf8");
+const overlayIndex = readFileSync(new URL("../../src/overlay/index.ts", import.meta.url), "utf8");
+const previewCss = readFileSync(new URL("../../src/preview/preview.css", import.meta.url), "utf8");
+const previewIndex = readFileSync(new URL("../../src/preview/index.ts", import.meta.url), "utf8");
+const editorCss = readFileSync(new URL("../../src/annotation/editor.css", import.meta.url), "utf8");
+const annotationIndex = readFileSync(new URL("../../src/annotation/index.ts", import.meta.url), "utf8");
+const pinCss = readFileSync(new URL("../../src/pin/pin.css", import.meta.url), "utf8");
 
 const TEXT_PAIRS = [
   ["ink", "bg"],
@@ -170,6 +177,40 @@ function assertMinTarget(css, selectors) {
   }
 }
 
+function ruleBodies(css, selector) {
+  const matched = rulesIn(stripComments(css)).filter((rule) => (
+    selectorItems(rule.selector).includes(selector)
+  ));
+  assert.ok(matched.length > 0, `${selector} is missing`);
+  return matched.map((rule) => rule.body).join("\n");
+}
+
+function lastPx(body, property) {
+  const matches = [...body.matchAll(new RegExp(`${property}\\s*:\\s*(\\d+(?:\\.\\d+)?)px`, "g"))];
+  return matches.length === 0 ? null : Number(matches.at(-1)[1]);
+}
+
+function targetFloor(body, minimumProperty, sizeProperty) {
+  const values = [lastPx(body, minimumProperty), lastPx(body, sizeProperty)].filter((value) => value !== null);
+  assert.ok(values.length > 0, `missing ${minimumProperty} or ${sizeProperty}`);
+  return Math.max(...values);
+}
+
+function assertClickTarget(css, selectors) {
+  assert.doesNotMatch(
+    css,
+    /(?:min-width|min-height|width|height)\s*:\s*44px/,
+    "click targets must stay below 44px",
+  );
+  for (const selector of selectors) {
+    const body = ruleBodies(css, selector);
+    const width = targetFloor(body, "min-width", "width");
+    const height = targetFloor(body, "min-height", "height");
+    assert.ok(width >= 24, `${selector} width target is ${width}px`);
+    assert.ok(height >= 24, `${selector} height target is ${height}px`);
+  }
+}
+
 test("contrast helper keeps the WCAG floor meaningful", () => {
   assert.ok(contrast("#000000", "#ffffff") >= 20);
   assert.ok(contrast("#ffffff", "#ffffff") < 1.1);
@@ -230,4 +271,128 @@ test("overlay and tooltip colors come from tokens, and toast text can wrap", () 
   assert.match(toastCss, /white-space:\s*normal/);
   assert.doesNotMatch(toastCss, /white-space:\s*nowrap/);
   assert.doesNotMatch(toastCss, /text-overflow:\s*ellipsis/);
+});
+
+test("overlay and preview keep existing controls on the frame edge", () => {
+  for (const snippet of [
+    'class="overlay-confirm"',
+    'class="overlay-capabilities"',
+    'class="overlay-cancel"',
+    'class="overlay-tools annotation-tools"',
+    'class="window-list"',
+  ]) {
+    assert.ok(overlayIndex.includes(snippet), snippet);
+  }
+  for (const snippet of [
+    'class="preview-close icon-btn"',
+    "data-annotation-toolbar",
+    'data-tool="ocr"',
+    'data-action="copy-ocr-all"',
+    'data-action="pin"',
+    'data-action="update-pin"',
+    'data-action="save"',
+    'data-action="toggle-quality"',
+    'data-action="copy"',
+  ]) {
+    assert.ok(previewIndex.includes(snippet), snippet);
+  }
+  assert.match(
+    annotationIndex,
+    /export const STYLE_COLORS = \["#e11d48", "#2563eb", "#f59e0b", "#10b981", "#111827"\];/,
+  );
+
+  const chrome = ruleBodies(overlayCss, ".overlay-chrome");
+  const tools = ruleBodies(overlayCss, ".overlay-tools");
+  assert.match(chrome, /top:\s*16px/);
+  assert.doesNotMatch(chrome, /top:\s*50%/);
+  assert.match(tools, /bottom:\s*20px/);
+  assert.doesNotMatch(tools, /top:\s*50%/);
+  assert.match(ruleBodies(previewCss, ".preview-toolbar"), /flex:\s*0\s+0\s+auto/);
+  assert.doesNotMatch(ruleBodies(previewCss, ".preview-toolbar"), /position:\s*absolute/);
+  assert.match(ruleBodies(previewCss, ".preview-stage"), /flex:\s*1/);
+  const pinBar = ruleBodies(pinCss, ".pin-toolbar");
+  assert.match(pinBar, /top:\s*6px/);
+  assert.match(pinBar, /right:\s*6px/);
+});
+
+test("selection stroke uses a token plus a halo token beside it", () => {
+  assert.match(overlayCss, /--selection-stroke:\s*var\(\s*--accent\s*\)/);
+  assert.match(overlayCss, /--selection-halo:\s*var\(\s*--focus-gap\s*\)/);
+  assert.match(overlayIndex, /getPropertyValue\(name\)/);
+  assert.match(overlayIndex, /"--selection-stroke"/);
+  assert.match(overlayIndex, /"--selection-halo"/);
+  assert.match(
+    overlayIndex,
+    /strokeRect\(\s*x - lineWidth,\s*y - lineWidth,\s*width \+ lineWidth \* 2,\s*height \+ lineWidth \* 2\s*\)/,
+  );
+  assert.match(overlayIndex, /strokeRect\(\s*x,\s*y,\s*width,\s*height\s*\)/);
+  assert.doesNotMatch(overlayIndex, /#2dd4bf/i);
+  assert.doesNotMatch(overlayIndex, /45\s*,\s*212\s*,\s*191/);
+  const { light, dark } = themesFrom(appCss);
+  for (const [label, tokens] of [["light", light], ["dark", dark]]) {
+    const ratio = contrast(tokens.accent, tokens["focus-gap"]);
+    assert.ok(ratio >= 3, `${label} selection stroke on its halo is ${ratio.toFixed(2)}:1`);
+  }
+});
+
+test("pin toolbar colors come from tokens and the opacity fade stays 120ms", () => {
+  for (const selector of [
+    ".pin-toolbar button",
+    ".pin-toolbar button:hover",
+    ".pin-toolbar .pin-close:hover",
+  ]) {
+    const body = ruleBodies(pinCss, selector);
+    assert.match(body, /var\(\s*--/);
+    assert.doesNotMatch(body, /#[0-9a-f]{3,8}/i);
+    assert.doesNotMatch(body, /rgba?\(/);
+  }
+  assert.match(ruleBodies(pinCss, ".pin-toolbar"), /transition:\s*opacity\s+120ms\s+ease/);
+  assert.doesNotMatch(pinCss, /prefers-reduced-motion[\s\S]*\.pin-toolbar[\s\S]*transition\s*:\s*none/);
+});
+
+test("preview note pulse is at most 200ms, does not scale, and reduced motion stops it", () => {
+  const source = stripComments(previewCss);
+  assert.match(ruleBodies(previewCss, ".preview-note.is-pulse"), /animation:\s*preview-note-pulse\s+200ms\s+ease/);
+  const frames = source.match(/@keyframes\s+preview-note-pulse\s*\{/);
+  assert.ok(frames, "missing preview-note-pulse");
+  const block = blockAt(source, source.indexOf("{", frames.index));
+  assert.doesNotMatch(block.body, /scale\s*\(/);
+  assert.doesNotMatch(block.body, /transform\s*:/);
+  const declared = /preview-note-pulse\s+(\d+(?:\.\d+)?)(ms|s)/.exec(source);
+  assert.ok(declared, "missing preview-note-pulse duration");
+  const duration = Number(declared[1]) * (declared[2] === "s" ? 1000 : 1);
+  assert.ok(duration <= 200, `preview-note-pulse is ${duration}ms`);
+  const media = source.match(/@media\s*\(\s*prefers-reduced-motion:\s*reduce\s*\)/);
+  assert.ok(media, "preview is missing prefers-reduced-motion");
+  const motion = blockAt(source, source.indexOf("{", media.index));
+  assert.match(motion.body, /\.preview-note\.is-pulse/);
+  assert.match(motion.body, /animation\s*:\s*none/);
+});
+
+test("overlay, preview, pin, and annotation click targets are at least 24px", () => {
+  assertClickTarget(overlayCss, [
+    ".overlay-cancel",
+    ".overlay-confirm",
+    ".overlay-capabilities",
+    ".window-item",
+    ".delay-root button",
+    ".error-root button",
+  ]);
+  assertClickTarget(previewCss, [
+    ".preview-close",
+    ".preview-actions button",
+    ".preview-save-caret",
+  ]);
+  assertClickTarget(editorCss, [
+    ".annotation-tools button",
+    ".style-options button",
+    ".style-options button[data-style-color]",
+    ".style-options input[data-style-number-start]",
+    ".annotation-context button",
+  ]);
+  assertClickTarget(pinCss, [
+    ".pin-toolbar button",
+    ".pin-menu button",
+    ".pin-menu-opacity button",
+  ]);
 });

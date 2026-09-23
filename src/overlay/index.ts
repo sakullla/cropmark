@@ -4,6 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   loadAnnotationDefaults,
   mountAnnotationEditor,
+  resolveCanvasColor,
   type AnnotationEditor,
 } from "../annotation";
 import { t, type CatalogKey } from "../i18n";
@@ -59,10 +60,36 @@ const REDUCED_CAPABILITIES: Array<{ nameKey: CatalogKey; detailKey: CatalogKey }
   { nameKey: "overlay.caps.nudge_name", detailKey: "overlay.caps.nudge_detail" },
 ];
 
+const FALLBACK_SELECTION = "#0e6d66";
+const FALLBACK_SELECTION_HALO = "#ffffff";
+const FALLBACK_IDLE_STROKE = "#1c1917";
+
 /// 触发不可用能力时的即时说明:同一事实在面板与按键反馈里保持一致。
 const TOOLBAR_NOTICE_KEY: CatalogKey = "overlay.notice.toolbar";
 const COLOR_NOTICE_KEY: CatalogKey = "overlay.notice.color";
 const NUDGE_NOTICE_KEY: CatalogKey = "overlay.notice.nudge";
+
+function canvasToken(root: HTMLElement, name: string, fallback: string): string {
+  return resolveCanvasColor(getComputedStyle(root).getPropertyValue(name), fallback);
+}
+
+// 选区描边读令牌。晕边与描边等宽并外移一个线宽，两条边刚好相接，对比不靠壁纸像素。
+function strokeWithHalo(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  lineWidth: number,
+  stroke: string,
+  selectionHalo: string,
+): void {
+  ctx.lineWidth = lineWidth;
+  ctx.strokeStyle = selectionHalo;
+  ctx.strokeRect(x - lineWidth, y - lineWidth, width + lineWidth * 2, height + lineWidth * 2);
+  ctx.strokeStyle = stroke;
+  ctx.strokeRect(x, y, width, height);
+}
 
 export function mountOverlay(root: HTMLElement): () => void {
   root.className = "overlay-root";
@@ -297,10 +324,13 @@ export function mountOverlay(root: HTMLElement): () => void {
     ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
     ctx.fillStyle = "rgba(12, 10, 9, 0.48)";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+    const selectionStroke = canvasToken(root, "--selection-stroke", FALLBACK_SELECTION);
+    const selectionHalo = canvasToken(root, "--selection-halo", FALLBACK_SELECTION_HALO);
+    const idleStroke = canvasToken(root, "--ink", FALLBACK_IDLE_STROKE);
     if (frame.mode === "window") {
       // 窗口模式不挖洞(Snipaste 惯例):整帧均匀压暗,冻结帧中缺失的
-      // 后开窗口不再呈现黑洞;悬停窗口画 accent 描边 + 轻微 accent 填充,
-      // 其余候选窗口 1px 浅色描边。
+      // 后开窗口不再呈现黑洞;悬停窗口画令牌描边、紧贴晕边和轻微填充,
+      // 其余候选窗口用正文色描边加同一条晕边。
       for (const listed of frame.windows) {
         const rect = windowRectOnFrame(listed, frame);
         if (!rect) {
@@ -309,20 +339,32 @@ export function mountOverlay(root: HTMLElement): () => void {
         const mapped = toCanvas(rect.x, rect.y, rect.width, rect.height);
         const active = hoverId === listed.id;
         if (active) {
-          ctx.fillStyle = "rgba(45, 212, 191, 0.16)";
+          ctx.save();
+          ctx.globalAlpha = 0.16;
+          ctx.fillStyle = selectionStroke;
           ctx.fillRect(mapped.x, mapped.y, mapped.width, mapped.height);
-          ctx.strokeStyle = "#2dd4bf";
-          ctx.lineWidth = 2.5;
-          ctx.strokeRect(
+          ctx.restore();
+          strokeWithHalo(
+            ctx,
             mapped.x + 1.25,
             mapped.y + 1.25,
             mapped.width - 2.5,
             mapped.height - 2.5,
+            2.5,
+            selectionStroke,
+            selectionHalo,
           );
         } else {
-          ctx.strokeStyle = "rgba(245, 240, 232, 0.55)";
-          ctx.lineWidth = 1;
-          ctx.strokeRect(mapped.x + 0.5, mapped.y + 0.5, mapped.width - 1, mapped.height - 1);
+          strokeWithHalo(
+            ctx,
+            mapped.x + 0.5,
+            mapped.y + 0.5,
+            mapped.width - 1,
+            mapped.height - 1,
+            1,
+            idleStroke,
+            selectionHalo,
+          );
         }
       }
       return;
@@ -372,9 +414,16 @@ export function mountOverlay(root: HTMLElement): () => void {
         );
       }
     }
-    ctx.strokeStyle = "#2dd4bf";
-    ctx.lineWidth = 2;
-    ctx.strokeRect(mapped.x + 1, mapped.y + 1, mapped.width - 2, mapped.height - 2);
+    strokeWithHalo(
+      ctx,
+      mapped.x + 1,
+      mapped.y + 1,
+      mapped.width - 2,
+      mapped.height - 2,
+      2,
+      selectionStroke,
+      selectionHalo,
+    );
     badge.hidden = false;
     badge.textContent = `${crop.width} × ${crop.height}`;
     const rect = canvas.getBoundingClientRect();
