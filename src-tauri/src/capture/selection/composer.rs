@@ -1,11 +1,11 @@
-//! 平台无关的选区像素合成器。
+//! 选区像素合成器。
 //!
 //! 在冻结帧(`capture::buffer::Frame`)的 RGBA 位图上合成:暗幕+选区开洞、
-//! 青绿描边、白芯青绿环手柄、亮铬尺寸徽标、放大镜(原始帧全分辨率采样 +
+//! 跟随系统明暗的强调色描边、白芯青绿环手柄、亮铬尺寸徽标、放大镜(原始帧全分辨率采样 +
 //! 十字准星 + 单行色值读数)、单条统一横条(主行工具/动作 + 「更多」展开
 //! 面板)与右键菜单。所有浮层 UI 统一亮暖白底深墨字(亮铬体系),在暗色
 //! scrim 与暗桌面上保持可读。布局/hitbox 函数是纯几何,状态机与绘制共用
-//! 同一份,保证命中判定与合成输出一致。不含任何窗口/平台代码。
+//! 同一份,保证命中判定与合成输出一致。不含窗口代码;系统明暗只决定选区描边。
 
 use std::cell::RefCell;
 
@@ -22,9 +22,12 @@ use crate::i18n;
 
 // ---- 配色单一 authority:亮铬浮层体系(暗 scrim 上的亮面板)。----
 
-/// 青绿强调色 #2dd4bf(选区描边/手柄环/十字准星),与现 Windows 原生路径 BGRA
-/// [0xBF,0xD4,0x2D] 同色。
+/// 亮铬按钮填充 #2dd4bf(复制按钮/手柄环/十字准星)。选区描边不使用此色。
 pub const ACCENT: [u8; 4] = [0x2D, 0xD4, 0xBF, 255];
+/// 选区描边浅色,与网页 `--accent` 相同(#1d4ed8)。系统配色不可用时用此值。
+const ACCENT_LIGHT: [u8; 4] = [0x1D, 0x4E, 0xD8, 255];
+/// 选区描边深色,与网页暗色 `--accent` 相同(#93c5fd)。
+const ACCENT_DARK: [u8; 4] = [0x93, 0xC5, 0xFD, 255];
 /// 深青绿 #0f766e:亮铬上的激活/hover 文字与强调。
 const ACCENT_DEEP: [u8; 4] = [0x0F, 0x76, 0x6E, 255];
 /// 图标字形白色(accent 填充按钮上的纯图标)。
@@ -1720,23 +1723,164 @@ fn punch_hole(
     restore_rect(rgba, original, stride_px, hole);
 }
 
-/// 选区描边:青绿 2px。
+/// 选区描边:与网页 `--accent` 同一对浅色/深色值,2px。
 fn outline_selection(rgba: &mut [u8], w: u32, h: u32, rect: PhysicalRect) {
+    let color = selection_accent();
     let x0 = rect.x as i32;
     let y0 = rect.y as i32;
     let x1 = x0 + rect.width as i32 - 1;
     let y1 = y0 + rect.height as i32 - 1;
     for x in x0..=x1 {
-        put(rgba, w, h, x, y0, ACCENT);
-        put(rgba, w, h, x, (y0 + 1).min(y1), ACCENT);
-        put(rgba, w, h, x, y1, ACCENT);
-        put(rgba, w, h, x, (y1 - 1).max(y0), ACCENT);
+        put(rgba, w, h, x, y0, color);
+        put(rgba, w, h, x, (y0 + 1).min(y1), color);
+        put(rgba, w, h, x, y1, color);
+        put(rgba, w, h, x, (y1 - 1).max(y0), color);
     }
     for y in y0..=y1 {
-        put(rgba, w, h, x0, y, ACCENT);
-        put(rgba, w, h, (x0 + 1).min(x1), y, ACCENT);
-        put(rgba, w, h, x1, y, ACCENT);
-        put(rgba, w, h, (x1 - 1).max(x0), y, ACCENT);
+        put(rgba, w, h, x0, y, color);
+        put(rgba, w, h, (x0 + 1).min(x1), y, color);
+        put(rgba, w, h, x1, y, color);
+        put(rgba, w, h, (x1 - 1).max(x0), y, color);
+    }
+}
+
+fn accent_for_scheme(prefers_dark: Option<bool>) -> [u8; 4] {
+    if prefers_dark == Some(true) {
+        ACCENT_DARK
+    } else {
+        ACCENT_LIGHT
+    }
+}
+
+fn selection_accent() -> [u8; 4] {
+    accent_for_scheme(system_prefers_dark())
+}
+
+/// 系统应用配色。读不到时返回 `None`,描边改用浅色强调色。
+fn system_prefers_dark() -> Option<bool> {
+    #[cfg(windows)]
+    {
+        return windows_prefers_dark();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return macos_prefers_dark();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        return linux_prefers_dark();
+    }
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+    {
+        None
+    }
+}
+
+#[cfg(windows)]
+fn windows_prefers_dark() -> Option<bool> {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let key = hkcu
+        .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
+        .ok()?;
+    let light: u32 = key.get_value("AppsUseLightTheme").ok()?;
+    Some(light == 0)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_prefers_dark() -> Option<bool> {
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject};
+    use objc2_foundation::NSString;
+    unsafe {
+        let cls = AnyClass::get(c"NSUserDefaults")?;
+        let defaults: *mut AnyObject = msg_send![cls, standardUserDefaults];
+        if defaults.is_null() {
+            return None;
+        }
+        let key = NSString::from_str("AppleInterfaceStyle");
+        let value: *mut AnyObject = msg_send![defaults, stringForKey: &*key];
+        if value.is_null() {
+            return Some(false);
+        }
+        let dark = NSString::from_str("Dark");
+        let is_dark: bool = msg_send![value, isEqualToString: &*dark];
+        Some(is_dark)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_prefers_dark() -> Option<bool> {
+    if let Some(theme) = std::env::var_os("GTK_THEME") {
+        let name = theme.to_string_lossy().to_ascii_lowercase();
+        if name.contains("dark") {
+            return Some(true);
+        }
+    }
+    if let Some(prefer) = gtk_application_prefer_dark() {
+        return Some(prefer);
+    }
+    cached_gnome_color_scheme()
+}
+
+#[cfg(target_os = "linux")]
+fn gtk_application_prefer_dark() -> Option<bool> {
+    let config = match std::env::var_os("XDG_CONFIG_HOME") {
+        Some(dir) => std::path::PathBuf::from(dir),
+        None => std::path::PathBuf::from(std::env::var_os("HOME")?).join(".config"),
+    };
+    for rel in ["gtk-4.0/settings.ini", "gtk-3.0/settings.ini"] {
+        let Ok(text) = std::fs::read_to_string(config.join(rel)) else {
+            continue;
+        };
+        for line in text.lines() {
+            let line = line.trim();
+            let Some(rest) = line
+                .strip_prefix("gtk-application-prefer-dark")
+                .map(str::trim)
+                .and_then(|s| s.strip_prefix('=').map(str::trim))
+            else {
+                continue;
+            };
+            return Some(rest == "1" || rest.eq_ignore_ascii_case("true"));
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn cached_gnome_color_scheme() -> Option<bool> {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    static CACHE: Mutex<Option<(Instant, Option<bool>)>> = Mutex::new(None);
+    let mut guard = CACHE.lock().ok()?;
+    if let Some((at, value)) = *guard {
+        if at.elapsed() < Duration::from_millis(500) {
+            return value;
+        }
+    }
+    let value = gnome_color_scheme();
+    *guard = Some((Instant::now(), value));
+    value
+}
+
+#[cfg(target_os = "linux")]
+fn gnome_color_scheme() -> Option<bool> {
+    let output = std::process::Command::new("gsettings")
+        .args(["get", "org.gnome.desktop.interface", "color-scheme"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    if text.contains("prefer-dark") {
+        Some(true)
+    } else if text.contains("prefer-light") || text.contains("default") {
+        Some(false)
+    } else {
+        None
     }
 }
 
@@ -2029,7 +2173,8 @@ mod tests {
         assert_eq!(read(&composed, 200, 400), [225, 29, 72]);
 
         // 1) 描边与手柄:第一条标注产生后仍在最上层。
-        assert_eq!(read(&composed, 41, 300), [ACCENT[0], ACCENT[1], ACCENT[2]]);
+        let stroke = selection_accent();
+        assert_eq!(read(&composed, 41, 300), [stroke[0], stroke[1], stroke[2]]);
         let (hx, hy) = handle_anchor(selection, HandleKind::SouthEast);
         assert_eq!(read(&composed, hx, hy), [255, 255, 255]);
         assert_eq!(
@@ -2452,8 +2597,7 @@ mod tests {
             width: 300,
             height: 100,
         };
-        let toolbar =
-            unified_toolbar(metrics, lower, (1280, 800), flags, true).expect("toolbar");
+        let toolbar = unified_toolbar(metrics, lower, (1280, 800), flags, true).expect("toolbar");
         assert_eq!(
             toolbar.panel.y,
             lower.y as i32 + lower.height as i32 + BAR_MARGIN
@@ -2465,8 +2609,7 @@ mod tests {
             width: 300,
             height: 100,
         };
-        let toolbar =
-            unified_toolbar(metrics, upper, (1280, 800), flags, true).expect("toolbar");
+        let toolbar = unified_toolbar(metrics, upper, (1280, 800), flags, true).expect("toolbar");
         assert_eq!(
             toolbar.panel.y,
             upper.y as i32 + upper.height as i32 + BAR_MARGIN
@@ -2478,8 +2621,7 @@ mod tests {
             width: 300,
             height: 50,
         };
-        let toolbar =
-            unified_toolbar(metrics, bottom, (1280, 800), flags, true).expect("toolbar");
+        let toolbar = unified_toolbar(metrics, bottom, (1280, 800), flags, true).expect("toolbar");
         assert_eq!(toolbar.panel.bottom(), bottom.y as i32 - BAR_MARGIN);
         // 竖直都不行 → 水平侧按剩余空间大者优先(右侧空间大)。
         let tall = PhysicalRect {
@@ -2587,6 +2729,19 @@ mod tests {
     /// 1.0 基准 metrics:既有固定几何断言按原值保留。
     fn metrics_1() -> ChromeMetrics {
         ChromeMetrics::for_scale(1.0)
+    }
+
+    #[test]
+    fn selection_stroke_uses_web_accent_pair_and_light_fallback() {
+        assert_eq!(accent_for_scheme(None), ACCENT_LIGHT);
+        assert_eq!(accent_for_scheme(Some(false)), ACCENT_LIGHT);
+        assert_eq!(accent_for_scheme(Some(true)), ACCENT_DARK);
+        assert_eq!(ACCENT_LIGHT, [0x1D, 0x4E, 0xD8, 255]);
+        assert_eq!(ACCENT_DARK, [0x93, 0xC5, 0xFD, 255]);
+        assert_ne!(ACCENT_LIGHT, ACCENT);
+        assert_ne!(ACCENT_DARK, ACCENT);
+        let live = selection_accent();
+        assert!(live == ACCENT_LIGHT || live == ACCENT_DARK);
     }
 
     #[test]
@@ -3255,8 +3410,9 @@ mod tests {
             probe[0] > 220 && probe[1] > 215 && probe[2] > 205,
             "toolbar panel should be bright chrome, got {probe:?}"
         );
-        // 描边:选区左边框(避开手柄)为强调色。
-        assert_eq!(read(41, 90), [ACCENT[0], ACCENT[1], ACCENT[2]]);
+        // 描边:选区左边框(避开手柄)为与网页相同的明暗强调色。
+        let stroke = selection_accent();
+        assert_eq!(read(41, 90), [stroke[0], stroke[1], stroke[2]]);
     }
 
     #[test]
@@ -3338,7 +3494,10 @@ mod tests {
             (320, 200),
         )
         .expect("tooltip fits");
-        assert!(tip.bottom() <= anchor.y, "tooltip should stay above the toolbar: {tip:?}");
+        assert!(
+            tip.bottom() <= anchor.y,
+            "tooltip should stay above the toolbar: {tip:?}"
+        );
         let bright_in = |buf: &[u8], region: IntRect| {
             let mut n = 0usize;
             for y in region.y.max(0)..region.bottom().min(200) {
