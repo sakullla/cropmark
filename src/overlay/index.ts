@@ -650,19 +650,30 @@ export function mountOverlay(root: HTMLElement): () => void {
     }
     editor?.commitText();
     finishing = true;
+    let yielded = false;
     try {
+      // 对话框挂在隐藏的预览窗上。先摘掉浮层置顶并让预览窗取得焦点,
+      // 否则对话框停在全屏浮层后面,saving 标志一直为真。
+      await invoke("prepare_workspace_save_dialog");
+      yielded = true;
       const result = await invoke<{ saved: boolean; path?: string | null }>("save_preview_png", {
         annotations: currentAnnotations(),
       });
       if (!result.saved) {
+        await invoke("restore_workspace_after_save_dialog");
+        yielded = false;
         finishing = false;
+        showNotice(t("overlay.notice.save_cancelled"));
         return;
       }
       const name = fileNameFromPath(result.path) ?? "cropmark";
       await afterExport("save", name);
     } catch (error) {
+      if (yielded) {
+        await invoke("restore_workspace_after_save_dialog").catch(() => undefined);
+      }
       finishing = false;
-      showNotice(invokeError(error, t("preview.error.save_fallback")));
+      showNotice(invokeError(error, t("overlay.error.save_fallback")));
     }
   };
 

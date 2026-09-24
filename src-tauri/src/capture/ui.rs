@@ -453,6 +453,86 @@ fn toast_origin(area: Option<(f64, f64, f64, f64)>, width: f64, height: f64) -> 
     }
 }
 
+/// 浮层保存对话框的窗口安排。`save_preview_png` 把对话框挂在预览窗上;
+/// 全屏置顶浮层会把它压住,所以打开前必须让出浮层并让预览窗拿到焦点。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkspaceSaveDialogWindows {
+    pub overlay_always_on_top: bool,
+    pub overlay_visible: bool,
+    pub preview_visible: bool,
+    /// `preview`、`overlay`,或成功收尾时的 `none`。
+    pub focus: &'static str,
+}
+
+/// 打开保存对话框之前:摘掉浮层置顶并藏起它,显示对话框的父窗口(预览)并给焦点。
+pub fn workspace_save_dialog_yield() -> WorkspaceSaveDialogWindows {
+    WorkspaceSaveDialogWindows {
+        overlay_always_on_top: false,
+        overlay_visible: false,
+        preview_visible: true,
+        focus: "preview",
+    }
+}
+
+/// 取消或失败:藏起临时露出的预览窗,把浮层放回置顶并交还焦点。不改位置与大小。
+pub fn workspace_save_dialog_restore() -> WorkspaceSaveDialogWindows {
+    WorkspaceSaveDialogWindows {
+        overlay_always_on_top: true,
+        overlay_visible: true,
+        preview_visible: false,
+        focus: "overlay",
+    }
+}
+
+pub fn yield_overlay_for_save_dialog(app: &AppHandle) {
+    apply_workspace_save_dialog_windows(app, workspace_save_dialog_yield());
+}
+
+pub fn restore_overlay_after_save_dialog(app: &AppHandle) {
+    apply_workspace_save_dialog_windows(app, workspace_save_dialog_restore());
+}
+
+fn apply_workspace_save_dialog_windows(app: &AppHandle, plan: WorkspaceSaveDialogWindows) {
+    let overlay = app.get_webview_window(OVERLAY);
+    let preview = app.get_webview_window(PREVIEW);
+    if let Some(window) = overlay.as_ref() {
+        let _ = window.set_always_on_top(plan.overlay_always_on_top);
+        let _ = window.set_ignore_cursor_events(false);
+        if plan.overlay_visible {
+            let _ = window.show();
+        } else {
+            // 只 hide,不挪到屏外:取消后 show 仍盖住原来的显示器。
+            let _ = window.hide();
+        }
+    }
+    if let Some(window) = preview.as_ref() {
+        if plan.preview_visible {
+            let _ = window.set_always_on_top(false);
+            let _ = window.show();
+        } else {
+            let _ = window.set_always_on_top(false);
+            let _ = window.hide();
+        }
+    }
+    match plan.focus {
+        "preview" => {
+            if let Some(window) = preview.as_ref() {
+                let _ = window.set_focus();
+                #[cfg(windows)]
+                force_foreground(window);
+            }
+        }
+        "overlay" => {
+            if let Some(window) = overlay.as_ref() {
+                let _ = window.set_focus();
+                #[cfg(windows)]
+                force_foreground(window);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// 预览先置顶抬到前台拿到焦点,再取消 always-on-top。
 /// 这样用户能看见结果,也能切到其它应用;覆盖层在焦点到手后再停放,
 /// 避免 hide overlay 把前台让给资源管理器后预览点不了按钮。
@@ -805,6 +885,21 @@ mod tests {
         assert_eq!((x, y), (24.0, 24.0));
         let (x, y) = toast_origin(None, TOAST_WIDTH, TOAST_HEIGHT);
         assert_eq!((x, y), (24.0, 24.0));
+    }
+
+    #[test]
+    fn workspace_save_dialog_yields_preview_and_restores_overlay() {
+        let yield_plan = workspace_save_dialog_yield();
+        assert!(!yield_plan.overlay_always_on_top);
+        assert!(!yield_plan.overlay_visible);
+        assert!(yield_plan.preview_visible);
+        assert_eq!(yield_plan.focus, "preview");
+
+        let restore = workspace_save_dialog_restore();
+        assert!(restore.overlay_always_on_top);
+        assert!(restore.overlay_visible);
+        assert!(!restore.preview_visible);
+        assert_eq!(restore.focus, "overlay");
     }
 
     #[test]

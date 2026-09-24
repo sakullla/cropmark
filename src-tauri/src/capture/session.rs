@@ -1625,6 +1625,8 @@ pub fn complete_workspace(
     name: Option<&str>,
 ) -> Result<(), CaptureError> {
     let frame = workspace_frame(app)?;
+    // 保存对话框会临时露出预览窗;成功离开时把它和浮层一起收起。
+    ui::hide_window(app, ui::PREVIEW);
     ui::hide_window(app, ui::OVERLAY);
     crate::history::record_capture(app, frame);
     crate::pin::restore_after_capture(app);

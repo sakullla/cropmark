@@ -74,7 +74,10 @@ fn write_export(
     std::fs::write(path, bytes).map_err(|error| {
         i18n::tp(
             "error.capture.save_to_path",
-            &[("path", &path.display().to_string()), ("error", &error.to_string())],
+            &[
+                ("path", &path.display().to_string()),
+                ("error", &error.to_string()),
+            ],
         )
     })
 }
@@ -187,7 +190,10 @@ pub async fn save_frame_with_dialog(
 ) -> Result<SaveResult, String> {
     let fallback = export.last_format;
     let mut dialog = rfd::AsyncFileDialog::new()
-        .add_filter(i18n::t("dialog.images_filter"), &["png", "jpg", "jpeg", "webp"])
+        .add_filter(
+            i18n::t("dialog.images_filter"),
+            &["png", "jpg", "jpeg", "webp"],
+        )
         .set_file_name(default_capture_file_name(fallback.extension()))
         .set_title(i18n::t("dialog.save_capture_title"));
     if let Some(directory) = export.existing_directory() {

@@ -187,6 +187,8 @@ pub fn run() {
             capture::confirm_logical_region,
             capture::confirm_window,
             capture::finish_region_with,
+            capture::prepare_workspace_save_dialog,
+            capture::restore_workspace_after_save_dialog,
             capture::complete_workspace,
             capture::edit_workspace_further,
             capture::fallback_workspace_preview,

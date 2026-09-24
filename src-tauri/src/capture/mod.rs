@@ -203,6 +203,18 @@ pub fn precreate_windows(app: &AppHandle) {
     crate::pin::precreate(app);
 }
 
+/// 浮层保存前:摘掉全屏置顶,让保存对话框的父窗口(预览)拿到焦点。
+#[tauri::command]
+pub fn prepare_workspace_save_dialog(app: AppHandle) {
+    ui::yield_overlay_for_save_dialog(&app);
+}
+
+/// 保存取消或失败:藏起临时预览窗,把浮层放回置顶。不重载页面,标注还在。
+#[tauri::command]
+pub fn restore_workspace_after_save_dialog(app: AppHandle) {
+    ui::restore_overlay_after_save_dialog(&app);
+}
+
 #[tauri::command]
 pub fn complete_workspace(
     app: AppHandle,

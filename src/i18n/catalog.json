@@ -1415,6 +1415,10 @@
     "zh-CN": "浮层无法提供标注、复制、保存、贴图或取字，已打开预览继续处理。",
     "en": "This overlay cannot annotate, copy, save, pin, or extract text. Preview is open so you can continue."
   },
+  "overlay.notice.save_cancelled": {
+    "zh-CN": "已取消保存。截图仍在，可继续复制、贴图或再试。",
+    "en": "Save cancelled. The screenshot is still here; copy, pin, or try again."
+  },
   "overlay.action.copy": {
     "zh-CN": "复制",
     "en": "Copy"
@@ -1494,6 +1498,10 @@
   "overlay.error.capture_failed": {
     "zh-CN": "截取失败。",
     "en": "Capture failed."
+  },
+  "overlay.error.save_fallback": {
+    "zh-CN": "无法保存图片。截图仍在，可继续操作。",
+    "en": "Could not save the image. The screenshot is still here."
   },
   "delay.preparing": {
     "zh-CN": "准备截取",
