@@ -28,6 +28,10 @@ pub const ACCENT: [u8; 4] = [0x2D, 0xD4, 0xBF, 255];
 const ACCENT_LIGHT: [u8; 4] = [0x1D, 0x4E, 0xD8, 255];
 /// 选区描边深色,与网页暗色 `--accent` 相同(#93c5fd)。
 const ACCENT_DARK: [u8; 4] = [0x93, 0xC5, 0xFD, 255];
+/// 选区晕边浅色,与网页 `--focus-gap` 相同(#ffffff)。
+const HALO_LIGHT: [u8; 4] = [255, 255, 255, 255];
+/// 选区晕边深色,与网页暗色 `--focus-gap` 相同(#12161c)。
+const HALO_DARK: [u8; 4] = [0x12, 0x16, 0x1C, 255];
 /// 深青绿 #0f766e:亮铬上的激活/hover 文字与强调。
 const ACCENT_DEEP: [u8; 4] = [0x0F, 0x76, 0x6E, 255];
 /// 图标字形白色(accent 填充按钮上的纯图标)。
@@ -1723,24 +1727,63 @@ fn punch_hole(
     restore_rect(rgba, original, stride_px, hole);
 }
 
-/// 选区描边:与网页 `--accent` 同一对浅色/深色值,2px。
+/// 选区描边:先画选区外 2px 对比晕边,再画贴边的 2px `--accent`。
+/// 晕边与强调色等宽且外移一个线宽,两条边相接,对比不靠壁纸像素。
 fn outline_selection(rgba: &mut [u8], w: u32, h: u32, rect: PhysicalRect) {
-    let color = selection_accent();
+    let scheme = system_prefers_dark();
     let x0 = rect.x as i32;
     let y0 = rect.y as i32;
     let x1 = x0 + rect.width as i32 - 1;
     let y1 = y0 + rect.height as i32 - 1;
-    for x in x0..=x1 {
-        put(rgba, w, h, x, y0, color);
-        put(rgba, w, h, x, (y0 + 1).min(y1), color);
-        put(rgba, w, h, x, y1, color);
-        put(rgba, w, h, x, (y1 - 1).max(y0), color);
+    paint_outline_band(
+        rgba,
+        w,
+        h,
+        x0 - 2,
+        y0 - 2,
+        x1 + 2,
+        y1 + 2,
+        2,
+        halo_for_scheme(scheme),
+    );
+    paint_outline_band(rgba, w, h, x0, y0, x1, y1, 2, accent_for_scheme(scheme));
+}
+
+/// 矩形外圈 `thickness` 像素(向内),越界像素由 `put` 丢弃。
+fn paint_outline_band(
+    rgba: &mut [u8],
+    w: u32,
+    h: u32,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    thickness: i32,
+    color: [u8; 4],
+) {
+    if thickness <= 0 || x1 < x0 || y1 < y0 {
+        return;
     }
-    for y in y0..=y1 {
-        put(rgba, w, h, x0, y, color);
-        put(rgba, w, h, (x0 + 1).min(x1), y, color);
-        put(rgba, w, h, x1, y, color);
-        put(rgba, w, h, (x1 - 1).max(x0), y, color);
+    for t in 0..thickness {
+        let left = x0 + t;
+        let right = x1 - t;
+        let top = y0 + t;
+        let bottom = y1 - t;
+        if left > right || top > bottom {
+            break;
+        }
+        for x in left..=right {
+            put(rgba, w, h, x, top, color);
+            if bottom != top {
+                put(rgba, w, h, x, bottom, color);
+            }
+        }
+        for y in (top + 1)..bottom {
+            put(rgba, w, h, left, y, color);
+            if right != left {
+                put(rgba, w, h, right, y, color);
+            }
+        }
     }
 }
 
@@ -1749,6 +1792,29 @@ fn accent_for_scheme(prefers_dark: Option<bool>) -> [u8; 4] {
         ACCENT_DARK
     } else {
         ACCENT_LIGHT
+    }
+}
+
+fn halo_for_scheme(prefers_dark: Option<bool>) -> [u8; 4] {
+    if prefers_dark == Some(true) {
+        HALO_DARK
+    } else {
+        HALO_LIGHT
+    }
+}
+
+/// GTK 主题名含 dark,或 `gtk-application-prefer-dark` 为 true,才强制深色。
+/// 该键为 0/false 只表示不强制深色,继续采用 `gnome_scheme`(读不到则为 `None`)。
+#[cfg(any(test, target_os = "linux"))]
+fn linux_scheme(
+    gtk_theme_names_dark: bool,
+    gtk_prefer_dark: Option<bool>,
+    gnome_scheme: Option<bool>,
+) -> Option<bool> {
+    if gtk_theme_names_dark || gtk_prefer_dark == Some(true) {
+        Some(true)
+    } else {
+        gnome_scheme
     }
 }
 
@@ -1812,16 +1878,19 @@ fn macos_prefers_dark() -> Option<bool> {
 
 #[cfg(target_os = "linux")]
 fn linux_prefers_dark() -> Option<bool> {
-    if let Some(theme) = std::env::var_os("GTK_THEME") {
-        let name = theme.to_string_lossy().to_ascii_lowercase();
-        if name.contains("dark") {
-            return Some(true);
-        }
-    }
-    if let Some(prefer) = gtk_application_prefer_dark() {
-        return Some(prefer);
-    }
-    cached_gnome_color_scheme()
+    let theme_dark = std::env::var_os("GTK_THEME").is_some_and(|theme| {
+        theme
+            .to_string_lossy()
+            .to_ascii_lowercase()
+            .contains("dark")
+    });
+    let prefer = gtk_application_prefer_dark();
+    let gnome = if theme_dark || prefer == Some(true) {
+        None
+    } else {
+        cached_gnome_color_scheme()
+    };
+    linux_scheme(theme_dark, prefer, gnome)
 }
 
 #[cfg(target_os = "linux")]
@@ -2742,6 +2811,58 @@ mod tests {
         assert_ne!(ACCENT_DARK, ACCENT);
         let live = selection_accent();
         assert!(live == ACCENT_LIGHT || live == ACCENT_DARK);
+        assert_eq!(halo_for_scheme(None), HALO_LIGHT);
+        assert_eq!(halo_for_scheme(Some(false)), HALO_LIGHT);
+        assert_eq!(halo_for_scheme(Some(true)), HALO_DARK);
+        assert_eq!(HALO_LIGHT, [255, 255, 255, 255]);
+        assert_eq!(HALO_DARK, [0x12, 0x16, 0x1C, 255]);
+    }
+
+    #[test]
+    fn selection_outline_draws_contrasting_halo_outside_accent() {
+        let frame = solid_frame(160, 120, [10, 200, 90, 255]);
+        let composer = Composer::new(&frame).unwrap();
+        let selection = PhysicalRect {
+            x: 40,
+            y: 30,
+            width: 80,
+            height: 50,
+        };
+        let scene = Scene {
+            selection: Some(selection),
+            cursor: (0, 0),
+            flags: no_magnifier_flags(),
+            toolbar_visible: false,
+            menu_open: false,
+            menu_anchor: (0, 0),
+            more_open: false,
+        };
+        let composed = composer.compose(&scene);
+        let read = |x: i32, y: i32| {
+            let i = ((y as u32 * 160 + x as u32) * 4) as usize;
+            [composed[i], composed[i + 1], composed[i + 2], composed[i + 3]]
+        };
+        let scheme = system_prefers_dark();
+        let accent = accent_for_scheme(scheme);
+        let halo = halo_for_scheme(scheme);
+        let dimmed = [5u8, 104, 46, 255];
+        // 左边避开角点与中点手柄:选区外 2px 晕边,贴边 2px 强调色,再往外仍是暗幕。
+        assert_eq!(read(38, 45), halo);
+        assert_eq!(read(39, 45), halo);
+        assert_eq!(read(40, 45), accent);
+        assert_eq!(read(41, 45), accent);
+        assert_eq!(read(37, 45), dimmed);
+        assert_eq!(read(50, 45), [10, 200, 90, 255]);
+    }
+
+    #[test]
+    fn gtk_prefer_dark_false_continues_to_color_scheme() {
+        assert_eq!(linux_scheme(false, Some(false), Some(true)), Some(true));
+        assert_eq!(linux_scheme(false, None, Some(true)), Some(true));
+        assert_eq!(linux_scheme(false, Some(false), Some(false)), Some(false));
+        assert_eq!(linux_scheme(false, None, None), None);
+        assert_eq!(linux_scheme(false, Some(true), Some(false)), Some(true));
+        assert_eq!(linux_scheme(true, Some(false), None), Some(true));
     }
 
     #[test]
