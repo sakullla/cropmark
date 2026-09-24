@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::{
-    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition, Position, Size, WebviewUrl,
-    WebviewWindow, WebviewWindowBuilder,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition, Position, Size,
+    WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 
 use super::buffer::{fit_display, Frame};
@@ -72,13 +72,36 @@ pub struct ToastPayload {
 pub struct OverlayCapabilities {
     /// 选区即时标注:关闭后覆盖层不提供标注入口。
     pub inline_annotation: bool,
+    /// 网页浮层能否挂上复制/保存/贴图/取字/进一步编辑。能挂上时为 true。
+    pub workspace_actions: bool,
+    pub copy: bool,
+    pub save: bool,
+    pub pin: bool,
+    pub ocr: bool,
 }
 
 impl OverlayCapabilities {
-    /// 从功能设置取覆盖层能力子集;后续覆盖层能力在此扩展。
+    /// 从功能设置取覆盖层能力子集。网页浮层可以挂这些动作。
     pub fn from_features(features: crate::settings::FeatureSettings) -> Self {
         Self {
             inline_annotation: features.inline_annotation,
+            workspace_actions: true,
+            copy: features.toolbar_copy,
+            save: features.toolbar_save,
+            pin: features.pin_entry && features.toolbar_pin,
+            ocr: features.ocr_entry,
+        }
+    }
+
+    /// 浮层确实挂不上工作区动作时的能力说明(R8)。
+    pub fn unhosted() -> Self {
+        Self {
+            inline_annotation: false,
+            workspace_actions: false,
+            copy: false,
+            save: false,
+            pin: false,
+            ocr: false,
         }
     }
 }
@@ -99,6 +122,12 @@ pub struct OverlayPayload {
     /// R24:能力子集;旧前端忽略未知字段不受影响。
     pub capabilities: OverlayCapabilities,
     pub windows: Vec<ListedWindow>,
+    /// 画面已定:不再框选或点窗,浮层即工作区。
+    pub fixed: bool,
+    /// 进入工作区时已有的标注(相对当前画面)。
+    pub annotations: Vec<Annotation>,
+    /// 壳上的取字动作:工作区打开后开始取字,不因此关闭浮层。
+    pub pending_ocr: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -211,6 +240,9 @@ pub fn overlay_payload(
         reduced_capabilities,
         capabilities,
         windows,
+        fixed: false,
+        annotations: Vec::new(),
+        pending_ocr: false,
     })
 }
 
@@ -298,8 +330,16 @@ pub fn open_delay(app: &AppHandle, delay_ms: u64) -> Result<WebviewWindow, Captu
         .visible(true)
         .center()
         .build()
-        .map_err(|error| CaptureError::api_detail("error.capture.window_build", &error.to_string()))?;
-    let _ = window.emit("capture-delay", DelayPayload { delay_ms, mode: CaptureMode::Region });
+        .map_err(|error| {
+            CaptureError::api_detail("error.capture.window_build", &error.to_string())
+        })?;
+    let _ = window.emit(
+        "capture-delay",
+        DelayPayload {
+            delay_ms,
+            mode: CaptureMode::Region,
+        },
+    );
     Ok(window)
 }
 
@@ -326,12 +366,23 @@ pub fn toast_message() -> Option<String> {
 /// Transient result feedback: one borderless topmost window, replaced on every
 /// call, auto-closed after ~2s. Never steals focus.
 pub fn show_toast(app: &AppHandle, message: &str) {
-    show_toast_source(app, ToastSource::Text(message.to_string()), Some(TOAST_DURATION));
+    show_toast_source(
+        app,
+        ToastSource::Text(message.to_string()),
+        Some(TOAST_DURATION),
+    );
 }
 
 /// 词条键形式的结果反馈:语言切换后重拉 toast 时按新语言解析。
 pub fn show_toast_key(app: &AppHandle, key: &str) {
-    show_toast_source(app, ToastSource::Key { key: key.into(), params: Vec::new() }, Some(TOAST_DURATION));
+    show_toast_source(
+        app,
+        ToastSource::Key {
+            key: key.into(),
+            params: Vec::new(),
+        },
+        Some(TOAST_DURATION),
+    );
 }
 
 /// 带 `{name}` 占位符参数的词条 toast。
@@ -352,7 +403,14 @@ pub fn show_toast_key_params(app: &AppHandle, key: &str, params: &[(&str, &str)]
 /// 词条键形式的进行中提示(不自动消失):静默取字首次加载模型时保持可见,
 /// 直到结果到达被下一条 toast 替换(R11)。
 pub fn show_progress_toast_key(app: &AppHandle, key: &str) {
-    show_toast_source(app, ToastSource::Key { key: key.into(), params: Vec::new() }, None);
+    show_toast_source(
+        app,
+        ToastSource::Key {
+            key: key.into(),
+            params: Vec::new(),
+        },
+        None,
+    );
 }
 
 fn show_toast_source(app: &AppHandle, source: ToastSource, auto_hide: Option<Duration>) {
@@ -531,7 +589,11 @@ fn target_work_area(app: &AppHandle) -> Option<(f64, f64, f64, f64)> {
     let monitor = app
         .cursor_position()
         .ok()
-        .and_then(|position| app.monitor_from_point(position.x, position.y).ok().flatten())
+        .and_then(|position| {
+            app.monitor_from_point(position.x, position.y)
+                .ok()
+                .flatten()
+        })
         .or_else(|| app.primary_monitor().ok().flatten())?;
     let area = monitor.work_area();
     let scale = monitor.scale_factor().max(f64::EPSILON);
@@ -579,13 +641,30 @@ mod tests {
 
     #[test]
     fn binary_preview_preserves_native_size_scale_and_original_png() {
-        let frame = Frame { width: 2, height: 1, rgba: vec![1, 2, 3, 255, 4, 5, 6, 128], scale: 1.5 };
+        let frame = Frame {
+            width: 2,
+            height: 1,
+            rgba: vec![1, 2, 3, 255, 4, 5, 6, 128],
+            scale: 1.5,
+        };
         let png = crate::capture::buffer::encode_png(&frame).unwrap();
         let payload = preview_payload(&frame, &png, PreviewCopyState::Copied, &[]);
-        assert_eq!(u32::from_le_bytes(payload.bytes[0..4].try_into().unwrap()), 2);
-        assert_eq!(u32::from_le_bytes(payload.bytes[4..8].try_into().unwrap()), 1);
-        assert_eq!(f64::from_le_bytes(payload.bytes[8..16].try_into().unwrap()), 1.5);
-        assert_eq!(u32::from_le_bytes(payload.bytes[16..20].try_into().unwrap()), 1);
+        assert_eq!(
+            u32::from_le_bytes(payload.bytes[0..4].try_into().unwrap()),
+            2
+        );
+        assert_eq!(
+            u32::from_le_bytes(payload.bytes[4..8].try_into().unwrap()),
+            1
+        );
+        assert_eq!(
+            f64::from_le_bytes(payload.bytes[8..16].try_into().unwrap()),
+            1.5
+        );
+        assert_eq!(
+            u32::from_le_bytes(payload.bytes[16..20].try_into().unwrap()),
+            1
+        );
         let (json_len, json, png_bytes) = payload_parts(&payload.bytes);
         assert_eq!(json, b"[]");
         assert!(json_len > 0);
@@ -616,7 +695,9 @@ mod tests {
         let (_, json, png_bytes) = payload_parts(&payload.bytes);
         let parsed: Vec<Annotation> = serde_json::from_slice(json).unwrap();
         assert_eq!(parsed, annotations);
-        assert!(std::str::from_utf8(json).unwrap().contains("\"type\":\"arrow\""));
+        assert!(std::str::from_utf8(json)
+            .unwrap()
+            .contains("\"type\":\"arrow\""));
         assert_eq!(png_bytes, png.as_slice());
     }
 
@@ -694,7 +775,8 @@ mod tests {
     }
 
     #[test]
-    fn preview_minimum_yields_to_tiny_work_area() {        let (width, height) = preview_size(&frame(100, 100), 500.0, 400.0);
+    fn preview_minimum_yields_to_tiny_work_area() {
+        let (width, height) = preview_size(&frame(100, 100), 500.0, 400.0);
         assert!(width <= 500.0 * 0.9);
         assert!(height <= 400.0 * 0.9);
     }
@@ -708,7 +790,11 @@ mod tests {
 
     #[test]
     fn toast_hugs_work_area_bottom_right() {
-        let (x, y) = toast_origin(Some((100.0, 50.0, 1920.0, 1080.0)), TOAST_WIDTH, TOAST_HEIGHT);
+        let (x, y) = toast_origin(
+            Some((100.0, 50.0, 1920.0, 1080.0)),
+            TOAST_WIDTH,
+            TOAST_HEIGHT,
+        );
         assert_eq!(x, 100.0 + 1920.0 - TOAST_WIDTH - 24.0);
         assert_eq!(y, 50.0 + 1080.0 - TOAST_HEIGHT - 24.0);
     }
@@ -755,7 +841,15 @@ mod tests {
         let json = serde_json::to_value(&reduced).expect("payload serializes");
         assert_eq!(json["reducedCapabilities"], serde_json::json!(true));
         // R24:能力子集字段名同样为 camelCase。
-        assert_eq!(json["capabilities"]["inlineAnnotation"], serde_json::json!(true));
+        assert_eq!(
+            json["capabilities"]["inlineAnnotation"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            json["capabilities"]["workspaceActions"],
+            serde_json::json!(true)
+        );
+        assert_eq!(json["fixed"], serde_json::json!(false));
 
         let full = overlay_payload(
             CaptureMode::Window,
@@ -780,8 +874,11 @@ mod tests {
         assert!(!off.inline_annotation);
         let json = serde_json::to_value(off).expect("capabilities serialize");
         assert_eq!(json["inlineAnnotation"], serde_json::json!(false));
-        // 子集只序列化已声明字段,不夹带其它设置。
-        assert_eq!(json.as_object().map(|map| map.len()), Some(1));
+        assert_eq!(json["workspaceActions"], serde_json::json!(true));
+        assert!(json["copy"].is_boolean());
+        assert!(json["save"].is_boolean());
+        assert!(json["pin"].is_boolean());
+        assert!(json["ocr"].is_boolean());
     }
 
     #[test]

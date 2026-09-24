@@ -5,6 +5,7 @@ import {
   loadAnnotationDefaults,
   mountAnnotationEditor,
   resolveCanvasColor,
+  type Annotation,
   type AnnotationEditor,
 } from "../annotation";
 import { t, type CatalogKey } from "../i18n";
@@ -27,6 +28,11 @@ interface ListedWindow {
 /** R24:覆盖层能力子集;旧后端缺失时按默认可用处理,未知字段天然忽略。 */
 interface OverlayCapabilities {
   inlineAnnotation?: boolean;
+  workspaceActions?: boolean;
+  copy?: boolean;
+  save?: boolean;
+  pin?: boolean;
+  ocr?: boolean;
 }
 
 interface OverlayFrame {
@@ -40,6 +46,9 @@ interface OverlayFrame {
   reducedCapabilities: boolean;
   capabilities?: OverlayCapabilities;
   windows: ListedWindow[];
+  fixed?: boolean;
+  annotations?: Annotation[];
+  pendingOcr?: boolean;
 }
 
 interface Selection {
@@ -97,7 +106,13 @@ export function mountOverlay(root: HTMLElement): () => void {
     <canvas></canvas>
     <div class="overlay-chrome">
       <div class="overlay-hint"></div>
-      <button type="button" class="overlay-confirm" data-i18n="overlay.confirm" hidden>确认 Enter</button>
+      <div class="overlay-actions" hidden>
+        <button type="button" data-workspace="ocr" data-i18n="overlay.action.ocr">取字</button>
+        <button type="button" data-workspace="pin" data-i18n="overlay.action.pin">贴图</button>
+        <button type="button" data-workspace="save" data-i18n="overlay.action.save">保存</button>
+        <button type="button" data-workspace="copy" data-i18n="overlay.action.copy">复制</button>
+        <button type="button" data-workspace="edit" data-i18n="overlay.action.edit">进一步编辑</button>
+      </div>
       <button type="button" class="overlay-capabilities" aria-expanded="false" data-i18n="overlay.capabilities" hidden>能力说明</button>
       <button type="button" class="overlay-cancel" data-i18n="overlay.cancel">取消 Esc</button>
     </div>
@@ -112,7 +127,7 @@ export function mountOverlay(root: HTMLElement): () => void {
   const badge = root.querySelector(".size-badge");
   const list = root.querySelector(".window-list");
   const cancelBtn = root.querySelector(".overlay-cancel");
-  const confirmBtn = root.querySelector(".overlay-confirm");
+  const actionsEl = root.querySelector(".overlay-actions");
   const toolsEl = root.querySelector(".overlay-tools");
   const capabilityToggle = root.querySelector(".overlay-capabilities");
   const capabilityPanel = root.querySelector(".capability-panel");
@@ -123,7 +138,7 @@ export function mountOverlay(root: HTMLElement): () => void {
     !(badge instanceof HTMLElement) ||
     !(list instanceof HTMLElement) ||
     !(cancelBtn instanceof HTMLButtonElement) ||
-    !(confirmBtn instanceof HTMLButtonElement) ||
+    !(actionsEl instanceof HTMLElement) ||
     !(toolsEl instanceof HTMLElement) ||
     !(capabilityToggle instanceof HTMLButtonElement) ||
     !(capabilityPanel instanceof HTMLElement) ||
@@ -171,13 +186,13 @@ export function mountOverlay(root: HTMLElement): () => void {
   };
 
   const annotationActive = (): boolean =>
-    inlineEnabled && frame !== null && frame.mode === "region" && phase === "annotate";
+    inlineEnabled && frame !== null && (frame.fixed === true || phase === "annotate");
 
   const resetAnnotationSession = (): void => {
     const wasAnnotating = phase === "annotate";
     phase = "select";
     toolsEl.hidden = true;
-    confirmBtn.hidden = true;
+    actionsEl.hidden = true;
     root.classList.remove("has-tools");
     editor?.cancelText();
     editor?.setAnnotations([]);
@@ -271,15 +286,22 @@ export function mountOverlay(root: HTMLElement): () => void {
       return;
     }
     const reduced = frame.reducedCapabilities === true;
-    const annotating = annotationActive();
+    if (frame.fixed) {
+      hint.textContent = t(
+        annotationActive()
+          ? reduced
+            ? "overlay.hint.reduced_annotate"
+            : "overlay.hint.annotate"
+          : "overlay.hint.workspace",
+      );
+      return;
+    }
     hint.textContent =
       frame.mode === "window"
         ? t("overlay.hint.window")
-        : annotating
-          ? t(reduced ? "overlay.hint.reduced_annotate" : "overlay.hint.annotate")
-          : reduced
-            ? t("overlay.hint.reduced")
-            : t("overlay.hint.region");
+        : reduced
+          ? t("overlay.hint.reduced")
+          : t("overlay.hint.region");
   };
 
   const fitCanvas = (): void => {
@@ -452,7 +474,9 @@ export function mountOverlay(root: HTMLElement): () => void {
       // R24:能力子集缺失(旧后端)视为可用;关闭后不出现标注入口,
       // 区域确认保持原有的松开即完成行为。
       inlineEnabled = frame.capabilities?.inlineAnnotation !== false;
-      selection = null;
+      selection = frame.fixed
+        ? { x: 0, y: 0, width: frame.width, height: frame.height }
+        : null;
       hoverId = null;
       dragging = false;
       finishing = false;
@@ -482,6 +506,24 @@ export function mountOverlay(root: HTMLElement): () => void {
       image.src = `data:image/jpeg;base64,${frame.pngBase64}`;
       // 跨会话样式(R8):每次会话重读设置页保存的颜色/线宽/字号/起始序号;
       // 会话已重置,不存在覆盖本次编辑的问题。
+      if (frame.fixed) {
+        phase = "annotate";
+        const hosted = frame.capabilities?.workspaceActions !== false;
+        if (!hosted) {
+          actionsEl.hidden = true;
+          toolsEl.hidden = true;
+          showNotice(t("overlay.notice.workspace_unavailable"));
+          void invoke("fallback_workspace_preview", { annotations: frame.annotations ?? [] });
+        } else {
+          showWorkspaceActions(frame);
+          toolsEl.hidden = !inlineEnabled;
+          root.classList.toggle("has-tools", inlineEnabled);
+          editor?.setAnnotations(frame.annotations ?? []);
+          if (frame.pendingOcr) {
+            void runOcr();
+          }
+        }
+      }
       void loadAnnotationDefaults().then((style) => {
         editor?.setStyle(style);
       });
@@ -538,8 +580,123 @@ export function mountOverlay(root: HTMLElement): () => void {
     }
   };
 
+  const showWorkspaceActions = (current: OverlayFrame): void => {
+    actionsEl.hidden = false;
+    const caps = current.capabilities;
+    const button = (name: string): HTMLButtonElement | null => {
+      const found = actionsEl.querySelector(`[data-workspace=${name}]`);
+      return found instanceof HTMLButtonElement ? found : null;
+    };
+    const ocr = button("ocr");
+    const pin = button("pin");
+    const save = button("save");
+    const copy = button("copy");
+    if (ocr) {
+      ocr.hidden = caps?.ocr === false;
+    }
+    if (pin) {
+      pin.hidden = caps?.pin === false;
+    }
+    if (save) {
+      save.hidden = caps?.save === false;
+    }
+    if (copy) {
+      copy.hidden = caps?.copy === false;
+    }
+  };
+
+  const currentAnnotations = (): Annotation[] => editor?.exportList() ?? [];
+
+  const runOcr = async (): Promise<void> => {
+    if (finishing) {
+      return;
+    }
+    finishing = true;
+    showNotice(t("toast.ocr_progress"));
+    try {
+      await invoke("recognize_preview");
+      const text = await invoke<string>("copy_ocr_all");
+      const chars = Array.from(text).length;
+      showNotice(t("toast.ocr_copied", { chars: String(chars) }));
+    } catch (error) {
+      showNotice(invokeError(error, t("preview.error.ocr_fallback")));
+    } finally {
+      finishing = false;
+    }
+  };
+
+  const afterExport = async (kind: string, name?: string): Promise<void> => {
+    await invoke("complete_workspace", { kind, name: name ?? null });
+  };
+
+  const copyWorkspace = async (): Promise<void> => {
+    if (finishing) {
+      return;
+    }
+    editor?.commitText();
+    finishing = true;
+    try {
+      await invoke("copy_preview_png", { annotations: currentAnnotations() });
+      await afterExport("copy");
+    } catch (error) {
+      finishing = false;
+      showNotice(invokeError(error, t("preview.error.copy_fallback")));
+    }
+  };
+
+  const saveWorkspace = async (): Promise<void> => {
+    if (finishing) {
+      return;
+    }
+    editor?.commitText();
+    finishing = true;
+    try {
+      const result = await invoke<{ saved: boolean; path?: string | null }>("save_preview_png", {
+        annotations: currentAnnotations(),
+      });
+      if (!result.saved) {
+        finishing = false;
+        return;
+      }
+      const name = fileNameFromPath(result.path) ?? "cropmark";
+      await afterExport("save", name);
+    } catch (error) {
+      finishing = false;
+      showNotice(invokeError(error, t("preview.error.save_fallback")));
+    }
+  };
+
+  const pinWorkspace = async (): Promise<void> => {
+    if (finishing) {
+      return;
+    }
+    editor?.commitText();
+    finishing = true;
+    try {
+      await invoke("pin_current", { annotations: currentAnnotations() });
+      await afterExport("pin");
+    } catch (error) {
+      finishing = false;
+      showNotice(invokeError(error, t("preview.error.pin_fallback")));
+    }
+  };
+
+  const editFurther = async (): Promise<void> => {
+    if (finishing) {
+      return;
+    }
+    editor?.commitText();
+    finishing = true;
+    try {
+      await invoke("edit_workspace_further", { annotations: currentAnnotations() });
+    } catch (error) {
+      finishing = false;
+      showNotice(invokeError(error, t("overlay.error.capture_failed")));
+    }
+  };
+
   canvas.addEventListener("mousedown", (event) => {
-    if (!frame || frame.mode !== "region" || event.button !== 0) {
+    if (!frame || frame.fixed || frame.mode !== "region" || event.button !== 0) {
       return;
     }
     if (annotationActive()) {
@@ -596,32 +753,16 @@ export function mountOverlay(root: HTMLElement): () => void {
   });
 
   window.addEventListener("mouseup", () => {
-    if (!dragging) {
+    if (!dragging || frame?.fixed) {
+      dragging = false;
       return;
     }
     dragging = false;
-    if (!inlineEnabled || !frame || frame.mode !== "region") {
-      void finishRegion();
-      return;
-    }
-    const crop = roundedRect();
-    if (!crop || crop.width < 2 || crop.height < 2) {
-      // 无效选区交由 finishRegion 给出具体提示。
-      void finishRegion();
-      return;
-    }
-    // 选区固定,进入标注阶段:工具条与确认按钮出现,Enter/确认完成。
-    phase = "annotate";
-    toolsEl.hidden = false;
-    confirmBtn.hidden = false;
-    root.classList.add("has-tools");
-    editor?.setTool("arrow");
-    renderHint();
-    scheduleDraw();
+    void finishRegion();
   });
 
   canvas.addEventListener("click", (event) => {
-    if (!frame || frame.mode !== "window") {
+    if (!frame || frame.fixed || frame.mode !== "window") {
       return;
     }
     const point = physicalPoint(event);
@@ -666,10 +807,29 @@ export function mountOverlay(root: HTMLElement): () => void {
     cancel();
   });
 
-  confirmBtn.addEventListener("click", (event) => {
+  actionsEl.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) {
+      return;
+    }
+    const button = target.closest("[data-workspace]");
+    if (!(button instanceof HTMLButtonElement) || button.hidden) {
+      return;
+    }
     event.preventDefault();
     event.stopPropagation();
-    void finishRegion();
+    const action = button.dataset.workspace;
+    if (action === "copy") {
+      void copyWorkspace();
+    } else if (action === "save") {
+      void saveWorkspace();
+    } else if (action === "pin") {
+      void pinWorkspace();
+    } else if (action === "ocr") {
+      void runOcr();
+    } else if (action === "edit") {
+      void editFurther();
+    }
   });
 
   // R21:内嵌与预览同源的标注层;坐标映射到冻帧物理像素,图元由 Rust
@@ -715,7 +875,6 @@ export function mountOverlay(root: HTMLElement): () => void {
     }
     if (event.key === "Enter") {
       event.preventDefault();
-      void finishRegion();
       return;
     }
     if (!frame || !frame.reducedCapabilities || frame.mode !== "region") {
@@ -819,6 +978,14 @@ function hitWindow(frame: OverlayFrame, x: number, y: number): string | null {
     }
   }
   return null;
+}
+
+function fileNameFromPath(path: string | null | undefined): string | null {
+  if (!path) {
+    return null;
+  }
+  const parts = path.split(/[/\\]/);
+  return parts[parts.length - 1] || null;
 }
 
 function clamp(value: number, min: number, max: number): number {

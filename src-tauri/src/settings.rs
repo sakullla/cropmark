@@ -57,9 +57,7 @@ impl AnnotationDefaults {
             color,
             width,
             text_size,
-            number_start: self
-                .number_start
-                .clamp(MIN_NUMBER_START, MAX_NUMBER_START),
+            number_start: self.number_start.clamp(MIN_NUMBER_START, MAX_NUMBER_START),
         }
     }
 }
@@ -131,50 +129,28 @@ impl FeatureSettings {
     }
 }
 
-/// 截图完成动作:进入预览,或静默完成(复制后关闭、仅 toast 反馈)。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum FinishAction {
-    #[default]
-    Preview,
-    Quiet,
-}
-
 /// 延时合法上限(秒)。
 pub const MAX_DELAY_SECONDS: u32 = 60;
 
-/// 延时与截图后行为(R4)。`delay_seconds` 为 0 时热键与托盘立即截取;
-/// `auto_copy` 关闭时完成路径不写剪贴板,静默完成因无输出被强制回退预览。
+/// 截取延时。完成后去向由浮层工作区决定,不再保存「完成后动作」或「自动复制」。
+/// 旧配置里的 `autoCopy` / `finishAction` 会被 serde 忽略,也不会再写回。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct CaptureSettings {
     pub delay_seconds: u32,
-    pub auto_copy: bool,
-    pub finish_action: FinishAction,
 }
 
 impl Default for CaptureSettings {
     fn default() -> Self {
-        Self {
-            delay_seconds: 0,
-            auto_copy: true,
-            finish_action: FinishAction::Preview,
-        }
+        Self { delay_seconds: 0 }
     }
 }
 
 impl CaptureSettings {
-    /// 延时钳制到 0–60;autoCopy 关闭时静默完成无输出,强制回退预览,
-    /// 与设置页禁用规则保持一致。
+    /// 延时钳制到 0–60。
     pub fn sanitized(self) -> Self {
         Self {
             delay_seconds: self.delay_seconds.min(MAX_DELAY_SECONDS),
-            auto_copy: self.auto_copy,
-            finish_action: if self.auto_copy {
-                self.finish_action
-            } else {
-                FinishAction::Preview
-            },
         }
     }
 
@@ -506,8 +482,7 @@ pub fn current_annotation_defaults(app: &AppHandle) -> AnnotationDefaults {
     lock(&app.state::<SessionState>().annotation_defaults).clone()
 }
 
-/// 供截取链路(热键/托盘取延时、完成路径取动作与自动复制)即时读取。
-/// 设置变更下一次截取即生效,无需重启。
+/// 供截取链路读取延时。设置变更下一次截取即生效,无需重启。
 pub fn current_capture(app: &AppHandle) -> CaptureSettings {
     *lock(&app.state::<SessionState>().capture)
 }
@@ -741,11 +716,7 @@ pub fn set_annotation_defaults(app: AppHandle, defaults: AnnotationDefaults) -> 
 /// 设置单个功能入口开关;内存值立即生效(下一次截取起),随 persist_settings
 /// 统一写盘(hotkeys+annotation_defaults+features),写盘失败沿 notice 提示。
 #[tauri::command]
-pub fn set_feature(
-    app: AppHandle,
-    key: String,
-    enabled: bool,
-) -> Result<UiSettings, String> {
+pub fn set_feature(app: AppHandle, key: String, enabled: bool) -> Result<UiSettings, String> {
     let next = {
         let state = app.state::<SessionState>();
         let current = *lock(&state.features);
@@ -762,8 +733,8 @@ pub fn set_feature(
     Ok(snapshot(&app))
 }
 
-/// 设置延时/自动复制/完成后动作;内存值立即生效(下一次截取起),随
-/// persist_settings 统一写盘,并按新延时重建托盘菜单标签。
+/// 设置延时;内存值立即生效(下一次截取起),随 persist_settings 写盘,
+/// 并按新延时重建托盘菜单标签。不写回已删除的完成动作与自动复制。
 #[tauri::command]
 pub fn set_capture_settings(app: AppHandle, settings: CaptureSettings) -> UiSettings {
     *lock(&app.state::<SessionState>().capture) = settings.sanitized();
@@ -863,11 +834,7 @@ mod tests {
                 ocr_orientation: false,
                 inline_annotation: true,
             },
-            capture: CaptureSettings {
-                delay_seconds: 5,
-                auto_copy: false,
-                finish_action: FinishAction::Quiet,
-            },
+            capture: CaptureSettings { delay_seconds: 5 },
             history: HistorySettings {
                 enabled: false,
                 limit: 50,
@@ -888,6 +855,8 @@ mod tests {
         save_to_path(&path, &stored).unwrap();
         let text = fs::read_to_string(&path).unwrap();
         assert!(!text.contains("autostart"));
+        assert!(!text.contains("autoCopy"));
+        assert!(!text.contains("finishAction"));
         let loaded = load_from_path(&path);
         assert_eq!(loaded.hotkeys.region, "Ctrl+Alt+R");
         assert_eq!(loaded.annotation_defaults.color, "#2563eb");
@@ -905,8 +874,6 @@ mod tests {
         assert!(!loaded.features.ocr_orientation);
         assert!(loaded.features.inline_annotation);
         assert_eq!(loaded.capture.delay_seconds, 5);
-        assert!(!loaded.capture.auto_copy);
-        assert_eq!(loaded.capture.finish_action, FinishAction::Quiet);
         assert!(!loaded.history.enabled);
         assert_eq!(loaded.history.limit, 50);
         assert_eq!(loaded.export.last_format, ExportFormat::Jpeg);
@@ -1043,9 +1010,13 @@ mod tests {
     #[test]
     fn with_key_applies_known_feature_keys_and_rejects_unknown() {
         let base = FeatureSettings::default();
-        let off = base.with_key("ocrEntry", false).expect("camelCase key applies");
+        let off = base
+            .with_key("ocrEntry", false)
+            .expect("camelCase key applies");
         assert!(!off.ocr_entry);
-        let snake = base.with_key("toolbar_save", false).expect("snake_case key applies");
+        let snake = base
+            .with_key("toolbar_save", false)
+            .expect("snake_case key applies");
         assert!(!snake.toolbar_save);
         // R24 四个能力开关:camelCase 与 snake_case 都被白名单接受。
         let cases = [
@@ -1122,46 +1093,23 @@ mod tests {
     }
 
     #[test]
-    fn capture_defaults_are_immediate_auto_copy_preview() {
+    fn capture_defaults_are_immediate() {
         let capture = CaptureSettings::default();
         assert_eq!(capture.delay_seconds, 0);
-        assert!(capture.auto_copy);
-        assert_eq!(capture.finish_action, FinishAction::Preview);
         assert_eq!(capture.delay_ms(), 0);
     }
 
     #[test]
     fn capture_sanitize_clamps_delay_and_keeps_valid_seconds() {
-        let clamped = CaptureSettings {
-            delay_seconds: 120,
-            auto_copy: true,
-            finish_action: FinishAction::Quiet,
-        }
-        .sanitized();
+        let clamped = CaptureSettings { delay_seconds: 120 }.sanitized();
         assert_eq!(clamped.delay_seconds, MAX_DELAY_SECONDS);
         assert_eq!(clamped.delay_ms(), 60_000);
-        assert_eq!(clamped.finish_action, FinishAction::Quiet);
 
         let exact = CaptureSettings {
             delay_seconds: MAX_DELAY_SECONDS,
-            auto_copy: true,
-            finish_action: FinishAction::Preview,
         }
         .sanitized();
         assert_eq!(exact.delay_seconds, 60);
-    }
-
-    #[test]
-    fn capture_sanitize_forces_preview_without_auto_copy() {
-        let forced = CaptureSettings {
-            delay_seconds: 5,
-            auto_copy: false,
-            finish_action: FinishAction::Quiet,
-        }
-        .sanitized();
-        assert_eq!(forced.delay_seconds, 5);
-        assert!(!forced.auto_copy);
-        assert_eq!(forced.finish_action, FinishAction::Preview);
     }
 
     #[test]
@@ -1181,18 +1129,16 @@ mod tests {
     }
 
     #[test]
-    fn capture_settings_deserialize_from_camel_case_json() {
+    fn capture_settings_ignore_saved_finish_fields() {
         let parsed: StoredSettings = serde_json::from_str(
             r#"{"capture":{"delaySeconds":7,"autoCopy":false,"finishAction":"quiet"}}"#,
         )
         .unwrap();
         assert_eq!(parsed.capture.delay_seconds, 7);
-        assert!(!parsed.capture.auto_copy);
-        assert_eq!(parsed.capture.finish_action, FinishAction::Quiet);
         let serialized = serde_json::to_value(parsed.capture).unwrap();
         assert_eq!(serialized["delaySeconds"], 7);
-        assert_eq!(serialized["autoCopy"], false);
-        assert_eq!(serialized["finishAction"], "quiet");
+        assert!(serialized.get("autoCopy").is_none());
+        assert!(serialized.get("finishAction").is_none());
     }
 
     #[test]
@@ -1612,6 +1558,8 @@ mod tests {
         };
         let serialized = serde_json::to_value(&info).unwrap();
         assert_eq!(serialized["language"], "system");
-        assert!(serialized["resolvedLanguage"] == "zh-CN" || serialized["resolvedLanguage"] == "en");
+        assert!(
+            serialized["resolvedLanguage"] == "zh-CN" || serialized["resolvedLanguage"] == "en"
+        );
     }
 }

@@ -374,8 +374,7 @@ async fn plan_last_region(app: &AppHandle) -> Result<FixedRegionPlan, LastRegion
     .map_err(|_| LastRegionPlanError::OutOfRange)?
 }
 
-/// 抓取目标显示器并按钳制后的区域裁剪;与全屏/区域完成一样走
-/// `finish_configured`,预览/静默完成、自动复制、历史与 toast 行为一致。
+/// 抓取目标显示器并按钳制后的区域裁剪,把已定画面送进网页浮层。
 async fn capture_last_region(
     app: &AppHandle,
     plan: FixedRegionPlan,
@@ -391,7 +390,13 @@ async fn capture_last_region(
         if !session_matches_generation(&handle, generation) {
             return Ok(());
         }
-        finish_configured(&handle, cropped, Vec::new(), Some(generation)).map(|_| ())
+        deliver_fixed_frame(
+            &handle,
+            cropped,
+            Vec::new(),
+            Some(plan.monitor),
+            Some(generation),
+        )
     })
     .await
     .map_err(|_| CaptureError::api("error.capture.thread_failed"))?
@@ -480,7 +485,9 @@ fn begin_capture(app: &AppHandle, mode: CaptureMode, delay_ms: u64) -> BeginStep
 
 /// 槽位内当前会话的代际(调用方保证刚占用)。
 fn current_generation(slot: &Option<ActiveSession>) -> u64 {
-    slot.as_ref().map(|current| current.generation).unwrap_or_default()
+    slot.as_ref()
+        .map(|current| current.generation)
+        .unwrap_or_default()
 }
 
 /// 看门狗重置:关闭旧会话记录的原生壳、隐藏会话窗、恢复旧会话隐藏前的
@@ -689,7 +696,9 @@ fn copy_color_feedback(text: &str, hex: &str) {
 /// 把设置里的功能入口开关映射为选区引擎 FeatureFlags(字段一一对应)。
 /// 每次截取启动时读取,关闭的入口下一次截取即消失。
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
-fn feature_flags_from(features: crate::settings::FeatureSettings) -> super::selection::FeatureFlags {
+fn feature_flags_from(
+    features: crate::settings::FeatureSettings,
+) -> super::selection::FeatureFlags {
     super::selection::FeatureFlags {
         ocr_entry: features.ocr_entry,
         pin_entry: features.pin_entry,
@@ -758,13 +767,14 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
         cleanup_cancelled_generation(app, generation);
         return Ok(());
     }
+    let pending_ocr = matches!(picked, RegionOutcome::Quiet(_, QuietAction::Ocr, _));
     match picked {
-        // Enter 确认:按 finishAction 选择预览或静默(复制+toast);即时标注
-        // 已在壳内完成,图元随结果进入裁剪/预览路径。
-        RegionOutcome::Preview(rect, annotations) => {
+        RegionOutcome::Preview(rect, annotations)
+        | RegionOutcome::Annotate(rect, annotations)
+        | RegionOutcome::Quiet(rect, _, annotations) => {
             let handle = app.clone();
             tauri::async_runtime::spawn_blocking(move || {
-                confirm_region_from_shell(
+                commit_shell_region(
                     &handle,
                     RegionSelection {
                         x: rect.x,
@@ -773,66 +783,12 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
                         height: rect.height,
                     },
                     annotations,
+                    pending_ocr,
                     generation,
                 )
             })
             .await
             .map_err(|_| CaptureError::api("error.capture.thread_failed"))?
-        }
-        // 「标注」动作:强制打开预览编辑器,静默完成配置不适用于显式标注(R4 review)。
-        RegionOutcome::Annotate(rect, annotations) => {
-            let handle = app.clone();
-            tauri::async_runtime::spawn_blocking(move || {
-                annotate_region_from_shell(
-                    &handle,
-                    RegionSelection {
-                        x: rect.x,
-                        y: rect.y,
-                        width: rect.width,
-                        height: rect.height,
-                    },
-                    annotations,
-                    generation,
-                )
-            })
-            .await
-            .map_err(|_| CaptureError::api("error.capture.thread_failed"))?
-        }
-        // 操作条/菜单动作:静默完成并执行动作(不开预览);标注先在完成路径
-        // 与像素合并,复制/保存/贴图/取字输出与所见一致。
-        RegionOutcome::Quiet(rect, QuietAction::Ocr, annotations) => {
-            // 取字打开预览再识别:后台静默 OCR 会关掉选区、首次加载模型像「退出后无响应」。
-            let handle = app.clone();
-            tauri::async_runtime::spawn_blocking(move || {
-                ocr_region_from_shell(
-                    &handle,
-                    RegionSelection {
-                        x: rect.x,
-                        y: rect.y,
-                        width: rect.width,
-                        height: rect.height,
-                    },
-                    annotations,
-                    generation,
-                )
-            })
-            .await
-            .map_err(|_| CaptureError::api("error.capture.thread_failed"))?
-        }
-        RegionOutcome::Quiet(rect, action, annotations) => {
-            finish_region_with(
-                app,
-                RegionSelection {
-                    x: rect.x,
-                    y: rect.y,
-                    width: rect.width,
-                    height: rect.height,
-                },
-                annotations,
-                action,
-                Some(generation),
-            )
-            .await
         }
         RegionOutcome::Cancelled => {
             // 壳已经退出,不要再 PostMessage(WM_CLOSE):否则会关掉紧接着
@@ -934,11 +890,11 @@ async fn capture_window_mode(app: &AppHandle, generation: u64) -> Result<(), Cap
 async fn capture_fullscreen(app: &AppHandle, generation: u64) -> Result<(), CaptureError> {
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let (frame, _) = grab_pointer_screen(&handle)?;
+        let (frame, monitor) = grab_pointer_screen(&handle)?;
         if !session_matches_generation(&handle, generation) {
             return Ok(());
         }
-        finish_configured(&handle, frame, Vec::new(), Some(generation)).map(|_| ())
+        deliver_fixed_frame(&handle, frame, Vec::new(), Some(monitor), Some(generation))
     })
     .await
     .map_err(|_| CaptureError::api("error.capture.thread_failed"))?
@@ -1181,66 +1137,32 @@ pub fn writeback_target(app: &AppHandle) -> Option<String> {
     })
 }
 
-/// 命令层区域确认:Web 覆盖层(Wayland)把选区上的即时标注图元一并带入,
-/// 与原生壳 Enter 确认同路径(`finish_selection` 负责裁剪 + 坐标平移)。
+/// 命令层区域确认:裁剪后把已定画面送进网页浮层,不打开预览、不写剪贴板。
 pub fn confirm_region(
     app: &AppHandle,
     selection: RegionSelection,
     annotations: Vec<Annotation>,
 ) -> Result<(), CaptureError> {
-    finish_selection(app, selection, annotations, FinishIntent::Configured, None).map(|_| ())
+    finish_selection(app, selection, annotations, None)
 }
 
-/// 原生壳 Enter 确认:携带壳启动时的会话代际,旧壳结果不作用于新会话。
-fn confirm_region_from_shell(
+/// 原生壳提交选区:不在壳上结束截图或打开预览,画面交给网页浮层。
+fn commit_shell_region(
     app: &AppHandle,
     selection: RegionSelection,
     annotations: Vec<Annotation>,
+    pending_ocr: bool,
     generation: u64,
 ) -> Result<(), CaptureError> {
-    finish_selection(
-        app,
-        selection,
-        annotations,
-        FinishIntent::Configured,
-        Some(generation),
-    )
-    .map(|_| ())
-}
-
-/// 原生选区壳的「标注」动作(操作条/右键菜单):总是打开预览编辑器,不受
-/// 静默完成设置影响;裁剪帧与普通完成一样按 autoCopy 决定是否写剪贴板。
-/// 携带壳启动时的会话代际,旧壳结果不作用于新会话。
-fn annotate_region_from_shell(
-    app: &AppHandle,
-    selection: RegionSelection,
-    annotations: Vec<Annotation>,
-    generation: u64,
-) -> Result<(), CaptureError> {
-    finish_selection(
-        app,
-        selection,
-        annotations,
-        FinishIntent::Annotate,
-        Some(generation),
-    )
-    .map(|_| ())
-}
-
-/// 选区「取字」:打开预览并记下 pending_ocr,前端加载帧后自动进入取字。
-fn ocr_region_from_shell(
-    app: &AppHandle,
-    selection: RegionSelection,
-    annotations: Vec<Annotation>,
-    generation: u64,
-) -> Result<(), CaptureError> {
-    with_session_mut(app, |session| {
-        if let Some(current) = session.as_mut() {
-            current.pending_ocr = true;
-        }
-    });
-    let result = annotate_region_from_shell(app, selection, annotations, generation);
-    if result.is_err() {
+    if pending_ocr {
+        with_session_mut(app, |session| {
+            if let Some(current) = session.as_mut() {
+                current.pending_ocr = true;
+            }
+        });
+    }
+    let result = finish_selection(app, selection, annotations, Some(generation));
+    if result.is_err() && pending_ocr {
         with_session_mut(app, |session| {
             if let Some(current) = session.as_mut() {
                 current.pending_ocr = false;
@@ -1265,12 +1187,10 @@ fn finish_selection(
     app: &AppHandle,
     selection: RegionSelection,
     annotations: Vec<Annotation>,
-    intent: FinishIntent,
     expected: Option<u64>,
-) -> Result<FinishSummary, CaptureError> {
+) -> Result<(), CaptureError> {
     let (frame, annotations) = with_session(app, |session| {
         let session = session.as_ref().ok_or_else(CaptureError::cancelled)?;
-        // 取消受理后代际不符的完成动作一律拒绝(ADR-16:停止接收完成动作)。
         if session.cancelled || generation_mismatch(session, expected) {
             return Err(CaptureError::cancelled());
         }
@@ -1280,11 +1200,8 @@ fn finish_selection(
             .ok_or_else(|| CaptureError::invalid_buffer("error.capture.buffer_uninitialized"))?;
         crop_selection_with_annotations(freeze, &selection, &annotations)
     })?;
-    ui::hide_window(app, ui::OVERLAY);
-    let summary = finish_frame(app, frame, annotations, intent, expected)?;
-    // R6:成功完成的区域截图覆盖"上次区域",托盘直取从下一次打开菜单起可用。
     remember_selection_region(app, &selection);
-    Ok(summary)
+    deliver_fixed_frame(app, frame, annotations, None, expected)
 }
 
 /// 选区裁剪 + 即时标注整屏坐标 → 裁剪坐标系(R21)。
@@ -1302,11 +1219,8 @@ fn crop_selection_with_annotations(
         selection.width,
         selection.height,
     )?;
-    let translated = crate::annotate::translated_all(
-        annotations,
-        -(selection.x as f64),
-        -(selection.y as f64),
-    );
+    let translated =
+        crate::annotate::translated_all(annotations, -(selection.x as f64), -(selection.y as f64));
     Ok((frame, translated))
 }
 
@@ -1374,7 +1288,7 @@ pub fn confirm_window(app: &AppHandle, window_id: String) -> Result<(), CaptureE
         return Err(CaptureError::cancelled());
     }
     let frame = platform::capture_window(&window_id)?;
-    finish_configured(app, frame, Vec::new(), None).map(|_| ())
+    deliver_fixed_frame(app, frame, Vec::new(), None, None)
 }
 
 /// 完成路径的结果摘要(供动作反馈区分剪贴板成败)。
@@ -1403,9 +1317,9 @@ fn generation_mismatch(session: &ActiveSession, expected: Option<u64>) -> bool {
 /// 当前会话仍是 `generation` 且未被取消:原生壳结果分发前的守卫。
 fn session_matches_generation(app: &AppHandle, generation: u64) -> bool {
     with_session(app, |session| {
-        session.as_ref().is_some_and(|current| {
-            current.generation == generation && !current.cancelled
-        })
+        session
+            .as_ref()
+            .is_some_and(|current| current.generation == generation && !current.cancelled)
     })
 }
 
@@ -1507,9 +1421,10 @@ fn take_cancel_request(
 /// 释放已取消会话:仅当槽位仍是同一 generation 的 Cancelling 会话时才移除,
 /// 因此旧清理任务不会删除后来占位的新会话。
 fn release_cancelled(session: &mut Option<ActiveSession>, generation: u64) -> bool {
-    if session.as_ref().is_some_and(|current| {
-        current.generation == generation && current.is_cancelling()
-    }) {
+    if session
+        .as_ref()
+        .is_some_and(|current| current.generation == generation && current.is_cancelling())
+    {
         *session = None;
         true
     } else {
@@ -1518,10 +1433,7 @@ fn release_cancelled(session: &mut Option<ActiveSession>, generation: u64) -> bo
 }
 
 /// 取消受理(进入 Cancelling 阶段)的会话层入口。
-fn accept_cancel(
-    app: &AppHandle,
-    expected: Option<u64>,
-) -> Option<(u64, Vec<RecordedSurface>)> {
+fn accept_cancel(app: &AppHandle, expected: Option<u64>) -> Option<(u64, Vec<RecordedSurface>)> {
     with_session_mut(app, |session| take_cancel_request(session, expected))
 }
 
@@ -1577,10 +1489,7 @@ fn cleanup_cancelled_generation(app: &AppHandle, generation: u64) {
     }
 }
 
-fn cancel_internal(
-    app: &AppHandle,
-    expected: Option<u64>,
-) -> Result<CancelOutcome, CaptureError> {
+fn cancel_internal(app: &AppHandle, expected: Option<u64>) -> Result<CancelOutcome, CaptureError> {
     if let Some((generation, restore)) = accept_cancel(app, expected) {
         finish_cancel(app, generation, restore, true);
     }
@@ -1588,75 +1497,168 @@ fn cancel_internal(
     Ok(CancelOutcome::clean())
 }
 
-/// 普通捕获(区域确认/窗口/全屏)的统一完成入口:按当前设置选择预览或
-/// 静默(复制后关闭),静默完成仍给出 toast 反馈,避免用户感知为无响应(R4)。
-/// `expected` 为壳启动时的会话代际(命令层为 None)。
-fn finish_configured(
-    app: &AppHandle,
-    frame: Frame,
-    annotations: Vec<Annotation>,
-    expected: Option<u64>,
-) -> Result<FinishSummary, CaptureError> {
-    finish_frame(app, frame, annotations, FinishIntent::Configured, expected)
+/// 已定画面的去向:浮层能挂上工作区动作时留在浮层,否则说明缺失并打开预览。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceRoute {
+    Overlay,
+    PreviewFallback,
 }
 
-fn finish_frame(
+pub fn workspace_route(hosted: bool) -> WorkspaceRoute {
+    if hosted {
+        WorkspaceRoute::Overlay
+    } else {
+        WorkspaceRoute::PreviewFallback
+    }
+}
+
+/// 把已定画面放进网页浮层。不调用完成设置,不写剪贴板,不因此打开预览。
+fn deliver_fixed_frame(
     app: &AppHandle,
     frame: Frame,
     annotations: Vec<Annotation>,
-    intent: FinishIntent,
+    monitor: Option<MonitorGeom>,
     expected: Option<u64>,
-) -> Result<FinishSummary, CaptureError> {
-    let capture = crate::settings::current_capture(app);
-    let disposition = finish_disposition(intent, capture);
-    let summary = finish_with_ttl(
+) -> Result<(), CaptureError> {
+    if is_cancelled(app) || finish_generation_stale(app, expected) {
+        return Err(CaptureError::cancelled());
+    }
+    let (mode, session_monitor, pending_ocr) = with_session(app, |session| {
+        let current = session.as_ref().ok_or_else(CaptureError::cancelled)?;
+        if current.cancelled || generation_mismatch(current, expected) {
+            return Err(CaptureError::cancelled());
+        }
+        Ok((current.mode, current.monitor.clone(), current.pending_ocr))
+    })?;
+    let monitor = monitor.or(session_monitor);
+    let capabilities =
+        ui::OverlayCapabilities::from_features(crate::settings::current_features(app));
+    let hosted = workspace_route(capabilities.workspace_actions) == WorkspaceRoute::Overlay;
+    let Some(monitor) = monitor else {
+        ui::show_toast_key(app, "overlay.notice.workspace_unavailable");
+        return open_workspace_preview(app, frame, annotations, expected);
+    };
+    if !hosted {
+        ui::show_toast_key(app, "overlay.notice.workspace_unavailable");
+        return open_workspace_preview(app, frame, annotations, expected);
+    }
+    let mut overlay = ui::overlay_payload(
+        mode,
+        &frame,
+        &monitor,
+        Vec::new(),
+        overlay_reduced_capabilities(mode, region_native_shell()),
+        capabilities,
+    )?;
+    overlay.fixed = true;
+    overlay.annotations = annotations;
+    overlay.pending_ocr = pending_ocr;
+    with_session_mut(app, |session| {
+        let current = session.as_mut().ok_or_else(CaptureError::cancelled)?;
+        if current.cancelled || generation_mismatch(current, expected) {
+            return Err(CaptureError::cancelled());
+        }
+        current.freeze = Some(frame.clone());
+        current.overlay = Some(overlay);
+        current.monitor = Some(monitor.clone());
+        current.windows.clear();
+        current.preview = None;
+        current.preview_opened = false;
+        Ok(())
+    })?;
+    if ui::open_overlay(app, &monitor).is_err() {
+        ui::show_toast_key(app, "overlay.notice.workspace_unavailable");
+        return open_workspace_preview(app, frame, annotations_from_overlay(app), expected);
+    }
+    Ok(())
+}
+
+fn annotations_from_overlay(app: &AppHandle) -> Vec<Annotation> {
+    with_session(app, |session| {
+        session
+            .as_ref()
+            .and_then(|current| current.overlay.as_ref())
+            .map(|overlay| overlay.annotations.clone())
+            .unwrap_or_default()
+    })
+}
+
+/// 进一步编辑,或浮层无法承载工作区时:打开含当前标注的预览,不写剪贴板。
+fn open_workspace_preview(
+    app: &AppHandle,
+    frame: Frame,
+    annotations: Vec<Annotation>,
+    expected: Option<u64>,
+) -> Result<(), CaptureError> {
+    match finish_with_ttl(
         app,
         frame,
         annotations,
-        disposition,
+        FinishDisposition::Preview,
         DEFAULT_FRAME_TTL,
-        capture.auto_copy,
+        false,
         expected,
-    )?;
-    if disposition == FinishDisposition::Quiet {
-        ui::show_toast_key(
-            app,
-            if summary.clipboard_written {
-                "toast.copied"
-            } else {
-                "toast.copy_failed"
-            },
-        );
-    }
-    Ok(summary)
-}
-
-/// 完成请求来源:普通完成(Enter/确认/窗口/全屏)套用 finishAction;显式
-/// 「标注」总是进预览编辑器——静默配置只约束默认完成动作,不能吞掉标注意图。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FinishIntent {
-    Configured,
-    Annotate,
-}
-
-fn finish_disposition(
-    intent: FinishIntent,
-    capture: crate::settings::CaptureSettings,
-) -> FinishDisposition {
-    match intent {
-        FinishIntent::Annotate => FinishDisposition::Preview,
-        FinishIntent::Configured => configured_disposition(capture),
+    ) {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            if !error.is_cancelled() {
+                let _ = ui::open_error(app, &error);
+            }
+            Err(error)
+        }
     }
 }
 
-/// 静默完成必须伴随自动复制(autoCopy 关闭时 sanitize 已强制回退预览,
-/// 这里对内存值再做一次兜底),避免"静默且无输出"的空动作。
-fn configured_disposition(capture: crate::settings::CaptureSettings) -> FinishDisposition {
-    if capture.auto_copy && capture.finish_action == crate::settings::FinishAction::Quiet {
-        FinishDisposition::Quiet
-    } else {
-        FinishDisposition::Preview
+fn workspace_frame(app: &AppHandle) -> Result<Frame, CaptureError> {
+    with_session(app, |session| {
+        session
+            .as_ref()
+            .and_then(|current| current.freeze.clone())
+            .ok_or_else(|| CaptureError::api("error.capture.preview_missing"))
+    })
+}
+
+/// 复制/保存/贴图成功后关闭浮层并提示。失败不得调用本函数。
+pub fn complete_workspace(
+    app: &AppHandle,
+    kind: &str,
+    name: Option<&str>,
+) -> Result<(), CaptureError> {
+    let frame = workspace_frame(app)?;
+    ui::hide_window(app, ui::OVERLAY);
+    crate::history::record_capture(app, frame);
+    crate::pin::restore_after_capture(app);
+    with_session_mut(app, |session| {
+        *session = None;
+    });
+    match kind {
+        "save" => {
+            let label = name.unwrap_or("cropmark");
+            ui::show_toast_key_params(app, "toast.saved", &[("name", label)]);
+        }
+        "pin" => ui::show_toast_key(app, "toast.pinned"),
+        _ => ui::show_toast_key(app, "toast.copied"),
     }
+    Ok(())
+}
+
+/// 进一步编辑:关闭浮层,打开含当前标注的预览,不写剪贴板。
+pub fn edit_workspace_further(
+    app: &AppHandle,
+    annotations: Vec<Annotation>,
+) -> Result<(), CaptureError> {
+    let frame = workspace_frame(app)?;
+    open_workspace_preview(app, frame, annotations, None)
+}
+
+/// 浮层挂不上工作区动作:说明缺失并打开预览,不写剪贴板。
+pub fn fallback_workspace_preview(
+    app: &AppHandle,
+    annotations: Vec<Annotation>,
+) -> Result<(), CaptureError> {
+    ui::show_toast_key(app, "overlay.notice.workspace_unavailable");
+    let frame = workspace_frame(app)?;
+    open_workspace_preview(app, frame, annotations, None)
 }
 
 fn finish_with_ttl(
@@ -1996,8 +1998,8 @@ mod tests {
                         );
                     }
                     CaptureMode::Fullscreen => {
-                        assert_eq!(steps.last().copied(), Some(SessionStep::OpenPreview));
                         assert!(!steps.contains(&SessionStep::ShowOverlayOnFreeze));
+                        assert_eq!(workspace_route(true), WorkspaceRoute::Overlay);
                     }
                 }
             }
@@ -2020,10 +2022,11 @@ mod tests {
     }
 
     #[test]
-    fn fullscreen_skips_overlay() {
+    fn fullscreen_delivers_workspace_overlay() {
         let steps = session_steps(false, 0);
-        assert_eq!(steps.last().copied(), Some(SessionStep::OpenPreview));
         assert!(!steps.contains(&SessionStep::ShowOverlayOnFreeze));
+        assert_eq!(workspace_route(true), WorkspaceRoute::Overlay);
+        assert_ne!(workspace_route(true), WorkspaceRoute::PreviewFallback);
     }
 
     #[test]
@@ -2031,7 +2034,10 @@ mod tests {
         let now = Instant::now();
         let mut slot = Some(ActiveSession::new(CaptureMode::Region, 0, now));
         let generation = slot.as_ref().unwrap().generation;
-        assert_eq!(begin_decision(slot.as_ref(), now), BeginDecision::IgnoreBusy);
+        assert_eq!(
+            begin_decision(slot.as_ref(), now),
+            BeginDecision::IgnoreBusy
+        );
         assert!(take_cancel_request(&mut slot, Some(generation)).is_some());
         assert!(release_cancelled(&mut slot, generation));
         assert!(slot.is_none());
@@ -2425,63 +2431,40 @@ mod tests {
     }
 
     #[test]
-    fn configured_disposition_requires_auto_copy_for_quiet() {
-        use crate::settings::{CaptureSettings, FinishAction};
-
-        let quiet = CaptureSettings {
-            delay_seconds: 0,
-            auto_copy: true,
-            finish_action: FinishAction::Quiet,
-        };
-        assert_eq!(configured_disposition(quiet), FinishDisposition::Quiet);
+    fn fixed_capture_stays_on_overlay_and_ignores_saved_finish_settings() {
+        let capture = crate::settings::CaptureSettings::default();
+        assert_eq!(capture.delay_seconds, 0);
+        let hosted =
+            ui::OverlayCapabilities::from_features(crate::settings::FeatureSettings::default());
+        assert!(hosted.workspace_actions);
+        assert_eq!(workspace_route(true), WorkspaceRoute::Overlay);
         assert_eq!(
-            configured_disposition(CaptureSettings::default()),
-            FinishDisposition::Preview
+            workspace_route(hosted.workspace_actions),
+            WorkspaceRoute::Overlay
         );
-        // autoCopy 关闭时即使内存值仍为 quiet 也回退预览。
-        let off = CaptureSettings {
-            auto_copy: false,
-            ..quiet
-        };
-        assert_eq!(configured_disposition(off), FinishDisposition::Preview);
+        let saved = serde_json::from_str::<crate::settings::CaptureSettings>(
+            r#"{"delaySeconds":3,"autoCopy":true,"finishAction":"preview"}"#,
+        )
+        .expect("old finish fields are ignored");
+        assert_eq!(saved.delay_seconds, 3);
+        let quiet = serde_json::from_str::<crate::settings::CaptureSettings>(
+            r#"{"delaySeconds":1,"autoCopy":true,"finishAction":"quiet"}"#,
+        )
+        .expect("old quiet finish is ignored");
+        assert_eq!(quiet.delay_seconds, 1);
+        assert_eq!(workspace_route(true), WorkspaceRoute::Overlay);
     }
 
     #[test]
-    fn annotate_intent_forces_preview_while_enter_keeps_quiet() {
-        use crate::settings::{CaptureSettings, FinishAction};
-
-        let quiet = CaptureSettings {
-            delay_seconds: 0,
-            auto_copy: true,
-            finish_action: FinishAction::Quiet,
-        };
-        // Enter/确认仍按设置静默完成。
+    fn unhosted_workspace_falls_back_to_preview_without_using_finish_settings() {
+        let unhosted = ui::OverlayCapabilities::unhosted();
+        assert!(!unhosted.workspace_actions);
         assert_eq!(
-            finish_disposition(FinishIntent::Configured, quiet),
-            FinishDisposition::Quiet
+            workspace_route(unhosted.workspace_actions),
+            WorkspaceRoute::PreviewFallback
         );
-        // 显式「标注」不受静默配置影响,总是打开预览编辑器。
-        assert_eq!(
-            finish_disposition(FinishIntent::Annotate, quiet),
-            FinishDisposition::Preview
-        );
-        // 默认设置与 autoCopy 关闭的回退两边都是预览。
-        assert_eq!(
-            finish_disposition(FinishIntent::Annotate, CaptureSettings::default()),
-            FinishDisposition::Preview
-        );
-        let off = CaptureSettings {
-            auto_copy: false,
-            ..quiet
-        };
-        assert_eq!(
-            finish_disposition(FinishIntent::Configured, off),
-            FinishDisposition::Preview
-        );
-        assert_eq!(
-            finish_disposition(FinishIntent::Annotate, off),
-            FinishDisposition::Preview
-        );
+        assert_eq!(workspace_route(false), WorkspaceRoute::PreviewFallback);
+        assert_ne!(workspace_route(true), WorkspaceRoute::PreviewFallback);
     }
 
     #[test]

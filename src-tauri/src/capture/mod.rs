@@ -65,7 +65,16 @@ pub async fn confirm_region(
 ) -> Result<(), CaptureError> {
     let annotations = annotations.unwrap_or_default();
     tauri::async_runtime::spawn_blocking(move || {
-        session::confirm_region(&app, RegionSelection { x, y, width, height }, annotations)
+        session::confirm_region(
+            &app,
+            RegionSelection {
+                x,
+                y,
+                width,
+                height,
+            },
+            annotations,
+        )
     })
     .await
     .map_err(|_| CaptureError::api("error.capture.thread_failed"))?
@@ -79,21 +88,26 @@ pub async fn confirm_logical_region(
     width: f64,
     height: f64,
 ) -> Result<(), CaptureError> {
-    tauri::async_runtime::spawn_blocking(move || session::confirm_logical_region(
-        &app,
-        LogicalRect {
-            x,
-            y,
-            width,
-            height,
-        },
-    )).await.map_err(|_| CaptureError::api("error.capture.thread_failed"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        session::confirm_logical_region(
+            &app,
+            LogicalRect {
+                x,
+                y,
+                width,
+                height,
+            },
+        )
+    })
+    .await
+    .map_err(|_| CaptureError::api("error.capture.thread_failed"))?
 }
 
 #[tauri::command]
 pub async fn confirm_window(app: AppHandle, window_id: String) -> Result<(), CaptureError> {
     tauri::async_runtime::spawn_blocking(move || session::confirm_window(&app, window_id))
-        .await.map_err(|_| CaptureError::api("error.capture.thread_failed"))?
+        .await
+        .map_err(|_| CaptureError::api("error.capture.thread_failed"))?
 }
 
 /// Quiet completion with an immediate action on the cropped region (R3):
@@ -113,7 +127,12 @@ pub async fn finish_region_with(
 ) -> Result<(), CaptureError> {
     session::finish_region_with(
         &app,
-        RegionSelection { x, y, width, height },
+        RegionSelection {
+            x,
+            y,
+            width,
+            height,
+        },
         Vec::new(),
         action,
         None,
@@ -162,7 +181,11 @@ async fn ocr_quiet_frame(app: &AppHandle) {
         Ok(_) => match crate::ocr::copy_ocr_all(app.clone()) {
             Ok(text) => {
                 let chars = text.chars().count();
-                ui::show_toast_key_params(app, "toast.ocr_copied", &[("chars", &chars.to_string())]);
+                ui::show_toast_key_params(
+                    app,
+                    "toast.ocr_copied",
+                    &[("chars", &chars.to_string())],
+                );
             }
             Err(message) => ui::show_toast(app, &message),
         },
@@ -178,6 +201,31 @@ pub fn get_toast_message() -> Option<ui::ToastPayload> {
 pub fn precreate_windows(app: &AppHandle) {
     ui::precreate(app);
     crate::pin::precreate(app);
+}
+
+#[tauri::command]
+pub fn complete_workspace(
+    app: AppHandle,
+    kind: String,
+    name: Option<String>,
+) -> Result<(), CaptureError> {
+    session::complete_workspace(&app, &kind, name.as_deref())
+}
+
+#[tauri::command]
+pub fn edit_workspace_further(
+    app: AppHandle,
+    annotations: Vec<crate::annotate::Annotation>,
+) -> Result<(), CaptureError> {
+    session::edit_workspace_further(&app, annotations)
+}
+
+#[tauri::command]
+pub fn fallback_workspace_preview(
+    app: AppHandle,
+    annotations: Vec<crate::annotate::Annotation>,
+) -> Result<(), CaptureError> {
+    session::fallback_workspace_preview(&app, annotations)
 }
 
 #[tauri::command]
@@ -240,6 +288,8 @@ mod tests {
         assert!(matches!(payload[1], Annotation::Text { .. }));
         assert!(matches!(payload[2], Annotation::Blur { .. }));
         // 无标注时前端发送空列表(旧行为:空裁剪仍走同一条完成路径)。
-        assert!(serde_json::from_str::<Vec<Annotation>>("[]").unwrap().is_empty());
+        assert!(serde_json::from_str::<Vec<Annotation>>("[]")
+            .unwrap()
+            .is_empty());
     }
 }

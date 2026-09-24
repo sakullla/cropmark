@@ -100,7 +100,7 @@ const KC_ANSI_T: u16 = 0x11;
 /// `AnnotationOptions::text_input` 为真,工具条含文字工具。
 #[derive(Debug, Clone, PartialEq)]
 pub enum RegionOutcome {
-    /// Enter 确认:rect 走普通完成路径(按 finishAction 预览或静默)。
+    /// Enter 确认:rect 交给网页浮层,壳本身不结束截图也不打开预览。
     Preview(PhysicalRect, Vec<Annotation>),
     /// 操作条/菜单的「标注」动作:rect 强制走预览编辑器,不受静默完成配置影响。
     Annotate(PhysicalRect, Vec<Annotation>),
@@ -359,11 +359,7 @@ unsafe extern "C-unwind" fn release_rgba_vec(
     }
 }
 
-fn nsimage_from_rgba(
-    pixels: Vec<u8>,
-    size: usize,
-    point_size: f64,
-) -> Option<Retained<NSImage>> {
+fn nsimage_from_rgba(pixels: Vec<u8>, size: usize, point_size: f64) -> Option<Retained<NSImage>> {
     let mut boxed = Box::new(pixels);
     let data_ptr = boxed.as_ptr();
     let data_len = boxed.len();

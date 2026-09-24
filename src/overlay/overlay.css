@@ -77,15 +77,18 @@
   background: var(--accent-soft);
 }
 
-/* R21:选区固定后的确认入口(Enter 等效);标注关闭时不出现。 */
-.overlay-confirm {
+.overlay-actions {
+  display: flex;
+  gap: 6px;
   pointer-events: auto;
+}
+
+.overlay-actions button {
   cursor: pointer;
   border: 1px solid transparent;
   border-radius: 999px;
-  min-width: 24px;
   min-height: 24px;
-  padding: 8px 16px;
+  padding: 8px 12px;
   background: var(--accent);
   color: var(--on-accent);
   font: inherit;
@@ -94,8 +97,14 @@
   box-shadow: var(--shadow);
 }
 
-.overlay-confirm:hover {
-  filter: brightness(1.06);
+.overlay-actions button[hidden] {
+  display: none;
+}
+
+.overlay-actions [data-workspace="edit"] {
+  background: var(--surface, transparent);
+  color: var(--text, inherit);
+  border-color: var(--line, currentColor);
 }
 
 /* R21:即时标注工具条,悬浮在选区下方居中;样式按钮面板向上展开。 */
@@ -137,7 +146,7 @@
 }
 
 .overlay-tools[hidden],
-.overlay-confirm[hidden] {
+.overlay-actions[hidden] {
   display: none;
 }
 

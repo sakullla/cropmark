@@ -35,11 +35,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
     PostQuitMessage, RegisterClassExW, SetCursor, SetForegroundWindow, SetWindowPos, ShowWindow,
     TranslateMessage, CS_HREDRAW, CS_VREDRAW, HCURSOR, HWND_TOPMOST, ICONINFO, IDC_ARROW, IDC_HAND,
     IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, MSG, PM_NOREMOVE, PM_REMOVE,
-    SM_CXCURSOR,
-    SM_CYCURSOR, SWP_SHOWWINDOW, SW_SHOW, WM_CHAR, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND,
-    WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KEYUP,
-    WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_QUIT, WM_RBUTTONDOWN,
-    WM_SETCURSOR, WM_SETFOCUS, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    SM_CXCURSOR, SM_CYCURSOR, SWP_SHOWWINDOW, SW_SHOW, WM_CHAR, WM_CLOSE, WM_DESTROY,
+    WM_ERASEBKGND, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN,
+    WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_QUIT,
+    WM_RBUTTONDOWN, WM_SETCURSOR, WM_SETFOCUS, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_POPUP,
 };
 
 use crate::annotate::Annotation;
@@ -90,7 +90,7 @@ const VK_T: u32 = 0x54;
 /// (坐标相对冻结帧物理像素,由会话层平移到裁剪坐标系)。
 #[derive(Debug, Clone, PartialEq)]
 pub enum RegionOutcome {
-    /// Enter 确认:rect 走普通完成路径(按 finishAction 预览或静默)。
+    /// Enter 确认:rect 交给网页浮层,壳本身不结束截图也不打开预览。
     Preview(PhysicalRect, Vec<Annotation>),
     /// 操作条/菜单的「标注」动作:rect 强制走预览编辑器,不受静默完成配置影响。
     Annotate(PhysicalRect, Vec<Annotation>),
@@ -216,7 +216,13 @@ fn run_shell(
         });
     });
     let hwnd = unsafe {
-        create_overlay_window(monitor.physical_x, monitor.physical_y, width, height, frame.scale)?
+        create_overlay_window(
+            monitor.physical_x,
+            monitor.physical_y,
+            width,
+            height,
+            frame.scale,
+        )?
     };
     unsafe {
         log_present_diagnostics(
@@ -480,7 +486,9 @@ fn cursor_resource(hint: CursorHint) -> Option<PCWSTR> {
 fn crosshair_cursor(scale: f64) -> HCURSOR {
     static HANDLES: OnceLock<Mutex<HashMap<u64, isize>>> = OnceLock::new();
     let cache = HANDLES.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut cache = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut cache = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let value = *cache
         .entry(scale.to_bits())
         .or_insert_with(|| create_dual_crosshair_cursor(scale).0 as isize);
@@ -717,7 +725,15 @@ fn present(timing: bool, hwnd: HWND, canvas: &mut Canvas) {
     let started = if timing { Some(Instant::now()) } else { None };
     let composed = compose_canvas(canvas);
     if let Some((_, dirty)) = composed {
-        unsafe { blit_dirty(hwnd, canvas.width, canvas.height, &canvas.present_buf, dirty) };
+        unsafe {
+            blit_dirty(
+                hwnd,
+                canvas.width,
+                canvas.height,
+                &canvas.present_buf,
+                dirty,
+            )
+        };
     }
     if let Some(started) = started {
         eprintln!(
@@ -818,13 +834,7 @@ unsafe fn blit(hwnd: HWND, width: i32, height: i32, bgra: &[u8]) {
 }
 
 /// 只把脏行带送到窗口。客户区与帧不一致时退回整帧 blit。
-unsafe fn blit_dirty(
-    hwnd: HWND,
-    width: i32,
-    height: i32,
-    bgra: &[u8],
-    dirty: composer::IntRect,
-) {
+unsafe fn blit_dirty(hwnd: HWND, width: i32, height: i32, bgra: &[u8], dirty: composer::IntRect) {
     if hwnd.0.is_null() {
         return;
     }

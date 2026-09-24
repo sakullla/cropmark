@@ -36,12 +36,8 @@ export interface FeatureSettings {
   inlineAnnotation: boolean;
 }
 
-export type FinishAction = "preview" | "quiet";
-
 export interface CaptureSettings {
   delaySeconds: number;
-  autoCopy: boolean;
-  finishAction: FinishAction;
 }
 
 export interface HistorySettings {
@@ -166,25 +162,6 @@ export function mountSettings(root: HTMLElement): () => void {
             <input type="number" class="number-input" data-capture="delay" min="0" max="60" step="1" inputmode="numeric" aria-labelledby="delay-label" />
           </div>
           <p class="error" data-capture-error role="alert" hidden></p>
-          <div class="setting-row">
-            <div>
-              <div class="label" id="autocopy-label" data-i18n="settings.capture.autocopy_label">完成后自动复制</div>
-              <p class="hint" data-i18n="settings.capture.autocopy_hint">关闭后截图完成不写入剪贴板；预览内手动复制不受影响。</p>
-            </div>
-            <button type="button" class="switch" data-capture="auto-copy" role="switch" aria-checked="true" aria-labelledby="autocopy-label">
-              <span class="knob"></span>
-            </button>
-          </div>
-          <div class="setting-row">
-            <div>
-              <div class="label" id="finish-label" data-i18n="settings.capture.finish_label">完成后动作</div>
-              <p class="hint" data-i18n="settings.capture.finish_hint">静默完成会直接复制并给出提示，不打开预览；需自动复制开启。</p>
-            </div>
-            <div class="choices" data-capture="finish" role="radiogroup" aria-labelledby="finish-label">
-              <button type="button" class="choice" role="radio" data-finish-action="preview" aria-checked="true" data-i18n="settings.capture.finish_preview">预览</button>
-              <button type="button" class="choice" role="radio" data-finish-action="quiet" aria-checked="false" data-i18n="settings.capture.finish_quiet">静默完成</button>
-            </div>
-          </div>
         </section>
         <section class="card" aria-labelledby="history-title">
           <h1 id="history-title" data-i18n="settings.history.title">历史记录</h1>
@@ -271,8 +248,6 @@ export function mountSettings(root: HTMLElement): () => void {
   const closeEl = root.querySelector("[data-action=close]");
   const delayEl = root.querySelector("[data-capture=delay]");
   const delayErrorEl = root.querySelector("[data-capture-error]");
-  const autoCopyEl = root.querySelector("[data-capture=auto-copy]");
-  const finishRoot = root.querySelector("[data-capture=finish]");
   const historyEnabledEl = root.querySelector("[data-history=enabled]");
   const historyLimitEl = root.querySelector("[data-history=limit]");
   const historyErrorEl = root.querySelector("[data-history-error]");
@@ -289,8 +264,6 @@ export function mountSettings(root: HTMLElement): () => void {
     !(closeEl instanceof HTMLButtonElement) ||
     !(delayEl instanceof HTMLInputElement) ||
     !(delayErrorEl instanceof HTMLElement) ||
-    !(autoCopyEl instanceof HTMLButtonElement) ||
-    !(finishRoot instanceof HTMLElement) ||
     !(historyEnabledEl instanceof HTMLButtonElement) ||
     !(historyLimitEl instanceof HTMLInputElement) ||
     !(historyErrorEl instanceof HTMLElement) ||
@@ -307,8 +280,6 @@ export function mountSettings(root: HTMLElement): () => void {
   let lastSettings: UiSettings | null = null;
   let captureSettings: CaptureSettings = {
     delaySeconds: 0,
-    autoCopy: true,
-    finishAction: "preview",
   };
   let historySettings: HistorySettings = {
     enabled: true,
@@ -331,20 +302,6 @@ export function mountSettings(root: HTMLElement): () => void {
     captureSettings = capture;
     delayEl.value = String(capture.delaySeconds);
     clearDelayError();
-    autoCopyEl.setAttribute("aria-checked", capture.autoCopy ? "true" : "false");
-    autoCopyEl.classList.toggle("on", capture.autoCopy);
-    const finishButtons = finishRoot.querySelectorAll("[data-finish-action]");
-    for (const button of finishButtons) {
-      if (!(button instanceof HTMLButtonElement)) {
-        continue;
-      }
-      const quiet = button.dataset.finishAction === "quiet";
-      const selected = button.dataset.finishAction === capture.finishAction;
-      button.setAttribute("aria-checked", selected ? "true" : "false");
-      button.classList.toggle("selected", selected);
-      button.disabled = quiet && !capture.autoCopy;
-      button.title = button.disabled ? t("settings.capture.quiet_locked") : "";
-    }
   };
 
   const showHistoryError = (message: string): void => {
@@ -586,30 +543,6 @@ export function mountSettings(root: HTMLElement): () => void {
       event.preventDefault();
       delayEl.blur();
     }
-  });
-
-  autoCopyEl.addEventListener("click", () => {
-    if (applying) {
-      return;
-    }
-    const next = autoCopyEl.getAttribute("aria-checked") !== "true";
-    void applyCapture({ ...captureSettings, autoCopy: next });
-  });
-
-  finishRoot.addEventListener("click", (event) => {
-    const target = event.target;
-    if (!(target instanceof Element) || applying) {
-      return;
-    }
-    const button = target.closest("[data-finish-action]");
-    if (!(button instanceof HTMLButtonElement) || button.disabled) {
-      return;
-    }
-    const action = button.dataset.finishAction as FinishAction | undefined;
-    if (!action || action === captureSettings.finishAction) {
-      return;
-    }
-    void applyCapture({ ...captureSettings, finishAction: action });
   });
 
   const commitHistoryLimit = (): void => {
