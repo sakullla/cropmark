@@ -628,8 +628,12 @@
     "en": "The history entry does not exist or was deleted."
   },
   "error.history.image_missing": {
-    "zh-CN": "历史图片文件缺失，无法复制或贴图。",
-    "en": "The history image file is missing; it cannot be copied or pinned."
+    "zh-CN": "历史图片文件缺失，无法复制、贴图或再编辑。",
+    "en": "The history image file is missing; it cannot be copied, pinned, or re-edited."
+  },
+  "error.history.reedit_busy": {
+    "zh-CN": "正在截取，无法打开这条历史的预览。",
+    "en": "A capture is in progress; this history image cannot be opened in preview."
   },
   "error.history.thumb_missing": {
     "zh-CN": "历史缩略图缺失。",
@@ -1676,12 +1680,12 @@
     "en": "Thumbnail missing"
   },
   "history.image_missing": {
-    "zh-CN": "原始图片缺失，无法复制或贴图",
-    "en": "Original image missing; cannot copy or pin"
+    "zh-CN": "原始图片缺失，无法复制、贴图或再编辑",
+    "en": "Original image missing; cannot copy, pin, or re-edit"
   },
   "history.image_missing_title": {
-    "zh-CN": "原始图片缺失",
-    "en": "Original image missing"
+    "zh-CN": "原始图片缺失，无法复制、贴图或再编辑",
+    "en": "Original image missing; cannot copy, pin, or re-edit"
   },
   "history.copy": {
     "zh-CN": "复制",
@@ -1694,6 +1698,10 @@
   "history.delete": {
     "zh-CN": "删除",
     "en": "Delete"
+  },
+  "history.reedit": {
+    "zh-CN": "再编辑",
+    "en": "Re-edit"
   },
   "history.deleted": {
     "zh-CN": "已删除。",

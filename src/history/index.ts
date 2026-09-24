@@ -19,8 +19,8 @@ interface HistoryListPayload {
   notice: string | null;
 }
 
-// 历史视图:按时间展示本机保存的截图缩略图,每条可重新复制、重新贴图或
-// 删除,也可清空全部。缩略图经 Rust 命令拉取为二进制,转 blob URL 显示;
+// 历史视图:按时间展示本机保存的截图缩略图,每条可再编辑、复制、贴图或
+// 删除,也可清空全部。再编辑打开该条图像的预览。缩略图经 Rust 命令拉取为二进制,转 blob URL 显示;
 // 索引损坏或缩略图/原图缺失时给出可理解状态,列表仍可用。
 export function mountHistory(root: HTMLElement): () => void {
   root.className = "history-root";
@@ -32,7 +32,7 @@ export function mountHistory(root: HTMLElement): () => void {
           <span class="name" data-i18n="history.title">历史记录</span>
         </div>
         <div class="history-toolbar">
-          <button type="button" class="choice" data-action="clear" data-i18n="history.clear">清空全部</button>
+          <button type="button" class="history-clear" data-action="clear" data-i18n="history.clear">清空全部</button>
           <button type="button" class="icon-btn" data-action="close" data-i18n-aria-label="history.close" aria-label="关闭">${icons.close}</button>
         </div>
       </header>
@@ -42,8 +42,8 @@ export function mountHistory(root: HTMLElement): () => void {
         <div class="history-confirm" data-confirm role="alertdialog" data-i18n-aria-label="history.confirm_group" aria-label="确认操作" hidden>
           <p class="history-confirm-text" data-confirm-text></p>
           <div class="history-confirm-actions">
-            <button type="button" class="choice history-confirm-accept" data-confirm-accept data-i18n="history.accept">确认</button>
-            <button type="button" class="choice" data-confirm-cancel data-i18n="history.cancel">取消</button>
+            <button type="button" class="history-btn history-btn-danger history-confirm-accept" data-confirm-accept data-i18n="history.accept">确认</button>
+            <button type="button" class="history-btn history-btn-quiet" data-confirm-cancel data-i18n="history.cancel">取消</button>
           </div>
         </div>
         <div class="history-list" data-list></div>
@@ -191,15 +191,16 @@ export function mountHistory(root: HTMLElement): () => void {
 
     const actions = document.createElement("div");
     actions.className = "history-actions";
-    const actionLabels: Array<[string, CatalogKey]> = [
-      ["copy", "history.copy"],
-      ["pin", "history.pin"],
-      ["delete", "history.delete"],
+    const actionLabels: Array<[string, CatalogKey, string]> = [
+      ["reedit", "history.reedit", "history-btn history-btn-edit"],
+      ["copy", "history.copy", "history-btn history-btn-quiet"],
+      ["pin", "history.pin", "history-btn history-btn-quiet"],
+      ["delete", "history.delete", "history-btn history-btn-danger"],
     ];
-    for (const [action, labelKey] of actionLabels) {
+    for (const [action, labelKey, className] of actionLabels) {
       const button = document.createElement("button");
       button.type = "button";
-      button.className = action === "delete" ? "choice history-delete" : "choice";
+      button.className = className;
       button.dataset.entryAction = action;
       button.textContent = t(labelKey);
       if (entry.imageMissing && action !== "delete") {
@@ -276,6 +277,8 @@ export function mountHistory(root: HTMLElement): () => void {
       } else if (action === "pin") {
         await invoke("pin_history_entry", { id });
         setStatusKey("history.pinned");
+      } else if (action === "reedit") {
+        await invoke("reedit_history_entry", { id });
       }
     } catch (error) {
       setStatusText(errorMessage(error), true);

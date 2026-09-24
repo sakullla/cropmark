@@ -53,6 +53,7 @@
   border-color: var(--danger);
   background: var(--danger);
   color: var(--on-danger);
+  font-weight: 650;
 }
 
 .history-confirm .history-confirm-accept:hover:not(:disabled) {
@@ -127,28 +128,77 @@
 
 .history-actions {
   display: flex;
-  gap: 6px;
+  align-items: center;
+  gap: 4px;
 }
 
-.history-actions .choice {
-  padding: 6px 10px;
-}
-
-.history-toolbar .choice,
-.history-toolbar .icon-btn,
-.history-actions .choice,
-.history-confirm-actions .choice {
+.history-clear,
+.history-btn {
   min-width: 24px;
   min-height: 24px;
+  border-radius: 6px;
+  font: inherit;
+  line-height: 1.2;
+  cursor: pointer;
 }
 
-.history-delete {
+.history-clear {
+  border: 0;
+  padding: 4px 2px;
+  background: transparent;
   color: var(--danger);
+  font-size: 12px;
+  font-weight: 600;
 }
 
-.history-delete:hover:not(:disabled) {
+.history-clear:hover:not(:disabled) {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.history-btn {
+  border: 1px solid transparent;
+  padding: 3px 7px;
+  background: transparent;
+  font-size: 12px;
+}
+
+.history-btn-edit {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 650;
+}
+
+.history-btn-edit:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--on-accent, #fff);
+}
+
+.history-btn-quiet {
+  color: var(--muted);
+}
+
+.history-btn-quiet:hover:not(:disabled) {
+  border-color: var(--line);
+  color: var(--ink);
+  background: var(--control-fill);
+}
+
+.history-btn-danger {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.history-btn-danger:hover:not(:disabled) {
   border-color: var(--danger);
   background: var(--danger-soft);
+}
+
+.history-btn:disabled,
+.history-clear:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .history-empty {

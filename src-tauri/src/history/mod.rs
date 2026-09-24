@@ -258,6 +258,14 @@ fn find_entry(dir: &Path, id: &str) -> Result<HistoryEntry, String> {
         .ok_or_else(|| i18n::t("error.history.missing"))
 }
 
+/// 再编辑用的原图帧:只读,不改索引或文件名。尺寸以 PNG 为准,缩放沿用索引。
+pub fn load_entry_frame(dir: &Path, id: &str) -> Result<Frame, String> {
+    let (entry, png) = read_entry(dir, id)?;
+    let mut frame = decode_png(&png).map_err(friendly)?;
+    frame.scale = entry.scale;
+    Ok(frame)
+}
+
 /// 读取一条记录的原图(复制/贴图共用);文件缺失时报可理解错误。
 pub fn read_entry(dir: &Path, id: &str) -> Result<(HistoryEntry, Vec<u8>), String> {
     let _guard = lock_store();
@@ -358,6 +366,22 @@ pub fn copy_history_entry(app: AppHandle, id: String) -> Result<(), String> {
     let (_, png) = read_entry(&history_dir(&app), &id)?;
     let frame = decode_png(&png).map_err(friendly)?;
     crate::clipboard::copy_frame_with_png(&frame, &png).map_err(friendly)
+}
+
+/// 再编辑:把该条历史图像装入现有预览,不写回贴图,也不改历史目录。
+#[tauri::command]
+pub async fn reedit_history_entry(app: AppHandle, id: String) -> Result<(), String> {
+    let frame = tauri::async_runtime::spawn_blocking({
+        let app = app.clone();
+        move || load_entry_frame(&history_dir(&app), &id)
+    })
+    .await
+    .map_err(|_| i18n::t("error.history.failed"))??;
+    crate::pin::finish_pin_edit(&app);
+    crate::capture::session::adopt_history_frame(&app, frame.clone()).map_err(friendly)?;
+    crate::capture::ui::open_preview(&app, &frame)
+        .map_err(friendly)
+        .map(|_| ())
 }
 
 #[tauri::command]
@@ -645,6 +669,34 @@ mod tests {
         let small = thumbnail_png(&solid(100, 50, [10, 20, 30, 255])).unwrap();
         let decoded = decode_png(&small).unwrap();
         assert_eq!((decoded.width, decoded.height), (100, 50));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reedit_load_keeps_directory_format_and_blocks_when_image_is_missing() {
+        let dir = temp_dir("reedit");
+        let mut frame = solid(10, 6, [7, 8, 9, 255]);
+        frame.scale = 1.5;
+        let entry = record_frame(&dir, &frame, 20, 9).unwrap();
+        let index_before = fs::read(dir.join(INDEX_FILE)).unwrap();
+        let image_before = fs::read(dir.join(&entry.file_name)).unwrap();
+        let thumb_before = fs::read(dir.join(&entry.thumb_name)).unwrap();
+
+        let loaded = load_entry_frame(&dir, &entry.id).unwrap();
+        assert_eq!((loaded.width, loaded.height), (10, 6));
+        assert_eq!(loaded.scale, 1.5);
+        assert_eq!(loaded.rgba, frame.rgba);
+        assert_eq!(fs::read(dir.join(INDEX_FILE)).unwrap(), index_before);
+        assert_eq!(fs::read(dir.join(&entry.file_name)).unwrap(), image_before);
+        assert_eq!(fs::read(dir.join(&entry.thumb_name)).unwrap(), thumb_before);
+        assert_eq!(entry.file_name, format!("{}.png", entry.id));
+        assert_eq!(entry.thumb_name, format!("{}{THUMB_SUFFIX}", entry.id));
+
+        fs::remove_file(dir.join(&entry.file_name)).unwrap();
+        let missing = load_entry_frame(&dir, &entry.id).unwrap_err();
+        assert!(missing.contains("再编辑") || missing.contains("re-edit"));
+        delete_entry(&dir, &entry.id).unwrap();
+        assert!(load_index(&dir).0.is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -218,6 +218,7 @@ pub fn run() {
             history::get_history_thumbnail,
             history::copy_history_entry,
             history::pin_history_entry,
+            history::reedit_history_entry,
             history::delete_history_entry,
             history::clear_history,
             history::open_history,
