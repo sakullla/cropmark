@@ -41,11 +41,13 @@ pub fn should_demote(product_ui_visible: bool, shell_active: bool) -> bool {
 }
 
 fn product_ui_visible(app: &AppHandle) -> bool {
-    [SETTINGS, HISTORY, PREVIEW, ERROR].into_iter().any(|label| {
-        app.get_webview_window(label)
-            .and_then(|window| window.is_visible().ok())
-            .unwrap_or(false)
-    })
+    [SETTINGS, HISTORY, PREVIEW, ERROR]
+        .into_iter()
+        .any(|label| {
+            app.get_webview_window(label)
+                .and_then(|window| window.is_visible().ok())
+                .unwrap_or(false)
+        })
 }
 
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]

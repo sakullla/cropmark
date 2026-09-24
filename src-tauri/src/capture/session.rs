@@ -374,7 +374,7 @@ async fn plan_last_region(app: &AppHandle) -> Result<FixedRegionPlan, LastRegion
     .map_err(|_| LastRegionPlanError::OutOfRange)?
 }
 
-/// 抓取目标显示器并按钳制后的区域裁剪,把已定画面送进网页浮层。
+/// 抓取目标显示器并按钳制后的区域裁剪,把已定画面送进编辑页。
 async fn capture_last_region(
     app: &AppHandle,
     plan: FixedRegionPlan,
@@ -767,11 +767,8 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
         cleanup_cancelled_generation(app, generation);
         return Ok(());
     }
-    let pending_ocr = matches!(picked, RegionOutcome::Quiet(_, QuietAction::Ocr, _));
     match picked {
-        RegionOutcome::Preview(rect, annotations)
-        | RegionOutcome::Annotate(rect, annotations)
-        | RegionOutcome::Quiet(rect, _, annotations) => {
+        RegionOutcome::Preview(rect, annotations) | RegionOutcome::Annotate(rect, annotations) => {
             let handle = app.clone();
             tauri::async_runtime::spawn_blocking(move || {
                 commit_shell_region(
@@ -783,12 +780,29 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
                         height: rect.height,
                     },
                     annotations,
-                    pending_ocr,
+                    false,
                     generation,
                 )
             })
             .await
-            .map_err(|_| CaptureError::api("error.capture.thread_failed"))?
+            .map_err(|_| CaptureError::api("error.capture.thread_failed"))??;
+            Ok(())
+        }
+        // 复制/保存/贴图/取字在选区上直接完成,不打开编辑页。
+        RegionOutcome::Quiet(rect, action, annotations) => {
+            finish_region_with(
+                app,
+                RegionSelection {
+                    x: rect.x,
+                    y: rect.y,
+                    width: rect.width,
+                    height: rect.height,
+                },
+                annotations,
+                action,
+                Some(generation),
+            )
+            .await
         }
         RegionOutcome::Cancelled => {
             // 壳已经退出,不要再 PostMessage(WM_CLOSE):否则会关掉紧接着
@@ -1108,11 +1122,26 @@ pub fn adopt_external_frame(
     frame: Frame,
     writeback: String,
 ) -> Result<(), CaptureError> {
+    adopt_frame(app, frame, Some(writeback), "error.capture.pin_busy")
+}
+
+/// 历史再编辑:把该条图像装入预览会话,不记录贴图回写,预览仍可复制、保存和贴图。
+/// 进行中的截取会话不允许被覆盖。
+pub fn adopt_history_frame(app: &AppHandle, frame: Frame) -> Result<(), CaptureError> {
+    adopt_frame(app, frame, None, "error.history.reedit_busy")
+}
+
+fn adopt_frame(
+    app: &AppHandle,
+    frame: Frame,
+    writeback: Option<String>,
+    busy_key: &str,
+) -> Result<(), CaptureError> {
     let busy = with_session(app, |session| {
         session.as_ref().is_some_and(|current| current.busy)
     });
     if busy {
-        return Err(CaptureError::api("error.capture.pin_busy"));
+        return Err(CaptureError::api(busy_key));
     }
     let png = encode_png(&frame)?;
     let preview = ui::preview_payload(&frame, &png, ui::PreviewCopyState::Disabled, &[]);
@@ -1122,7 +1151,7 @@ pub fn adopt_external_frame(
         current.preview_opened = true;
         current.freeze = Some(frame.clone());
         current.preview = Some(preview);
-        current.writeback = Some(writeback);
+        current.writeback = writeback;
         *session = Some(current);
     });
     Ok(())
@@ -1500,90 +1529,30 @@ fn cancel_internal(app: &AppHandle, expected: Option<u64>) -> Result<CancelOutco
 /// 已定画面的去向:浮层能挂上工作区动作时留在浮层,否则说明缺失并打开预览。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkspaceRoute {
-    Overlay,
-    PreviewFallback,
+    Preview,
 }
 
-pub fn workspace_route(hosted: bool) -> WorkspaceRoute {
-    if hosted {
-        WorkspaceRoute::Overlay
-    } else {
-        WorkspaceRoute::PreviewFallback
-    }
+pub fn workspace_route(_hosted: bool) -> WorkspaceRoute {
+    WorkspaceRoute::Preview
 }
 
-/// 把已定画面放进网页浮层。不调用完成设置,不写剪贴板,不因此打开预览。
+/// 画面已经定下来:直接打开编辑页,不再盖一层全屏中间页。不写剪贴板。
 fn deliver_fixed_frame(
     app: &AppHandle,
     frame: Frame,
     annotations: Vec<Annotation>,
-    monitor: Option<MonitorGeom>,
+    _monitor: Option<MonitorGeom>,
     expected: Option<u64>,
 ) -> Result<(), CaptureError> {
     if is_cancelled(app) || finish_generation_stale(app, expected) {
         return Err(CaptureError::cancelled());
     }
-    let (mode, session_monitor, pending_ocr) = with_session(app, |session| {
-        let current = session.as_ref().ok_or_else(CaptureError::cancelled)?;
-        if current.cancelled || generation_mismatch(current, expected) {
-            return Err(CaptureError::cancelled());
-        }
-        Ok((current.mode, current.monitor.clone(), current.pending_ocr))
-    })?;
-    let monitor = monitor.or(session_monitor);
-    let capabilities =
-        ui::OverlayCapabilities::from_features(crate::settings::current_features(app));
-    let hosted = workspace_route(capabilities.workspace_actions) == WorkspaceRoute::Overlay;
-    let Some(monitor) = monitor else {
-        ui::show_toast_key(app, "overlay.notice.workspace_unavailable");
-        return open_workspace_preview(app, frame, annotations, expected);
-    };
-    if !hosted {
-        ui::show_toast_key(app, "overlay.notice.workspace_unavailable");
-        return open_workspace_preview(app, frame, annotations, expected);
+    match workspace_route(true) {
+        WorkspaceRoute::Preview => open_workspace_preview(app, frame, annotations, expected),
     }
-    let mut overlay = ui::overlay_payload(
-        mode,
-        &frame,
-        &monitor,
-        Vec::new(),
-        overlay_reduced_capabilities(mode, region_native_shell()),
-        capabilities,
-    )?;
-    overlay.fixed = true;
-    overlay.annotations = annotations;
-    overlay.pending_ocr = pending_ocr;
-    with_session_mut(app, |session| {
-        let current = session.as_mut().ok_or_else(CaptureError::cancelled)?;
-        if current.cancelled || generation_mismatch(current, expected) {
-            return Err(CaptureError::cancelled());
-        }
-        current.freeze = Some(frame.clone());
-        current.overlay = Some(overlay);
-        current.monitor = Some(monitor.clone());
-        current.windows.clear();
-        current.preview = None;
-        current.preview_opened = false;
-        Ok(())
-    })?;
-    if ui::open_overlay(app, &monitor).is_err() {
-        ui::show_toast_key(app, "overlay.notice.workspace_unavailable");
-        return open_workspace_preview(app, frame, annotations_from_overlay(app), expected);
-    }
-    Ok(())
 }
 
-fn annotations_from_overlay(app: &AppHandle) -> Vec<Annotation> {
-    with_session(app, |session| {
-        session
-            .as_ref()
-            .and_then(|current| current.overlay.as_ref())
-            .map(|overlay| overlay.annotations.clone())
-            .unwrap_or_default()
-    })
-}
-
-/// 进一步编辑,或浮层无法承载工作区时:打开含当前标注的预览,不写剪贴板。
+/// 进一步编辑,或已定画面进入编辑页:打开含当前标注的预览,不写剪贴板。
 fn open_workspace_preview(
     app: &AppHandle,
     frame: Frame,
@@ -2001,7 +1970,7 @@ mod tests {
                     }
                     CaptureMode::Fullscreen => {
                         assert!(!steps.contains(&SessionStep::ShowOverlayOnFreeze));
-                        assert_eq!(workspace_route(true), WorkspaceRoute::Overlay);
+                        assert_eq!(workspace_route(true), WorkspaceRoute::Preview);
                     }
                 }
             }
@@ -2024,11 +1993,10 @@ mod tests {
     }
 
     #[test]
-    fn fullscreen_delivers_workspace_overlay() {
+    fn fullscreen_opens_the_edit_page() {
         let steps = session_steps(false, 0);
         assert!(!steps.contains(&SessionStep::ShowOverlayOnFreeze));
-        assert_eq!(workspace_route(true), WorkspaceRoute::Overlay);
-        assert_ne!(workspace_route(true), WorkspaceRoute::PreviewFallback);
+        assert_eq!(workspace_route(true), WorkspaceRoute::Preview);
     }
 
     #[test]
@@ -2433,16 +2401,16 @@ mod tests {
     }
 
     #[test]
-    fn fixed_capture_stays_on_overlay_and_ignores_saved_finish_settings() {
+    fn fixed_capture_opens_the_edit_page_and_ignores_saved_finish_settings() {
         let capture = crate::settings::CaptureSettings::default();
         assert_eq!(capture.delay_seconds, 0);
         let hosted =
             ui::OverlayCapabilities::from_features(crate::settings::FeatureSettings::default());
         assert!(hosted.workspace_actions);
-        assert_eq!(workspace_route(true), WorkspaceRoute::Overlay);
+        assert_eq!(workspace_route(true), WorkspaceRoute::Preview);
         assert_eq!(
             workspace_route(hosted.workspace_actions),
-            WorkspaceRoute::Overlay
+            WorkspaceRoute::Preview
         );
         let saved = serde_json::from_str::<crate::settings::CaptureSettings>(
             r#"{"delaySeconds":3,"autoCopy":true,"finishAction":"preview"}"#,
@@ -2454,19 +2422,19 @@ mod tests {
         )
         .expect("old quiet finish is ignored");
         assert_eq!(quiet.delay_seconds, 1);
-        assert_eq!(workspace_route(true), WorkspaceRoute::Overlay);
+        assert_eq!(workspace_route(true), WorkspaceRoute::Preview);
     }
 
     #[test]
-    fn unhosted_workspace_falls_back_to_preview_without_using_finish_settings() {
+    fn unhosted_workspace_also_opens_the_edit_page() {
         let unhosted = ui::OverlayCapabilities::unhosted();
         assert!(!unhosted.workspace_actions);
         assert_eq!(
             workspace_route(unhosted.workspace_actions),
-            WorkspaceRoute::PreviewFallback
+            WorkspaceRoute::Preview
         );
-        assert_eq!(workspace_route(false), WorkspaceRoute::PreviewFallback);
-        assert_ne!(workspace_route(true), WorkspaceRoute::PreviewFallback);
+        assert_eq!(workspace_route(false), WorkspaceRoute::Preview);
+        assert_eq!(workspace_route(true), WorkspaceRoute::Preview);
     }
 
     #[test]

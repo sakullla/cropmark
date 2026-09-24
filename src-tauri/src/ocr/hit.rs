@@ -158,7 +158,12 @@ pub fn aabb(points: &[(f64, f64)]) -> Option<(f64, f64, f64, f64)> {
         max_x = max_x.max(x);
         max_y = max_y.max(y);
     }
-    Some((min_x, min_y, (max_x - min_x).max(1.0), (max_y - min_y).max(1.0)))
+    Some((
+        min_x,
+        min_y,
+        (max_x - min_x).max(1.0),
+        (max_y - min_y).max(1.0),
+    ))
 }
 
 pub fn expand_for_selection(spans: &[TextSpan]) -> Vec<TextSpan> {
@@ -238,9 +243,7 @@ pub fn hit_point(spans: &[TextSpan], x: f64, y: f64) -> Option<usize> {
         .iter()
         .enumerate()
         .filter(|(_, span)| !span.text.trim().is_empty() && span.contains(x, y))
-        .min_by(|a, b| {
-            area_cmp(a.1.area(), b.1.area()).then_with(|| a.0.cmp(&b.0))
-        })
+        .min_by(|a, b| area_cmp(a.1.area(), b.1.area()).then_with(|| a.0.cmp(&b.0)))
         .map(|(index, _)| index)
 }
 
@@ -271,11 +274,9 @@ pub fn join_spans(spans: &[TextSpan], indices: &[usize]) -> String {
         return String::new();
     }
     let mut ordered = indices.to_vec();
-    ordered.sort_by(|&a, &b| {
-        match (spans.get(a), spans.get(b)) {
-            (Some(left), Some(right)) => reading_order(left, right).then_with(|| a.cmp(&b)),
-            _ => a.cmp(&b),
-        }
+    ordered.sort_by(|&a, &b| match (spans.get(a), spans.get(b)) {
+        (Some(left), Some(right)) => reading_order(left, right).then_with(|| a.cmp(&b)),
+        _ => a.cmp(&b),
     });
     ordered.dedup();
     let mut lines: Vec<Vec<usize>> = Vec::new();

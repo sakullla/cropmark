@@ -47,16 +47,22 @@ impl RawBuffer {
         if self.bytes.len() < 4 {
             return false;
         }
-        self.bytes.chunks_exact(4).all(|px| px[0] == 0 && px[1] == 0 && px[2] == 0)
+        self.bytes
+            .chunks_exact(4)
+            .all(|px| px[0] == 0 && px[1] == 0 && px[2] == 0)
     }
 }
 
 pub fn accept_buffer(raw: RawBuffer) -> Result<Frame, CaptureError> {
     if raw.init == FrameInit::Uninitialized {
-        return Err(CaptureError::invalid_buffer("error.capture.buffer_uninitialized"));
+        return Err(CaptureError::invalid_buffer(
+            "error.capture.buffer_uninitialized",
+        ));
     }
     if raw.width == 0 || raw.height == 0 {
-        return Err(CaptureError::invalid_buffer("error.capture.buffer_zero_size"));
+        return Err(CaptureError::invalid_buffer(
+            "error.capture.buffer_zero_size",
+        ));
     }
     if raw.bytes.is_empty() {
         return Err(CaptureError::invalid_buffer("error.capture.buffer_empty"));
@@ -73,9 +79,17 @@ pub fn accept_buffer(raw: RawBuffer) -> Result<Frame, CaptureError> {
     })
 }
 
-pub fn crop_rgba(frame: &Frame, x: u32, y: u32, width: u32, height: u32) -> Result<Frame, CaptureError> {
+pub fn crop_rgba(
+    frame: &Frame,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+) -> Result<Frame, CaptureError> {
     if width == 0 || height == 0 {
-        return Err(CaptureError::invalid_buffer("error.capture.buffer_zero_size"));
+        return Err(CaptureError::invalid_buffer(
+            "error.capture.buffer_zero_size",
+        ));
     }
     if x.saturating_add(width) > frame.width || y.saturating_add(height) > frame.height {
         return Err(CaptureError::api("error.capture.region_out_of_bounds"));
@@ -128,7 +142,12 @@ pub fn encode_png(frame: &Frame) -> Result<Vec<u8>, CaptureError> {
     validate_frame(frame)?;
     let mut bytes = Vec::new();
     image::codecs::png::PngEncoder::new(&mut bytes)
-        .write_image(&frame.rgba, frame.width, frame.height, image::ExtendedColorType::Rgba8)
+        .write_image(
+            &frame.rgba,
+            frame.width,
+            frame.height,
+            image::ExtendedColorType::Rgba8,
+        )
         .map_err(|_| CaptureError::api("error.capture.encode_png"))?;
     Ok(bytes)
 }
@@ -138,7 +157,9 @@ pub fn validate_frame(frame: &Frame) -> Result<(), CaptureError> {
         .checked_mul(frame.height as usize)
         .and_then(|pixels| pixels.checked_mul(4));
     if frame.width == 0 || frame.height == 0 || expected != Some(frame.rgba.len()) {
-        return Err(CaptureError::invalid_buffer("error.capture.buffer_mismatch"));
+        return Err(CaptureError::invalid_buffer(
+            "error.capture.buffer_mismatch",
+        ));
     }
     Ok(())
 }
@@ -207,7 +228,9 @@ pub fn fit_display(width: u32, height: u32, max_edge: u32) -> (u32, u32) {
 
 pub fn resize_rgba(frame: &Frame, width: u32, height: u32) -> Result<Frame, CaptureError> {
     if width == 0 || height == 0 {
-        return Err(CaptureError::invalid_buffer("error.capture.buffer_zero_size"));
+        return Err(CaptureError::invalid_buffer(
+            "error.capture.buffer_zero_size",
+        ));
     }
     if frame.width == width && frame.height == height {
         return Ok(frame.clone());
@@ -264,7 +287,12 @@ mod tests {
 
     #[test]
     fn png_rejects_invalid_pixel_lengths_without_panicking() {
-        let frame = Frame { width: 2, height: 2, rgba: vec![0; 4], scale: 1.0 };
+        let frame = Frame {
+            width: 2,
+            height: 2,
+            rgba: vec![0; 4],
+            scale: 1.0,
+        };
         assert!(encode_png(&frame).is_err());
     }
 
@@ -283,7 +311,11 @@ mod tests {
             }
             let started = Instant::now();
             let png = encode_png(&frame).unwrap();
-            eprintln!("{width}x{height} current PNG: {:?}, {} bytes", started.elapsed(), png.len());
+            eprintln!(
+                "{width}x{height} current PNG: {:?}, {} bytes",
+                started.elapsed(),
+                png.len()
+            );
             assert_eq!(decode_png(&png).unwrap().rgba, frame.rgba);
         }
     }
@@ -309,7 +341,10 @@ mod tests {
     #[test]
     fn empty_buffer_is_failure() {
         let error = accept_buffer(RawBuffer::ready(10, 10, Vec::new())).unwrap_err();
-        assert_eq!(error.kind, super::super::error::CaptureErrorKind::InvalidBuffer);
+        assert_eq!(
+            error.kind,
+            super::super::error::CaptureErrorKind::InvalidBuffer
+        );
         assert!(error.message.contains("空"));
     }
 
@@ -328,7 +363,10 @@ mod tests {
     #[test]
     fn length_mismatch_is_invalid_buffer() {
         let error = accept_buffer(RawBuffer::ready(2, 2, vec![1, 2, 3])).unwrap_err();
-        assert_eq!(error.kind, super::super::error::CaptureErrorKind::InvalidBuffer);
+        assert_eq!(
+            error.kind,
+            super::super::error::CaptureErrorKind::InvalidBuffer
+        );
     }
 
     #[test]

@@ -263,10 +263,7 @@ pub fn finalize_plan(
             continue;
         };
         if let Err(_error) = register(shortcut) {
-            errors.set(
-                item.mode,
-                Some("error.hotkey.register".to_string()),
-            );
+            errors.set(item.mode, Some("error.hotkey.register".to_string()));
         }
     }
     errors
@@ -304,7 +301,9 @@ fn plan_mode_for_shortcut(hotkeys: &Hotkeys, shortcut: &str) -> Option<CaptureMo
 }
 
 fn lock_mutex<T>(mutex: &std::sync::Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 enum Token {
@@ -475,10 +474,16 @@ mod tests {
             fullscreen: "Alt+Shift+S".into(),
         };
         let plan = plan_bindings(&hotkeys);
-        let window = plan.iter().find(|item| item.mode == CaptureMode::Window).unwrap();
+        let window = plan
+            .iter()
+            .find(|item| item.mode == CaptureMode::Window)
+            .unwrap();
         assert!(i18n::t(window.error.as_deref().unwrap()).contains("冲突"));
         assert!(window.plugin_shortcut.is_none());
-        let region = plan.iter().find(|item| item.mode == CaptureMode::Region).unwrap();
+        let region = plan
+            .iter()
+            .find(|item| item.mode == CaptureMode::Region)
+            .unwrap();
         assert!(region.error.is_none());
     }
 
@@ -514,7 +519,10 @@ mod tests {
             fullscreen: "Alt+Shift+S".into(),
         };
         let plan = plan_bindings(&hotkeys);
-        let region = plan.iter().find(|item| item.mode == CaptureMode::Region).unwrap();
+        let region = plan
+            .iter()
+            .find(|item| item.mode == CaptureMode::Region)
+            .unwrap();
         assert!(i18n::t(region.error.as_deref().unwrap()).contains("系统截图"));
         assert!(region.plugin_shortcut.is_none());
     }

@@ -38,7 +38,11 @@ impl MonitorGeom {
         logical_height: u32,
         scale: f64,
     ) -> Self {
-        let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+        let scale = if scale.is_finite() && scale > 0.0 {
+            scale
+        } else {
+            1.0
+        };
         Self {
             id: id.into(),
             logical_x,
@@ -61,7 +65,11 @@ impl MonitorGeom {
         physical_height: u32,
         scale: f64,
     ) -> Self {
-        let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+        let scale = if scale.is_finite() && scale > 0.0 {
+            scale
+        } else {
+            1.0
+        };
         Self {
             id: id.into(),
             logical_x: unscale_i32(physical_x, scale),
@@ -92,12 +100,10 @@ impl MonitorGeom {
     }
 }
 
-pub fn monitor_at_physical(
-    monitors: &[MonitorGeom],
-    x: i32,
-    y: i32,
-) -> Option<&MonitorGeom> {
-    monitors.iter().find(|monitor| monitor.contains_physical(x, y))
+pub fn monitor_at_physical(monitors: &[MonitorGeom], x: i32, y: i32) -> Option<&MonitorGeom> {
+    monitors
+        .iter()
+        .find(|monitor| monitor.contains_physical(x, y))
 }
 
 #[cfg(test)]
@@ -125,7 +131,11 @@ pub fn appkit_global_to_physical(
     frame_height: f64,
     scale: f64,
 ) -> (i32, i32) {
-    let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
     let x = ((screen_x - frame_x) * scale).round() as i32;
     let y = ((frame_y + frame_height - screen_y) * scale).round() as i32;
     (x, y)
@@ -167,8 +177,17 @@ pub fn backing_to_engine(
     (x, y)
 }
 
-pub fn crop_from_logical(scale: f64, rect: LogicalRect, frame_w: u32, frame_h: u32) -> PhysicalRect {
-    let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+pub fn crop_from_logical(
+    scale: f64,
+    rect: LogicalRect,
+    frame_w: u32,
+    frame_h: u32,
+) -> PhysicalRect {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
     let x = (rect.x * scale).round().max(0.0) as u32;
     let y = (rect.y * scale).round().max(0.0) as u32;
     let width = (rect.width * scale).round().max(0.0) as u32;

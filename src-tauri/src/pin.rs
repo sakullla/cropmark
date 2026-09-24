@@ -22,7 +22,6 @@ fn pin_retry_message() -> String {
     i18n::t("pin.retry")
 }
 
-
 /// 轮转游标:下一次分配从上一次分配槽位之后开始找空闲标签。
 static NEXT_SLOT: AtomicUsize = AtomicUsize::new(0);
 
@@ -274,23 +273,22 @@ fn ensure_pin_window(app: &AppHandle, slot: usize) -> Result<WebviewWindow, Stri
     if let Some(window) = app.get_webview_window(&label) {
         return Ok(window);
     }
-    let window = WebviewWindowBuilder::new(
-        app,
-        label,
-        WebviewUrl::App("index.html?view=pin".into()),
-    )
-    .title("Cropmark")
-    .decorations(false)
-    .shadow(true)
-    .skip_taskbar(true)
-    .resizable(false)
-    .maximizable(false)
-    .minimizable(false)
-    .always_on_top(false)
-    .visible(false)
-    .inner_size(1.0, 1.0)
-    .build()
-    .map_err(|error| i18n::tp("error.pin.window_create", &[("error", &error.to_string())]))?;
+    let window =
+        WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html?view=pin".into()))
+            .title("Cropmark")
+            .decorations(false)
+            .shadow(true)
+            .skip_taskbar(true)
+            .resizable(false)
+            .maximizable(false)
+            .minimizable(false)
+            .always_on_top(false)
+            .visible(false)
+            .inner_size(1.0, 1.0)
+            .build()
+            .map_err(|error| {
+                i18n::tp("error.pin.window_create", &[("error", &error.to_string())])
+            })?;
     park_pin_window(&window);
     Ok(window)
 }
@@ -415,8 +413,13 @@ fn prepare_pin(app: &AppHandle, annotations: &[Annotation]) -> Result<PreparedPi
     };
     let (_, work) = pointer_work_area(app);
     let (work_w, work_h) = work.map(|(.., w, h)| (w, h)).unwrap_or((1920.0, 1080.0));
-    let (width, height) =
-        pin_logical_size(rendered.width, rendered.height, rendered.scale, work_w, work_h);
+    let (width, height) = pin_logical_size(
+        rendered.width,
+        rendered.height,
+        rendered.scale,
+        work_w,
+        work_h,
+    );
     Ok(PreparedPin {
         frame: rendered,
         width,
@@ -465,8 +468,7 @@ pub fn pin_retained(app: &AppHandle) {
 /// 读取槽位源图(克隆);窗口已关闭或源图已清时返回错误文案。
 fn source_for(label: &str) -> Result<PinSource, String> {
     let slot = slot_from_label(label).ok_or_else(|| i18n::t("error.pin.window_unknown"))?;
-    with_store(|slots| slots[slot].clone())
-        .ok_or_else(|| i18n::t("error.pin.source_gone"))
+    with_store(|slots| slots[slot].clone()).ok_or_else(|| i18n::t("error.pin.source_gone"))
 }
 
 /// 读取源图并应用当前旋转/透明度(复制、保存、再标注共用)。
@@ -558,8 +560,15 @@ pub async fn save_pin(
     let bytes = tauri::async_runtime::spawn_blocking(move || encode_png(&frame).map_err(fail))
         .await
         .map_err(|_| i18n::t("error.pin.thread_save"))??;
-    std::fs::write(&path, bytes)
-        .map_err(|error| i18n::tp("error.pin.save_to_path", &[("path", &path.display().to_string()), ("error", &error.to_string())]))?;
+    std::fs::write(&path, bytes).map_err(|error| {
+        i18n::tp(
+            "error.pin.save_to_path",
+            &[
+                ("path", &path.display().to_string()),
+                ("error", &error.to_string()),
+            ],
+        )
+    })?;
     Ok(PinSaveResult {
         saved: true,
         path: Some(path.to_string_lossy().into_owned()),
@@ -622,11 +631,10 @@ pub async fn update_pin_from_preview(
         return Err(i18n::t("error.pin.not_editing"));
     };
     let frame = session::current_preview_frame(&app).map_err(fail)?;
-    let rendered = tauri::async_runtime::spawn_blocking(move || {
-        rasterize(&frame, &annotations).map_err(fail)
-    })
-    .await
-    .map_err(|_| i18n::t("error.pin.thread_pin"))??;
+    let rendered =
+        tauri::async_runtime::spawn_blocking(move || rasterize(&frame, &annotations).map_err(fail))
+            .await
+            .map_err(|_| i18n::t("error.pin.thread_pin"))??;
 
     let slot = slot_from_label(&label).ok_or_else(|| i18n::t("error.pin.window_unknown"))?;
     let stored = with_store(|slots| {
@@ -825,7 +833,10 @@ mod tests {
 
     #[test]
     fn quiet_pin_toast_keeps_other_readable_errors() {
-        assert_eq!(quiet_pin_toast("无法创建贴图窗口：timeout"), "无法创建贴图窗口：timeout");
+        assert_eq!(
+            quiet_pin_toast("无法创建贴图窗口：timeout"),
+            "无法创建贴图窗口：timeout"
+        );
         assert_eq!(quiet_pin_toast("贴图线程失败。"), "贴图线程失败。");
         assert_eq!(quiet_pin_toast(""), pin_retry_message());
     }

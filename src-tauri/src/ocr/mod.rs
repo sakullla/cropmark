@@ -83,18 +83,22 @@ pub fn copy_recognized_text(text: &str, empty: OcrError) -> Result<String, OcrEr
 
 #[tauri::command]
 pub async fn recognize_preview(app: AppHandle) -> Result<OcrDocument, String> {
-    let frame = session::current_preview_frame(&app).map_err(|_| OcrError::NoPreview.user_message())?;
+    let frame =
+        session::current_preview_frame(&app).map_err(|_| OcrError::NoPreview.user_message())?;
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || recognize_blocking(&app, &frame))
         .await
         .map_err(|_| OcrError::Failed.user_message())?
 }
 
-fn recognize_blocking(app: &AppHandle, frame: &crate::capture::buffer::Frame) -> Result<OcrDocument, String> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| recognize_blocking_inner(app, frame)))
-        .unwrap_or_else(|_| {
-            Err(OcrError::Failed.user_message())
-        })
+fn recognize_blocking(
+    app: &AppHandle,
+    frame: &crate::capture::buffer::Frame,
+) -> Result<OcrDocument, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        recognize_blocking_inner(app, frame)
+    }))
+    .unwrap_or_else(|_| Err(OcrError::Failed.user_message()))
 }
 
 fn recognize_blocking_inner(
@@ -131,17 +135,38 @@ fn recognize_blocking_inner(
 pub fn copy_ocr_point(app: AppHandle, x: f64, y: f64) -> Result<String, String> {
     let runtime = app.state::<OcrRuntime>();
     let inner = runtime.lock();
-    let doc = inner.last.as_ref().ok_or_else(|| OcrError::NoText.user_message())?;
+    let doc = inner
+        .last
+        .as_ref()
+        .ok_or_else(|| OcrError::NoText.user_message())?;
     let index = hit_point(&doc.spans, x, y).ok_or_else(|| OcrError::NoSelection.user_message())?;
-    copy_recognized_text(&doc.spans[index].text, OcrError::NoSelection).map_err(|e| e.user_message())
+    copy_recognized_text(&doc.spans[index].text, OcrError::NoSelection)
+        .map_err(|e| e.user_message())
 }
 
 #[tauri::command]
-pub fn copy_ocr_rect(app: AppHandle, x: f64, y: f64, width: f64, height: f64) -> Result<String, String> {
+pub fn copy_ocr_rect(
+    app: AppHandle,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> Result<String, String> {
     let runtime = app.state::<OcrRuntime>();
     let inner = runtime.lock();
-    let doc = inner.last.as_ref().ok_or_else(|| OcrError::NoText.user_message())?;
-    let hits = hit_rect(&doc.spans, Rect { x, y, width, height });
+    let doc = inner
+        .last
+        .as_ref()
+        .ok_or_else(|| OcrError::NoText.user_message())?;
+    let hits = hit_rect(
+        &doc.spans,
+        Rect {
+            x,
+            y,
+            width,
+            height,
+        },
+    );
     let text = join_spans(&doc.spans, &hits);
     copy_recognized_text(&text, OcrError::NoSelection).map_err(|e| e.user_message())
 }
@@ -150,7 +175,10 @@ pub fn copy_ocr_rect(app: AppHandle, x: f64, y: f64, width: f64, height: f64) ->
 pub fn copy_ocr_all(app: AppHandle) -> Result<String, String> {
     let runtime = app.state::<OcrRuntime>();
     let inner = runtime.lock();
-    let doc = inner.last.as_ref().ok_or_else(|| OcrError::NoText.user_message())?;
+    let doc = inner
+        .last
+        .as_ref()
+        .ok_or_else(|| OcrError::NoText.user_message())?;
     let text = if doc.full_text.trim().is_empty() {
         join_spans(&doc.spans, &all_indices(&doc.spans))
     } else {
@@ -174,7 +202,10 @@ mod tests {
             prepared_clipboard_text(" \n\t", OcrError::NoSelection),
             Err(OcrError::NoSelection)
         );
-        assert_eq!(prepared_clipboard_text("中文", OcrError::NoText), Ok("中文"));
+        assert_eq!(
+            prepared_clipboard_text("中文", OcrError::NoText),
+            Ok("中文")
+        );
     }
 
     #[test]

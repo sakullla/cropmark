@@ -99,7 +99,10 @@ mod tests {
         for by in [0u32, 4] {
             for bx in [0u32, 4] {
                 let mean = pixel(&rgba, 8, bx, by);
-                assert!(mean[0] > 100 && mean[0] < 160, "block mean should average checker");
+                assert!(
+                    mean[0] > 100 && mean[0] < 160,
+                    "block mean should average checker"
+                );
                 assert_eq!(mean[3], 255);
                 for y in by..by + 4 {
                     for x in bx..bx + 4 {

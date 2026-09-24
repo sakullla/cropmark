@@ -175,7 +175,13 @@ fn delay_once_label(seconds: u64) -> String {
 }
 
 fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
-    let region = MenuItem::with_id(app, "capture-region", i18n::t("tray.region"), true, None::<&str>)?;
+    let region = MenuItem::with_id(
+        app,
+        "capture-region",
+        i18n::t("tray.region"),
+        true,
+        None::<&str>,
+    )?;
     let features = settings::current_features(app);
     let has_last_region = crate::settings::current_last_region(app).is_some();
     let last_region = MenuItem::with_id(
@@ -185,7 +191,13 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         last_region_enabled(features, has_last_region),
         None::<&str>,
     )?;
-    let window = MenuItem::with_id(app, "capture-window", i18n::t("tray.window"), true, None::<&str>)?;
+    let window = MenuItem::with_id(
+        app,
+        "capture-window",
+        i18n::t("tray.window"),
+        true,
+        None::<&str>,
+    )?;
     let fullscreen = MenuItem::with_id(
         app,
         "capture-fullscreen",
@@ -200,8 +212,15 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         true,
         &[&region, &last_region, &window, &fullscreen, &delay],
     )?;
-    let settings_item = MenuItem::with_id(app, "settings", i18n::t("tray.settings"), true, None::<&str>)?;
-    let history_item = MenuItem::with_id(app, "history", i18n::t("tray.history"), true, None::<&str>)?;
+    let settings_item = MenuItem::with_id(
+        app,
+        "settings",
+        i18n::t("tray.settings"),
+        true,
+        None::<&str>,
+    )?;
+    let history_item =
+        MenuItem::with_id(app, "history", i18n::t("tray.history"), true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", i18n::t("tray.quit"), true, None::<&str>)?;
     Menu::with_items(
         app,
@@ -304,7 +323,10 @@ mod tests {
         for seconds in FIXED_DELAY_SECONDS {
             assert_eq!(
                 menu_action(&format!("capture-region-delay-{seconds}")),
-                Some(action(CaptureMode::Region, DelayChoice::Once(seconds * 1000))),
+                Some(action(
+                    CaptureMode::Region,
+                    DelayChoice::Once(seconds * 1000)
+                )),
             );
         }
     }

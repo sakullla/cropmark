@@ -166,6 +166,7 @@ function arcPoints(p1, p2, rx, ry, phi, laf, sf) {
 // ---------- SVG loading ----------
 function loadSvg(file) {
   const text = readFileSync(join(here, file), "utf8");
+  const svgSw = /<svg\b[^>]*\bstroke-width="([^"]+)"/.exec(text)?.[1] ?? "2";
   const paths = [];
   const re = /<path\b[^>]*\/?>(?:<\/path>)?/g;
   let m;
@@ -175,7 +176,7 @@ function loadSvg(file) {
     if (!d) continue;
     const fill = /fill="([^"]+)"/.exec(tag)?.[1] ?? "none";
     const stroke = /stroke="([^"]+)"/.exec(tag)?.[1] ?? "#000";
-    const sw = Number(/stroke-width="([^"]+)"/.exec(tag)?.[1] ?? "1.75");
+    const sw = Number(/stroke-width="([^"]+)"/.exec(tag)?.[1] ?? svgSw);
     paths.push({
       subpaths: parsePath(d),
       fill: fill !== "none",
@@ -188,12 +189,14 @@ function loadSvg(file) {
 }
 
 // ---------- rasterization ----------
-function distToSeg(px, py, ax, ay, bx, by) {
+// 平头：投影落在线段外就不算覆盖。圆头会在端点外再铺一圈灰边。
+function distButt(px, py, ax, ay, bx, by) {
   const abx = bx - ax;
   const aby = by - ay;
   const len2 = abx * abx + aby * aby;
-  let t = len2 === 0 ? 0 : ((px - ax) * abx + (py - ay) * aby) / len2;
-  t = Math.max(0, Math.min(1, t));
+  if (len2 === 0) return Infinity;
+  const t = ((px - ax) * abx + (py - ay) * aby) / len2;
+  if (t < 0 || t > 1) return Infinity;
   const dx = px - (ax + t * abx);
   const dy = py - (ay + t * aby);
   return Math.hypot(dx, dy);
@@ -213,25 +216,32 @@ function inFill(px, py, subpaths) {
 }
 
 function coverage(px, py, path) {
-  let cov = 0;
-  if (path.fill && inFill(px, py, path.subpaths)) cov = 1;
-  if (path.stroke && cov === 0) {
-    let d = Infinity;
-    for (const pts of path.subpaths) {
-      for (let i = 0; i + 1 < pts.length; i++) {
-        const dd = distToSeg(px, py, pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1]);
-        if (dd < d) d = dd;
-      }
+  if (path.fill && inFill(px, py, path.subpaths)) return 1;
+  if (!path.stroke) return 0;
+  const r = path.sw / 2;
+  const r2 = r * r;
+  for (const pts of path.subpaths) {
+    for (let i = 0; i + 1 < pts.length; i++) {
+      if (distButt(px, py, pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1]) < r) return 1;
     }
-    if (d < path.sw / 2) cov = 1;
+    if (pts.length < 2) continue;
+    const closed =
+      pts[0][0] === pts[pts.length - 1][0] && pts[0][1] === pts[pts.length - 1][1];
+    const from = closed ? 0 : 1;
+    const to = pts.length - 1;
+    for (let i = from; i < to; i++) {
+      const dx = px - pts[i][0];
+      const dy = py - pts[i][1];
+      if (dx * dx + dy * dy < r2) return 1;
+    }
   }
-  return cov;
+  return 0;
 }
 
 function render(paths, size) {
   const scale = size / GRID;
   const rgba = Buffer.alloc(size * size * 4);
-  const SS = 4;
+  const SS = 8;
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
       let acc = 0;

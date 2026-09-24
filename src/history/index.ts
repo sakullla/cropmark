@@ -30,6 +30,7 @@ export function mountHistory(root: HTMLElement): () => void {
         <div class="brand" data-tauri-drag-region>
           <span class="mark" aria-hidden="true"></span>
           <span class="name" data-i18n="history.title">历史记录</span>
+          <span class="history-count" data-count hidden></span>
         </div>
         <div class="history-toolbar">
           <button type="button" class="history-clear" data-action="clear" data-i18n="history.clear">清空全部</button>
@@ -59,6 +60,7 @@ export function mountHistory(root: HTMLElement): () => void {
   const confirmAcceptEl = root.querySelector("[data-confirm-accept]");
   const confirmCancelEl = root.querySelector("[data-confirm-cancel]");
   const listEl = root.querySelector("[data-list]");
+  const countEl = root.querySelector("[data-count]");
   const emptyEl = root.querySelector("[data-empty]");
   const clearEl = root.querySelector("[data-action=clear]");
   const closeEl = root.querySelector("[data-action=close]");
@@ -70,6 +72,7 @@ export function mountHistory(root: HTMLElement): () => void {
     !(confirmAcceptEl instanceof HTMLButtonElement) ||
     !(confirmCancelEl instanceof HTMLButtonElement) ||
     !(listEl instanceof HTMLElement) ||
+    !(countEl instanceof HTMLElement) ||
     !(emptyEl instanceof HTMLElement) ||
     !(clearEl instanceof HTMLButtonElement) ||
     !(closeEl instanceof HTMLButtonElement)
@@ -130,12 +133,38 @@ export function mountHistory(root: HTMLElement): () => void {
   const errorMessage = (error: unknown): string =>
     error instanceof Error ? error.message : String(error);
 
-  const formatTime = (createdAt: number): string => {
+  const formatTime = (createdAt: number): { label: string; title: string } => {
     const date = new Date(createdAt);
     if (Number.isNaN(date.getTime())) {
-      return t("history.unknown_time");
+      const unknown = t("history.unknown_time");
+      return { label: unknown, title: unknown };
     }
-    return date.toLocaleString(localeTag());
+    const title = date.toLocaleString(localeTag());
+    const clock = new Intl.DateTimeFormat(localeTag(), {
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(date);
+    const dayStart = (value: Date): number =>
+      new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
+    const day = dayStart(date);
+    const now = new Date();
+    if (day === dayStart(now)) {
+      return { label: t("history.today", { time: clock }), title };
+    }
+    const yesterday = new Date(now);
+    yesterday.setDate(now.getDate() - 1);
+    if (day === dayStart(yesterday)) {
+      return { label: t("history.yesterday", { time: clock }), title };
+    }
+    const sameYear = date.getFullYear() === now.getFullYear();
+    const label = new Intl.DateTimeFormat(localeTag(), {
+      year: sameYear ? undefined : "numeric",
+      month: "numeric",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(date);
+    return { label, title };
   };
 
   const loadThumbnail = (id: string, holder: HTMLElement): void => {
@@ -177,7 +206,9 @@ export function mountHistory(root: HTMLElement): () => void {
     meta.className = "history-meta";
     const time = document.createElement("div");
     time.className = "history-time";
-    time.textContent = formatTime(entry.createdAt);
+    const formatted = formatTime(entry.createdAt);
+    time.textContent = formatted.label;
+    time.title = formatted.title;
     const size = document.createElement("div");
     size.className = "history-size";
     size.textContent = `${entry.width} × ${entry.height}`;
@@ -207,6 +238,12 @@ export function mountHistory(root: HTMLElement): () => void {
         button.disabled = true;
         button.title = t("history.image_missing_title");
       }
+      if (action === "delete") {
+        const separator = document.createElement("span");
+        separator.className = "history-action-sep";
+        separator.setAttribute("aria-hidden", "true");
+        actions.append(separator);
+      }
       actions.append(button);
     }
 
@@ -223,6 +260,8 @@ export function mountHistory(root: HTMLElement): () => void {
       listEl.append(entryRow(entry));
     }
     emptyEl.hidden = payload.entries.length > 0;
+    countEl.hidden = payload.entries.length === 0;
+    countEl.textContent = t("history.count", { count: payload.entries.length });
   };
 
   const refresh = async (): Promise<void> => {

@@ -101,7 +101,11 @@ pub fn pointer_monitor() -> Result<MonitorGeom, CaptureError> {
         physical_y: monitor.physical_y,
         physical_width: monitor.physical_w,
         physical_height: monitor.physical_h,
-        scale: if monitor.scale > 0.0 { monitor.scale } else { 1.0 },
+        scale: if monitor.scale > 0.0 {
+            monitor.scale
+        } else {
+            1.0
+        },
     })
 }
 
@@ -157,7 +161,8 @@ pub fn list_windows(self_pid: u32) -> Result<Vec<ListedWindow>, CaptureError> {
         })
         .collect();
     let mut count = 0i32;
-    let status = unsafe { cropmark_sck_list_windows(raw.as_mut_ptr(), raw.len() as i32, &mut count) };
+    let status =
+        unsafe { cropmark_sck_list_windows(raw.as_mut_ptr(), raw.len() as i32, &mut count) };
     if status == 1 {
         return Err(classify_platform_failure(PlatformFailure::PermissionDenied));
     }
@@ -168,7 +173,9 @@ pub fn list_windows(self_pid: u32) -> Result<Vec<ListedWindow>, CaptureError> {
         ));
     }
     if status != 0 {
-        return Err(CaptureError::unavailable("error.capture.screencapturekit_windows"));
+        return Err(CaptureError::unavailable(
+            "error.capture.screencapturekit_windows",
+        ));
     }
     let mut listed = Vec::new();
     // CGWindowList 返回 front-to-back(自顶向下),符合 selectable_windows 契约。
@@ -195,7 +202,10 @@ pub fn capture_window(id: &str) -> Result<Frame, CaptureError> {
     let window_id = id
         .parse::<u32>()
         .map_err(|_| CaptureError::api("error.capture.window_unknown"))?;
-    take_result(|out| unsafe { cropmark_sck_capture_window(window_id, out) }, 2.0)
+    take_result(
+        |out| unsafe { cropmark_sck_capture_window(window_id, out) },
+        2.0,
+    )
 }
 
 pub fn dismiss_tray_popup() {}
@@ -204,7 +214,10 @@ pub fn tray_popup_visible() -> bool {
     false
 }
 
-fn take_result(call: impl FnOnce(*mut CropmarkSckResult) -> i32, fallback_scale: f64) -> Result<Frame, CaptureError> {
+fn take_result(
+    call: impl FnOnce(*mut CropmarkSckResult) -> i32,
+    fallback_scale: f64,
+) -> Result<Frame, CaptureError> {
     let mut raw = CropmarkSckResult {
         rgba: std::ptr::null_mut(),
         width: 0,
@@ -218,7 +231,9 @@ fn take_result(call: impl FnOnce(*mut CropmarkSckResult) -> i32, fallback_scale:
     let result = if status != 0 || kind != 0 {
         Err(map_kind(kind, error_text))
     } else if raw.rgba.is_null() {
-        Err(classify_platform_failure(PlatformFailure::BufferUninitialized))
+        Err(classify_platform_failure(
+            PlatformFailure::BufferUninitialized,
+        ))
     } else {
         let len = raw.width as usize * raw.height as usize * 4;
         let bytes = unsafe { std::slice::from_raw_parts(raw.rgba, len) }.to_vec();

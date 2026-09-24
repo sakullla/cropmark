@@ -152,10 +152,9 @@ pub enum PlatformFailure {
 
 pub fn classify_platform_failure(failure: PlatformFailure) -> CaptureError {
     match failure {
-        PlatformFailure::PermissionDenied => CaptureError::permission(
-            "error.capture.no_permission",
-            permission_hint_key(),
-        ),
+        PlatformFailure::PermissionDenied => {
+            CaptureError::permission("error.capture.no_permission", permission_hint_key())
+        }
         PlatformFailure::Api(detail) => {
             if detail.is_empty() {
                 CaptureError::api("error.capture.api")
@@ -163,9 +162,13 @@ pub fn classify_platform_failure(failure: PlatformFailure) -> CaptureError {
                 CaptureError::api_detail("error.capture.api_detail", &detail)
             }
         }
-        PlatformFailure::NoInterface(_detail) => CaptureError::unavailable("error.capture.no_interface"),
+        PlatformFailure::NoInterface(_detail) => {
+            CaptureError::unavailable("error.capture.no_interface")
+        }
         PlatformFailure::BufferEmpty => CaptureError::invalid_buffer("error.capture.buffer_empty"),
-        PlatformFailure::BufferZeroSize => CaptureError::invalid_buffer("error.capture.buffer_zero_size"),
+        PlatformFailure::BufferZeroSize => {
+            CaptureError::invalid_buffer("error.capture.buffer_zero_size")
+        }
         PlatformFailure::BufferUninitialized => {
             CaptureError::invalid_buffer("error.capture.buffer_uninitialized")
         }

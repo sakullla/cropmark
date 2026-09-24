@@ -752,6 +752,11 @@ function toolbarMarkup(): string {
   `;
 }
 
+function snapDevicePx(value: number): number {
+  const dpr = window.devicePixelRatio || 1;
+  return Math.round(value * dpr) / dpr;
+}
+
 export function mountAnnotationEditor(options: AnnotationEditorOptions): AnnotationEditor {
   const { root, canvas, ctx, toolbar, textHost } = options;
 
@@ -832,7 +837,7 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     const frame = options.frame();
     const dpi = Math.max(frame?.scale ?? 1, 1);
     const longestEdge = Math.max(frame?.width ?? 0, frame?.height ?? 0);
-    return Math.max(10, Math.round((styleTextBase ?? 16) * Math.max(dpi, longestEdge / 1920)));
+    return Math.max(22, Math.round((styleTextBase ?? 28) * Math.max(dpi, longestEdge / 1920)));
   };
   // 与 Rust raster resolve_stroke 同一数值推导:逻辑档位 × scale 后 clamp 2..8。
   const strokeFor = (opWidth: number | null): number =>
@@ -927,8 +932,8 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     const menuRect = contextMenu.getBoundingClientRect();
     const left = clamp(clientX - rootRect.left, 4, Math.max(4, rootRect.width - menuRect.width - 4));
     const top = clamp(clientY - rootRect.top, 4, Math.max(4, rootRect.height - menuRect.height - 4));
-    contextMenu.style.left = `${left}px`;
-    contextMenu.style.top = `${top}px`;
+    contextMenu.style.left = `${snapDevicePx(left)}px`;
+    contextMenu.style.top = `${snapDevicePx(top)}px`;
   };
 
   const editorOpen = (): boolean => editor.classList.contains("is-open");
@@ -1010,9 +1015,9 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     const insetY = parseFloat(editorStyle.paddingTop) + parseFloat(editorStyle.borderTopWidth);
     const fontSize = baseFontSize * scale.y;
     editor.value = text;
-    editor.style.left = `${canvasRect.left - hostRect.left + origin.x * scale.x - insetX}px`;
-    editor.style.top = `${canvasRect.top - hostRect.top + origin.y * scale.y - insetY}px`;
-    editor.style.fontSize = `${fontSize}px`;
+    editor.style.left = `${snapDevicePx(canvasRect.left - hostRect.left + origin.x * scale.x - insetX)}px`;
+    editor.style.top = `${snapDevicePx(canvasRect.top - hostRect.top + origin.y * scale.y - insetY)}px`;
+    editor.style.fontSize = `${snapDevicePx(fontSize)}px`;
     editor.style.width = `${Math.max(160, fontSize * 12)}px`;
     editor.classList.add("is-open");
     syncUndo();

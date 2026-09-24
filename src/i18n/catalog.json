@@ -1647,6 +1647,18 @@
     "zh-CN": "历史记录",
     "en": "History"
   },
+  "history.count": {
+    "zh-CN": "{count} 条",
+    "en": "{count}"
+  },
+  "history.today": {
+    "zh-CN": "今天 {time}",
+    "en": "Today {time}"
+  },
+  "history.yesterday": {
+    "zh-CN": "昨天 {time}",
+    "en": "Yesterday {time}"
+  },
   "history.clear": {
     "zh-CN": "清空全部",
     "en": "Clear all"

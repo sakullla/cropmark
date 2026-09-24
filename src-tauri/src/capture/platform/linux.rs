@@ -5,7 +5,9 @@ use x11rb::connection::Connection;
 use x11rb::protocol::randr::ConnectionExt as RandrExt;
 use x11rb::protocol::xproto::{self, ConnectionExt as XprotoExt, ImageFormat};
 
-use crate::capture::buffer::{accept_buffer, crop_desktop_to_monitor, decode_png, Frame, RawBuffer};
+use crate::capture::buffer::{
+    accept_buffer, crop_desktop_to_monitor, decode_png, Frame, RawBuffer,
+};
 use crate::capture::error::{classify_platform_failure, CaptureError, PlatformFailure};
 use crate::capture::geometry::{monitor_at_physical, MonitorGeom};
 use crate::capture::windows_list::{selectable_windows, ListedWindow};
@@ -95,10 +97,16 @@ async fn portal_fullscreen_async() -> Result<Frame, CaptureError> {
     let request = ashpd::desktop::screenshot::Screenshot::request()
         .interactive(false)
         .modal(false);
-    let response = request.send().await.map_err(portal_error)?.response().map_err(portal_error)?;
+    let response = request
+        .send()
+        .await
+        .map_err(portal_error)?
+        .response()
+        .map_err(portal_error)?;
     let uri = response.uri().to_string();
     let path = file_uri_to_path(&uri)?;
-    let bytes = fs::read(&path).map_err(|_| CaptureError::invalid_buffer("error.capture.buffer_empty"))?;
+    let bytes =
+        fs::read(&path).map_err(|_| CaptureError::invalid_buffer("error.capture.buffer_empty"))?;
     let _ = fs::remove_file(&path);
     decode_png(&bytes)
 }
@@ -108,7 +116,8 @@ fn portal_error(error: ashpd::Error) -> CaptureError {
     let lower = text.to_ascii_lowercase();
     if lower.contains("denied") || lower.contains("permission") || lower.contains("not allowed") {
         classify_platform_failure(PlatformFailure::PermissionDenied)
-    } else if lower.contains("unknown") || lower.contains("not found") || lower.contains("no such") {
+    } else if lower.contains("unknown") || lower.contains("not found") || lower.contains("no such")
+    {
         CaptureError::unavailable(PORTAL_UNAVAILABLE_KEY)
     } else {
         classify_platform_failure(PlatformFailure::Api(text))
@@ -116,7 +125,8 @@ fn portal_error(error: ashpd::Error) -> CaptureError {
 }
 
 fn file_uri_to_path(uri: &str) -> Result<PathBuf, CaptureError> {
-    let parsed = url::Url::parse(uri).map_err(|_| CaptureError::api("error.capture.portal_path_invalid"))?;
+    let parsed =
+        url::Url::parse(uri).map_err(|_| CaptureError::api("error.capture.portal_path_invalid"))?;
     parsed
         .to_file_path()
         .map_err(|_| CaptureError::api("error.capture.portal_path_invalid"))
@@ -169,7 +179,13 @@ fn x11_monitors(
     }
 }
 
-fn x11_capture_rect(x: i32, y: i32, width: u32, height: u32, scale: f64) -> Result<Frame, CaptureError> {
+fn x11_capture_rect(
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    scale: f64,
+) -> Result<Frame, CaptureError> {
     if width == 0 || height == 0 {
         return Err(classify_platform_failure(PlatformFailure::BufferZeroSize));
     }
@@ -271,8 +287,8 @@ fn x11_capture_window(id: &str) -> Result<Frame, CaptureError> {
     let window = id
         .parse::<u32>()
         .map_err(|_| CaptureError::api("error.capture.window_unknown"))?;
-    let (conn, _screen_num) = x11rb::connect(None)
-        .map_err(|_| CaptureError::unavailable(PORTAL_WINDOW_CAPTURE_KEY))?;
+    let (conn, _screen_num) =
+        x11rb::connect(None).map_err(|_| CaptureError::unavailable(PORTAL_WINDOW_CAPTURE_KEY))?;
     let geom = conn
         .get_geometry(window)
         .map_err(|_| CaptureError::api("error.capture.window_read"))?
@@ -291,8 +307,17 @@ fn x11_capture_window(id: &str) -> Result<Frame, CaptureError> {
         .map_err(|_| classify_platform_failure(PlatformFailure::Api("XGetImage".into())))?
         .reply()
         .map_err(|_| classify_platform_failure(PlatformFailure::Api("XGetImage".into())))?;
-    let rgba = zpixmap_to_rgba(&image.data, image.depth, geom.width as u32, geom.height as u32)?;
-    accept_buffer(RawBuffer::ready(geom.width as u32, geom.height as u32, rgba))
+    let rgba = zpixmap_to_rgba(
+        &image.data,
+        image.depth,
+        geom.width as u32,
+        geom.height as u32,
+    )?;
+    accept_buffer(RawBuffer::ready(
+        geom.width as u32,
+        geom.height as u32,
+        rgba,
+    ))
 }
 
 fn intern(conn: &impl Connection, name: &[u8]) -> Result<xproto::Atom, CaptureError> {
@@ -314,7 +339,16 @@ fn window_title(conn: &impl Connection, id: u32) -> Option<String> {
             }
         }
     }
-    let cookie = conn.get_property(false, id, xproto::AtomEnum::WM_NAME, xproto::AtomEnum::STRING, 0, 1024).ok()?;
+    let cookie = conn
+        .get_property(
+            false,
+            id,
+            xproto::AtomEnum::WM_NAME,
+            xproto::AtomEnum::STRING,
+            0,
+            1024,
+        )
+        .ok()?;
     let reply = cookie.reply().ok()?;
     Some(String::from_utf8_lossy(&reply.value).into_owned())
 }
@@ -330,7 +364,12 @@ fn window_pid(conn: &impl Connection, id: u32) -> Option<u32> {
     values.next()
 }
 
-fn zpixmap_to_rgba(data: &[u8], depth: u8, width: u32, height: u32) -> Result<Vec<u8>, CaptureError> {
+fn zpixmap_to_rgba(
+    data: &[u8],
+    depth: u8,
+    width: u32,
+    height: u32,
+) -> Result<Vec<u8>, CaptureError> {
     let pixels = width as usize * height as usize;
     if data.is_empty() {
         return Err(classify_platform_failure(PlatformFailure::BufferEmpty));
@@ -353,7 +392,11 @@ fn zpixmap_to_rgba(data: &[u8], depth: u8, width: u32, height: u32) -> Result<Ve
                 dst[3] = 255;
             }
         }
-        _ => return Err(classify_platform_failure(PlatformFailure::BufferUninitialized)),
+        _ => {
+            return Err(classify_platform_failure(
+                PlatformFailure::BufferUninitialized,
+            ))
+        }
     }
     Ok(rgba)
 }

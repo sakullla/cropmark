@@ -1,11 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
-  <path fill="#000" stroke="none" d="M4.65 4.65 H8.85 V8.85 H4.65 Z"/>
-  <path d="M9.9 4.65 H14.1 V8.85 H9.9 Z"/>
-  <path fill="#000" stroke="none" d="M15.15 4.65 H19.35 V8.85 H15.15 Z"/>
-  <path d="M4.65 9.9 H8.85 V14.1 H4.65 Z"/>
-  <path fill="#000" stroke="none" d="M9.9 9.9 H14.1 V14.1 H9.9 Z"/>
-  <path d="M15.15 9.9 H19.35 V14.1 H15.15 Z"/>
-  <path fill="#000" stroke="none" d="M4.65 15.15 H8.85 V19.35 H4.65 Z"/>
-  <path d="M9.9 15.15 H14.1 V19.35 H9.9 Z"/>
-  <path fill="#000" stroke="none" d="M15.15 15.15 H19.35 V19.35 H15.15 Z"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2">
+  <path fill="#000" stroke="none" d="M5 5 H11 V11 H5 Z"/>
+  <path fill="#000" stroke="none" d="M13 5 H19 V11 H13 Z"/>
+  <path fill="#000" stroke="none" d="M5 13 H11 V19 H5 Z"/>
+  <path fill="#000" stroke="none" d="M13 13 H19 V19 H13 Z"/>
 </svg>

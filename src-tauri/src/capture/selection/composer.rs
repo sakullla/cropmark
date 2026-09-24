@@ -1,10 +1,10 @@
 //! 选区像素合成器。
 //!
 //! 在冻结帧(`capture::buffer::Frame`)的 RGBA 位图上合成:暗幕+选区开洞、
-//! 跟随系统明暗的强调色描边、白芯青绿环手柄、亮铬尺寸徽标、放大镜(原始帧全分辨率采样 +
+//! 跟随系统明暗的强调色描边、白芯蓝环手柄、尺寸徽标、放大镜(原始帧全分辨率采样 +
 //! 十字准星 + 单行色值读数)、单条统一横条(主行工具/动作 + 「更多」展开
-//! 面板)与右键菜单。所有浮层 UI 统一亮暖白底深墨字(亮铬体系),在暗色
-//! scrim 与暗桌面上保持可读。布局/hitbox 函数是纯几何,状态机与绘制共用
+//! 面板)与右键菜单。浮层用冷灰表面和与选区描边同一的蓝,只有复制是实心强调。
+//! 布局/hitbox 函数是纯几何,状态机与绘制共用
 //! 同一份,保证命中判定与合成输出一致。不含窗口代码;系统明暗只决定选区描边。
 
 use std::cell::RefCell;
@@ -20,10 +20,10 @@ use crate::capture::error::CaptureError;
 use crate::capture::geometry::PhysicalRect;
 use crate::i18n;
 
-// ---- 配色单一 authority:亮铬浮层体系(暗 scrim 上的亮面板)。----
+// ---- 配色:冷灰浮层 + 与选区描边相同的蓝。只有一个实心主动作。----
 
-/// 亮铬按钮填充 #2dd4bf(复制按钮/手柄环/十字准星)。选区描边不使用此色。
-pub const ACCENT: [u8; 4] = [0x2D, 0xD4, 0xBF, 255];
+/// 复制按钮、手柄环、放大镜准星。与浅色选区描边同一蓝,避免青绿和蓝两套强调色。
+pub const ACCENT: [u8; 4] = [0x1D, 0x4E, 0xD8, 255];
 /// 选区描边浅色,与网页 `--accent` 相同(#1d4ed8)。系统配色不可用时用此值。
 const ACCENT_LIGHT: [u8; 4] = [0x1D, 0x4E, 0xD8, 255];
 /// 选区描边深色,与网页暗色 `--accent` 相同(#93c5fd)。
@@ -32,20 +32,20 @@ const ACCENT_DARK: [u8; 4] = [0x93, 0xC5, 0xFD, 255];
 const HALO_LIGHT: [u8; 4] = [255, 255, 255, 255];
 /// 选区晕边深色,与网页暗色 `--focus-gap` 相同(#12161c)。
 const HALO_DARK: [u8; 4] = [0x12, 0x16, 0x1C, 255];
-/// 深青绿 #0f766e:亮铬上的激活/hover 文字与强调。
-const ACCENT_DEEP: [u8; 4] = [0x0F, 0x76, 0x6E, 255];
+/// 悬停文字与图标 #1e40af,比填充蓝更深,压在浅蓝底上仍清楚。
+const ACCENT_DEEP: [u8; 4] = [0x1E, 0x40, 0xAF, 255];
 /// 图标字形白色(accent 填充按钮上的纯图标)。
 const ICON_INK: [u8; 4] = [255, 255, 255, 255];
-/// 亮暖白浮层底 #fffcf7 @ 97%:尺寸徽标/操作条/菜单/放大镜统一底色。
-const CHROME_BG: [u8; 4] = [255, 252, 247, 247];
-/// 深墨字 #1c1917:亮铬上的文字。
-const CHROME_TEXT: [u8; 4] = [0x1C, 0x19, 0x17, 255];
-/// 1px 细描边 rgba(28,25,23,0.14)。
-const CHROME_BORDER: [u8; 4] = [28, 25, 23, 36];
-/// 底部 2px 深色 offset,引擎画不了真阴影,用它模拟浮层层次。
-const CHROME_SHADOW: [u8; 4] = [20, 18, 16, 70];
-/// 激活/hover 软底 rgba(15,118,110,0.12)。
-const ACTIVE_BG: [u8; 4] = [15, 118, 110, 31];
+/// 浮层底 #e4ebf6,不透明的浅蓝灰。纯白贴在截图上没有层次,半透明又会发灰。
+const CHROME_BG: [u8; 4] = [0xE4, 0xEB, 0xF6, 255];
+/// 正文 #1c2128。
+const CHROME_TEXT: [u8; 4] = [0x1C, 0x21, 0x28, 255];
+/// 1px 边 rgba(28,33,40,0.16),让面板在杂乱画面上仍有边。
+const CHROME_BORDER: [u8; 4] = [28, 33, 40, 41];
+/// 底部 2px 偏移,模拟浮层阴影。
+const CHROME_SHADOW: [u8; 4] = [15, 23, 42, 72];
+/// 悬停软底,约 14% 的蓝。
+const ACTIVE_BG: [u8; 4] = [0x1D, 0x4E, 0xD8, 36];
 /// 手柄白芯(亮暗背景均可见的双圆结构内芯)。
 const HANDLE_CORE: [u8; 4] = [255, 255, 255, 255];
 /// 暗幕保留 52% 亮度,对齐现 Windows 原生路径。
@@ -70,24 +70,24 @@ const BADGE_MARGIN: i32 = 6;
 const BAR_BUTTON: i32 = 40;
 /// 统一横条与选区间的间距。
 const BAR_MARGIN: i32 = 8;
-/// 统一横条按钮图标外接盒边长(2px 描边稿在 20px 下仍清晰)。
-const BAR_ICON: i32 = 20;
+/// 统一横条按钮图标外接盒。24 是原稿像素网格,缩小到 20 会把描边平均成灰边。
+const BAR_ICON: i32 = 24;
 
 const MENU_ITEM_W: i32 = 168;
 const MENU_ITEM_H: i32 = 36;
 /// 菜单容器内边距。
 const MENU_PAD: i32 = 6;
-/// 菜单项图标中心相对项左缘的偏移。
-const MENU_ICON_CX: i32 = 22;
-/// 菜单项文字起点(图标区之后)。
-const MENU_TEXT_X: i32 = 38;
+/// 菜单项图标中心相对项左缘的偏移(24px 图标,左侧留 8px)。
+const MENU_ICON_CX: i32 = 20;
+/// 菜单项文字起点。24px 图标中心在 20,右缘在 32,再留 12px(Fluent 菜单图标与标签间距)。
+const MENU_TEXT_X: i32 = 44;
 /// 「取消」前的 1px 分隔线高度。
 const MENU_SEPARATOR_H: i32 = 1;
-const MENU_FONT: f32 = 14.0;
+const MENU_FONT: f32 = 16.0;
 /// 菜单项 hover 软底圆角(1.0 基准)。
 const MENU_HOVER_RADIUS: i32 = 8;
-/// 菜单项图标外接盒边长(1.0 基准)。
-const MENU_ICON: i32 = 16;
+/// 菜单项图标外接盒。与横条相同,走 24px 原稿,避免缩成细灰线。
+const MENU_ICON: i32 = 24;
 /// 浮层圆角逻辑半径(× scale,钳制 8..=32)。
 const PANEL_RADIUS: f32 = 10.0;
 
@@ -155,12 +155,12 @@ impl ChromeMetrics {
             menu_text_x: scaled(MENU_TEXT_X),
             menu_separator_h: scaled(MENU_SEPARATOR_H),
             menu_hover_radius: scaled(MENU_HOVER_RADIUS),
-            menu_font: MENU_FONT * scale,
+            menu_font: (MENU_FONT * scale).round(),
             menu_icon: scaled(MENU_ICON),
             handle_radius: scaled(HANDLE_RADIUS as i32),
             handle_hit_radius: scaled(HANDLE_HIT_RADIUS),
             edge_hit_radius: scaled(EDGE_HIT_RADIUS),
-            badge_font: BADGE_FONT * scale,
+            badge_font: (BADGE_FONT * scale).round(),
             badge_pad_x: scaled(BADGE_PAD_X),
             badge_pad_y: scaled(BADGE_PAD_Y),
             badge_margin: scaled(BADGE_MARGIN),
@@ -176,11 +176,11 @@ pub const MAG_ZOOM: i32 = 5;
 const MAG_MAX_EDGE: i32 = 140;
 /// 放大镜面板宽度上限(物理 px);读数字号过宽时自动收缩以守住上限。
 const MAG_PANEL_MAX: i32 = 200;
-const MAG_FONT: f32 = 11.0;
+const MAG_FONT: f32 = 13.0;
 const MAG_OFFSET: i32 = 18;
 const MAG_PAD: i32 = 4;
 /// 单行读数 pill 的最坏情况宽度样本(面板宽度据此预留,与实际像素无关)。
-const MAG_READOUT_SAMPLE: &str = "#FFFFFF R255 G255 B255 · 99999, 99999";
+const MAG_READOUT_SAMPLE: &str = "#FFFFFF";
 
 pub const ALL_HANDLES: [HandleKind; 8] = [
     HandleKind::NorthWest,
@@ -542,6 +542,18 @@ pub fn unified_toolbar(
 /// `toolbar` 为横条面板矩形:顶边横条被钳到屏幕顶缘时,向上弹出的面板会与
 /// 横条重叠;若下方放得下,把面板下移到横条之下避免遮挡(绘制与命中共用本
 /// 几何)。放不下时保留屏内位置,由命中顺序(面板优先)保证可点。
+/// 菜单行宽跟最长标签走,右侧只留内边距。固定 168px 会在「直线」这类短标签旁留出大片空白。
+pub fn menu_row_width(metrics: ChromeMetrics, items: &[SelectionAction]) -> i32 {
+    let mut text_w = 0i32;
+    for action in items {
+        let label = action_label(*action);
+        let measured = text::measure_width(&label, metrics.menu_font)
+            .unwrap_or(metrics.menu_font * label.chars().count() as f32);
+        text_w = text_w.max(measured.ceil() as i32);
+    }
+    metrics.menu_text_x + text_w + metrics.menu_pad * 2
+}
+
 pub fn more_panel(
     metrics: ChromeMetrics,
     anchor: IntRect,
@@ -549,7 +561,7 @@ pub fn more_panel(
     screen: (u32, u32),
     items: &[SelectionAction],
 ) -> IntRect {
-    let width = metrics.menu_item_w + metrics.menu_pad * 2;
+    let width = menu_row_width(metrics, items) + metrics.menu_pad * 2;
     let height = items.len() as i32 * metrics.menu_item_h + metrics.menu_pad * 2;
     let mut panel = IntRect {
         x: (anchor.right() - width).clamp(0, (screen.0 as i32 - width).max(0)),
@@ -580,7 +592,7 @@ pub fn more_item_rects(
                 IntRect {
                     x: panel.x + metrics.menu_pad,
                     y: panel.y + metrics.menu_pad + index as i32 * metrics.menu_item_h,
-                    width: metrics.menu_item_w,
+                    width: menu_row_width(metrics, items),
                     height: metrics.menu_item_h,
                 },
             )
@@ -594,7 +606,7 @@ pub fn menu_panel(
     screen: (u32, u32),
     items: &[SelectionAction],
 ) -> IntRect {
-    let width = metrics.menu_item_w + metrics.menu_pad * 2;
+    let width = menu_row_width(metrics, items) + metrics.menu_pad * 2;
     // 「取消」与其余动作之间预留分隔线。
     let height =
         items.len() as i32 * metrics.menu_item_h + metrics.menu_pad * 2 + metrics.menu_separator_h;
@@ -629,7 +641,7 @@ pub fn menu_item_rects(
                         } else {
                             0
                         },
-                    width: metrics.menu_item_w,
+                    width: menu_row_width(metrics, items),
                     height: metrics.menu_item_h,
                 },
             )
@@ -677,14 +689,14 @@ fn mag_layout(scale: f32) -> MagLayout {
     let pill_pad_x = (8.0 * scale).round().max(4.0) as i32;
     // 读数字号随 scale 放大,但样本串超出面板宽度上限时自动收缩字号守住上限。
     let inner = (MAG_PANEL_MAX - pad * 2 - pill_pad_x * 2).max(16) as f32;
-    let mut font = MAG_FONT * scale;
+    let mut font = (MAG_FONT * scale).round().max(7.0);
     let measure = |f: f32| {
         text::measure_width(MAG_READOUT_SAMPLE, f)
             .unwrap_or(f * 0.62 * MAG_READOUT_SAMPLE.chars().count() as f32)
     };
     let sample_w = measure(font);
     if sample_w > inner && sample_w > 0.0 {
-        font = (font * inner / sample_w).max(7.0);
+        font = (font * inner / sample_w).max(7.0).floor();
     }
     let line_h = text::line_height(font).ceil() as i32;
     let pill_h = line_h + 2 * (3.0 * scale).round().max(2.0) as i32;
@@ -812,17 +824,9 @@ pub fn hex_readout(pixel: [u8; 4]) -> String {
     format!("#{:02X}{:02X}{:02X}", pixel[0], pixel[1], pixel[2])
 }
 
-/// 放大镜单行读数:HEX + 紧凑 RGB + 坐标,例如 "#2DD4BF R45 G212 B191 · 32, 32"。
-pub fn magnifier_readout_line(cursor: (i32, i32), pixel: [u8; 4]) -> String {
-    format!(
-        "{} R{} G{} B{} · {}, {}",
-        hex_readout(pixel),
-        pixel[0],
-        pixel[1],
-        pixel[2],
-        cursor.0,
-        cursor.1
-    )
+/// 放大镜读数只保留 HEX。RGB 与坐标和色值重复,小字号下又糊又占宽。
+pub fn magnifier_readout_line(_cursor: (i32, i32), pixel: [u8; 4]) -> String {
+    hex_readout(pixel)
 }
 
 /// 冻结帧像素采样(越界钳制到边缘,返回 RGBA)。
@@ -993,10 +997,12 @@ impl Composer {
             if scene.flags.magnifier {
                 self.draw_magnifier(out, self.width, self.height, scene.cursor);
             }
-            if let Some((action, rect)) =
-                self.hovered_icon(scene, Some(overlay), self.width, self.height)
-            {
-                self.draw_hover_tooltip(out, self.width, self.height, action, rect);
+            if !scene.more_open {
+                if let Some((action, rect)) =
+                    self.hovered_icon(scene, Some(overlay), self.width, self.height)
+                {
+                    self.draw_hover_tooltip(out, self.width, self.height, action, rect);
+                }
             }
         } else {
             self.compose_into_inner(scene, Some(overlay), out, Some(dirty));
@@ -1038,8 +1044,10 @@ impl Composer {
         if scene.flags.magnifier {
             self.draw_magnifier(out, w, h, scene.cursor);
         }
-        if let Some((action, rect)) = self.hovered_icon(scene, overlay, w, h) {
-            self.draw_hover_tooltip(out, w, h, action, rect);
+        if !scene.more_open {
+            if let Some((action, rect)) = self.hovered_icon(scene, overlay, w, h) {
+                self.draw_hover_tooltip(out, w, h, action, rect);
+            }
         }
     }
 
@@ -1314,7 +1322,7 @@ impl Composer {
         }
     }
 
-    /// 统一横条:亮铬面板 + 位图图标。仅复制为 accent 填充(白色图标);
+    /// 统一横条:浅蓝灰面板 + 位图图标。仅复制为蓝色填充(白色图标);
     /// 当前绘制工具有独立的 accent 选中态;hover 软底;工具组与动作组之间画
     /// 1px 分隔线。「更多」展开时在其按钮上方弹出动作列表面板(图标+名称,
     /// 与右键菜单同构)。
@@ -1346,20 +1354,10 @@ impl Composer {
             let hover = rect.contains(scene.cursor.0, scene.cursor.1);
             let selected_tool = matches!(action, SelectionAction::Tool(tool)
                 if overlay.is_some_and(|overlay| overlay.tool == Some(*tool)));
-            // 仅复制为 accent 实心填充(白图标);选中工具是独立选中态:
-            // accent 软底 + accent 墨色,与复制的实心填充一眼可辨。
-            let filled = *action == SelectionAction::Copy;
-            let ink = if filled {
-                ICON_INK
-            } else if selected_tool {
-                ACCENT
-            } else {
-                CHROME_TEXT
-            };
-            if filled {
-                fill_round(rgba, w, h, inset(*rect, 4), radius, ACCENT);
-            } else if selected_tool || hover {
-                fill_round_blend(rgba, w, h, inset(*rect, 4), radius, ACTIVE_BG);
+            // 复制与其他按钮同一墨色。实心圆和短杠在像素网格上都会显得突兀。
+            let ink = if selected_tool { ACCENT } else { CHROME_TEXT };
+            if selected_tool || hover {
+                fill_round_blend(rgba, w, h, inset(*rect, 6), radius, ACTIVE_BG);
             }
             icons::draw(rgba, w, h, *action, cx, cy, metrics.bar_icon, ink);
             if sep_index == Some(index) {
@@ -1398,7 +1396,7 @@ impl Composer {
                 metrics.menu_icon,
                 color,
             );
-            text::draw_text(
+            text::draw_text_bold(
                 rgba,
                 w,
                 h,
@@ -1411,7 +1409,7 @@ impl Composer {
         }
     }
 
-    /// 白芯 + 青绿环双圆手柄,亮暗背景均可见;外环半径随 scale 派生。
+    /// 白芯 + 蓝环双圆手柄,亮暗背景均可见;外环半径随 scale 派生。
     fn draw_handles(&self, rgba: &mut [u8], w: u32, h: u32, rect: PhysicalRect) {
         let outer = self.metrics.handle_radius;
         let core = (outer - 2).max(2);
@@ -1537,7 +1535,7 @@ impl Composer {
         );
     }
 
-    /// 亮铬右键菜单:左图标 + 右文字;光标悬停项用青绿软底 + 深青绿字;
+    /// 右键菜单:左图标 + 右文字;悬停项用蓝色软底和更深的蓝字。
     /// 「取消」与其余动作之间画分隔线(14% 墨)。全部几何经 metrics 派生。
     fn draw_menu(&self, rgba: &mut [u8], w: u32, h: u32, scene: &Scene) {
         let metrics = self.metrics;
@@ -1568,7 +1566,7 @@ impl Composer {
                 color,
             );
             let label = action_label(action);
-            text::draw_text(
+            text::draw_text_bold(
                 rgba,
                 w,
                 h,
@@ -1581,55 +1579,68 @@ impl Composer {
         }
     }
 
-    /// 放大镜:采样冻结帧**原件**(真实屏幕像素,非压暗帧),中心十字准星,
-    /// 镜下单行亮底 pill 读数(HEX/RGB/坐标);放大区边长封顶 MAG_MAX_EDGE。
+    /// 放大镜:最近邻放大,蓝框只标光标那一格,不再铺网格。
+    /// 底部是色块加 HEX,不再重复 RGB 和坐标。
     fn draw_magnifier(&self, rgba: &mut [u8], w: u32, h: u32, cursor: (i32, i32)) {
         let layout = mag_layout(self.scale);
         let panel = magnifier_rect(cursor, (w, h), self.scale);
         draw_panel_chrome(rgba, w, h, panel, self.metrics.panel_radius);
-        // 放大区在面板内水平居中,顶部留出 pad。
         let px = panel.x + (panel.width - layout.edge) / 2;
         let py = panel.y + layout.pad;
+        let block = layout.block;
         for dy in 0..layout.edge {
             for dx in 0..layout.edge {
                 let src = self.sample(
-                    cursor.0 - layout.half + dx / layout.block,
-                    cursor.1 - layout.half + dy / layout.block,
+                    cursor.0 - layout.half + dx / block,
+                    cursor.1 - layout.half + dy / block,
                 );
                 let [r, g, b, _] = src;
                 put(rgba, w, h, px + dx, py + dy, [r, g, b, 255]);
             }
         }
-        // 中心十字准星(横竖 1px 贯穿放大区)。
-        let cross_x = px + layout.half * layout.block + layout.block / 2;
-        let cross_y = py + layout.half * layout.block + layout.block / 2;
-        for x in px..px + layout.edge {
-            put(rgba, w, h, x, cross_y, ACCENT);
+        let ox = px + layout.half * block;
+        let oy = py + layout.half * block;
+        for i in 0..block {
+            put(rgba, w, h, ox + i, oy, ACCENT);
+            put(rgba, w, h, ox + i, oy + block - 1, ACCENT);
+            put(rgba, w, h, ox, oy + i, ACCENT);
+            put(rgba, w, h, ox + block - 1, oy + i, ACCENT);
         }
-        for y in py..py + layout.edge {
-            put(rgba, w, h, cross_x, y, ACCENT);
-        }
-        // 单行读数 pill:白底深字,水平居中于放大区下方。
         let center = self.sample(cursor.0, cursor.1);
         let line = magnifier_readout_line(cursor, center);
         let text_w = text::measure_width(&line, layout.font).unwrap_or(0.0);
-        let max_pill = (panel.width - layout.pad * 2).max(0);
-        let pill_w = (text_w.ceil() as i32 + layout.pill_pad_x * 2).min(max_pill);
-        let pill = IntRect {
-            x: panel.x + (panel.width - pill_w) / 2,
-            y: panel.y + layout.pad + layout.edge + layout.gap,
-            width: pill_w,
-            height: layout.pill_h,
+        let swatch = (layout.pill_h - 8).max(10);
+        let footer_w = (swatch + 8 + text_w.ceil() as i32 + layout.pill_pad_x).min(panel.width - layout.pad * 2);
+        let footer_x = panel.x + (panel.width - footer_w) / 2;
+        let footer_y = panel.y + layout.pad + layout.edge + layout.gap;
+        let sw = IntRect {
+            x: footer_x,
+            y: footer_y + (layout.pill_h - swatch) / 2,
+            width: swatch,
+            height: swatch,
         };
-        draw_panel_chrome(rgba, w, h, pill, layout.pill_h / 2);
+        fill_round(rgba, w, h, sw, 3, [center[0], center[1], center[2], 255]);
+        for i in 0..swatch {
+            blend(rgba, w, h, sw.x + i, sw.y, CHROME_BORDER);
+            blend(rgba, w, h, sw.x + i, sw.bottom() - 1, CHROME_BORDER);
+            blend(rgba, w, h, sw.x, sw.y + i, CHROME_BORDER);
+            blend(rgba, w, h, sw.right() - 1, sw.y + i, CHROME_BORDER);
+        }
         let line_h = text::line_height(layout.font);
-        let text_x = pill.x as f32 + (pill.width as f32 - text_w).max(0.0) / 2.0;
-        let text_y = pill.y as f32 + (pill.height as f32 - line_h).max(0.0) / 2.0;
-        text::draw_text(rgba, w, h, text_x, text_y, &line, layout.font, CHROME_TEXT);
+        text::draw_text(
+            rgba,
+            w,
+            h,
+            (sw.right() + 8) as f32,
+            footer_y as f32 + (layout.pill_h as f32 - line_h) / 2.0,
+            &line,
+            layout.font,
+            CHROME_TEXT,
+        );
     }
 }
 
-/// 亮铬面板统一画法:底部 2px 深色 offset 模拟阴影 → 1px 细描边 → 亮暖白底。
+/// 浮层画法:向下 2px 的阴影 → 1px 边 → 浅蓝灰底。
 fn place_tooltip(
     anchor: IntRect,
     width: i32,
@@ -1642,26 +1653,16 @@ fn place_tooltip(
         return None;
     }
     let (ax, ay) = anchor.center();
-    // Keep above/below candidates on screen when font metrics make the tooltip
-    // wider than a button near an edge. A side candidate can cover the toolbar.
+    // 工具条是单行按钮。提示优先放在按钮上方,放不下再放下方。
+    // 左右候选会盖住相邻按钮,只在上下都出屏时使用。
     let centered_x = (ax - width / 2).clamp(0, sw - width);
-    // 右侧操作条优先出现在按钮左侧,避免贴屏幕右缘时提示跑出画面;
-    // 底部工具条仍优先出现在按钮上方。
-    let candidates = if ax > sw / 2 {
-        [
-            (anchor.x - width - gap, ay - height / 2),
-            (centered_x, anchor.y - height - gap),
-            (centered_x, anchor.bottom() + gap),
-            (anchor.right() + gap, ay - height / 2),
-        ]
-    } else {
-        [
-            (centered_x, anchor.y - height - gap),
-            (anchor.right() + gap, ay - height / 2),
-            (anchor.x - width - gap, ay - height / 2),
-            (centered_x, anchor.bottom() + gap),
-        ]
-    };
+    let centered_y = (ay - height / 2).clamp(0, sh - height);
+    let candidates = [
+        (centered_x, anchor.y - height - gap),
+        (centered_x, anchor.bottom() + gap),
+        (anchor.x - width - gap, centered_y),
+        (anchor.right() + gap, centered_y),
+    ];
     for (x, y) in candidates {
         if x >= 0 && y >= 0 && x + width <= sw && y + height <= sh {
             return Some(IntRect {
@@ -2092,6 +2093,13 @@ mod tests {
         accept_buffer(RawBuffer::ready(width, height, bytes)).unwrap()
     }
 
+    fn near_chrome(pixel: [u8; 3]) -> bool {
+        pixel
+            .iter()
+            .zip(CHROME_BG)
+            .all(|(channel, surface)| (*channel as i16 - surface as i16).abs() <= 12)
+    }
+
     /// 选区标注测试场景:未选中工具、光标在选区外。
     fn annotation_scene(selection: PhysicalRect, flags: FeatureFlags) -> Scene {
         Scene {
@@ -2266,11 +2274,12 @@ mod tests {
         let panel = magnifier_rect(cursor, (w, h), 1.0);
         let layout = mag_layout(1.0);
         let px = panel.x + (panel.width - layout.edge) / 2;
-        let cross_y = panel.y + layout.pad + layout.half * layout.block + layout.block / 2;
+        let origin_x = px + layout.half * layout.block;
+        let origin_y = panel.y + layout.pad + layout.half * layout.block;
         assert_eq!(
-            read(&composed, px + 10, cross_y),
+            read(&composed, origin_x, origin_y),
             [ACCENT[0], ACCENT[1], ACCENT[2]],
-            "magnifier crosshair must survive the annotation layer"
+            "magnifier center pixel outline must survive the annotation layer"
         );
 
         // 3) 右键菜单:面板像素不被擦除(菜单命中与绘制同源,不允许隐形可点)。
@@ -2440,9 +2449,7 @@ mod tests {
             panel_ink(&light, false) > 20,
             "annotate-form toolbar should draw icons"
         );
-        // 选中工具出现 accent 墨色字形(独立选中态:accent 软底 + accent
-        // 图标,与复制的实心 accent 填充区分;基线字形为深色,accent 近色
-        // 像素只来自复制按钮,选中后增多)。
+        // 选中工具用蓝色字形。复制按钮也是这块蓝,所以只断言选中后蓝像素变多。
         let selected = composer.compose_with_overlay(
             &mode_scene(selection, enabled, false),
             &overlay(Some(AnnotationTool::Rect)),
@@ -2450,14 +2457,14 @@ mod tests {
         let accent_pixels = |bytes: &[u8]| {
             bytes
                 .chunks_exact(4)
-                .filter(|px| px[0] < 100 && px[1] > 150 && px[2] > 140)
+                .filter(|px| px[0] < 80 && px[1] < 140 && px[2] > 180)
                 .count()
         };
         assert!(
             accent_pixels(&selected) > accent_pixels(&with_tools),
             "selected tool should paint its glyph in accent ink"
         );
-        // 复制按钮中心区为 accent 填充。
+        // 复制按钮不再单独高亮,短杠位置应是浮层底而不是强调色。
         let copy_rect = toolbar
             .buttons
             .iter()
@@ -2469,10 +2476,10 @@ mod tests {
             let i = ((y as u32 * 800 + x as u32) * 4) as usize;
             [bytes[i], bytes[i + 1], bytes[i + 2]]
         };
-        assert_eq!(
+        assert_ne!(
             read(&with_tools, cx, cy + copy_rect.height / 2 - 6),
             [ACCENT[0], ACCENT[1], ACCENT[2]],
-            "copy button must be accent filled"
+            "copy button should not carry an accent mark"
         );
     }
 
@@ -2807,7 +2814,7 @@ mod tests {
         assert_eq!(accent_for_scheme(Some(true)), ACCENT_DARK);
         assert_eq!(ACCENT_LIGHT, [0x1D, 0x4E, 0xD8, 255]);
         assert_eq!(ACCENT_DARK, [0x93, 0xC5, 0xFD, 255]);
-        assert_ne!(ACCENT_LIGHT, ACCENT);
+        assert_eq!(ACCENT_LIGHT, ACCENT);
         assert_ne!(ACCENT_DARK, ACCENT);
         let live = selection_accent();
         assert!(live == ACCENT_LIGHT || live == ACCENT_DARK);
@@ -2866,16 +2873,12 @@ mod tests {
     }
 
     #[test]
-    fn chrome_palette_is_bright_warm_with_dark_ink() {
-        // 亮暖白底 #fffcf7 @ 97%。
-        assert_eq!(CHROME_BG, [255, 252, 247, 247]);
-        // 深墨字 #1c1917。
-        assert_eq!(CHROME_TEXT, [0x1C, 0x19, 0x17, 255]);
-        // 描边是 14% 深墨;hover 软底是 12% 深青绿。
-        assert_eq!(CHROME_BORDER, [28, 25, 23, 36]);
-        assert_eq!(ACTIVE_BG, [15, 118, 110, 31]);
-        // accent 填充按钮:青绿底白图标。
-        assert_eq!(ACCENT, [0x2D, 0xD4, 0xBF, 255]);
+    fn chrome_palette_uses_cool_surface_and_shared_accent() {
+        assert_eq!(CHROME_BG, [0xE4, 0xEB, 0xF6, 255]);
+        assert_eq!(CHROME_TEXT, [0x1C, 0x21, 0x28, 255]);
+        assert_eq!(CHROME_BORDER, [28, 33, 40, 41]);
+        assert_eq!(ACTIVE_BG, [0x1D, 0x4E, 0xD8, 36]);
+        assert_eq!(ACCENT, ACCENT_LIGHT);
         assert_eq!(ICON_INK, [255, 255, 255, 255]);
         // 压暗系数保持 52%。
         assert_eq!(DIM_KEEP, 52);
@@ -2968,11 +2971,7 @@ mod tests {
         let pixel = [0x2D, 0xD4, 0xBF, 255];
         assert_eq!(rgb_readout(pixel), "R 45 G 212 B 191");
         assert_eq!(hex_readout(pixel), "#2DD4BF");
-        // 单行读数:HEX + 紧凑 RGB + 坐标。
-        assert_eq!(
-            magnifier_readout_line((32, 32), pixel),
-            "#2DD4BF R45 G212 B191 · 32, 32".to_string()
-        );
+        assert_eq!(magnifier_readout_line((32, 32), pixel), "#2DD4BF");
     }
 
     #[test]
@@ -3043,15 +3042,14 @@ mod tests {
         };
         // 放大区左上角对应源 (cursor - half):原始纯色,不是压暗后的 (104,52,26)。
         assert_eq!(read(px, py), [200, 100, 50, 255]);
-        // 中心块内部对应光标源像素 (200,150)(避开十字准星行列)。
-        let block = px + layout.half * layout.block;
-        let block_y = py + layout.half * layout.block;
-        assert_eq!(read(block + 1, block_y + 1), [1, 2, 3, 255]);
-        // 十字准星:放大区中心行/列为强调色。
-        let cross_x = px + layout.half * layout.block + layout.block / 2;
-        let cross_y = py + layout.half * layout.block + layout.block / 2;
-        assert_eq!(read(cross_x, py), [ACCENT[0], ACCENT[1], ACCENT[2], 255]);
-        assert_eq!(read(px, cross_y), [ACCENT[0], ACCENT[1], ACCENT[2], 255]);
+        // 中心块内部是光标源像素;框在块的外缘,不切开像素。
+        let origin_x = px + layout.half * layout.block;
+        let origin_y = py + layout.half * layout.block;
+        assert_eq!(read(origin_x + 1, origin_y + 1), [1, 2, 3, 255]);
+        assert_eq!(
+            read(origin_x, origin_y),
+            [ACCENT[0], ACCENT[1], ACCENT[2], 255]
+        );
     }
 
     #[test]
@@ -3274,7 +3272,7 @@ mod tests {
             let i = ((y as u32 * 320 + x as u32) * 4) as usize;
             [composed[i], composed[i + 1], composed[i + 2]]
         };
-        // SE 手柄 (200,120):白芯 + 青绿环(scale 1.0 外环半径 5)。
+        // SE 手柄 (200,120):白芯 + 蓝环(scale 1.0 外环半径 5)。
         let (hx, hy) = handle_anchor(selection, HandleKind::SouthEast);
         assert_eq!(read(hx, hy), [255, 255, 255]);
         assert_eq!(read(hx + 4, hy), [ACCENT[0], ACCENT[1], ACCENT[2]]);
@@ -3305,14 +3303,14 @@ mod tests {
             let i = ((y as u32 * 320 + x as u32) * 4) as usize;
             [composed[i], composed[i + 1], composed[i + 2]]
         };
-        // 徽标在选区上方;面板内部接近亮暖白(暗幕 [10,10,10] 上 97% 混合 ≈ [250,247,242])。
+        // 徽标在选区上方,内部是浮层底色。
         let badge_y = 80 - (text::line_height(BADGE_FONT).ceil() as i32) - BADGE_PAD_Y * 2
             + BADGE_PAD_Y
             - BADGE_MARGIN;
         let pixel = read(60, badge_y.max(2));
         assert!(
-            pixel[0] > 230 && pixel[1] > 225 && pixel[2] > 220,
-            "badge interior should be bright, got {pixel:?}"
+            near_chrome(pixel),
+            "badge interior should be the chrome surface, got {pixel:?}"
         );
     }
 
@@ -3372,15 +3370,18 @@ mod tests {
     fn menu_geometry_has_touch_targets_and_cancel_separator() {
         let items = menu_items(FeatureFlags::default());
         assert_eq!(items.len(), 6);
-        let panel = menu_panel(metrics_1(), (50, 50), (800, 600), &items);
-        assert_eq!(panel.width, MENU_ITEM_W + MENU_PAD * 2);
+        let metrics = metrics_1();
+        let row = menu_row_width(metrics, &items);
+        let panel = menu_panel(metrics, (50, 50), (800, 600), &items);
+        assert!(row < MENU_ITEM_W);
+        assert_eq!(panel.width, row + MENU_PAD * 2);
         assert_eq!(
             panel.height,
             items.len() as i32 * MENU_ITEM_H + MENU_PAD * 2 + MENU_SEPARATOR_H
         );
-        let rects = menu_item_rects(metrics_1(), panel, &items);
+        let rects = menu_item_rects(metrics, panel, &items);
         for (_, rect) in &rects {
-            assert_eq!(rect.width, MENU_ITEM_W);
+            assert_eq!(rect.width, row);
             assert_eq!(rect.height, MENU_ITEM_H);
             assert_eq!(rect.x, panel.x + MENU_PAD);
         }
@@ -3389,8 +3390,8 @@ mod tests {
         assert_eq!(rects[4].1.bottom(), sep_y);
         assert_eq!(rects[5].1.y, sep_y + MENU_SEPARATOR_H);
         // 图标/文字内边距。
-        assert_eq!(MENU_ICON_CX, 22);
-        assert_eq!(MENU_TEXT_X, 38);
+        assert_eq!(MENU_ICON_CX, 20);
+        assert_eq!(MENU_TEXT_X, 44);
     }
 
     /// 「更多」面板几何:与右键菜单同构,向上展开且钳制在屏幕内。
@@ -3405,7 +3406,9 @@ mod tests {
             height: BAR_BUTTON,
         };
         let panel = more_panel(metrics, anchor, None, (1280, 800), &items);
-        assert_eq!(panel.width, metrics.menu_item_w + metrics.menu_pad * 2);
+        let row = menu_row_width(metrics, &items);
+        assert!(row < metrics.menu_item_w, "短标签不应撑满旧的 168px 槽");
+        assert_eq!(panel.width, row + metrics.menu_pad * 2);
         assert_eq!(
             panel.height,
             items.len() as i32 * metrics.menu_item_h + metrics.menu_pad * 2
@@ -3415,7 +3418,7 @@ mod tests {
         let rects = more_item_rects(metrics, panel, &items);
         assert_eq!(rects.len(), items.len());
         for (index, (_, rect)) in rects.iter().enumerate() {
-            assert_eq!(rect.width, metrics.menu_item_w);
+            assert_eq!(rect.width, row);
             assert_eq!(rect.height, metrics.menu_item_h);
             assert_eq!(rect.x, panel.x + metrics.menu_pad);
             assert_eq!(
@@ -3516,20 +3519,20 @@ mod tests {
         assert_eq!(read(190, 60), [10, 200, 90]);
         // 选区外是暗幕(避开所有面板)。
         assert_eq!(read(10, 190), [dimmed[0], dimmed[1], dimmed[2]]);
-        // 复制按钮为 accent 填充。
+        // 复制按钮不再单独铺强调色。
         let (cx, cy) = copy_rect.center();
-        assert_eq!(
+        assert_ne!(
             read(cx, cy + copy_rect.height / 2 - 6),
             [ACCENT[0], ACCENT[1], ACCENT[2]]
         );
-        // 横条面板内部是亮铬底(取左缘内 2px,避开图标与分隔线)。
+        // 横条面板内部是浮层底(取左缘内 2px,避开图标与分隔线)。
         let probe = read(
             toolbar.panel.x + 2,
             toolbar.panel.y + toolbar.panel.height / 2,
         );
         assert!(
-            probe[0] > 220 && probe[1] > 215 && probe[2] > 205,
-            "toolbar panel should be bright chrome, got {probe:?}"
+            near_chrome(probe),
+            "toolbar panel should be the chrome surface, got {probe:?}"
         );
         // 描边:选区左边框(避开手柄)为与网页相同的明暗强调色。
         let stroke = selection_accent();
@@ -3624,7 +3627,7 @@ mod tests {
             for y in region.y.max(0)..region.bottom().min(200) {
                 for x in region.x.max(0)..region.right().min(320) {
                     let i = ((y as u32 * 320 + x as u32) * 4) as usize;
-                    if buf[i] > 240 && buf[i + 1] > 240 && buf[i + 2] > 230 {
+                    if near_chrome([buf[i], buf[i + 1], buf[i + 2]]) {
                         n += 1;
                     }
                 }
@@ -3659,8 +3662,8 @@ mod tests {
                 metrics.menu_item_h,
                 (MENU_ITEM_H as f32 * scale).round() as i32
             );
-            assert_eq!(metrics.menu_font, MENU_FONT * scale);
-            assert_eq!(metrics.badge_font, BADGE_FONT * scale);
+            assert_eq!(metrics.menu_font, (MENU_FONT * scale).round());
+            assert_eq!(metrics.badge_font, (BADGE_FONT * scale).round());
             // 命中半径随 scale 放大且不低于 1.0 基准。
             assert!(metrics.handle_hit_radius >= HANDLE_HIT_RADIUS);
             assert!(metrics.handle_radius >= 5);
@@ -3671,8 +3674,9 @@ mod tests {
             if text::ui_font().is_some() {
                 let label = action_label(SelectionAction::Cancel);
                 let width = text::measure_width(&label, metrics.menu_font).unwrap();
+                let row = menu_row_width(metrics, &[SelectionAction::Cancel]);
                 assert!(
-                    metrics.menu_text_x + width.ceil() as i32 <= metrics.menu_item_w,
+                    metrics.menu_text_x + width.ceil() as i32 + metrics.menu_pad <= row,
                     "scale {scale}: 菜单文字被裁切"
                 );
                 assert!(text::line_height(metrics.menu_font) <= metrics.menu_item_h as f32);
@@ -3728,7 +3732,8 @@ mod tests {
             // 菜单几何按 metrics;分隔线与项底对齐。
             let items = menu_items(FeatureFlags::default());
             let menu = menu_panel(metrics, (50, 50), (800, 600), &items);
-            assert_eq!(menu.width, metrics.menu_item_w + metrics.menu_pad * 2);
+            let row = menu_row_width(metrics, &items);
+            assert_eq!(menu.width, row + metrics.menu_pad * 2);
             assert_eq!(
                 menu.height,
                 items.len() as i32 * metrics.menu_item_h
@@ -3737,7 +3742,7 @@ mod tests {
             );
             let mrects = menu_item_rects(metrics, menu, &items);
             for (_, rect) in &mrects {
-                assert_eq!(rect.width, metrics.menu_item_w);
+                assert_eq!(rect.width, row);
                 assert_eq!(rect.height, metrics.menu_item_h);
                 assert_eq!(rect.x, menu.x + metrics.menu_pad);
             }
@@ -3753,7 +3758,10 @@ mod tests {
                 (800, 600),
                 &more,
             );
-            assert_eq!(m_panel.width, metrics.menu_item_w + metrics.menu_pad * 2);
+            assert_eq!(
+                m_panel.width,
+                menu_row_width(metrics, &more) + metrics.menu_pad * 2
+            );
             // 手柄/边命中半径按 metrics 派生(角手柄优先)。
             let rect = PhysicalRect {
                 x: 100,
@@ -3810,8 +3818,7 @@ mod tests {
             let i = ((y as u32 * 640 + x as u32) * 4) as usize;
             [composed[i], composed[i + 1], composed[i + 2]]
         };
-        // 横条复制按钮中心区仍是 accent 填充(取偏心点避开白色图标)。
-        // compose 无 overlay:布局按 text_input=false 计算。
+        // 复制按钮与其他按钮一样,不再画强调色短杠。
         let toolbar = unified_toolbar(metrics, selection, (640, 400), flags, false).unwrap();
         let copy_rect = toolbar
             .buttons
@@ -3820,8 +3827,8 @@ mod tests {
             .map(|(_, rect)| *rect)
             .unwrap();
         let (cx, cy) = copy_rect.center();
-        let inset = metrics.bar_button / 2 - 6;
-        assert_eq!(read(cx, cy + inset), [ACCENT[0], ACCENT[1], ACCENT[2]]);
+        let inset = metrics.bar_icon / 2 + 2;
+        assert_ne!(read(cx, cy + inset), [ACCENT[0], ACCENT[1], ACCENT[2]]);
         // 手柄视觉半径也随 scale 放大:距锚点 1.0 基准半径外、缩放半径内仍为强调色。
         let (hx, hy) = handle_anchor(selection, HandleKind::SouthEast);
         assert_eq!(read(hx, hy), [255, 255, 255]);
@@ -3847,8 +3854,8 @@ mod tests {
         let probe_y = panel.y + metrics.menu_pad + 2;
         let pixel = read(probe_x, probe_y);
         assert!(
-            pixel[0] > 230 && pixel[1] > 225 && pixel[2] > 220,
-            "scaled menu panel should be bright, got {pixel:?}"
+            near_chrome(pixel),
+            "scaled menu panel should be the chrome surface, got {pixel:?}"
         );
     }
 }

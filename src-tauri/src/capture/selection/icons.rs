@@ -2,8 +2,8 @@
 //! (24px/48px)缓存解码位图,并按 (图标, 目标尺寸, 着色) 缓存预合成
 //! 的 RGBA 字形,绘制时经 `composer::blend()` 叠到帧上。
 //!
-//! 资产为黑线透明底单色稿:每个像素的覆盖度 = alpha × (1 − 亮度),
-//! 着色即把 RGB 换成墨色、alpha 换成覆盖度,合成时自然抗锯齿。
+//! 资产为黑线透明底单色稿:每个像素的覆盖度 = alpha × (1 − 亮度)。
+//! 24/48 原稿已按像素网格超采样,斜边保留灰度抗锯齿,不再收成纯黑白。
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -166,9 +166,8 @@ impl IconName {
             .or_insert_with(|| Box::leak(load(self, tier)))
     }
 
-    /// 目标尺寸 + 墨色 → 预合成 RGBA 字形。源档按目标尺寸选(>24 用 48 档),
-    /// 下缩放走盒式面积平均(细描边不丢像素、边缘平滑),上缩放走双线性;
-    /// 与目标同档时直接着色。
+    /// 目标尺寸 + 墨色 → 预合成 RGBA 字形。只在 24/48 原稿或 48 的整数倍上
+    /// 着色;整数倍用最近邻复制像素,不把细描边做双线性放大。
     fn tinted(self, size: u32, ink: [u8; 4]) -> &'static [u8] {
         fn render(name: IconName, size: u32, ink: [u8; 4]) -> Box<[u8]> {
             let tier = if size <= 24 { 24 } else { 48 };
@@ -179,10 +178,22 @@ impl IconName {
                 tint_into(src, &mut out, ink);
                 return out.into_boxed_slice();
             }
+            if size > tier && size % tier == 0 {
+                let factor = size / tier;
+                for y in 0..size {
+                    for x in 0..size {
+                        let cover = src[((y / factor) * tier + x / factor) as usize];
+                        let i = (y * size + x) as usize * 4;
+                        out[i] = ink[0];
+                        out[i + 1] = ink[1];
+                        out[i + 2] = ink[2];
+                        out[i + 3] = (u16::from(ink[3]) * u16::from(cover) / 255) as u8;
+                    }
+                }
+                return out.into_boxed_slice();
+            }
             if size < tier {
-                // 盒式过滤:每个输出像素取源图上对应矩形(可跨像素)的覆盖度
-                // 平均值。相比最近邻,1.75px 细描边在 18/14px 目标下不会
-                // 断裂发虚(观感「模糊」的根因)。
+                // 非整数倍才做面积平均。调用方应先把尺寸钉到 24/48,避免走到这里。
                 for y in 0..size {
                     let sy0 = (y * tier) as f32 / size as f32;
                     let sy1 = ((y + 1) * tier) as f32 / size as f32;
@@ -262,6 +273,20 @@ impl IconName {
     }
 }
 
+/// 钉到原稿像素网格。24 与 48 是 1:1 资产;中间尺寸就近取原稿,
+/// 不再把 16/20px 请求面积平均成细灰线。更大尺寸用 48 的整数倍。
+pub(crate) fn crisp_icon_px(requested: u32) -> u32 {
+    if requested >= 72 {
+        48 * (requested / 48).max(2)
+    } else if requested >= 36 {
+        48
+    } else if requested >= 18 {
+        24
+    } else {
+        requested.max(1)
+    }
+}
+
 fn tint_into(src: &[u8], out: &mut [u8], ink: [u8; 4]) {
     for (i, &cover) in src.iter().enumerate() {
         let i = i * 4;
@@ -318,7 +343,7 @@ pub fn draw(
     let Some(name) = IconName::for_action(action) else {
         return;
     };
-    let size = size.max(1) as u32;
+    let size = crisp_icon_px(size.max(1) as u32);
     let glyph = name.tinted(size, ink);
     let half = size as i32 / 2;
     for dy in 0..size as i32 {
@@ -346,7 +371,10 @@ mod tests {
         for name in IconName::ALL {
             for tier in [24u8, 48] {
                 let coverage = name.coverage(tier);
-                assert_eq!(coverage.len(), u32::from(tier) as usize * u32::from(tier) as usize);
+                assert_eq!(
+                    coverage.len(),
+                    u32::from(tier) as usize * u32::from(tier) as usize
+                );
                 let painted = coverage.iter().filter(|&&c| c > 0).count();
                 assert!(
                     painted > tier as usize,
@@ -376,6 +404,15 @@ mod tests {
         assert_ne!(a, c);
         let d = IconName::Copy.tinted(36, INK).as_ptr();
         assert_ne!(a, d);
+    }
+
+    #[test]
+    fn crisp_icon_px_stays_on_authored_grid() {
+        assert_eq!(crisp_icon_px(20), 24);
+        assert_eq!(crisp_icon_px(30), 24);
+        assert_eq!(crisp_icon_px(40), 48);
+        assert_eq!(crisp_icon_px(48), 48);
+        assert_eq!(crisp_icon_px(96), 96);
     }
 
     /// 着色正确性:黑线稿 → 字形像素取墨色,覆盖度全透明处不落笔。
@@ -420,7 +457,10 @@ mod tests {
         for name in [IconName::Rect, IconName::Line, IconName::Copy] {
             let glyph = name.tinted(18, INK);
             let max_cover = glyph.chunks_exact(4).map(|px| px[3]).max().unwrap_or(0);
-            assert!(max_cover >= 200, "{name:?}@18 stroke core faded: {max_cover}");
+            assert!(
+                max_cover >= 200,
+                "{name:?}@18 stroke core faded: {max_cover}"
+            );
             let painted = glyph.chunks_exact(4).filter(|px| px[3] > 0).count();
             assert!(painted >= 30, "{name:?}@18 lost strokes: {painted}");
         }

@@ -21,13 +21,7 @@ pub fn rasterize(frame: &Frame, annotations: &[Annotation]) -> Result<Frame, Cap
         return Err(CaptureError::invalid_buffer("error.capture.buffer_empty"));
     }
     let mut out = frame.clone();
-    apply_annotations(
-        &mut out.rgba,
-        out.width,
-        out.height,
-        out.scale,
-        annotations,
-    )?;
+    apply_annotations(&mut out.rgba, out.width, out.height, out.scale, annotations)?;
     Ok(out)
 }
 

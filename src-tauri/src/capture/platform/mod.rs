@@ -18,42 +18,50 @@ pub fn linux_capture_backend(wayland_display: Option<&str>) -> LinuxCaptureBacke
     }
 }
 
-#[cfg(windows)]
-mod win;
-#[cfg(target_os = "macos")]
-mod macos;
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(windows)]
+mod win;
 
 /// macOS 屏幕录制权限状态(R23):触发前快速判定,首次请求给出过渡提示。
 #[cfg(target_os = "macos")]
 pub use macos::{screen_permission_state, ScreenPermissionState};
 
-#[cfg(windows)]
-use win as backend;
-#[cfg(target_os = "macos")]
-use macos as backend;
 #[cfg(target_os = "linux")]
 use linux as backend;
+#[cfg(target_os = "macos")]
+use macos as backend;
+#[cfg(windows)]
+use win as backend;
 
 #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 mod backend {
     use super::*;
 
     pub fn pointer_monitor() -> Result<MonitorGeom, CaptureError> {
-        Err(CaptureError::unavailable("error.capture.platform_no_interface"))
+        Err(CaptureError::unavailable(
+            "error.capture.platform_no_interface",
+        ))
     }
 
     pub fn capture_monitor(_monitor: &MonitorGeom) -> Result<Frame, CaptureError> {
-        Err(CaptureError::unavailable("error.capture.platform_no_interface"))
+        Err(CaptureError::unavailable(
+            "error.capture.platform_no_interface",
+        ))
     }
 
     pub fn list_windows(_self_pid: u32) -> Result<Vec<ListedWindow>, CaptureError> {
-        Err(CaptureError::unavailable("error.capture.platform_no_window_list"))
+        Err(CaptureError::unavailable(
+            "error.capture.platform_no_window_list",
+        ))
     }
 
     pub fn capture_window(_id: &str) -> Result<Frame, CaptureError> {
-        Err(CaptureError::unavailable("error.capture.platform_no_window_capture"))
+        Err(CaptureError::unavailable(
+            "error.capture.platform_no_window_capture",
+        ))
     }
 
     pub fn dismiss_tray_popup() {}

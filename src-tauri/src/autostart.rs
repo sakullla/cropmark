@@ -108,13 +108,13 @@ pub fn map_platform_status(status: PlatformStatus) -> AutostartState {
             message: None,
             rejection: None,
         },
-        PlatformStatus::RequiresApproval
-        | PlatformStatus::NotFound
-        | PlatformStatus::Denied(_) => AutostartState {
-            enabled: false,
-            message,
-            rejection,
-        },
+        PlatformStatus::RequiresApproval | PlatformStatus::NotFound | PlatformStatus::Denied(_) => {
+            AutostartState {
+                enabled: false,
+                message,
+                rejection,
+            }
+        }
     }
 }
 
@@ -214,7 +214,8 @@ mod windows {
                 .map(|(key, _)| key)
                 .map_err(|error| error.to_string())
         } else {
-            hkcu.open_subkey(RUN_SUBKEY).map_err(|error| error.to_string())
+            hkcu.open_subkey(RUN_SUBKEY)
+                .map_err(|error| error.to_string())
         }
     }
 
@@ -361,9 +362,11 @@ mod linux {
         let path = desktop_path().map_err(PlatformStatus::Denied)?;
         if enabled {
             if let Some(dir) = path.parent() {
-                fs::create_dir_all(dir).map_err(|error| PlatformStatus::Denied(error.to_string()))?;
+                fs::create_dir_all(dir)
+                    .map_err(|error| PlatformStatus::Denied(error.to_string()))?;
             }
-            fs::write(&path, desktop_entry(exe)).map_err(|error| PlatformStatus::Denied(error.to_string()))
+            fs::write(&path, desktop_entry(exe))
+                .map_err(|error| PlatformStatus::Denied(error.to_string()))
         } else {
             match fs::remove_file(&path) {
                 Ok(()) => Ok(()),
@@ -510,10 +513,7 @@ mod tests {
         ));
         assert!(!run_command_matches(r#""C:\Other\cropmark.exe""#, exe));
         assert!(run_command_for_exe(exe).starts_with('"'));
-        assert_eq!(
-            windows_run_value_name(),
-            "Cropmark"
-        );
+        assert_eq!(windows_run_value_name(), "Cropmark");
     }
 
     #[test]
@@ -525,7 +525,10 @@ mod tests {
         assert!(!body.to_ascii_lowercase().contains("cleanshot"));
         assert!(!body.to_ascii_lowercase().contains("flameshot"));
         assert!(linux_desktop_enabled(&body, exe));
-        assert!(!linux_desktop_enabled("Hidden=true\nExec=/opt/Cropmark/cropmark\n", exe));
+        assert!(!linux_desktop_enabled(
+            "Hidden=true\nExec=/opt/Cropmark/cropmark\n",
+            exe
+        ));
         assert!(!linux_desktop_enabled(&body, Path::new("/tmp/other")));
     }
 

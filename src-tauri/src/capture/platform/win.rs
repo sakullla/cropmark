@@ -5,7 +5,9 @@ use windows::Win32::Foundation::{
     SetLastError, ERROR_ACCESS_DENIED, ERROR_SUCCESS, E_ACCESSDENIED, HWND, LPARAM, POINT, RECT,
     WIN32_ERROR,
 };
-use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS};
+use windows::Win32::Graphics::Dwm::{
+    DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
+};
 use windows::Win32::Graphics::Gdi::{
     BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits,
     GetMonitorInfoW, MonitorFromPoint, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER,
@@ -117,12 +119,7 @@ unsafe fn monitor_from_handle(
         name
     };
     Ok(MonitorGeom::from_physical(
-        id,
-        rect.left,
-        rect.top,
-        width,
-        height,
-        scale,
+        id, rect.left, rect.top, width, height, scale,
     ))
 }
 
@@ -216,7 +213,9 @@ unsafe fn capture_dc(
     let bitmap = CreateCompatibleBitmap(hdc_screen, width as i32, height as i32);
     if bitmap.is_invalid() {
         let _ = DeleteDC(hdc_mem);
-        return Err(classify_platform_failure(PlatformFailure::BufferUninitialized));
+        return Err(classify_platform_failure(
+            PlatformFailure::BufferUninitialized,
+        ));
     }
     let old = SelectObject(hdc_mem, bitmap.into());
     if let Err(error) = paint(hdc_mem) {
@@ -262,7 +261,9 @@ unsafe fn dibits_to_frame(
         DIB_RGB_COLORS,
     );
     if copied == 0 {
-        return Err(classify_platform_failure(PlatformFailure::BufferUninitialized));
+        return Err(classify_platform_failure(
+            PlatformFailure::BufferUninitialized,
+        ));
     }
     let mut rgba = vec![0u8; bgra.len()];
     for (src, dst) in bgra.chunks_exact(4).zip(rgba.chunks_exact_mut(4)) {
@@ -288,7 +289,8 @@ unsafe fn capture_hwnd(hwnd: HWND) -> Result<Frame, CaptureError> {
         size_of::<RECT>() as u32,
     );
     if dwm.is_err() {
-        GetWindowRect(hwnd, &mut rect).map_err(|_| CaptureError::api("error.capture.window_rect"))?;
+        GetWindowRect(hwnd, &mut rect)
+            .map_err(|_| CaptureError::api("error.capture.window_rect"))?;
     }
     let width = (rect.right - rect.left).max(0) as u32;
     let height = (rect.bottom - rect.top).max(0) as u32;

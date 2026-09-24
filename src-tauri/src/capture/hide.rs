@@ -106,7 +106,11 @@ impl HideWait {
         self.hide_requested && self.hide_presented && !self.still_visible
     }
 
-    pub fn commit_presented(&mut self, surfaces_hidden: bool, tray_gone: bool) -> Result<(), CaptureError> {
+    pub fn commit_presented(
+        &mut self,
+        surfaces_hidden: bool,
+        tray_gone: bool,
+    ) -> Result<(), CaptureError> {
         if !surfaces_hidden || !tray_gone {
             return Err(hide_not_presented_error());
         }
@@ -281,8 +285,16 @@ mod tests {
         assert_eq!(steps[3], SessionStep::DelayWithoutOverlay);
         assert_eq!(steps[5], SessionStep::CapturePixels);
         assert_eq!(steps[6], SessionStep::ShowOverlayOnFreeze);
-        assert!(steps.iter().position(|&s| s == SessionStep::DelayWithoutOverlay).unwrap()
-            < steps.iter().position(|&s| s == SessionStep::CapturePixels).unwrap());
+        assert!(
+            steps
+                .iter()
+                .position(|&s| s == SessionStep::DelayWithoutOverlay)
+                .unwrap()
+                < steps
+                    .iter()
+                    .position(|&s| s == SessionStep::CapturePixels)
+                    .unwrap()
+        );
     }
 
     #[test]
@@ -310,7 +322,10 @@ mod tests {
                 .unwrap();
             assert!(delay < pixels);
             if uses_overlay {
-                assert_eq!(steps.last().copied(), Some(SessionStep::ShowOverlayOnFreeze));
+                assert_eq!(
+                    steps.last().copied(),
+                    Some(SessionStep::ShowOverlayOnFreeze)
+                );
             } else {
                 assert_eq!(steps.last().copied(), Some(SessionStep::OpenPreview));
             }
@@ -320,8 +335,14 @@ mod tests {
     #[test]
     fn overlay_is_drawn_after_freeze() {
         let steps = session_steps(true, 0);
-        let capture = steps.iter().position(|&s| s == SessionStep::CapturePixels).unwrap();
-        let overlay = steps.iter().position(|&s| s == SessionStep::ShowOverlayOnFreeze).unwrap();
+        let capture = steps
+            .iter()
+            .position(|&s| s == SessionStep::CapturePixels)
+            .unwrap();
+        let overlay = steps
+            .iter()
+            .position(|&s| s == SessionStep::ShowOverlayOnFreeze)
+            .unwrap();
         assert!(capture < overlay);
     }
 

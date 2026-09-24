@@ -9,7 +9,9 @@ fn dib_v5(frame: &Frame) -> Result<Vec<u8>, CaptureError> {
         || frame.height > i32::MAX as u32
         || frame.rgba.len() > u32::MAX as usize
     {
-        return Err(CaptureError::invalid_buffer("error.capture.image_too_large"));
+        return Err(CaptureError::invalid_buffer(
+            "error.capture.image_too_large",
+        ));
     }
     const HEADER: usize = 124;
     let mut dib = vec![0; HEADER + frame.rgba.len()];
@@ -75,7 +77,11 @@ pub(super) fn copy_frame_with_png(frame: &Frame, png: &[u8]) -> Result<(), Captu
     clipboard_win::raw::set_without_clear(format.get(), png).map_err(fail)?;
     clipboard_win::raw::set_without_clear(clipboard_win::formats::CF_DIBV5, &dib).map_err(fail)?;
     if std::env::var_os("CROPMARK_CAPTURE_TIMING").is_some() {
-        eprintln!("Cropmark clipboard: prepare={:?}, write={:?}", prepared_at, started.elapsed() - prepared_at);
+        eprintln!(
+            "Cropmark clipboard: prepare={:?}, write={:?}",
+            prepared_at,
+            started.elapsed() - prepared_at
+        );
     }
     Ok(())
 }
@@ -129,8 +135,12 @@ mod tests {
     #[test]
     #[ignore = "writes the real Windows clipboard; run manually"]
     fn native_clipboard_roundtrip() {
-        let frame = Frame { width: 2, height: 2, scale: 1.0,
-            rgba: vec![255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 64, 10, 20, 30, 0] };
+        let frame = Frame {
+            width: 2,
+            height: 2,
+            scale: 1.0,
+            rgba: vec![255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 64, 10, 20, 30, 0],
+        };
         let png = crate::capture::buffer::encode_png(&frame).unwrap();
         copy_frame_with_png(&frame, &png).unwrap();
         let mut clipboard = arboard::Clipboard::new().unwrap();
@@ -142,9 +152,18 @@ mod tests {
     #[test]
     #[ignore = "manual DIB conversion benchmark"]
     fn benchmark_dib_conversion() {
-        let frame = Frame { width: 3840, height: 2160, scale: 1.0, rgba: vec![255; 3840*2160*4] };
+        let frame = Frame {
+            width: 3840,
+            height: 2160,
+            scale: 1.0,
+            rgba: vec![255; 3840 * 2160 * 4],
+        };
         let started = std::time::Instant::now();
         let dib = dib_v5(&frame).unwrap();
-        eprintln!("4K DIB conversion: {:?}, {} bytes", started.elapsed(), dib.len());
+        eprintln!(
+            "4K DIB conversion: {:?}, {} bytes",
+            started.elapsed(),
+            dib.len()
+        );
     }
 }

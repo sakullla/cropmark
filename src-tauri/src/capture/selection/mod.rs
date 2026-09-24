@@ -473,10 +473,10 @@ impl SelectionEngine {
     /// 生效字号:与预览 `textSize()` 同规则(基础档位 × max(DPI, 长边/1920),
     /// 下限 10),保证选区标注与预览编辑器字号一致。
     fn resolved_text_size(&self) -> f32 {
-        let base = self.options.text_size.unwrap_or(16.0);
+        let base = self.options.text_size.unwrap_or(28.0);
         let dpi = f64::from(self.scale).max(1.0);
         let longest = f64::from(self.width.max(self.height));
-        (base * dpi.max(longest / 1920.0)).max(10.0).round() as f32
+        (base * dpi.max(longest / 1920.0)).max(22.0).round() as f32
     }
 
     /// 合成器标注层视图(图元/草稿/工具/文本/样式同源)。

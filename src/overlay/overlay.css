@@ -31,8 +31,10 @@
 .overlay-chrome {
   position: absolute;
   top: 16px;
-  left: 50%;
-  transform: translateX(-50%);
+  left: 0;
+  right: 0;
+  width: fit-content;
+  margin-inline: auto;
   z-index: 3;
   display: flex;
   align-items: center;
@@ -49,7 +51,7 @@
 .overlay-hint {
   padding: 8px 14px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  background: var(--panel);
   border: 1px solid var(--line);
   box-shadow: var(--shadow);
   color: var(--ink);
@@ -64,7 +66,7 @@
   min-width: 24px;
   min-height: 24px;
   padding: 8px 14px;
-  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  background: var(--panel);
   color: var(--ink);
   font: inherit;
   font-size: 13px;
@@ -111,8 +113,10 @@
 .overlay-tools {
   position: absolute;
   bottom: 20px;
-  left: 50%;
-  transform: translateX(-50%);
+  left: 0;
+  right: 0;
+  width: fit-content;
+  margin-inline: auto;
   z-index: 4;
   display: flex;
   align-items: center;
@@ -121,7 +125,7 @@
   padding: 6px 8px;
   border: 1px solid var(--line);
   border-radius: 16px;
-  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  background: var(--panel);
   box-shadow: var(--shadow);
   pointer-events: auto;
 }
@@ -159,7 +163,7 @@
   min-width: 24px;
   min-height: 24px;
   padding: 8px 12px;
-  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  background: var(--panel);
   color: var(--muted);
   font: inherit;
   font-size: 13px;
@@ -176,14 +180,15 @@
 .capability-panel {
   position: absolute;
   top: 64px;
-  left: 50%;
-  transform: translateX(-50%);
+  left: 0;
+  right: 0;
+  margin-inline: auto;
   z-index: 4;
   width: min(520px, 86vw);
   padding: 14px 16px;
   border: 1px solid var(--line);
   border-radius: 14px;
-  background: color-mix(in srgb, var(--panel) 96%, transparent);
+  background: var(--panel);
   color: var(--ink);
   box-shadow: var(--shadow);
   cursor: default;
@@ -223,14 +228,16 @@
 .overlay-notice {
   position: absolute;
   bottom: 24px;
-  left: 50%;
-  transform: translateX(-50%);
+  left: 0;
+  right: 0;
+  width: fit-content;
+  margin-inline: auto;
   z-index: 4;
   max-width: min(560px, 86vw);
   padding: 10px 14px;
   border: 1px solid var(--line);
   border-radius: 12px;
-  background: color-mix(in srgb, var(--panel) 96%, transparent);
+  background: var(--panel);
   color: var(--ink);
   font-size: 13px;
   line-height: 1.45;
@@ -247,7 +254,7 @@
 .size-badge {
   padding: 4px 8px;
   border-radius: 8px;
-  background: color-mix(in srgb, var(--accent) 92%, transparent);
+  background: var(--accent);
   color: var(--on-accent);
   font-size: 12px;
   font-weight: 650;
@@ -270,7 +277,7 @@
 .window-item {
   text-align: left;
   border: 1px solid var(--line);
-  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  background: var(--panel);
   color: var(--ink);
   border-radius: 12px;
   min-width: 24px;
