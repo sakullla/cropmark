@@ -69,9 +69,9 @@ const REDUCED_CAPABILITIES: Array<{ nameKey: CatalogKey; detailKey: CatalogKey }
   { nameKey: "overlay.caps.nudge_name", detailKey: "overlay.caps.nudge_detail" },
 ];
 
-const FALLBACK_SELECTION = "#0e6d66";
+const FALLBACK_SELECTION = "#1d4ed8";
 const FALLBACK_SELECTION_HALO = "#ffffff";
-const FALLBACK_IDLE_STROKE = "#1c1917";
+const FALLBACK_IDLE_STROKE = "#1c2128";
 
 /// 触发不可用能力时的即时说明:同一事实在面板与按键反馈里保持一致。
 const TOOLBAR_NOTICE_KEY: CatalogKey = "overlay.notice.toolbar";

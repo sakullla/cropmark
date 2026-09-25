@@ -9,7 +9,7 @@
   user-select: none;
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: var(--radius-window);
   box-shadow: var(--shadow);
 }
 

@@ -51,7 +51,7 @@
 
 .overlay-hint {
   padding: 8px 14px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--panel);
   border: 1px solid var(--line);
   box-shadow: var(--shadow);
@@ -63,7 +63,7 @@
   pointer-events: auto;
   cursor: pointer;
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   min-width: 24px;
   min-height: 24px;
   padding: 8px 14px;
@@ -73,11 +73,16 @@
   font-size: 13px;
   font-weight: 650;
   box-shadow: var(--shadow);
+  transition: var(--control-transition);
 }
 
 .overlay-cancel:hover {
-  border-color: var(--accent);
-  background: var(--accent-soft);
+  border-color: var(--control-hover-border);
+  background: var(--control-hover-bg);
+}
+
+.overlay-cancel:active {
+  filter: var(--control-pressed-filter);
 }
 
 .overlay-actions {
@@ -89,7 +94,7 @@
 .overlay-actions button {
   cursor: pointer;
   border: 1px solid transparent;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   min-height: 24px;
   padding: 8px 12px;
   background: var(--accent);
@@ -98,16 +103,35 @@
   font-size: 13px;
   font-weight: 650;
   box-shadow: var(--shadow);
+  transition: var(--control-transition);
+}
+
+.overlay-actions button:hover {
+  filter: var(--control-hover-filter);
+}
+
+.overlay-actions button:active {
+  filter: var(--control-pressed-filter);
 }
 
 .overlay-actions button[hidden] {
   display: none;
 }
 
+/* “进一步编辑”是中性胶囊:实底与文字都取已定义 token,并在填充主操作之外补中性状态。 */
 .overlay-actions [data-workspace="edit"] {
-  background: var(--surface, transparent);
-  color: var(--text, inherit);
-  border-color: var(--line, currentColor);
+  background: var(--panel);
+  color: var(--ink);
+  border-color: var(--line);
+}
+
+.overlay-actions [data-workspace="edit"]:hover {
+  border-color: var(--control-hover-border);
+  background: var(--control-hover-bg);
+}
+
+.overlay-actions [data-workspace="edit"]:active {
+  filter: var(--control-pressed-filter);
 }
 
 /* R21:即时标注工具条,悬浮在选区下方居中;样式按钮面板向上展开。 */
@@ -125,7 +149,7 @@
   max-width: calc(100% - 32px);
   padding: 6px 8px;
   border: 1px solid var(--line);
-  border-radius: 16px;
+  border-radius: var(--radius-window);
   background: var(--panel);
   box-shadow: var(--shadow);
   pointer-events: auto;
@@ -135,6 +159,12 @@
 .overlay-tools .annotation-more-panel {
   top: auto;
   bottom: calc(100% + 8px);
+}
+
+/* 工具条贴屏幕底部:自绘提示翻到按钮上方,向下会越出窗口不可见。 */
+.overlay-tools [data-tooltip]::after {
+  top: auto;
+  bottom: calc(100% + 6px);
 }
 
 /* 工具条出现时把即时说明抬到其上,避免遮挡。 */
@@ -160,7 +190,7 @@
   pointer-events: auto;
   cursor: pointer;
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   min-width: 24px;
   min-height: 24px;
   padding: 8px 12px;
@@ -169,13 +199,18 @@
   font: inherit;
   font-size: 13px;
   box-shadow: var(--shadow);
+  transition: var(--control-transition);
 }
 
 .overlay-capabilities:hover,
 .overlay-capabilities[aria-expanded="true"] {
-  border-color: var(--accent);
-  background: var(--accent-soft);
+  border-color: var(--control-hover-border);
+  background: var(--control-hover-bg);
   color: var(--ink);
+}
+
+.overlay-capabilities:active {
+  filter: var(--control-pressed-filter);
 }
 
 .capability-panel {
@@ -186,9 +221,9 @@
   margin-inline: auto;
   z-index: 4;
   width: min(520px, 86vw);
-  padding: 14px 16px;
+  padding: var(--panel-padding);
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: var(--radius-panel);
   background: var(--panel);
   color: var(--ink);
   box-shadow: var(--shadow);
@@ -237,7 +272,7 @@
   max-width: min(560px, 86vw);
   padding: 10px 14px;
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: var(--radius-menu);
   background: var(--panel);
   color: var(--ink);
   font-size: 13px;
@@ -254,7 +289,7 @@
 
 .size-badge {
   padding: 4px 8px;
-  border-radius: 8px;
+  border-radius: var(--radius-control-sm);
   background: var(--accent);
   color: var(--on-accent);
   font-size: 12px;
@@ -280,18 +315,23 @@
   border: 1px solid var(--line);
   background: var(--panel);
   color: var(--ink);
-  border-radius: 12px;
+  border-radius: var(--radius-menu);
   min-width: 24px;
   min-height: 24px;
   padding: 10px 12px;
   font: inherit;
   cursor: pointer;
+  transition: var(--control-transition);
 }
 
 .window-item:hover,
 .window-item.active {
-  border-color: var(--accent);
-  background: var(--accent-soft);
+  border-color: var(--control-hover-border);
+  background: var(--control-hover-bg);
+}
+
+.window-item:active {
+  filter: var(--control-pressed-filter);
 }
 
 .window-item .title {
@@ -305,7 +345,6 @@
   color: var(--muted);
 }
 
-.error-root header,
 .delay-root {
   display: flex;
   align-items: center;
@@ -317,7 +356,7 @@
 .error-root {
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 16px;
+  border-radius: var(--radius-window);
   box-shadow: var(--shadow);
 }
 
@@ -340,7 +379,7 @@
 .delay-root button,
 .error-root button {
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   min-width: 24px;
   min-height: 24px;
   background: var(--accent-soft);
@@ -349,11 +388,19 @@
   font-size: 13px;
   padding: 7px 14px;
   cursor: pointer;
+  transition: var(--control-transition);
 }
 
+/* 无边框软按钮用内描边表达 hover,与共享控件状态语义一致。 */
 .delay-root button:hover,
 .error-root button:hover {
-  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  background: var(--control-hover-bg);
+  box-shadow: inset 0 0 0 1px var(--control-hover-border);
+}
+
+.delay-root button:active,
+.error-root button:active {
+  filter: var(--control-pressed-filter);
 }
 
 .error-root {
