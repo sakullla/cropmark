@@ -1118,7 +1118,10 @@ impl SelectionEngine {
         if self.text_edit.is_some() {
             match key {
                 LogicalKey::Escape => {
+                    // Esc 放弃编辑会话:不写回文本,也必须同时丢弃气泡回写
+                    // 目标,否则残留索引会把后续文字编辑错误写回旧图元。
                     self.text_edit = None;
+                    self.bubble_edit = None;
                     return EngineOutcome::Redraw;
                 }
                 LogicalKey::Enter => {
@@ -1541,13 +1544,14 @@ impl SelectionEngine {
         };
         self.push_annotation(op);
         if is_bubble {
-            self.bubble_edit = Some(index);
-            // 编辑光标放在气泡内部左上角(栅格化时文本从该处起排)。
+            // 编辑光标放在气泡内部左上角(栅格化时文本从该处起排);
+            // begin_text_edit 会重置回写目标,之后再指向本气泡。
             let pad = 6.0 * f64::from(self.scale.max(1.0));
             self.begin_text_edit(
                 (bubble_x + pad).round() as i32,
                 (bubble_y + pad).round() as i32,
             );
+            self.bubble_edit = Some(index);
         }
     }
 
@@ -1584,6 +1588,7 @@ impl SelectionEngine {
     }
 
     /// 删除:优先删除光标下的图元,否则删除最近一个;可撤销。
+    /// 栈变化后气泡回写索引不再可信,一并失效。
     fn delete_annotation(&mut self) -> bool {
         let index = self
             .annotation_at(self.cursor.0, self.cursor.1)
@@ -1591,6 +1596,7 @@ impl SelectionEngine {
         let Some(index) = index else {
             return false;
         };
+        self.bubble_edit = None;
         let op = self.annotations.remove(index);
         self.undo.push(AnnotationEdit::Remove { index, op });
         self.redo.clear();
@@ -1602,6 +1608,8 @@ impl SelectionEngine {
         let Some(edit) = self.undo.pop() else {
             return false;
         };
+        // 栈变化后气泡回写索引不再可信,一并失效。
+        self.bubble_edit = None;
         match &edit {
             AnnotationEdit::Add { index, .. } => {
                 if *index < self.annotations.len() {
@@ -1622,6 +1630,8 @@ impl SelectionEngine {
         let Some(edit) = self.redo.pop() else {
             return false;
         };
+        // 栈变化后气泡回写索引不再可信,一并失效。
+        self.bubble_edit = None;
         match &edit {
             AnnotationEdit::Add { index, op } => {
                 let index = (*index).min(self.annotations.len());
@@ -1740,6 +1750,9 @@ impl SelectionEngine {
     }
 
     fn begin_text_edit(&mut self, x: i32, y: i32) {
+        // 新编辑会话的目标永远是新建文字图元;重置气泡回写目标,
+        // 防御残留索引把本次输入写回旧气泡。
+        self.bubble_edit = None;
         self.text_edit = Some(TextEdit {
             x,
             y,
@@ -3529,6 +3542,111 @@ mod tests {
             shift: false,
         });
         assert!(engine.annotations().is_empty());
+    }
+
+    /// R5:气泡编辑中按 Esc 放弃会话后,残留回写目标不得把后续文字编辑
+    /// 写回旧气泡;切换文字工具提交必须新建文字图元。
+    #[test]
+    fn bubble_edit_escape_then_text_tool_creates_new_annotation() {
+        let tools = ToolToggles {
+            bubble: true,
+            ..ToolToggles::default()
+        };
+        let mut engine = SelectionEngine::new(
+            800,
+            600,
+            FeatureFlags {
+                tools,
+                ..FeatureFlags::default()
+            },
+        )
+        .with_annotation_options(AnnotationOptions {
+            text_input: true,
+            ..AnnotationOptions::default()
+        });
+        drag_selection(&mut engine, (40, 30), (760, 560));
+        engine.handle_event(InputEvent::Key {
+            key: LogicalKey::Tool(AnnotationTool::Bubble),
+            shift: false,
+        });
+        engine.handle_event(InputEvent::LeftDown { x: 200, y: 300 });
+        engine.handle_event(InputEvent::PointerMove { x: 360, y: 380 });
+        engine.handle_event(InputEvent::LeftUp { x: 360, y: 380 });
+        assert!(engine.text_edit().is_some());
+        // Esc 放弃编辑会话:不写回文本。
+        engine.handle_event(InputEvent::Key {
+            key: LogicalKey::Escape,
+            shift: false,
+        });
+        assert!(engine.text_edit().is_none());
+        // 切换文字工具并提交:必须新建文字图元,而不是写回空气泡。
+        engine.handle_event(InputEvent::Key {
+            key: LogicalKey::Tool(AnnotationTool::Text),
+            shift: false,
+        });
+        engine.handle_event(InputEvent::LeftDown { x: 500, y: 200 });
+        engine.handle_event(InputEvent::Text("after".into()));
+        engine.handle_event(InputEvent::Key {
+            key: LogicalKey::Enter,
+            shift: false,
+        });
+        assert_eq!(engine.annotations().len(), 2);
+        match &engine.annotations()[0] {
+            Annotation::Bubble { text, .. } => assert_eq!(text, ""),
+            other => panic!("expected empty bubble, got {other:?}"),
+        }
+        match &engine.annotations()[1] {
+            Annotation::Text { text, .. } => assert_eq!(text, "after"),
+            other => panic!("expected text, got {other:?}"),
+        }
+    }
+
+    /// R5:气泡编辑会话存续期间标注栈被撤销/重做/删除改变时,回写目标
+    /// 索引随之失效,后续提交不得写回已移位/移除的图元。
+    #[test]
+    fn annotation_stack_mutation_invalidates_bubble_edit_target() {
+        let tools = ToolToggles {
+            bubble: true,
+            ..ToolToggles::default()
+        };
+        let mut engine = SelectionEngine::new(
+            800,
+            600,
+            FeatureFlags {
+                tools,
+                ..FeatureFlags::default()
+            },
+        )
+        .with_annotation_options(AnnotationOptions {
+            text_input: true,
+            ..AnnotationOptions::default()
+        });
+        drag_selection(&mut engine, (40, 30), (760, 560));
+        engine.handle_event(InputEvent::Key {
+            key: LogicalKey::Tool(AnnotationTool::Bubble),
+            shift: false,
+        });
+        engine.handle_event(InputEvent::LeftDown { x: 200, y: 300 });
+        engine.handle_event(InputEvent::PointerMove { x: 360, y: 380 });
+        engine.handle_event(InputEvent::LeftUp { x: 360, y: 380 });
+        assert!(engine.bubble_edit.is_some());
+        // 栈变化(撤销移除编辑中的气泡)后回写目标必须失效。
+        assert!(engine.undo_annotation());
+        assert!(engine.bubble_edit.is_none());
+        // 撤销可重做(重新插入气泡),回写目标同样不得残留旧索引。
+        assert!(engine.redo_annotation());
+        assert!(engine.bubble_edit.is_none());
+        // 此后提交文本必须新建文字图元,而不是写回重入栈的气泡。
+        engine.handle_event(InputEvent::Text("next".into()));
+        engine.handle_event(InputEvent::Key {
+            key: LogicalKey::Enter,
+            shift: false,
+        });
+        assert_eq!(engine.annotations().len(), 2);
+        match &engine.annotations()[1] {
+            Annotation::Text { text, .. } => assert_eq!(text, "next"),
+            other => panic!("expected text, got {other:?}"),
+        }
     }
 
     /// R5:贴纸工具点击落默认素材,钳制在选区内。
