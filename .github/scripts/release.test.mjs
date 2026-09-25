@@ -28,6 +28,8 @@ test("macOS release uses one stable self-signed identity and does not notarize",
   assert.match(workflow, /test -n "\$\{APPLE_SIGNING_IDENTITY\}"/);
   assert.match(workflow, /codesign --verify --deep --strict --verbose=2/);
   assert.match(workflow, /if: runner\.os != 'macOS'/);
+  assert.match(workflow, /env -u APPLE_CERTIFICATE -u APPLE_CERTIFICATE_PASSWORD -u APPLE_SIGNING_IDENTITY/);
+  assert.match(workflow, /--bundles app --no-sign/);
   assert.match(workflow, /security import/);
   assert.match(workflow, /codesign --force --deep --options runtime/);
   assert.match(workflow, /grep -F -x -q "Authority=\$\{APPLE_SIGNING_IDENTITY\}"/);

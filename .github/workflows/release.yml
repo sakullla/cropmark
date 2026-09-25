@@ -140,7 +140,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          npm run tauri -- build --target "$TARGET" --bundles app -- --locked
+          env -u APPLE_CERTIFICATE -u APPLE_CERTIFICATE_PASSWORD -u APPLE_SIGNING_IDENTITY \
+            npm run tauri -- build --target "$TARGET" --bundles app --no-sign -- --locked
           app="src-tauri/target/$TARGET/release/bundle/macos/Cropmark.app"
           test -d "$app"
           keychain="$RUNNER_TEMP/cropmark.keychain-db"
