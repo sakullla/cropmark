@@ -1309,14 +1309,17 @@ impl Composer {
         }
         let width = text::measure_width(&edit.display(), size).unwrap_or(0.0);
         let caret_x = (x + width).round() as i32;
-        let caret_h = text::line_height(size).max(10.0) as i32;
+        // 光标贴合参考字墨迹框,保持与字面同高,不按整行行框绘制。
+        let (caret_top, caret_height) = text::caret_span(size);
+        let caret_start = (y + caret_top).round() as i32;
+        let caret_h = caret_height.round().max(1.0) as i32;
         for dy in 0..caret_h {
             put(
                 region,
                 selection.width,
                 selection.height,
                 caret_x,
-                y.round() as i32 + dy,
+                caret_start + dy,
                 ACCENT_DEEP,
             );
         }

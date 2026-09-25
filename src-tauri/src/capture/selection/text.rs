@@ -34,6 +34,36 @@ pub fn line_height(size: f32) -> f32 {
     size * LINE_HEIGHT
 }
 
+/// 光标参考字形:优先方块字,光标与汉字墨迹同高,避免行框高于字面显得过大。
+const CARET_REFERENCE_GLYPHS: [char; 3] = ['国', '中', 'M'];
+
+/// 文本光标相对绘制 y(em 顶)的垂直范围:(顶偏移, 高度),物理像素。
+/// 取参考字形的墨迹框;无字体或参考字形缺失时回退到 em 盒。
+pub fn caret_span(size: f32) -> (f32, f32) {
+    let size = size.max(1.0);
+    let Some(font) = ui_font() else {
+        return (0.0, size);
+    };
+    let scale = PxScale::from(size.round());
+    let scaled = font.as_scaled(scale);
+    let baseline = scaled.ascent();
+    for reference in CARET_REFERENCE_GLYPHS {
+        let glyph_id = font.glyph_id(reference);
+        if glyph_id.0 == 0 {
+            continue;
+        }
+        let glyph = glyph_id.with_scale_and_position(scale, ab_glyph::point(0.0, baseline));
+        if let Some(outlined) = font.outline_glyph(glyph) {
+            let bounds = outlined.px_bounds();
+            let height = (bounds.max.y - bounds.min.y).max(1.0);
+            if height >= size * 0.5 {
+                return (bounds.min.y, height);
+            }
+        }
+    }
+    (baseline - size, size)
+}
+
 /// 使单行文字的 em 盒垂直中心落在 `center_y` 时的绘制 y(em 顶,即 baseline - ascent)。
 /// `draw_text` 把 y 当成 em 顶。descent 为负,em 高是 ascent - descent;
 /// 用 ascent + descent 会把中文墨迹压到行框下半。无字体时回退行高居中。
@@ -182,5 +212,21 @@ mod tests {
     #[test]
     fn line_height_scales_with_size() {
         assert!(line_height(11.0) < line_height(13.0));
+    }
+
+    #[test]
+    fn caret_span_tracks_the_glyph_box_not_the_line_box() {
+        let size = 20.0;
+        let (top, height) = caret_span(size);
+        assert!(height >= size * 0.5, "caret too short: {height}");
+        assert!(
+            height <= size * 1.05,
+            "caret must not use the 1.25 line box: {height} at size {size}"
+        );
+        if ui_font().is_some() {
+            assert!(top > 0.0, "caret top should sit below the em top: {top}");
+        } else {
+            assert_eq!((top, height), (0.0, size));
+        }
     }
 }
