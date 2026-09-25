@@ -118,18 +118,8 @@ jobs:
           test -n "${APPLE_CERTIFICATE}"
           test -n "${APPLE_CERTIFICATE_PASSWORD}"
           test -n "${APPLE_SIGNING_IDENTITY}"
-          {
-            echo "APPLE_CERTIFICATE<<CROPMARK_SIGNING_EOF"
-            echo "${APPLE_CERTIFICATE}"
-            echo "CROPMARK_SIGNING_EOF"
-            echo "APPLE_CERTIFICATE_PASSWORD<<CROPMARK_SIGNING_EOF"
-            echo "${APPLE_CERTIFICATE_PASSWORD}"
-            echo "CROPMARK_SIGNING_EOF"
-            echo "APPLE_SIGNING_IDENTITY<<CROPMARK_SIGNING_EOF"
-            echo "${APPLE_SIGNING_IDENTITY}"
-            echo "CROPMARK_SIGNING_EOF"
-          } >> "${GITHUB_ENV}"
       - name: Build and upload to draft release
+        if: runner.os != 'macOS'
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -140,10 +130,42 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
           retryAttempts: 2
           args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --verbose -- --locked
+      - name: Build, sign, and upload macOS disk image
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          TARGET: ${{ matrix.target }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          npm run tauri -- build --target "$TARGET" --bundles app -- --locked
+          app="src-tauri/target/$TARGET/release/bundle/macos/Cropmark.app"
+          test -d "$app"
+          keychain="$RUNNER_TEMP/cropmark.keychain-db"
+          keychain_password="$(openssl rand -hex 16)"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security list-keychains -d user -s "$keychain"
+          security default-keychain -s "$keychain"
+          base64 --decode > "$RUNNER_TEMP/cropmark.p12" <<< "${APPLE_CERTIFICATE}"
+          security import "$RUNNER_TEMP/cropmark.p12" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
+          codesign --force --deep --options runtime --entitlements src-tauri/entitlements.plist --sign "$APPLE_SIGNING_IDENTITY" "$app"
+          rm -f "$RUNNER_TEMP/cropmark.p12"
+          version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          arch="${TARGET%%-*}"
+          dmg="$RUNNER_TEMP/Cropmark_${version}_${arch}.dmg"
+          hdiutil create -volname Cropmark -srcfolder "$app" -ov -format UDZO "$dmg"
+          gh release upload "${{ github.ref_name }}" "$dmg" --clobber
+          security delete-keychain "$keychain"
       - name: Verify macOS self-signed signature
         if: runner.os == 'macOS'
         env:
           TARGET: ${{ matrix.target }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
           set -euo pipefail
           app="src-tauri/target/$TARGET/release/bundle/macos/Cropmark.app"
@@ -155,7 +177,7 @@ jobs:
             echo "release app is ad-hoc; expected ${APPLE_SIGNING_IDENTITY}" >&2
             exit 1
           fi
-          grep -F -q "Authority=${APPLE_SIGNING_IDENTITY}" <<< "$signature"
+          grep -F -x -q "Authority=${APPLE_SIGNING_IDENTITY}" <<< "$signature"
           codesign --verify --deep --strict --verbose=2 "$app"
 
   verify-release:
