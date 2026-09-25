@@ -158,7 +158,7 @@ export const MORE_TOOLS: AnnotationTool[] = ANNOTATION_TOOLS.filter(
 );
 
 const FALLBACK_STROKE = "#e11d48";
-const FALLBACK_SELECT = "#2563eb";
+const FALLBACK_SELECT = "#1d4ed8";
 export const TEXT_FONT_STACK = '"Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif';
 
 // 与 Rust annotate::HIGHLIGHTER_ALPHA / MIN_BLUR_SIGMA / MAX_BLUR_SIGMA 对齐。
@@ -685,7 +685,7 @@ export function exportableList(annotations: Annotation[]): Annotation[] {
 }
 
 function toolButton(tool: AnnotationTool): string {
-  return `<button type="button" data-tool="${tool}" data-i18n-title="${TOOL_TITLE_KEYS[tool]}" data-i18n-aria-label="${TOOL_LABEL_KEYS[tool]}" title="${t(TOOL_TITLE_KEYS[tool])}" aria-label="${t(TOOL_LABEL_KEYS[tool])}">${ICONS[tool]}</button>`;
+  return `<button type="button" data-tool="${tool}" data-i18n-title="${TOOL_TITLE_KEYS[tool]}" data-i18n-aria-label="${TOOL_LABEL_KEYS[tool]}" data-tooltip="${t(TOOL_TITLE_KEYS[tool])}" aria-label="${t(TOOL_LABEL_KEYS[tool])}">${ICONS[tool]}</button>`;
 }
 
 function toolbarMarkup(): string {
@@ -694,20 +694,20 @@ function toolbarMarkup(): string {
   return `
     ${primary}
     <div class="annotation-more" data-more-root>
-      <button type="button" data-action="more" data-i18n-title="preview.tool.more_title" data-i18n-aria-label="preview.tool.more" title="更多工具" aria-label="更多" aria-haspopup="true">${ICONS.more}</button>
+      <button type="button" data-action="more" data-i18n-title="preview.tool.more_title" data-i18n-aria-label="preview.tool.more" data-tooltip="${t("preview.tool.more_title")}" aria-label="${t("preview.tool.more")}" aria-haspopup="true">${ICONS.more}</button>
       <div class="annotation-more-panel" data-more-panel hidden>${extra}</div>
     </div>
     <span class="toolbar-sep" aria-hidden="true"></span>
-    <button type="button" data-action="undo" data-i18n-title="preview.tool.undo_title" data-i18n-aria-label="preview.tool.undo" title="撤销 (Ctrl+Z)" aria-label="撤销">${ICONS.undo}</button>
+    <button type="button" data-action="undo" data-i18n-title="preview.tool.undo_title" data-i18n-aria-label="preview.tool.undo" data-tooltip="${t("preview.tool.undo_title")}" aria-label="${t("preview.tool.undo")}">${ICONS.undo}</button>
     <div class="annotation-style" data-style-root>
-      <button type="button" data-action="style" data-i18n-title="preview.tool.style_title" data-i18n-aria-label="preview.tool.style_title" title="标注样式" aria-label="标注样式" aria-haspopup="true">${ICONS.style}</button>
+      <button type="button" data-action="style" data-i18n-title="preview.tool.style_title" data-i18n-aria-label="preview.tool.style_title" data-tooltip="${t("preview.tool.style_title")}" aria-label="${t("preview.tool.style_title")}" aria-haspopup="true">${ICONS.style}</button>
       <div class="annotation-style-panel" data-style-panel hidden>
         <div class="style-group">
           <span class="style-label" data-i18n="preview.style.color">颜色</span>
           <div class="style-options" role="group" data-i18n-aria-label="preview.style.color_group" aria-label="标注颜色">
             ${STYLE_COLORS.map(
               (color) =>
-                `<button type="button" data-style-color="${color}" style="--swatch:${color}" title="${color}" aria-label="${t("preview.style.color_aria", { color })}"></button>`,
+                `<button type="button" data-style-color="${color}" style="--swatch:${color}" data-tooltip="${color}" aria-label="${t("preview.style.color_aria", { color })}"></button>`,
             ).join("")}
           </div>
         </div>
@@ -716,7 +716,7 @@ function toolbarMarkup(): string {
           <div class="style-options" role="group" data-i18n-aria-label="preview.style.width" aria-label="线宽">
             ${STYLE_WIDTHS.map(
               ({ value, labelKey }) =>
-                `<button type="button" data-style-width="${value}" title="${t("preview.style.option_title", { label: t(labelKey), value })}">${t(labelKey)}</button>`,
+                `<button type="button" data-style-width="${value}" data-tooltip="${t("preview.style.option_title", { label: t(labelKey), value })}">${t(labelKey)}</button>`,
             ).join("")}
           </div>
         </div>
@@ -725,7 +725,7 @@ function toolbarMarkup(): string {
           <div class="style-options" role="group" data-i18n-aria-label="preview.style.text_size_group" aria-label="文字字号">
             ${STYLE_TEXT_SIZES.map(
               ({ value, labelKey }) =>
-                `<button type="button" data-style-text-size="${value}" title="${t("preview.style.option_title", { label: t(labelKey), value })}">${t(labelKey)}</button>`,
+                `<button type="button" data-style-text-size="${value}" data-tooltip="${t("preview.style.option_title", { label: t(labelKey), value })}">${t(labelKey)}</button>`,
             ).join("")}
           </div>
         </div>
@@ -1672,14 +1672,14 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
       if (!value || !isAnnotationTool(value)) {
         return;
       }
-      button.title = t(TOOL_TITLE_KEYS[value]);
+      button.dataset.tooltip = t(TOOL_TITLE_KEYS[value]);
       button.setAttribute("aria-label", t(TOOL_LABEL_KEYS[value]));
     });
     stylePanel.querySelectorAll<HTMLButtonElement>("[data-style-width]").forEach((button) => {
       const option = STYLE_WIDTHS.find((item) => String(item.value) === button.dataset.styleWidth);
       if (option) {
         button.textContent = t(option.labelKey);
-        button.title = t("preview.style.option_title", {
+        button.dataset.tooltip = t("preview.style.option_title", {
           label: t(option.labelKey),
           value: option.value,
         });
@@ -1691,7 +1691,7 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
       );
       if (option) {
         button.textContent = t(option.labelKey);
-        button.title = t("preview.style.option_title", {
+        button.dataset.tooltip = t("preview.style.option_title", {
           label: t(option.labelKey),
           value: option.value,
         });
@@ -1699,6 +1699,7 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     });
     stylePanel.querySelectorAll<HTMLButtonElement>("[data-style-color]").forEach((button) => {
       const color = button.dataset.styleColor ?? "";
+      button.dataset.tooltip = color;
       button.setAttribute("aria-label", t("preview.style.color_aria", { color }));
     });
   };

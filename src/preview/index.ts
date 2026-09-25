@@ -81,7 +81,7 @@ export function mountPreview(root: HTMLElement): () => void {
             <div class="style-options" role="group" data-i18n-aria-label="preview.quality.group" aria-label="保存质量">
               ${SAVE_QUALITIES.map(
                 ({ value, labelKey, titleKey }) =>
-                  `<button type="button" data-save-quality="${value}" title="${t(titleKey)}">${t(labelKey)}</button>`,
+                  `<button type="button" data-save-quality="${value}" data-tooltip="${t(titleKey)}">${t(labelKey)}</button>`,
               ).join("")}
             </div>
           </div>
@@ -901,7 +901,7 @@ export function mountPreview(root: HTMLElement): () => void {
       const option = SAVE_QUALITIES.find((item) => item.value === button.dataset.saveQuality);
       if (option) {
         button.textContent = t(option.labelKey);
-        button.title = t(option.titleKey);
+        button.dataset.tooltip = t(option.titleKey);
       }
     });
   };

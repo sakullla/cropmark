@@ -8,7 +8,7 @@
   color: var(--ink);
   font: inherit;
   cursor: pointer;
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   -webkit-app-region: no-drag;
   app-region: no-drag;
   width: 34px;
@@ -19,6 +19,7 @@
   align-items: center;
   justify-content: center;
   padding: 0;
+  transition: var(--control-transition);
 }
 
 .annotation-tools button svg {
@@ -50,7 +51,7 @@
   gap: 2px;
   padding: 4px;
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: var(--radius-panel);
   background: var(--panel);
   box-shadow: var(--shadow);
 }
@@ -59,8 +60,13 @@
   display: none;
 }
 
-.annotation-tools button:hover {
-  background: var(--accent-soft);
+.annotation-tools button:hover:not(:disabled) {
+  background: var(--control-hover-bg);
+  border-color: var(--control-hover-border);
+}
+
+.annotation-tools button:active:not(:disabled) {
+  filter: var(--control-pressed-filter);
 }
 
 .annotation-tools button.active {
@@ -69,8 +75,9 @@
   color: var(--accent);
 }
 
+/* 禁用(撤销无可撤销内容)统一为共享变暗与光标,禁用时不出现 hover 反馈。 */
 .annotation-tools button:disabled {
-  opacity: 0.35;
+  opacity: var(--control-disabled-opacity);
   cursor: default;
 }
 
@@ -88,9 +95,9 @@
   flex-direction: column;
   gap: 12px;
   min-width: 232px;
-  padding: 12px 14px;
+  padding: var(--panel-padding);
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: var(--radius-panel);
   background: var(--panel);
   box-shadow: var(--shadow);
 }
@@ -127,15 +134,21 @@
   min-width: 40px;
   min-height: 24px;
   padding: 0 10px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  transition: var(--control-transition);
 }
 
 .style-options button:hover {
-  background: var(--accent-soft);
+  border-color: var(--control-hover-border);
+  background: var(--control-hover-bg);
+}
+
+.style-options button:active {
+  filter: var(--control-pressed-filter);
 }
 
 .style-options button.active {
@@ -163,18 +176,13 @@
   min-height: 24px;
   padding: 0 8px;
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: color-mix(in srgb, var(--panel) 80%, transparent);
   color: var(--ink);
   font: inherit;
   font-size: 12px;
   text-align: center;
-}
-
-.style-options input[data-style-number-start]:focus-visible {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent-soft);
+  transition: var(--control-transition);
 }
 
 .style-options button[data-style-color]::before {
@@ -186,8 +194,10 @@
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 14%, transparent);
 }
 
+/* 色块按钮的透明边框在基础规则中重置,悬停描边需在此恢复。 */
 .style-options button[data-style-color]:hover {
-  background: var(--accent-soft);
+  background: var(--control-hover-bg);
+  border-color: var(--control-hover-border);
 }
 
 .style-options button[data-style-color].active::before {
@@ -206,7 +216,7 @@
   margin: 0;
   padding: 8px 10px;
   border: 2px solid var(--accent);
-  border-radius: 8px;
+  border-radius: var(--radius-control-sm);
   background: var(--panel);
   color: var(--ink);
   caret-color: var(--accent);
@@ -241,7 +251,7 @@
   min-width: 132px;
   padding: 4px;
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: var(--radius-menu);
   background: var(--panel);
   box-shadow: var(--shadow);
 }
@@ -259,15 +269,21 @@
   padding: 6px 10px;
   text-align: left;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--radius-control-sm);
   background: transparent;
   color: var(--ink);
   font: inherit;
   font-size: 13px;
   cursor: pointer;
+  transition: var(--control-transition);
 }
 
 .annotation-context button:hover {
-  background: var(--accent-soft);
+  background: var(--control-hover-bg);
+  box-shadow: inset 0 0 0 1px var(--control-hover-border);
   color: var(--accent);
+}
+
+.annotation-context button:active {
+  filter: var(--control-pressed-filter);
 }

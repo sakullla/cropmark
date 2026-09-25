@@ -580,6 +580,13 @@ h1 {
   z-index: 50;
 }
 
+/* 热键按钮贴近卡片右缘,提示右对齐,避免长文案被窗口右缘裁切。 */
+.hotkey-btn[data-tooltip]::after {
+  right: 0;
+  left: auto;
+  transform: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
   /* 共享控件的状态过渡统一由 token 关闭，各视图无需重复维护。 */
   :root {
