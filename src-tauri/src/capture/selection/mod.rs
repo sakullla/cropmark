@@ -25,58 +25,254 @@ pub const KEY_STEP_LARGE: i32 = 10;
 /// 拖动式标注草稿的最小边长(物理像素),与预览编辑器 `MIN_DRAW_SIZE` 对齐。
 pub const MIN_DRAW_SIZE: i32 = 3;
 
-/// 选区即时标注工具(R21);工具集与预览编辑器一致。
+/// 选区即时标注工具(R5 注册表):与预览编辑器 `TOOL_REGISTRY` 同源;
+/// 直线/画笔/模糊已并入箭头/荧光笔/马赛克,由 `ToolMode` 提供等效模式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnnotationTool {
+    Arrow,
     Rect,
     Ellipse,
-    Line,
-    Arrow,
-    Number,
-    Text,
-    Pen,
     Highlighter,
+    Mosaic,
+    Text,
+    Number,
+    Spotlight,
+    Magnifier,
+    Bubble,
+    Sticker,
+    Erase,
+}
+
+/// 合并工具的等效模式(R5):直线并入箭头、画笔并入荧光笔、模糊并入马赛克。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolMode {
+    Arrow,
+    Line,
+    Highlighter,
+    Pen,
     Mosaic,
     Blur,
 }
 
+impl ToolMode {
+    /// 所有模式(注册表声明的模式全集;「更多」面板的模式入口)。
+    pub const ALL: [Self; 6] = [
+        Self::Arrow,
+        Self::Line,
+        Self::Highlighter,
+        Self::Pen,
+        Self::Mosaic,
+        Self::Blur,
+    ];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Arrow => "arrow",
+            Self::Line => "line",
+            Self::Highlighter => "highlighter",
+            Self::Pen => "pen",
+            Self::Mosaic => "mosaic",
+            Self::Blur => "blur",
+        }
+    }
+
+    /// 所属的注册表工具(模式入口选中它)。
+    pub fn tool(self) -> AnnotationTool {
+        match self {
+            Self::Arrow | Self::Line => AnnotationTool::Arrow,
+            Self::Highlighter | Self::Pen => AnnotationTool::Highlighter,
+            Self::Mosaic | Self::Blur => AnnotationTool::Mosaic,
+        }
+    }
+
+    /// 「更多」面板/提示用的词条键(与既有工具名共用词条)。
+    pub fn label_key(self) -> &'static str {
+        match self {
+            Self::Arrow => "selection.tool.arrow",
+            Self::Line => "selection.tool.line",
+            Self::Highlighter => "selection.tool.highlighter",
+            Self::Pen => "selection.tool.pen",
+            Self::Mosaic => "selection.tool.mosaic",
+            Self::Blur => "selection.tool.blur",
+        }
+    }
+}
+
 impl AnnotationTool {
-    /// 工具条展示顺序(绘制类在前,序号/文字居中,遮盖类在后)。
-    pub const ALL: [Self; 10] = [
+    /// 注册表展示顺序(主行 6 + 「更多」6),与前端 `TOOL_REGISTRY` 一致。
+    pub const ALL: [Self; 12] = [
+        Self::Arrow,
         Self::Rect,
         Self::Ellipse,
-        Self::Line,
-        Self::Arrow,
-        Self::Number,
+        Self::Highlighter,
+        Self::Mosaic,
         Self::Text,
-        Self::Pen,
-        Self::Highlighter,
-        Self::Mosaic,
-        Self::Blur,
-    ];
-
-    /// 精简工具条主行工具(R21 修订):最常用的四个保持单行常驻。
-    pub const PRIMARY: [Self; 4] = [Self::Rect, Self::Ellipse, Self::Arrow, Self::Text];
-
-    /// 收进「更多」展开行的工具(直线/序号/画笔/荧光笔/马赛克/模糊)。
-    pub const MORE: [Self; 6] = [
-        Self::Line,
         Self::Number,
-        Self::Pen,
+        Self::Spotlight,
+        Self::Magnifier,
+        Self::Bubble,
+        Self::Sticker,
+        Self::Erase,
+    ];
+
+    /// 常驻统一横行主行的工具。
+    pub const PRIMARY: [Self; 6] = [
+        Self::Arrow,
+        Self::Rect,
+        Self::Ellipse,
         Self::Highlighter,
         Self::Mosaic,
-        Self::Blur,
+        Self::Text,
     ];
+
+    /// 收进「更多」展开行的工具。
+    pub const MORE: [Self; 6] = [
+        Self::Number,
+        Self::Spotlight,
+        Self::Magnifier,
+        Self::Bubble,
+        Self::Sticker,
+        Self::Erase,
+    ];
+
+    /// 设置开关表用的稳定 id(与 `settings::ANNOTATION_TOOL_IDS` 同一契约)。
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Arrow => "arrow",
+            Self::Rect => "rect",
+            Self::Ellipse => "ellipse",
+            Self::Highlighter => "highlighter",
+            Self::Mosaic => "mosaic",
+            Self::Text => "text",
+            Self::Number => "number",
+            Self::Spotlight => "spotlight",
+            Self::Magnifier => "magnifier",
+            Self::Bubble => "bubble",
+            Self::Sticker => "sticker",
+            Self::Erase => "erase",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|tool| tool.id() == id)
+    }
+
+    /// 该工具声明的模式;无模式工具返回空表。
+    pub fn modes(self) -> &'static [ToolMode] {
+        match self {
+            Self::Arrow => &[ToolMode::Arrow, ToolMode::Line],
+            Self::Highlighter => &[ToolMode::Highlighter, ToolMode::Pen],
+            Self::Mosaic => &[ToolMode::Mosaic, ToolMode::Blur],
+            _ => &[],
+        }
+    }
+
+    /// 默认模式(注册表首项);无模式工具返回 None。
+    pub fn default_mode(self) -> Option<ToolMode> {
+        self.modes().first().copied()
+    }
 
     fn is_drag(self) -> bool {
         matches!(
             self,
-            Self::Rect | Self::Ellipse | Self::Line | Self::Arrow | Self::Mosaic | Self::Blur
+            Self::Rect
+                | Self::Ellipse
+                | Self::Arrow
+                | Self::Mosaic
+                | Self::Spotlight
+                | Self::Magnifier
+                | Self::Bubble
+                | Self::Erase
         )
     }
 
     fn is_freehand(self) -> bool {
-        matches!(self, Self::Pen | Self::Highlighter)
+        matches!(self, Self::Highlighter)
+    }
+}
+
+/// R5/R19:标注工具逐项开关。合并工具(line/pen/blur)不单列,其入口随
+/// 保留工具(arrow/highlighter/mosaic)的开关出现/隐藏;默认值与
+/// `settings::default_annotation_tools` 的 R19 精选一致。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToolToggles {
+    pub arrow: bool,
+    pub rect: bool,
+    pub ellipse: bool,
+    pub highlighter: bool,
+    pub mosaic: bool,
+    pub text: bool,
+    pub number: bool,
+    pub spotlight: bool,
+    pub magnifier: bool,
+    pub bubble: bool,
+    pub sticker: bool,
+    pub erase: bool,
+}
+
+impl Default for ToolToggles {
+    fn default() -> Self {
+        Self {
+            arrow: true,
+            rect: true,
+            ellipse: true,
+            highlighter: true,
+            mosaic: true,
+            text: true,
+            number: true,
+            spotlight: false,
+            magnifier: false,
+            bubble: false,
+            sticker: false,
+            erase: false,
+        }
+    }
+}
+
+impl ToolToggles {
+    pub fn enabled(self, tool: AnnotationTool) -> bool {
+        match tool {
+            AnnotationTool::Arrow => self.arrow,
+            AnnotationTool::Rect => self.rect,
+            AnnotationTool::Ellipse => self.ellipse,
+            AnnotationTool::Highlighter => self.highlighter,
+            AnnotationTool::Mosaic => self.mosaic,
+            AnnotationTool::Text => self.text,
+            AnnotationTool::Number => self.number,
+            AnnotationTool::Spotlight => self.spotlight,
+            AnnotationTool::Magnifier => self.magnifier,
+            AnnotationTool::Bubble => self.bubble,
+            AnnotationTool::Sticker => self.sticker,
+            AnnotationTool::Erase => self.erase,
+        }
+    }
+
+    /// 由设置开关表(工具 id → bool)构造;未知键忽略,缺失键取精选默认。
+    pub fn from_map(map: &std::collections::BTreeMap<String, bool>) -> Self {
+        let mut toggles = Self::default();
+        for tool in AnnotationTool::ALL {
+            if let Some(enabled) = map.get(tool.id()) {
+                toggles.set(tool, *enabled);
+            }
+        }
+        toggles
+    }
+
+    fn set(&mut self, tool: AnnotationTool, enabled: bool) {
+        match tool {
+            AnnotationTool::Arrow => self.arrow = enabled,
+            AnnotationTool::Rect => self.rect = enabled,
+            AnnotationTool::Ellipse => self.ellipse = enabled,
+            AnnotationTool::Highlighter => self.highlighter = enabled,
+            AnnotationTool::Mosaic => self.mosaic = enabled,
+            AnnotationTool::Text => self.text = enabled,
+            AnnotationTool::Number => self.number = enabled,
+            AnnotationTool::Spotlight => self.spotlight = enabled,
+            AnnotationTool::Magnifier => self.magnifier = enabled,
+            AnnotationTool::Bubble => self.bubble = enabled,
+            AnnotationTool::Sticker => self.sticker = enabled,
+            AnnotationTool::Erase => self.erase = enabled,
+        }
     }
 }
 
@@ -143,6 +339,8 @@ pub struct AnnotationOverlay<'a> {
     pub annotations: &'a [Annotation],
     pub draft: Option<&'a Annotation>,
     pub tool: Option<AnnotationTool>,
+    /// 当前工具的等效模式(合并工具);用于「更多」面板模式入口的选中态。
+    pub mode: Option<ToolMode>,
     pub text: Option<&'a TextEdit>,
     /// 已确认图元的变更序号(合成器缓存失效键)。
     pub revision: u64,
@@ -167,6 +365,9 @@ pub struct FeatureFlags {
     pub cursor_hints: bool,
     /// R21:选区即时标注;关闭后选区不出现标注工具,`标注` 动作仍进预览编辑器。
     pub inline_annotation: bool,
+    /// R5/R19:标注工具逐项开关(注册表 12 项);关闭的工具不进工具条/
+    /// 「更多」面板/快捷键,已创建标注的渲染与编辑不受影响。
+    pub tools: ToolToggles,
 }
 
 impl Default for FeatureFlags {
@@ -180,6 +381,7 @@ impl Default for FeatureFlags {
             toolbar_pin: true,
             cursor_hints: true,
             inline_annotation: true,
+            tools: ToolToggles::default(),
         }
     }
 }
@@ -249,9 +451,12 @@ pub enum LogicalKey {
     ArrowDown,
     /// 取色快捷键(平台壳把 C 键映射到这里)。
     CopyColor,
-    /// 即时标注:工具快捷键(A/R/E/L/M/B/H/P/N/T,与预览编辑器一致);
+    /// 即时标注:工具快捷键(A/R/E/H/M/T/N/S/G/K/X,与预览编辑器注册表一致);
     /// 按下即进入标注模式并选中该工具。
     Tool(AnnotationTool),
+    /// 即时标注:合并工具的等效模式快捷键(L=直线、P=画笔、B=模糊);
+    /// 按下即选中所属工具并切换到该模式。
+    Mode(ToolMode),
     /// 即时标注:撤销(Ctrl+Z)。
     Undo,
     /// 即时标注:重做(Ctrl+Y / Ctrl+Shift+Z)。
@@ -273,6 +478,8 @@ pub enum SelectionAction {
     /// 即时标注工具切换/撤销/重做/删除:由引擎内部消费,平台壳不解释
     /// (`EngineOutcome` 不会把这类动作交给会话层)。
     Tool(AnnotationTool),
+    /// 合并工具的等效模式入口(直线/画笔/模糊):选中所属工具并切换模式。
+    Mode(ToolMode),
     Undo,
     Redo,
     Delete,
@@ -381,15 +588,59 @@ pub struct SelectionEngine {
     redo: Vec<AnnotationEdit>,
     /// 当前工具;None = 选择/移动模式。
     tool: Option<AnnotationTool>,
-    /// 「更多」面板展开(收进的动作列表可见)。
-    more_open: bool,
+    /// 合并工具当前模式(仅 arrow/highlighter/mosaic 有值)。
+    modes: ActiveModes,
     /// 拖动中的草稿(未入栈)。
     draft: Option<Annotation>,
+    /// 气泡工具绘制后等待输入文本的图元索引(文本编辑会话落回该图元)。
+    bubble_edit: Option<usize>,
+    /// 「更多」面板展开(收进的动作列表可见)。
+    more_open: bool,
     options: AnnotationOptions,
     /// 文本编辑会话;有值时键盘输入进入文本框而不是选择交互。
     text_edit: Option<TextEdit>,
     /// 已确认图元变更序号:合成器缓存以它 + 选区矩形为失效键。
     revision: u64,
+}
+
+/// 合并工具的当前模式;无模式工具的 `mode_for` 返回 None。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ActiveModes {
+    arrow: ToolMode,
+    highlighter: ToolMode,
+    mosaic: ToolMode,
+}
+
+impl Default for ActiveModes {
+    fn default() -> Self {
+        Self {
+            arrow: ToolMode::Arrow,
+            highlighter: ToolMode::Highlighter,
+            mosaic: ToolMode::Mosaic,
+        }
+    }
+}
+
+impl ActiveModes {
+    fn mode_for(self, tool: AnnotationTool) -> Option<ToolMode> {
+        match tool {
+            AnnotationTool::Arrow => Some(self.arrow),
+            AnnotationTool::Highlighter => Some(self.highlighter),
+            AnnotationTool::Mosaic => Some(self.mosaic),
+            _ => None,
+        }
+    }
+
+    fn set(self, mode: ToolMode) -> Self {
+        let mut modes = self;
+        match mode.tool() {
+            AnnotationTool::Arrow => modes.arrow = mode,
+            AnnotationTool::Highlighter => modes.highlighter = mode,
+            AnnotationTool::Mosaic => modes.mosaic = mode,
+            _ => {}
+        }
+        modes
+    }
 }
 
 impl SelectionEngine {
@@ -407,8 +658,10 @@ impl SelectionEngine {
             undo: Vec::new(),
             redo: Vec::new(),
             tool: None,
-            more_open: false,
+            modes: ActiveModes::default(),
             draft: None,
+            bubble_edit: None,
+            more_open: false,
             options: AnnotationOptions::default(),
             text_edit: None,
             revision: 0,
@@ -486,6 +739,7 @@ impl SelectionEngine {
             annotations: &self.annotations,
             draft: self.draft.as_ref(),
             tool: self.tool,
+            mode: self.tool.and_then(|tool| self.modes.mode_for(tool)),
             text: self.text_edit.as_ref(),
             revision: self.revision,
             color: self.options.color_rgba(),
@@ -904,6 +1158,14 @@ impl SelectionEngine {
                 }
                 EngineOutcome::Redraw
             }
+            LogicalKey::Mode(mode) => {
+                // 模式快捷键(L/P/B):选中所属保留工具并切换到等效模式;
+                // 关闭(或所属工具被开关关闭)时忽略。
+                if self.state == EngineState::Selected && self.selection.is_some() {
+                    self.select_mode(mode);
+                }
+                EngineOutcome::Redraw
+            }
             LogicalKey::Undo => {
                 self.undo_annotation();
                 EngineOutcome::Redraw
@@ -1042,7 +1304,7 @@ impl SelectionEngine {
         }
     }
 
-    /// 按下左键开始一次标注:序号即落点、文字进入编辑、其余工具起草稿。
+    /// 按下左键开始一次标注:序号/贴纸即落点、文字进入编辑、其余工具起草稿。
     fn begin_annotation_draw(&mut self) {
         let Some(tool) = self.tool else {
             return;
@@ -1061,6 +1323,7 @@ impl SelectionEngine {
                 self.push_annotation(op);
             }
             AnnotationTool::Text => self.begin_text_edit(point.0, point.1),
+            AnnotationTool::Sticker => self.place_sticker(point),
             _ => {
                 self.state = EngineState::Drawing {
                     anchor_x: point.0,
@@ -1072,9 +1335,44 @@ impl SelectionEngine {
         }
     }
 
-    /// 按当前工具与选项生成 (anchor → cursor) 草稿图元;与预览 `draft()` 同规则。
+    /// 贴纸落点:默认素材按默认尺寸(96 逻辑像素 × scale)居中放在点击处,
+    /// 钳制在选区内。原生壳无素材选择面板,素材选择在预览编辑器完成。
+    fn place_sticker(&mut self, point: (i32, i32)) {
+        let Some(selection) = self.selection else {
+            return;
+        };
+        let Some((id, _)) = crate::annotate::stickers::STICKERS.first().copied() else {
+            return;
+        };
+        let size = (96.0 * f64::from(self.scale.max(1.0))).round() as i32;
+        let x = point
+            .0
+            .clamp(
+                selection.x as i32,
+                (selection.x + selection.width) as i32 - size,
+            )
+            .max(selection.x as i32);
+        let y = point
+            .1
+            .clamp(
+                selection.y as i32,
+                (selection.y + selection.height) as i32 - size,
+            )
+            .max(selection.y as i32);
+        self.push_annotation(Annotation::Sticker {
+            x: x as f64,
+            y: y as f64,
+            width: size as f64,
+            height: size as f64,
+            sticker: id.to_string(),
+        });
+    }
+
+    /// 按当前工具、模式与选项生成 (anchor → cursor) 草稿图元;与预览
+    /// `draft()`/`freehandDraft()` 同规则(合并工具按模式落既有图元)。
     fn draft_for(&self, anchor: (i32, i32), cursor: (i32, i32)) -> Annotation {
         let tool = self.tool.unwrap_or(AnnotationTool::Rect);
+        let mode = self.modes.mode_for(tool);
         let color = self.options.color.clone();
         let stroke_width = self.options.stroke_width;
         if tool.is_freehand() {
@@ -1088,20 +1386,21 @@ impl SelectionEngine {
                     y: cursor.1 as f64,
                 },
             ];
-            return match tool {
-                AnnotationTool::Highlighter => Annotation::Highlighter {
+            return if mode == Some(ToolMode::Pen) {
+                Annotation::Pen {
                     points,
                     color,
                     stroke_width,
-                },
-                _ => Annotation::Pen {
+                }
+            } else {
+                Annotation::Highlighter {
                     points,
                     color,
                     stroke_width,
-                },
+                }
             };
         }
-        if matches!(tool, AnnotationTool::Line | AnnotationTool::Arrow) {
+        if tool == AnnotationTool::Arrow {
             let from = Point {
                 x: anchor.0 as f64,
                 y: anchor.1 as f64,
@@ -1110,19 +1409,20 @@ impl SelectionEngine {
                 x: cursor.0 as f64,
                 y: cursor.1 as f64,
             };
-            return match tool {
-                AnnotationTool::Arrow => Annotation::Arrow {
+            return if mode == Some(ToolMode::Line) {
+                Annotation::Line {
                     from,
                     to,
                     color,
                     stroke_width,
-                },
-                _ => Annotation::Line {
+                }
+            } else {
+                Annotation::Arrow {
                     from,
                     to,
                     color,
                     stroke_width,
-                },
+                }
             };
         }
         let x = anchor.0.min(cursor.0) as f64;
@@ -1130,20 +1430,25 @@ impl SelectionEngine {
         let width = (cursor.0 - anchor.0).unsigned_abs() as f64;
         let height = (cursor.1 - anchor.1).unsigned_abs() as f64;
         match tool {
-            AnnotationTool::Mosaic => Annotation::Mosaic {
-                x,
-                y,
-                width,
-                height,
-                block: mosaic_block(self.scale),
-            },
-            AnnotationTool::Blur => Annotation::Blur {
-                x,
-                y,
-                width,
-                height,
-                sigma: blur_sigma(width, height),
-            },
+            AnnotationTool::Mosaic => {
+                if mode == Some(ToolMode::Blur) {
+                    Annotation::Blur {
+                        x,
+                        y,
+                        width,
+                        height,
+                        sigma: blur_sigma(width, height),
+                    }
+                } else {
+                    Annotation::Mosaic {
+                        x,
+                        y,
+                        width,
+                        height,
+                        block: mosaic_block(self.scale),
+                    }
+                }
+            }
             AnnotationTool::Ellipse => Annotation::Ellipse {
                 x,
                 y,
@@ -1151,6 +1456,37 @@ impl SelectionEngine {
                 height,
                 color,
                 stroke_width,
+            },
+            AnnotationTool::Spotlight => Annotation::Spotlight {
+                x,
+                y,
+                width,
+                height,
+                dim: crate::annotate::DEFAULT_SPOTLIGHT_DIM,
+            },
+            AnnotationTool::Magnifier => Annotation::Magnifier {
+                x,
+                y,
+                width,
+                height,
+                zoom: crate::annotate::DEFAULT_MAGNIFIER_ZOOM,
+                color,
+            },
+            AnnotationTool::Bubble => Annotation::Bubble {
+                x,
+                y,
+                width,
+                height,
+                text: String::new(),
+                size: self.resolved_text_size() as f64,
+                color,
+            },
+            AnnotationTool::Erase => Annotation::Erase {
+                x,
+                y,
+                width,
+                height,
+                color: None,
             },
             _ => Annotation::Rect {
                 x,
@@ -1189,6 +1525,7 @@ impl SelectionEngine {
     }
 
     /// 松开左键提交草稿:退化图元(与预览 MIN_DRAW_SIZE 同规则)不入栈。
+    /// 气泡提交后立即进入文本编辑,输入的文本写回该气泡图元。
     fn commit_draft(&mut self) {
         let Some(op) = self.draft.take() else {
             return;
@@ -1196,7 +1533,22 @@ impl SelectionEngine {
         if !is_meaningful_draft(&op) {
             return;
         }
+        let is_bubble = matches!(op, Annotation::Bubble { .. });
+        let index = self.annotations.len();
+        let (bubble_x, bubble_y) = match &op {
+            Annotation::Bubble { x, y, .. } => (*x, *y),
+            _ => (0.0, 0.0),
+        };
         self.push_annotation(op);
+        if is_bubble {
+            self.bubble_edit = Some(index);
+            // 编辑光标放在气泡内部左上角(栅格化时文本从该处起排)。
+            let pad = 6.0 * f64::from(self.scale.max(1.0));
+            self.begin_text_edit(
+                (bubble_x + pad).round() as i32,
+                (bubble_y + pad).round() as i32,
+            );
+        }
     }
 
     /// 开始拖新选区时清空标注会话:图元、撤销/重做栈与编辑态都属于
@@ -1205,6 +1557,7 @@ impl SelectionEngine {
     fn clear_annotations(&mut self) {
         self.tool = None;
         self.more_open = false;
+        self.bubble_edit = None;
         if self.annotations.is_empty()
             && self.undo.is_empty()
             && self.redo.is_empty()
@@ -1291,6 +1644,7 @@ impl SelectionEngine {
         match action {
             SelectionAction::Annotate => {}
             SelectionAction::Tool(tool) => self.select_tool(tool),
+            SelectionAction::Mode(mode) => self.select_mode(mode),
             SelectionAction::More => {
                 // 面板为空(关闭即时标注且贴图/取字均关)时不展开。
                 if !composer::more_panel_buttons(self.flags).is_empty() {
@@ -1310,10 +1664,13 @@ impl SelectionEngine {
         }
     }
 
-    /// 切换工具(再次点击同一工具回到选择模式);平台无文本输入时忽略文字工具。
-    /// 从「更多」面板选工具时立即收起面板。
+    /// 切换工具(再次点击同一工具回到选择模式);被开关关闭的工具、平台无
+    /// 文本输入时的文字工具均不可选。从「更多」面板选工具时立即收起面板。
     fn select_tool(&mut self, tool: AnnotationTool) {
         if !self.flags.inline_annotation || self.selection.is_none() {
+            return;
+        }
+        if !self.flags.tools.enabled(tool) {
             return;
         }
         if tool == AnnotationTool::Text && !self.options.text_input {
@@ -1327,6 +1684,25 @@ impl SelectionEngine {
         } else {
             Some(tool)
         };
+        self.more_open = false;
+        self.draft = None;
+    }
+
+    /// 模式入口(直线/画笔/模糊):选中所属保留工具并切换到该等效模式;
+    /// 不做再次点击取消(与预览编辑器模式按钮一致)。
+    fn select_mode(&mut self, mode: ToolMode) {
+        let tool = mode.tool();
+        if !self.flags.inline_annotation
+            || self.selection.is_none()
+            || !self.flags.tools.enabled(tool)
+        {
+            return;
+        }
+        if self.text_edit.is_some() {
+            self.commit_text_edit();
+        }
+        self.modes = self.modes.set(mode);
+        self.tool = Some(tool);
         self.more_open = false;
         self.draft = None;
     }
@@ -1392,6 +1768,7 @@ impl SelectionEngine {
     }
 
     /// 提交文本编辑:空白文本丢弃;Enter/切换工具/点击别处都会提交。
+    /// 气泡绘制后的编辑会话把文本写回该气泡图元,而不是新建文字图元。
     fn commit_text_edit(&mut self) {
         let Some(edit) = self.text_edit.take() else {
             return;
@@ -1399,7 +1776,22 @@ impl SelectionEngine {
         let mut text = edit.text;
         text.push_str(&edit.preedit);
         if text.trim().is_empty() {
+            self.bubble_edit = None;
             return;
+        }
+        if let Some(index) = self.bubble_edit.take() {
+            let size = self.resolved_text_size() as f64;
+            if let Some(Annotation::Bubble {
+                text: slot,
+                size: slot_size,
+                ..
+            }) = self.annotations.get_mut(index)
+            {
+                *slot = text;
+                *slot_size = size;
+                self.revision = self.revision.wrapping_add(1);
+                return;
+            }
         }
         let size = self.resolved_text_size() as f64;
         let color = self.options.color.clone();
@@ -1504,8 +1896,8 @@ impl SelectionEngine {
     /// 编辑器。
     fn is_internal_annotation_action(&self, action: SelectionAction) -> bool {
         match action {
-            SelectionAction::Tool(_)
-            | SelectionAction::Undo
+            SelectionAction::Tool(_) | SelectionAction::Mode(_) => true,
+            SelectionAction::Undo
             | SelectionAction::Redo
             | SelectionAction::Delete
             | SelectionAction::More => true,
@@ -1524,7 +1916,14 @@ fn is_meaningful_draft(op: &Annotation) -> bool {
         Annotation::Rect { width, height, .. }
         | Annotation::Ellipse { width, height, .. }
         | Annotation::Mosaic { width, height, .. }
-        | Annotation::Blur { width, height, .. } => {
+        | Annotation::Blur { width, height, .. }
+        | Annotation::Spotlight { width, height, .. }
+        | Annotation::Magnifier { width, height, .. }
+        | Annotation::Bubble { width, height, .. }
+        | Annotation::Erase { width, height, .. } => {
+            width.abs() >= f64::from(MIN_DRAW_SIZE) && height.abs() >= f64::from(MIN_DRAW_SIZE)
+        }
+        Annotation::Sticker { width, height, .. } => {
             width.abs() >= f64::from(MIN_DRAW_SIZE) && height.abs() >= f64::from(MIN_DRAW_SIZE)
         }
         Annotation::Pen { points, .. } | Annotation::Highlighter { points, .. } => {
@@ -1589,6 +1988,41 @@ fn annotation_bounds(op: &Annotation) -> Option<(f64, f64, f64, f64)> {
             ..
         }
         | Annotation::Blur {
+            x,
+            y,
+            width,
+            height,
+            ..
+        }
+        | Annotation::Spotlight {
+            x,
+            y,
+            width,
+            height,
+            ..
+        }
+        | Annotation::Magnifier {
+            x,
+            y,
+            width,
+            height,
+            ..
+        }
+        | Annotation::Bubble {
+            x,
+            y,
+            width,
+            height,
+            ..
+        }
+        | Annotation::Sticker {
+            x,
+            y,
+            width,
+            height,
+            ..
+        }
+        | Annotation::Erase {
             x,
             y,
             width,
@@ -2496,14 +2930,16 @@ mod tests {
             "横条必须位于选区外: {:?}",
             toolbar.panel
         );
-        // 主行:四工具 + 撤销 + 复制 + 保存 + 取消 + 更多。
+        // 主行:注册表主行工具 + 撤销 + 复制 + 保存 + 取消 + 更多。
         let buttons: Vec<SelectionAction> = toolbar.buttons.iter().map(|(a, _)| *a).collect();
         assert_eq!(
             buttons,
             vec![
+                SelectionAction::Tool(AnnotationTool::Arrow),
                 SelectionAction::Tool(AnnotationTool::Rect),
                 SelectionAction::Tool(AnnotationTool::Ellipse),
-                SelectionAction::Tool(AnnotationTool::Arrow),
+                SelectionAction::Tool(AnnotationTool::Highlighter),
+                SelectionAction::Tool(AnnotationTool::Mosaic),
                 SelectionAction::Tool(AnnotationTool::Text),
                 SelectionAction::Undo,
                 SelectionAction::Copy,
@@ -2512,19 +2948,21 @@ mod tests {
                 SelectionAction::More,
             ]
         );
-        // 展开「更多」:面板在选区上方弹出,含 6 工具 + 重做 + 删除 + 贴图 + 取字。
+        // 展开「更多」:面板在选区上方弹出,含默认开启的收进工具(序号)+
+        // 合并工具的全部模式 + 重做 + 删除 + 贴图 + 取字。
         open_more_panel(&mut engine);
         let (panel, items) = engine.more_panel().expect("more panel");
         let actions: Vec<SelectionAction> = items.iter().map(|(a, _)| *a).collect();
         assert_eq!(
             actions,
             vec![
-                SelectionAction::Tool(AnnotationTool::Line),
                 SelectionAction::Tool(AnnotationTool::Number),
-                SelectionAction::Tool(AnnotationTool::Pen),
-                SelectionAction::Tool(AnnotationTool::Highlighter),
-                SelectionAction::Tool(AnnotationTool::Mosaic),
-                SelectionAction::Tool(AnnotationTool::Blur),
+                SelectionAction::Mode(ToolMode::Arrow),
+                SelectionAction::Mode(ToolMode::Line),
+                SelectionAction::Mode(ToolMode::Highlighter),
+                SelectionAction::Mode(ToolMode::Pen),
+                SelectionAction::Mode(ToolMode::Mosaic),
+                SelectionAction::Mode(ToolMode::Blur),
                 SelectionAction::Redo,
                 SelectionAction::Delete,
                 SelectionAction::Pin,
@@ -2565,9 +3003,11 @@ mod tests {
         assert_eq!(
             buttons,
             vec![
+                SelectionAction::Tool(AnnotationTool::Arrow),
                 SelectionAction::Tool(AnnotationTool::Rect),
                 SelectionAction::Tool(AnnotationTool::Ellipse),
-                SelectionAction::Tool(AnnotationTool::Arrow),
+                SelectionAction::Tool(AnnotationTool::Highlighter),
+                SelectionAction::Tool(AnnotationTool::Mosaic),
                 SelectionAction::Tool(AnnotationTool::Text),
                 SelectionAction::Undo,
                 SelectionAction::Cancel,
@@ -2585,12 +3025,13 @@ mod tests {
         assert_eq!(
             actions,
             vec![
-                SelectionAction::Tool(AnnotationTool::Line),
                 SelectionAction::Tool(AnnotationTool::Number),
-                SelectionAction::Tool(AnnotationTool::Pen),
-                SelectionAction::Tool(AnnotationTool::Highlighter),
-                SelectionAction::Tool(AnnotationTool::Mosaic),
-                SelectionAction::Tool(AnnotationTool::Blur),
+                SelectionAction::Mode(ToolMode::Arrow),
+                SelectionAction::Mode(ToolMode::Line),
+                SelectionAction::Mode(ToolMode::Highlighter),
+                SelectionAction::Mode(ToolMode::Pen),
+                SelectionAction::Mode(ToolMode::Mosaic),
+                SelectionAction::Mode(ToolMode::Blur),
                 SelectionAction::Redo,
                 SelectionAction::Delete,
             ]
@@ -2650,7 +3091,10 @@ mod tests {
     fn escape_layers_more_tool_then_cancel() {
         let mut engine = inline_engine(800, 600);
         drag_selection(&mut engine, (40, 30), (760, 560));
-        click_action(&mut engine, SelectionAction::Tool(AnnotationTool::Pen));
+        click_action(
+            &mut engine,
+            SelectionAction::Tool(AnnotationTool::Highlighter),
+        );
         engine.handle_event(InputEvent::LeftDown { x: 200, y: 300 });
         engine.handle_event(InputEvent::PointerMove { x: 400, y: 420 });
         engine.handle_event(InputEvent::LeftUp { x: 400, y: 420 });
@@ -2845,7 +3289,9 @@ mod tests {
     fn freehand_tools_collect_points_and_commit() {
         let mut engine = inline_engine(800, 600);
         drag_selection(&mut engine, (40, 30), (760, 560));
-        click_action(&mut engine, SelectionAction::Tool(AnnotationTool::Pen));
+        // 画笔并入荧光笔:模式入口(Pen)选中荧光笔工具并落 Pen 图元。
+        click_action(&mut engine, SelectionAction::Mode(ToolMode::Pen));
+        assert_eq!(engine.tool(), Some(AnnotationTool::Highlighter));
         engine.handle_event(InputEvent::LeftDown { x: 200, y: 300 });
         for point in [(220, 320), (260, 360), (300, 380)] {
             engine.handle_event(InputEvent::PointerMove {
@@ -2859,10 +3305,14 @@ mod tests {
             other => panic!("expected pen, got {other:?}"),
         }
 
-        click_action(
-            &mut engine,
-            SelectionAction::Tool(AnnotationTool::Highlighter),
-        );
+        // Esc 取消工具选中;再经模式入口切回荧光笔默认模式(画笔模式会
+        // 持续生效,与预览编辑器的 activeModes 一致)。
+        engine.handle_event(InputEvent::Key {
+            key: LogicalKey::Escape,
+            shift: false,
+        });
+        click_action(&mut engine, SelectionAction::Mode(ToolMode::Highlighter));
+        assert_eq!(engine.tool(), Some(AnnotationTool::Highlighter));
         engine.handle_event(InputEvent::LeftDown { x: 200, y: 400 });
         engine.handle_event(InputEvent::PointerMove { x: 320, y: 430 });
         engine.handle_event(InputEvent::LeftUp { x: 320, y: 430 });
@@ -2870,6 +3320,316 @@ mod tests {
             engine.annotations()[1],
             Annotation::Highlighter { .. }
         ));
+    }
+
+    /// R5/R19:逐项工具开关控制创建入口——被关闭的工具不出现在主行/「更多」,
+    /// 快捷键与面板点击都不再选中;已开启的工具不受影响。
+    #[test]
+    fn tool_toggles_gate_entry_and_selection() {
+        let mut engine = SelectionEngine::new(
+            800,
+            600,
+            FeatureFlags {
+                tools: ToolToggles {
+                    rect: false,
+                    spotlight: true,
+                    ..ToolToggles::default()
+                },
+                ..FeatureFlags::default()
+            },
+        )
+        .with_annotation_options(AnnotationOptions {
+            text_input: true,
+            ..AnnotationOptions::default()
+        });
+        drag_selection(&mut engine, (40, 30), (760, 560));
+        // 主行不含被关闭的矩形;「更多」出现默认关闭、现被开启的聚光灯。
+        let buttons = engine_buttons(&engine);
+        assert!(!buttons.contains(&SelectionAction::Tool(AnnotationTool::Rect)));
+        open_more_panel(&mut engine);
+        let actions: Vec<SelectionAction> = engine
+            .more_panel()
+            .expect("more panel")
+            .1
+            .iter()
+            .map(|(a, _)| *a)
+            .collect();
+        assert!(actions.contains(&SelectionAction::Tool(AnnotationTool::Spotlight)));
+        // 快捷键:关闭的矩形忽略,开启的聚光灯选中。
+        engine.handle_event(InputEvent::Key {
+            key: LogicalKey::Tool(AnnotationTool::Rect),
+            shift: false,
+        });
+        assert_eq!(engine.tool(), None);
+        engine.handle_event(InputEvent::Key {
+            key: LogicalKey::Tool(AnnotationTool::Spotlight),
+            shift: false,
+        });
+        assert_eq!(engine.tool(), Some(AnnotationTool::Spotlight));
+        // 合并模式入口随所属工具开关:关闭马赛克后模糊模式不可选。
+        let mut restricted = SelectionEngine::new(
+            800,
+            600,
+            FeatureFlags {
+                tools: ToolToggles {
+                    mosaic: false,
+                    ..ToolToggles::default()
+                },
+                ..FeatureFlags::default()
+            },
+        );
+        drag_selection(&mut restricted, (40, 30), (760, 560));
+        restricted.handle_event(InputEvent::Key {
+            key: LogicalKey::Mode(ToolMode::Blur),
+            shift: false,
+        });
+        assert_eq!(restricted.tool(), None);
+        restricted.handle_event(InputEvent::Key {
+            key: LogicalKey::Mode(ToolMode::Line),
+            shift: false,
+        });
+        assert_eq!(restricted.tool(), Some(AnnotationTool::Arrow));
+    }
+
+    /// R5:合并模式快捷键(L/P/B)选中所属工具并决定草稿图元类型。
+    #[test]
+    fn merged_mode_shortcuts_select_owner_and_shape_draft() {
+        let mut engine = inline_engine(800, 600);
+        drag_selection(&mut engine, (40, 30), (760, 560));
+        // L → 箭头工具 + 直线模式。
+        engine.handle_event(InputEvent::Key {
+            key: LogicalKey::Mode(ToolMode::Line),
+            shift: false,
+        });
+        assert_eq!(engine.tool(), Some(AnnotationTool::Arrow));
+        engine.handle_event(InputEvent::LeftDown { x: 200, y: 300 });
+        engine.handle_event(InputEvent::PointerMove { x: 320, y: 380 });
+        engine.handle_event(InputEvent::LeftUp { x: 320, y: 380 });
+        assert!(matches!(engine.annotations()[0], Annotation::Line { .. }));
+        // B → 马赛克工具 + 模糊模式。
+        engine.handle_event(InputEvent::Key {
+            key: LogicalKey::Escape,
+            shift: false,
+        });
+        engine.handle_event(InputEvent::Key {
+            key: LogicalKey::Mode(ToolMode::Blur),
+            shift: false,
+        });
+        assert_eq!(engine.tool(), Some(AnnotationTool::Mosaic));
+        engine.handle_event(InputEvent::LeftDown { x: 200, y: 300 });
+        engine.handle_event(InputEvent::PointerMove { x: 300, y: 360 });
+        engine.handle_event(InputEvent::LeftUp { x: 300, y: 360 });
+        assert!(matches!(engine.annotations()[1], Annotation::Blur { .. }));
+        // 「更多」面板的模式入口切换回默认模式(箭头)。
+        click_action(&mut engine, SelectionAction::Mode(ToolMode::Mosaic));
+        assert_eq!(engine.tool(), Some(AnnotationTool::Mosaic));
+        engine.handle_event(InputEvent::LeftDown { x: 380, y: 300 });
+        engine.handle_event(InputEvent::PointerMove { x: 460, y: 360 });
+        engine.handle_event(InputEvent::LeftUp { x: 460, y: 360 });
+        assert!(matches!(engine.annotations()[2], Annotation::Mosaic { .. }));
+    }
+
+    /// R5:新增拖拽工具(聚光灯/放大镜/内容擦除)可创建并撤销。
+    #[test]
+    fn new_drag_tools_create_and_undo_annotations() {
+        let tools = ToolToggles {
+            spotlight: true,
+            magnifier: true,
+            erase: true,
+            ..ToolToggles::default()
+        };
+        let mut engine = SelectionEngine::new(
+            800,
+            600,
+            FeatureFlags {
+                tools,
+                ..FeatureFlags::default()
+            },
+        );
+        drag_selection(&mut engine, (40, 30), (760, 560));
+        for (tool, probe) in [
+            (AnnotationTool::Spotlight, 0),
+            (AnnotationTool::Magnifier, 1),
+            (AnnotationTool::Erase, 2),
+        ] {
+            engine.handle_event(InputEvent::Key {
+                key: LogicalKey::Tool(tool),
+                shift: false,
+            });
+            assert_eq!(engine.tool(), Some(tool), "{tool:?}");
+            engine.handle_event(InputEvent::LeftDown { x: 200, y: 300 });
+            engine.handle_event(InputEvent::PointerMove { x: 320, y: 380 });
+            engine.handle_event(InputEvent::LeftUp { x: 320, y: 380 });
+            assert!(
+                engine.annotations().len() > probe,
+                "{tool:?} annotation must be committed"
+            );
+        }
+        let expected = engine.annotations().len();
+        assert!(matches!(
+            engine.annotations()[0],
+            Annotation::Spotlight { dim, .. } if dim == crate::annotate::DEFAULT_SPOTLIGHT_DIM
+        ));
+        assert!(matches!(
+            engine.annotations()[1],
+            Annotation::Magnifier { zoom, .. }
+                if (zoom - crate::annotate::DEFAULT_MAGNIFIER_ZOOM).abs() < f64::EPSILON
+        ));
+        assert!(matches!(engine.annotations()[2], Annotation::Erase { .. }));
+        engine.handle_event(InputEvent::Key {
+            key: LogicalKey::Undo,
+            shift: false,
+        });
+        assert_eq!(engine.annotations().len(), expected - 1);
+    }
+
+    /// R5:对话气泡绘制后进入文本编辑,提交文本写回气泡;空白提交保留空气泡。
+    #[test]
+    fn bubble_tool_draws_then_edits_text_in_place() {
+        let tools = ToolToggles {
+            bubble: true,
+            ..ToolToggles::default()
+        };
+        let mut engine = SelectionEngine::new(
+            800,
+            600,
+            FeatureFlags {
+                tools,
+                ..FeatureFlags::default()
+            },
+        )
+        .with_annotation_options(AnnotationOptions {
+            text_input: true,
+            ..AnnotationOptions::default()
+        });
+        drag_selection(&mut engine, (40, 30), (760, 560));
+        engine.handle_event(InputEvent::Key {
+            key: LogicalKey::Tool(AnnotationTool::Bubble),
+            shift: false,
+        });
+        engine.handle_event(InputEvent::LeftDown { x: 200, y: 300 });
+        engine.handle_event(InputEvent::PointerMove { x: 360, y: 380 });
+        engine.handle_event(InputEvent::LeftUp { x: 360, y: 380 });
+        // 气泡已入栈且立即进入文本编辑会话。
+        assert!(matches!(engine.annotations()[0], Annotation::Bubble { .. }));
+        assert!(engine.text_edit().is_some());
+        engine.handle_event(InputEvent::Text("你好".into()));
+        engine.handle_event(InputEvent::Key {
+            key: LogicalKey::Enter,
+            shift: false,
+        });
+        match &engine.annotations()[0] {
+            Annotation::Bubble { text, .. } => assert_eq!(text, "你好"),
+            other => panic!("expected bubble, got {other:?}"),
+        }
+        // 不产生额外的文字图元;撤销一次移除气泡。
+        assert_eq!(engine.annotations().len(), 1);
+        engine.handle_event(InputEvent::Key {
+            key: LogicalKey::Undo,
+            shift: false,
+        });
+        assert!(engine.annotations().is_empty());
+    }
+
+    /// R5:贴纸工具点击落默认素材,钳制在选区内。
+    #[test]
+    fn sticker_tool_places_default_sticker_inside_selection() {
+        let tools = ToolToggles {
+            sticker: true,
+            ..ToolToggles::default()
+        };
+        let mut engine = SelectionEngine::new(
+            800,
+            600,
+            FeatureFlags {
+                tools,
+                ..FeatureFlags::default()
+            },
+        );
+        drag_selection(&mut engine, (40, 30), (200, 180));
+        engine.handle_event(InputEvent::Key {
+            key: LogicalKey::Tool(AnnotationTool::Sticker),
+            shift: false,
+        });
+        // 点击贴着选区右下角:贴纸钳制在选区内。
+        engine.handle_event(InputEvent::LeftDown { x: 190, y: 170 });
+        engine.handle_event(InputEvent::LeftUp { x: 190, y: 170 });
+        let selection = engine.selection().unwrap();
+        match &engine.annotations()[0] {
+            Annotation::Sticker {
+                x,
+                y,
+                width,
+                height,
+                sticker,
+            } => {
+                assert_eq!(sticker, "star");
+                assert!(*x >= selection.x as f64);
+                assert!(*y >= selection.y as f64);
+                assert!(
+                    *x + *width <= (selection.x + selection.width) as f64,
+                    "sticker must stay inside selection"
+                );
+                assert!(
+                    *y + *height <= (selection.y + selection.height) as f64,
+                    "sticker must stay inside selection"
+                );
+            }
+            other => panic!("expected sticker, got {other:?}"),
+        }
+    }
+
+    /// R5/R19:设置开关表(工具 id → bool)构造逐项开关;未知键忽略、
+    /// 缺失键取精选默认。
+    #[test]
+    fn tool_toggles_from_settings_map_sanitizes_keys() {
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("rect".to_string(), false);
+        map.insert("spotlight".to_string(), true);
+        map.insert("line".to_string(), true); // 合并工具不单列:忽略
+        map.insert("unknown".to_string(), true);
+        let toggles = ToolToggles::from_map(&map);
+        assert!(!toggles.enabled(AnnotationTool::Rect));
+        assert!(toggles.enabled(AnnotationTool::Spotlight));
+        assert!(toggles.enabled(AnnotationTool::Arrow));
+        // R19 精选默认:关闭的 5 个新增工具。
+        assert!(!toggles.enabled(AnnotationTool::Magnifier));
+        assert!(!toggles.enabled(AnnotationTool::Bubble));
+        assert!(!toggles.enabled(AnnotationTool::Sticker));
+        assert!(!toggles.enabled(AnnotationTool::Erase));
+    }
+
+    /// R5:注册表工具 id 与设置白名单(`settings::ANNOTATION_TOOL_IDS`)是同一
+    /// 契约,两侧漂移会让开关表出现永不生效的键或选不到的工具。
+    #[test]
+    fn registry_tool_ids_match_settings_whitelist() {
+        let mut registry: Vec<&str> = AnnotationTool::ALL.iter().map(|tool| tool.id()).collect();
+        registry.sort_unstable();
+        let mut whitelist = crate::settings::ANNOTATION_TOOL_IDS.to_vec();
+        whitelist.sort_unstable();
+        assert_eq!(registry, whitelist, "注册表工具 id 与设置白名单必须一致");
+        // 主行/「更多」不重叠且覆盖全部注册表工具。
+        let primary: Vec<_> = AnnotationTool::PRIMARY.to_vec();
+        let more: Vec<_> = AnnotationTool::MORE.to_vec();
+        assert_eq!(primary.len() + more.len(), AnnotationTool::ALL.len());
+        for tool in more {
+            assert!(
+                !primary.contains(&tool),
+                "{tool:?} 不得同时出现在主行与更多"
+            );
+        }
+        // 模式归属与默认模式声明一致。
+        for mode in ToolMode::ALL {
+            let tool = mode.tool();
+            assert!(
+                tool.modes().contains(&mode),
+                "{mode:?} 未声明在所属工具的模式表"
+            );
+            assert!(
+                tool.default_mode().is_some(),
+                "{tool:?} 声明了模式却无默认模式"
+            );
+        }
     }
 
     #[test]
@@ -3044,11 +3804,12 @@ mod tests {
     /// (面板绘制在横条之上,命中顺序与绘制顺序一致),而不是底下的横条按钮。
     #[test]
     fn more_panel_wins_hit_test_overlapping_toolbar_button() {
-        let mut engine = inline_engine(1920, 410);
+        let mut engine = inline_engine(1920, 330);
         // 选区几乎占满屏幕:下缘放不下(候选被钳回屏内仍压选区),
         // 横条按最小重叠翻上缘并被钳到 y=0;屏高不足以把「更多」面板
-        // 下移到横条之下,重叠保留,命中顺序必须让可见的面板项获胜。
-        drag_selection(&mut engine, (0, 39), (1910, 400));
+        // (默认 11 行 = 408px)下移到横条之下,重叠保留,命中顺序必须让
+        // 可见的面板项获胜。
+        drag_selection(&mut engine, (0, 39), (1910, 320));
         let toolbar = engine.unified_toolbar().expect("toolbar");
         assert_eq!(toolbar.panel.y, 0, "横条应被钳到屏幕顶缘");
         open_more_panel(&mut engine);

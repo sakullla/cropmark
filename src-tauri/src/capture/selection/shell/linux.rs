@@ -63,7 +63,7 @@ use crate::capture::geometry::{MonitorGeom, PhysicalRect};
 use crate::capture::selection::composer::{self, Composer};
 use crate::capture::selection::{
     AnnotationOptions, AnnotationTool, CursorHint, EngineOutcome, FeatureFlags, InputEvent,
-    LogicalKey, SelectionAction, SelectionEngine,
+    LogicalKey, SelectionAction, SelectionEngine, ToolMode,
 };
 use crate::capture::session::QuietAction;
 
@@ -95,8 +95,12 @@ const XK_B_LOWER: u32 = 0x62;
 const XK_B_UPPER: u32 = 0x42;
 const XK_E_LOWER: u32 = 0x65;
 const XK_E_UPPER: u32 = 0x45;
+const XK_G_LOWER: u32 = 0x67;
+const XK_G_UPPER: u32 = 0x47;
 const XK_H_LOWER: u32 = 0x68;
 const XK_H_UPPER: u32 = 0x48;
+const XK_K_LOWER: u32 = 0x6b;
+const XK_K_UPPER: u32 = 0x4b;
 const XK_L_LOWER: u32 = 0x6c;
 const XK_L_UPPER: u32 = 0x4c;
 const XK_M_LOWER: u32 = 0x6d;
@@ -107,8 +111,12 @@ const XK_P_LOWER: u32 = 0x70;
 const XK_P_UPPER: u32 = 0x50;
 const XK_R_LOWER: u32 = 0x72;
 const XK_R_UPPER: u32 = 0x52;
+const XK_S_LOWER: u32 = 0x73;
+const XK_S_UPPER: u32 = 0x53;
 const XK_T_LOWER: u32 = 0x74;
 const XK_T_UPPER: u32 = 0x54;
+const XK_X_LOWER: u32 = 0x78;
+const XK_X_UPPER: u32 = 0x58;
 
 // "cursor" 字体中的标准字形(X11/cursorfont.h 的 XC_* 常量)。每个光标占两个
 // 字符码:source=glyph、mask=glyph+1(XCreateFontCursor 语义)。
@@ -744,17 +752,22 @@ impl KeyboardMap {
             XK_C_LOWER | XK_C_UPPER => Some(LogicalKey::CopyColor),
             // 文本编辑的退格/删除(非编辑态下引擎忽略)。
             XK_BACKSPACE | XK_DELETE => Some(LogicalKey::Delete),
-            // R21 修订:工具快捷键(A/R/E/L/M/B/H/P/N/T)进入标注模式并选工具。
+            // R5 注册表:工具快捷键(A/R/E/H/M/T/N/S/G/K/X)进入标注模式并选工具;
+            // L/P/B 是合并工具的等效模式(直线/画笔/模糊)。C 保留为取色。
+            XK_A_LOWER | XK_A_UPPER => Some(LogicalKey::Tool(AnnotationTool::Arrow)),
             XK_R_LOWER | XK_R_UPPER => Some(LogicalKey::Tool(AnnotationTool::Rect)),
             XK_E_LOWER | XK_E_UPPER => Some(LogicalKey::Tool(AnnotationTool::Ellipse)),
-            XK_L_LOWER | XK_L_UPPER => Some(LogicalKey::Tool(AnnotationTool::Line)),
-            XK_A_LOWER | XK_A_UPPER => Some(LogicalKey::Tool(AnnotationTool::Arrow)),
-            XK_N_LOWER | XK_N_UPPER => Some(LogicalKey::Tool(AnnotationTool::Number)),
-            XK_T_LOWER | XK_T_UPPER => Some(LogicalKey::Tool(AnnotationTool::Text)),
-            XK_P_LOWER | XK_P_UPPER => Some(LogicalKey::Tool(AnnotationTool::Pen)),
             XK_H_LOWER | XK_H_UPPER => Some(LogicalKey::Tool(AnnotationTool::Highlighter)),
             XK_M_LOWER | XK_M_UPPER => Some(LogicalKey::Tool(AnnotationTool::Mosaic)),
-            XK_B_LOWER | XK_B_UPPER => Some(LogicalKey::Tool(AnnotationTool::Blur)),
+            XK_T_LOWER | XK_T_UPPER => Some(LogicalKey::Tool(AnnotationTool::Text)),
+            XK_N_LOWER | XK_N_UPPER => Some(LogicalKey::Tool(AnnotationTool::Number)),
+            XK_S_LOWER | XK_S_UPPER => Some(LogicalKey::Tool(AnnotationTool::Spotlight)),
+            XK_G_LOWER | XK_G_UPPER => Some(LogicalKey::Tool(AnnotationTool::Magnifier)),
+            XK_K_LOWER | XK_K_UPPER => Some(LogicalKey::Tool(AnnotationTool::Sticker)),
+            XK_X_LOWER | XK_X_UPPER => Some(LogicalKey::Tool(AnnotationTool::Erase)),
+            XK_L_LOWER | XK_L_UPPER => Some(LogicalKey::Mode(ToolMode::Line)),
+            XK_P_LOWER | XK_P_UPPER => Some(LogicalKey::Mode(ToolMode::Pen)),
+            XK_B_LOWER | XK_B_UPPER => Some(LogicalKey::Mode(ToolMode::Blur)),
             _ => None,
         }
     }
@@ -1682,9 +1695,10 @@ fn handle_key_event(
         .shortcut_key(keycode, key.state as u16)
         .or_else(|| {
             let mapped = keyboard.logical_key(keycode);
-            // 文本编辑中字母键属于输入内容;Ctrl 组合也不作为工具快捷键
+            // 文本编辑中字母键属于输入内容;Ctrl 组合也不作为工具/模式快捷键
             // (与 Windows 壳一致,避免 Ctrl+R 等误切工具)。
-            if matches!(mapped, Some(LogicalKey::Tool(_))) && (typing || ctrl) {
+            if matches!(mapped, Some(LogicalKey::Tool(_) | LogicalKey::Mode(_))) && (typing || ctrl)
+            {
                 None
             } else {
                 mapped
@@ -2098,29 +2112,30 @@ mod tests {
             min_keycode: 8,
             per_keycode: 1,
             keysyms: vec![
-                XK_R_LOWER, XK_E_LOWER, XK_L_LOWER, XK_A_LOWER, XK_N_LOWER, XK_T_LOWER, XK_P_LOWER,
-                XK_H_LOWER, XK_M_LOWER, XK_B_LOWER, XK_A_UPPER, XK_B_UPPER, XK_D_LOWER,
+                XK_A_LOWER, XK_R_LOWER, XK_E_LOWER, XK_H_LOWER, XK_M_LOWER, XK_T_LOWER, XK_N_LOWER,
+                XK_S_LOWER, XK_G_LOWER, XK_K_LOWER, XK_X_LOWER, XK_L_LOWER, XK_P_LOWER, XK_B_LOWER,
+                XK_A_UPPER, XK_B_UPPER, XK_D_LOWER,
             ],
         };
         assert_eq!(
             map.logical_key(8),
-            Some(LogicalKey::Tool(AnnotationTool::Rect))
-        );
-        assert_eq!(
-            map.logical_key(9),
-            Some(LogicalKey::Tool(AnnotationTool::Ellipse))
-        );
-        assert_eq!(
-            map.logical_key(10),
-            Some(LogicalKey::Tool(AnnotationTool::Line))
-        );
-        assert_eq!(
-            map.logical_key(11),
             Some(LogicalKey::Tool(AnnotationTool::Arrow))
         );
         assert_eq!(
+            map.logical_key(9),
+            Some(LogicalKey::Tool(AnnotationTool::Rect))
+        );
+        assert_eq!(
+            map.logical_key(10),
+            Some(LogicalKey::Tool(AnnotationTool::Ellipse))
+        );
+        assert_eq!(
+            map.logical_key(11),
+            Some(LogicalKey::Tool(AnnotationTool::Highlighter))
+        );
+        assert_eq!(
             map.logical_key(12),
-            Some(LogicalKey::Tool(AnnotationTool::Number))
+            Some(LogicalKey::Tool(AnnotationTool::Mosaic))
         );
         assert_eq!(
             map.logical_key(13),
@@ -2128,29 +2143,33 @@ mod tests {
         );
         assert_eq!(
             map.logical_key(14),
-            Some(LogicalKey::Tool(AnnotationTool::Pen))
+            Some(LogicalKey::Tool(AnnotationTool::Number))
         );
         assert_eq!(
             map.logical_key(15),
-            Some(LogicalKey::Tool(AnnotationTool::Highlighter))
+            Some(LogicalKey::Tool(AnnotationTool::Spotlight))
         );
         assert_eq!(
             map.logical_key(16),
-            Some(LogicalKey::Tool(AnnotationTool::Mosaic))
+            Some(LogicalKey::Tool(AnnotationTool::Magnifier))
         );
         assert_eq!(
             map.logical_key(17),
-            Some(LogicalKey::Tool(AnnotationTool::Blur))
+            Some(LogicalKey::Tool(AnnotationTool::Sticker))
         );
         assert_eq!(
             map.logical_key(18),
+            Some(LogicalKey::Tool(AnnotationTool::Erase))
+        );
+        assert_eq!(map.logical_key(19), Some(LogicalKey::Mode(ToolMode::Line)));
+        assert_eq!(map.logical_key(20), Some(LogicalKey::Mode(ToolMode::Pen)));
+        assert_eq!(map.logical_key(21), Some(LogicalKey::Mode(ToolMode::Blur)));
+        assert_eq!(
+            map.logical_key(22),
             Some(LogicalKey::Tool(AnnotationTool::Arrow))
         );
-        assert_eq!(
-            map.logical_key(19),
-            Some(LogicalKey::Tool(AnnotationTool::Blur))
-        );
-        assert_eq!(map.logical_key(20), None);
+        assert_eq!(map.logical_key(23), Some(LogicalKey::Mode(ToolMode::Blur)));
+        assert_eq!(map.logical_key(24), None);
     }
 
     #[test]

@@ -13,6 +13,7 @@ use super::icons;
 use super::text;
 use super::{
     AnnotationOverlay, AnnotationTool, EdgeKind, FeatureFlags, HandleKind, Scene, SelectionAction,
+    ToolMode,
 };
 use crate::annotate::raster;
 use crate::capture::buffer::{validate_frame, Frame};
@@ -308,17 +309,20 @@ pub fn action_label(action: SelectionAction) -> String {
         SelectionAction::CopyColor => "selection.action.copy_color",
         // 标注工具条按钮为纯图标;名称仍提供词条供辅助文本/后续提示复用。
         SelectionAction::Tool(tool) => match tool {
+            AnnotationTool::Arrow => "selection.tool.arrow",
             AnnotationTool::Rect => "selection.tool.rect",
             AnnotationTool::Ellipse => "selection.tool.ellipse",
-            AnnotationTool::Line => "selection.tool.line",
-            AnnotationTool::Arrow => "selection.tool.arrow",
-            AnnotationTool::Number => "selection.tool.number",
-            AnnotationTool::Text => "selection.tool.text",
-            AnnotationTool::Pen => "selection.tool.pen",
             AnnotationTool::Highlighter => "selection.tool.highlighter",
             AnnotationTool::Mosaic => "selection.tool.mosaic",
-            AnnotationTool::Blur => "selection.tool.blur",
+            AnnotationTool::Text => "selection.tool.text",
+            AnnotationTool::Number => "selection.tool.number",
+            AnnotationTool::Spotlight => "selection.tool.spotlight",
+            AnnotationTool::Magnifier => "selection.tool.magnifier",
+            AnnotationTool::Bubble => "selection.tool.bubble",
+            AnnotationTool::Sticker => "selection.tool.sticker",
+            AnnotationTool::Erase => "selection.tool.erase",
         },
+        SelectionAction::Mode(mode) => mode.label_key(),
         SelectionAction::Undo => "selection.tool.undo",
         SelectionAction::Redo => "selection.tool.redo",
         SelectionAction::Delete => "selection.tool.delete",
@@ -348,15 +352,18 @@ fn capture_actions(flags: FeatureFlags) -> Vec<SelectionAction> {
     actions
 }
 
-/// 统一横条主行动作集(单一 chrome,取代 rail + 标注条双条):
-/// 即时标注开启时为 矩形/椭圆/箭头/文字(平台有文本输入通道时)+ 撤销 +
-/// Copy←`toolbar_copy` + Save←`toolbar_save` + 取消 + 更多;
+/// 统一横条主行动作集(R5 注册表驱动,与预览编辑器工具条同源):
+/// 即时标注开启时为注册表主行工具(开关允许 + 平台有文本输入通道时的文字)
+/// + 撤销 + Copy←`toolbar_copy` + Save←`toolbar_save` + 取消 + 更多;
 /// 关闭时为 标注 + Copy←`toolbar_copy` + Save←`toolbar_save` + 取消 + 更多。
 /// 关闭复制/保存后主行不再含该项,其余顺序不变。
 pub fn toolbar_buttons(flags: FeatureFlags, text_input: bool) -> Vec<SelectionAction> {
-    let mut buttons = Vec::with_capacity(9);
+    let mut buttons = Vec::with_capacity(11);
     if flags.inline_annotation {
         for tool in AnnotationTool::PRIMARY {
+            if !flags.tools.enabled(tool) {
+                continue;
+            }
             if tool != AnnotationTool::Text || text_input {
                 buttons.push(SelectionAction::Tool(tool));
             }
@@ -376,13 +383,22 @@ pub fn toolbar_buttons(flags: FeatureFlags, text_input: bool) -> Vec<SelectionAc
     buttons
 }
 
-/// 「更多」面板动作集:即时标注开启时收进 直线/序号/画笔/荧光笔/马赛克/
-/// 模糊 + 重做 + 删除,以及开关允许的贴图/取字;关闭时只含贴图/取字。
+/// 「更多」面板动作集(R5 注册表驱动):即时标注开启时收进注册表更多工具
+/// (开关允许时)+ 合并工具的全部模式入口(直线/画笔/模糊与各自默认模式,
+/// 所属工具开启时)+ 重做 + 删除,以及开关允许的贴图/取字;关闭时只含
+/// 贴图/取字。
 pub fn more_panel_buttons(flags: FeatureFlags) -> Vec<SelectionAction> {
-    let mut buttons = Vec::with_capacity(10);
+    let mut buttons = Vec::with_capacity(14);
     if flags.inline_annotation {
         for tool in AnnotationTool::MORE {
-            buttons.push(SelectionAction::Tool(tool));
+            if flags.tools.enabled(tool) {
+                buttons.push(SelectionAction::Tool(tool));
+            }
+        }
+        for mode in ToolMode::ALL {
+            if flags.tools.enabled(mode.tool()) {
+                buttons.push(SelectionAction::Mode(mode));
+            }
         }
         buttons.push(SelectionAction::Redo);
         buttons.push(SelectionAction::Delete);
@@ -1355,8 +1371,14 @@ impl Composer {
         for (index, (action, rect)) in toolbar.buttons.iter().enumerate() {
             let (cx, cy) = rect.center();
             let hover = rect.contains(scene.cursor.0, scene.cursor.1);
-            let selected_tool = matches!(action, SelectionAction::Tool(tool)
-                if overlay.is_some_and(|overlay| overlay.tool == Some(*tool)));
+            let selected_tool = match (action, overlay) {
+                (SelectionAction::Tool(tool), Some(overlay)) => overlay.tool == Some(*tool),
+                // 模式入口:所属工具选中且当前模式一致时高亮。
+                (SelectionAction::Mode(mode), Some(overlay)) => {
+                    overlay.tool == Some(mode.tool()) && overlay.mode == Some(*mode)
+                }
+                (_, _) => false,
+            };
             // 复制与其他按钮同一墨色。实心圆和短杠在像素网格上都会显得突兀。
             let ink = if selected_tool { ACCENT } else { CHROME_TEXT };
             if selected_tool || hover {
@@ -2088,6 +2110,7 @@ mod tests {
     use super::*;
     use crate::annotate::{Annotation, Point};
     use crate::capture::buffer::{accept_buffer, crop_rgba, RawBuffer};
+    use crate::capture::selection::ToolToggles;
 
     fn solid_frame(width: u32, height: u32, rgba: [u8; 4]) -> Frame {
         let mut bytes = Vec::with_capacity((width * height * 4) as usize);
@@ -2127,6 +2150,7 @@ mod tests {
             annotations,
             draft,
             tool,
+            mode: None,
             text: None,
             revision,
             color: [225, 29, 72, 255],
@@ -2487,17 +2511,19 @@ mod tests {
         );
     }
 
-    /// 主行动作矩阵:开关矩阵决定主行与「更多」内容,关闭复制/保存后
-    /// 主行与「更多」均无该项且顺序不变。
+    /// 主行动作矩阵:注册表 + 开关矩阵决定主行与「更多」内容,关闭复制/保存
+    /// 后主行与「更多」均无该项且顺序不变;逐项工具开关只裁剪对应入口。
     #[test]
     fn unified_toolbar_button_matrix_follows_flags() {
         let on = FeatureFlags::default();
         assert_eq!(
             toolbar_buttons(on, true),
             vec![
+                SelectionAction::Tool(AnnotationTool::Arrow),
                 SelectionAction::Tool(AnnotationTool::Rect),
                 SelectionAction::Tool(AnnotationTool::Ellipse),
-                SelectionAction::Tool(AnnotationTool::Arrow),
+                SelectionAction::Tool(AnnotationTool::Highlighter),
+                SelectionAction::Tool(AnnotationTool::Mosaic),
                 SelectionAction::Tool(AnnotationTool::Text),
                 SelectionAction::Undo,
                 SelectionAction::Copy,
@@ -2510,9 +2536,11 @@ mod tests {
         assert_eq!(
             toolbar_buttons(on, false),
             vec![
+                SelectionAction::Tool(AnnotationTool::Arrow),
                 SelectionAction::Tool(AnnotationTool::Rect),
                 SelectionAction::Tool(AnnotationTool::Ellipse),
-                SelectionAction::Tool(AnnotationTool::Arrow),
+                SelectionAction::Tool(AnnotationTool::Highlighter),
+                SelectionAction::Tool(AnnotationTool::Mosaic),
                 SelectionAction::Undo,
                 SelectionAction::Copy,
                 SelectionAction::Save,
@@ -2531,41 +2559,46 @@ mod tests {
         assert_eq!(
             toolbar_buttons(off, true),
             vec![
+                SelectionAction::Tool(AnnotationTool::Arrow),
                 SelectionAction::Tool(AnnotationTool::Rect),
                 SelectionAction::Tool(AnnotationTool::Ellipse),
-                SelectionAction::Tool(AnnotationTool::Arrow),
+                SelectionAction::Tool(AnnotationTool::Highlighter),
+                SelectionAction::Tool(AnnotationTool::Mosaic),
                 SelectionAction::Tool(AnnotationTool::Text),
                 SelectionAction::Undo,
                 SelectionAction::Cancel,
                 SelectionAction::More,
             ]
         );
-        // 「更多」:6 工具 + 重做 + 删除 + 贴图/取字(开关允许时)。
+        // 「更多」(R19 精选默认):默认开启的收进工具(序号)+ 合并工具的
+        // 全部模式入口(所属工具开启)+ 重做 + 删除 + 贴图/取字(开关允许时)。
         assert_eq!(
             more_panel_buttons(on),
             vec![
-                SelectionAction::Tool(AnnotationTool::Line),
                 SelectionAction::Tool(AnnotationTool::Number),
-                SelectionAction::Tool(AnnotationTool::Pen),
-                SelectionAction::Tool(AnnotationTool::Highlighter),
-                SelectionAction::Tool(AnnotationTool::Mosaic),
-                SelectionAction::Tool(AnnotationTool::Blur),
+                SelectionAction::Mode(ToolMode::Arrow),
+                SelectionAction::Mode(ToolMode::Line),
+                SelectionAction::Mode(ToolMode::Highlighter),
+                SelectionAction::Mode(ToolMode::Pen),
+                SelectionAction::Mode(ToolMode::Mosaic),
+                SelectionAction::Mode(ToolMode::Blur),
                 SelectionAction::Redo,
                 SelectionAction::Delete,
                 SelectionAction::Pin,
                 SelectionAction::Ocr,
             ]
         );
-        // 「更多」仍含收进的工具/重做/删除(仅贴图/取字被开关关闭)。
+        // 「更多」仍含收进的工具/模式/重做/删除(仅贴图/取字被开关关闭)。
         assert_eq!(
             more_panel_buttons(off),
             vec![
-                SelectionAction::Tool(AnnotationTool::Line),
                 SelectionAction::Tool(AnnotationTool::Number),
-                SelectionAction::Tool(AnnotationTool::Pen),
-                SelectionAction::Tool(AnnotationTool::Highlighter),
-                SelectionAction::Tool(AnnotationTool::Mosaic),
-                SelectionAction::Tool(AnnotationTool::Blur),
+                SelectionAction::Mode(ToolMode::Arrow),
+                SelectionAction::Mode(ToolMode::Line),
+                SelectionAction::Mode(ToolMode::Highlighter),
+                SelectionAction::Mode(ToolMode::Pen),
+                SelectionAction::Mode(ToolMode::Mosaic),
+                SelectionAction::Mode(ToolMode::Blur),
                 SelectionAction::Redo,
                 SelectionAction::Delete,
             ]
@@ -2579,6 +2612,102 @@ mod tests {
             more_panel_buttons(inline_off),
             vec![SelectionAction::Pin, SelectionAction::Ocr]
         );
+        // R5:全量开启时「更多」含全部注册表收进工具(序号/聚光灯/放大镜/
+        // 对话气泡/贴纸/内容擦除)。
+        let all_tools = FeatureFlags {
+            tools: ToolToggles {
+                spotlight: true,
+                magnifier: true,
+                bubble: true,
+                sticker: true,
+                erase: true,
+                ..ToolToggles::default()
+            },
+            ..FeatureFlags::default()
+        };
+        assert_eq!(
+            more_panel_buttons(all_tools),
+            vec![
+                SelectionAction::Tool(AnnotationTool::Number),
+                SelectionAction::Tool(AnnotationTool::Spotlight),
+                SelectionAction::Tool(AnnotationTool::Magnifier),
+                SelectionAction::Tool(AnnotationTool::Bubble),
+                SelectionAction::Tool(AnnotationTool::Sticker),
+                SelectionAction::Tool(AnnotationTool::Erase),
+                SelectionAction::Mode(ToolMode::Arrow),
+                SelectionAction::Mode(ToolMode::Line),
+                SelectionAction::Mode(ToolMode::Highlighter),
+                SelectionAction::Mode(ToolMode::Pen),
+                SelectionAction::Mode(ToolMode::Mosaic),
+                SelectionAction::Mode(ToolMode::Blur),
+                SelectionAction::Redo,
+                SelectionAction::Delete,
+                SelectionAction::Pin,
+                SelectionAction::Ocr,
+            ]
+        );
+        // R5/R19:逐项开关关闭工具后主行不再含该入口;关闭全部绘图工具后
+        // 主行只剩 撤销/复制/保存/取消/更多(撤销/重做/删除仍可用)。
+        let rect_off = FeatureFlags {
+            tools: ToolToggles {
+                rect: false,
+                arrow: false,
+                ..ToolToggles::default()
+            },
+            ..FeatureFlags::default()
+        };
+        let buttons = toolbar_buttons(rect_off, true);
+        assert!(!buttons.contains(&SelectionAction::Tool(AnnotationTool::Rect)));
+        assert!(!buttons.contains(&SelectionAction::Tool(AnnotationTool::Arrow)));
+        assert!(buttons.contains(&SelectionAction::Tool(AnnotationTool::Ellipse)));
+        let no_draw = FeatureFlags {
+            tools: ToolToggles {
+                arrow: false,
+                rect: false,
+                ellipse: false,
+                highlighter: false,
+                mosaic: false,
+                text: false,
+                number: false,
+                spotlight: false,
+                magnifier: false,
+                bubble: false,
+                sticker: false,
+                erase: false,
+            },
+            ..FeatureFlags::default()
+        };
+        assert_eq!(
+            toolbar_buttons(no_draw, true),
+            vec![
+                SelectionAction::Undo,
+                SelectionAction::Copy,
+                SelectionAction::Save,
+                SelectionAction::Cancel,
+                SelectionAction::More,
+            ]
+        );
+        assert_eq!(
+            more_panel_buttons(no_draw),
+            vec![
+                SelectionAction::Redo,
+                SelectionAction::Delete,
+                SelectionAction::Pin,
+                SelectionAction::Ocr,
+            ]
+        );
+        // 合并工具的默认模式入口同样随所属工具开关裁剪:关闭马赛克后,
+        // 马赛克/模糊两个模式入口都不再出现。
+        let modes = more_panel_buttons(FeatureFlags {
+            tools: ToolToggles {
+                mosaic: false,
+                ..ToolToggles::default()
+            },
+            ..FeatureFlags::default()
+        });
+        assert!(!modes.contains(&SelectionAction::Mode(ToolMode::Mosaic)));
+        assert!(!modes.contains(&SelectionAction::Mode(ToolMode::Blur)));
+        assert!(modes.contains(&SelectionAction::Mode(ToolMode::Line)));
     }
 
     /// 统一横条布局:下缘优先(水平居中)→ 上缘 → 侧面;恒为一行、在屏内、
@@ -2742,14 +2871,19 @@ mod tests {
             SelectionAction::More,
             SelectionAction::Tool(AnnotationTool::Rect),
             SelectionAction::Tool(AnnotationTool::Ellipse),
-            SelectionAction::Tool(AnnotationTool::Line),
             SelectionAction::Tool(AnnotationTool::Arrow),
             SelectionAction::Tool(AnnotationTool::Number),
             SelectionAction::Tool(AnnotationTool::Text),
-            SelectionAction::Tool(AnnotationTool::Pen),
             SelectionAction::Tool(AnnotationTool::Highlighter),
             SelectionAction::Tool(AnnotationTool::Mosaic),
-            SelectionAction::Tool(AnnotationTool::Blur),
+            SelectionAction::Tool(AnnotationTool::Spotlight),
+            SelectionAction::Tool(AnnotationTool::Magnifier),
+            SelectionAction::Tool(AnnotationTool::Bubble),
+            SelectionAction::Tool(AnnotationTool::Sticker),
+            SelectionAction::Tool(AnnotationTool::Erase),
+            SelectionAction::Mode(ToolMode::Line),
+            SelectionAction::Mode(ToolMode::Pen),
+            SelectionAction::Mode(ToolMode::Blur),
         ];
         for action in actions {
             let mut buf = vec![0u8; (w * h * 4) as usize];
@@ -3478,8 +3612,9 @@ mod tests {
         );
         assert!(panel.bottom() <= 1080, "面板必须在屏内: {panel:?}");
         // 屏高不足以避开时:保持屏内,命中顺序(面板优先)保证可点。
-        let short_screen = more_panel(metrics, anchor, Some(toolbar), (1920, 400), &items);
-        assert!(short_screen.y >= 0 && short_screen.bottom() <= 400);
+        // (默认「更多」11 行 = 408px;横条之下需 448px,420 高的屏放不下。)
+        let short_screen = more_panel(metrics, anchor, Some(toolbar), (1920, 420), &items);
+        assert!(short_screen.y >= 0 && short_screen.bottom() <= 420);
         assert!(intersects(short_screen, toolbar));
     }
 

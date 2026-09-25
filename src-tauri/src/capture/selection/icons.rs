@@ -9,10 +9,10 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use super::composer::blend;
-use super::{AnnotationTool, SelectionAction};
+use super::{AnnotationTool, SelectionAction, ToolMode};
 use crate::capture::buffer::decode_rgba;
 
-/// 20 个工具条/菜单图标的资产身份(R3:替代程序化 SDF 字形)。
+/// 工具条/菜单图标的资产身份(R3:替代程序化 SDF 字形;R5 增补 5 个注册表工具)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum IconName {
     Rect,
@@ -35,6 +35,11 @@ pub enum IconName {
     Pin,
     Ocr,
     Annotate,
+    Spotlight,
+    Magnifier,
+    Bubble,
+    Sticker,
+    Erase,
 }
 
 /// 缓存句柄:泄漏的 'static 位图切片,进程级缓存条目。
@@ -43,7 +48,7 @@ type CoverageCache = Mutex<HashMap<(IconName, u8), CachedBitmap>>;
 type TintedCache = Mutex<HashMap<(IconName, u32, [u8; 4]), CachedBitmap>>;
 
 impl IconName {
-    pub const ALL: [Self; 20] = [
+    pub const ALL: [Self; 25] = [
         Self::Rect,
         Self::Ellipse,
         Self::Arrow,
@@ -64,6 +69,11 @@ impl IconName {
         Self::Pin,
         Self::Ocr,
         Self::Annotate,
+        Self::Spotlight,
+        Self::Magnifier,
+        Self::Bubble,
+        Self::Sticker,
+        Self::Erase,
     ];
 
     const fn slug(self) -> &'static str {
@@ -88,6 +98,11 @@ impl IconName {
             Self::Pin => "pin",
             Self::Ocr => "ocr",
             Self::Annotate => "annotate",
+            Self::Spotlight => "spotlight",
+            Self::Magnifier => "magnifier",
+            Self::Bubble => "bubble",
+            Self::Sticker => "sticker",
+            Self::Erase => "erase",
         }
     }
 
@@ -116,6 +131,11 @@ impl IconName {
                 Self::Pin => include_bytes!("../../../icons/toolbar/pin-24.png"),
                 Self::Ocr => include_bytes!("../../../icons/toolbar/ocr-24.png"),
                 Self::Annotate => include_bytes!("../../../icons/toolbar/annotate-24.png"),
+                Self::Spotlight => include_bytes!("../../../icons/toolbar/spotlight-24.png"),
+                Self::Magnifier => include_bytes!("../../../icons/toolbar/magnifier-24.png"),
+                Self::Bubble => include_bytes!("../../../icons/toolbar/bubble-24.png"),
+                Self::Sticker => include_bytes!("../../../icons/toolbar/sticker-24.png"),
+                Self::Erase => include_bytes!("../../../icons/toolbar/erase-24.png"),
             },
             _ => match self {
                 Self::Rect => include_bytes!("../../../icons/toolbar/rect-48.png"),
@@ -140,6 +160,11 @@ impl IconName {
                 Self::Pin => include_bytes!("../../../icons/toolbar/pin-48.png"),
                 Self::Ocr => include_bytes!("../../../icons/toolbar/ocr-48.png"),
                 Self::Annotate => include_bytes!("../../../icons/toolbar/annotate-48.png"),
+                Self::Spotlight => include_bytes!("../../../icons/toolbar/spotlight-48.png"),
+                Self::Magnifier => include_bytes!("../../../icons/toolbar/magnifier-48.png"),
+                Self::Bubble => include_bytes!("../../../icons/toolbar/bubble-48.png"),
+                Self::Sticker => include_bytes!("../../../icons/toolbar/sticker-48.png"),
+                Self::Erase => include_bytes!("../../../icons/toolbar/erase-48.png"),
             },
         }
     }
@@ -256,14 +281,22 @@ impl IconName {
             SelectionAction::Cancel => Self::Cancel,
             SelectionAction::Tool(AnnotationTool::Rect) => Self::Rect,
             SelectionAction::Tool(AnnotationTool::Ellipse) => Self::Ellipse,
-            SelectionAction::Tool(AnnotationTool::Line) => Self::Line,
             SelectionAction::Tool(AnnotationTool::Arrow) => Self::Arrow,
             SelectionAction::Tool(AnnotationTool::Number) => Self::Number,
             SelectionAction::Tool(AnnotationTool::Text) => Self::Text,
-            SelectionAction::Tool(AnnotationTool::Pen) => Self::Pen,
             SelectionAction::Tool(AnnotationTool::Highlighter) => Self::Highlighter,
             SelectionAction::Tool(AnnotationTool::Mosaic) => Self::Mosaic,
-            SelectionAction::Tool(AnnotationTool::Blur) => Self::Blur,
+            SelectionAction::Tool(AnnotationTool::Spotlight) => Self::Spotlight,
+            SelectionAction::Tool(AnnotationTool::Magnifier) => Self::Magnifier,
+            SelectionAction::Tool(AnnotationTool::Bubble) => Self::Bubble,
+            SelectionAction::Tool(AnnotationTool::Sticker) => Self::Sticker,
+            SelectionAction::Tool(AnnotationTool::Erase) => Self::Erase,
+            SelectionAction::Mode(ToolMode::Arrow) => Self::Arrow,
+            SelectionAction::Mode(ToolMode::Line) => Self::Line,
+            SelectionAction::Mode(ToolMode::Highlighter) => Self::Highlighter,
+            SelectionAction::Mode(ToolMode::Pen) => Self::Pen,
+            SelectionAction::Mode(ToolMode::Mosaic) => Self::Mosaic,
+            SelectionAction::Mode(ToolMode::Blur) => Self::Blur,
             SelectionAction::Undo => Self::Undo,
             SelectionAction::Redo => Self::Redo,
             SelectionAction::Delete => Self::Delete,
@@ -364,10 +397,10 @@ mod tests {
 
     const INK: [u8; 4] = [255, 255, 255, 255];
 
-    /// 解码测试(icon-assets 的可加载性由本任务验证):20 个图标 ×
+    /// 解码测试(icon-assets 的可加载性由本任务验证):25 个图标 ×
     /// 两档缩放,尺寸正确且确有笔画覆盖像素。
     #[test]
-    fn all_twenty_icons_decode_at_both_tiers_with_stroke_pixels() {
+    fn all_toolbar_icons_decode_at_both_tiers_with_stroke_pixels() {
         for name in IconName::ALL {
             for tier in [24u8, 48] {
                 let coverage = name.coverage(tier);
@@ -487,14 +520,22 @@ mod tests {
             SelectionAction::More,
             SelectionAction::Tool(AnnotationTool::Rect),
             SelectionAction::Tool(AnnotationTool::Ellipse),
-            SelectionAction::Tool(AnnotationTool::Line),
             SelectionAction::Tool(AnnotationTool::Arrow),
             SelectionAction::Tool(AnnotationTool::Number),
             SelectionAction::Tool(AnnotationTool::Text),
-            SelectionAction::Tool(AnnotationTool::Pen),
             SelectionAction::Tool(AnnotationTool::Highlighter),
             SelectionAction::Tool(AnnotationTool::Mosaic),
-            SelectionAction::Tool(AnnotationTool::Blur),
+            SelectionAction::Tool(AnnotationTool::Spotlight),
+            SelectionAction::Tool(AnnotationTool::Magnifier),
+            SelectionAction::Tool(AnnotationTool::Bubble),
+            SelectionAction::Tool(AnnotationTool::Sticker),
+            SelectionAction::Tool(AnnotationTool::Erase),
+            SelectionAction::Mode(ToolMode::Arrow),
+            SelectionAction::Mode(ToolMode::Line),
+            SelectionAction::Mode(ToolMode::Highlighter),
+            SelectionAction::Mode(ToolMode::Pen),
+            SelectionAction::Mode(ToolMode::Mosaic),
+            SelectionAction::Mode(ToolMode::Blur),
         ] {
             assert!(IconName::for_action(action).is_some(), "{action:?}");
         }
@@ -506,7 +547,7 @@ mod tests {
         assert!(buf.chunks_exact(4).all(|px| px[0] == 7));
     }
 
-    /// 全图标绘制烟测:20 个资产在目标尺寸下都能落笔(验收「彼此可分辨」
+    /// 全图标绘制烟测:25 个资产在目标尺寸下都能落笔(验收「彼此可分辨」
     /// 的底线:每个图标都有可见笔画)。
     #[test]
     fn every_icon_paints_pixels_at_toolbar_and_menu_sizes() {
@@ -516,12 +557,12 @@ mod tests {
                 IconName::Ellipse => SelectionAction::Tool(AnnotationTool::Ellipse),
                 IconName::Arrow => SelectionAction::Tool(AnnotationTool::Arrow),
                 IconName::Text => SelectionAction::Tool(AnnotationTool::Text),
-                IconName::Line => SelectionAction::Tool(AnnotationTool::Line),
+                IconName::Line => SelectionAction::Mode(ToolMode::Line),
                 IconName::Number => SelectionAction::Tool(AnnotationTool::Number),
-                IconName::Pen => SelectionAction::Tool(AnnotationTool::Pen),
+                IconName::Pen => SelectionAction::Mode(ToolMode::Pen),
                 IconName::Highlighter => SelectionAction::Tool(AnnotationTool::Highlighter),
                 IconName::Mosaic => SelectionAction::Tool(AnnotationTool::Mosaic),
-                IconName::Blur => SelectionAction::Tool(AnnotationTool::Blur),
+                IconName::Blur => SelectionAction::Mode(ToolMode::Blur),
                 IconName::Undo => SelectionAction::Undo,
                 IconName::Redo => SelectionAction::Redo,
                 IconName::Delete => SelectionAction::Delete,
@@ -532,6 +573,11 @@ mod tests {
                 IconName::Pin => SelectionAction::Pin,
                 IconName::Ocr => SelectionAction::Ocr,
                 IconName::Annotate => SelectionAction::Annotate,
+                IconName::Spotlight => SelectionAction::Tool(AnnotationTool::Spotlight),
+                IconName::Magnifier => SelectionAction::Tool(AnnotationTool::Magnifier),
+                IconName::Bubble => SelectionAction::Tool(AnnotationTool::Bubble),
+                IconName::Sticker => SelectionAction::Tool(AnnotationTool::Sticker),
+                IconName::Erase => SelectionAction::Tool(AnnotationTool::Erase),
             };
             for size in [14i32, 18, 22] {
                 let (w, h) = (48u32, 48u32);

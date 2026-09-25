@@ -115,6 +115,26 @@
     "zh-CN": "模糊",
     "en": "Blur"
   },
+  "selection.tool.spotlight": {
+    "zh-CN": "聚光灯",
+    "en": "Spotlight"
+  },
+  "selection.tool.magnifier": {
+    "zh-CN": "放大镜",
+    "en": "Magnifier"
+  },
+  "selection.tool.bubble": {
+    "zh-CN": "对话气泡",
+    "en": "Speech bubble"
+  },
+  "selection.tool.sticker": {
+    "zh-CN": "贴纸",
+    "en": "Sticker"
+  },
+  "selection.tool.erase": {
+    "zh-CN": "内容擦除",
+    "en": "Erase content"
+  },
   "selection.tool.undo": {
     "zh-CN": "撤销",
     "en": "Undo"

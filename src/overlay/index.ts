@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
-  loadAnnotationDefaults,
+  loadAnnotationSettings,
   mountAnnotationEditor,
   resolveCanvasColor,
   type Annotation,
@@ -524,8 +524,10 @@ export function mountOverlay(root: HTMLElement): () => void {
           }
         }
       }
-      void loadAnnotationDefaults().then((style) => {
+      void loadAnnotationSettings().then(({ style, tools }) => {
         editor?.setStyle(style);
+        // R5:逐项工具开关只控制创建入口;渲染/编辑/导出不随开关变化。
+        editor?.setToolToggles(tools);
       });
     } catch (error) {
       // 无进行中的会话(cancelled)是预创建/隐藏时的正常路径,静默返回。

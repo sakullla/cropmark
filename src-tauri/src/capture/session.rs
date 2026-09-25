@@ -720,8 +720,14 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
         let (frame, monitor) = grab_pointer_screen(&handle)?;
         store_pixels(&handle, frame.clone(), monitor.clone(), generation)?;
         // R19:旧入口开关(取字/贴图/复制/保存/放大镜/光标提示/即时标注)已按
-        // 常开语义移除,选区壳固定使用全开能力集。
-        let flags = super::selection::FeatureFlags::default();
+        // 常开语义移除;R5 标注工具逐项开关(注册表 12 项)注入选区壳,
+        // 关闭的工具不进工具条/「更多」面板/快捷键。
+        let flags = super::selection::FeatureFlags {
+            tools: super::selection::ToolToggles::from_map(
+                &crate::settings::current_annotation_tools(&handle),
+            ),
+            ..super::selection::FeatureFlags::default()
+        };
         let annotation_options = annotation_options_from(&handle);
         // 壳回调在同一线程内同步执行,经 thread-local 取回 AppHandle。
         SHELL_APP.with(|slot| *slot.borrow_mut() = Some(handle.clone()));

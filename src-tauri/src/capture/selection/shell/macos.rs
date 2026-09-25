@@ -67,7 +67,7 @@ use crate::capture::geometry::{self, MonitorGeom, PhysicalRect};
 use crate::capture::selection::composer::{self, Composer};
 use crate::capture::selection::{
     AnnotationOptions, AnnotationTool, CursorHint, EngineOutcome, EngineState, FeatureFlags,
-    InputEvent, LogicalKey, SelectionAction, SelectionEngine,
+    InputEvent, LogicalKey, SelectionAction, SelectionEngine, ToolMode,
 };
 use crate::capture::session::QuietAction;
 
@@ -87,13 +87,17 @@ const KC_FORWARD_DELETE: u16 = 0x75;
 const KC_ANSI_A: u16 = 0x00;
 const KC_ANSI_B: u16 = 0x0B;
 const KC_ANSI_E: u16 = 0x0E;
+const KC_ANSI_G: u16 = 0x05;
 const KC_ANSI_H: u16 = 0x04;
+const KC_ANSI_K: u16 = 0x28;
 const KC_ANSI_L: u16 = 0x25;
 const KC_ANSI_M: u16 = 0x2E;
 const KC_ANSI_N: u16 = 0x2D;
 const KC_ANSI_P: u16 = 0x23;
 const KC_ANSI_R: u16 = 0x0F;
+const KC_ANSI_S: u16 = 0x01;
 const KC_ANSI_T: u16 = 0x11;
+const KC_ANSI_X: u16 = 0x07;
 
 /// 壳的最终结果:会话层据此选择完成路径(与 Windows 壳同构)。
 /// R21 起携带即时标注图元;文本输入经 `NSTextInputClient` 接入,
@@ -1393,17 +1397,22 @@ fn map_key_code(code: u16) -> Option<LogicalKey> {
         KC_ANSI_C => Some(LogicalKey::CopyColor),
         // 文本编辑的退格/删除(非编辑态下引擎忽略)。
         KC_DELETE | KC_FORWARD_DELETE => Some(LogicalKey::Delete),
-        // R21 修订:工具快捷键(A/R/E/L/M/B/H/P/N/T)进入标注模式并选工具。
+        // R5 注册表:工具快捷键(A/R/E/H/M/T/N/S/G/K/X)进入标注模式并选工具;
+        // L/P/B 是合并工具的等效模式(直线/画笔/模糊)。C 保留为取色。
+        KC_ANSI_A => Some(LogicalKey::Tool(AnnotationTool::Arrow)),
         KC_ANSI_R => Some(LogicalKey::Tool(AnnotationTool::Rect)),
         KC_ANSI_E => Some(LogicalKey::Tool(AnnotationTool::Ellipse)),
-        KC_ANSI_L => Some(LogicalKey::Tool(AnnotationTool::Line)),
-        KC_ANSI_A => Some(LogicalKey::Tool(AnnotationTool::Arrow)),
-        KC_ANSI_N => Some(LogicalKey::Tool(AnnotationTool::Number)),
-        KC_ANSI_T => Some(LogicalKey::Tool(AnnotationTool::Text)),
-        KC_ANSI_P => Some(LogicalKey::Tool(AnnotationTool::Pen)),
         KC_ANSI_H => Some(LogicalKey::Tool(AnnotationTool::Highlighter)),
         KC_ANSI_M => Some(LogicalKey::Tool(AnnotationTool::Mosaic)),
-        KC_ANSI_B => Some(LogicalKey::Tool(AnnotationTool::Blur)),
+        KC_ANSI_T => Some(LogicalKey::Tool(AnnotationTool::Text)),
+        KC_ANSI_N => Some(LogicalKey::Tool(AnnotationTool::Number)),
+        KC_ANSI_S => Some(LogicalKey::Tool(AnnotationTool::Spotlight)),
+        KC_ANSI_G => Some(LogicalKey::Tool(AnnotationTool::Magnifier)),
+        KC_ANSI_K => Some(LogicalKey::Tool(AnnotationTool::Sticker)),
+        KC_ANSI_X => Some(LogicalKey::Tool(AnnotationTool::Erase)),
+        KC_ANSI_L => Some(LogicalKey::Mode(ToolMode::Line)),
+        KC_ANSI_P => Some(LogicalKey::Mode(ToolMode::Pen)),
+        KC_ANSI_B => Some(LogicalKey::Mode(ToolMode::Blur)),
         _ => None,
     }
 }
@@ -1447,8 +1456,8 @@ fn handle_key(view: &SelectionView, event: &NSEvent) {
         }
     }
     if let Some(key) = map_key_code(code) {
-        // Cmd/Ctrl 组合不作为工具快捷键(与 Windows/Linux 壳一致)。
-        if command && matches!(key, LogicalKey::Tool(_)) {
+        // Cmd/Ctrl 组合不作为工具/模式快捷键(与 Windows/Linux 壳一致)。
+        if command && matches!(key, LogicalKey::Tool(_) | LogicalKey::Mode(_)) {
             return;
         }
         dispatch_input(view, InputEvent::Key { key, shift });

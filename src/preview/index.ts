@@ -5,6 +5,7 @@ import {
   annotationToolForKey,
   mountAnnotationEditor,
   readAnnotationDefaults,
+  readAnnotationToolToggles,
   resolveCanvasColor,
   type Annotation,
   type AnnotationEditor,
@@ -730,6 +731,8 @@ export function mountPreview(root: HTMLElement): () => void {
           syncSaveQuality();
         }
         editor?.setStyle(readAnnotationDefaults(settings));
+        // R5:逐项工具开关只控制创建入口;渲染/编辑/导出不随开关变化。
+        editor?.setToolToggles(readAnnotationToolToggles(settings));
         redraw();
       })
       .catch(() => undefined);

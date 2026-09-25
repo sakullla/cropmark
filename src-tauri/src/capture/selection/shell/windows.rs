@@ -49,7 +49,7 @@ use crate::capture::geometry::{MonitorGeom, PhysicalRect};
 use crate::capture::selection::composer::{self, Composer};
 use crate::capture::selection::{
     AnnotationOptions, AnnotationTool, CursorHint, EngineOutcome, FeatureFlags, InputEvent,
-    LogicalKey, Scene, SelectionAction, SelectionEngine,
+    LogicalKey, Scene, SelectionAction, SelectionEngine, ToolMode,
 };
 use crate::capture::session::QuietAction;
 
@@ -78,13 +78,17 @@ const VK_DOWN: u32 = 0x28;
 const VK_A: u32 = 0x41;
 const VK_B: u32 = 0x42;
 const VK_E: u32 = 0x45;
+const VK_G: u32 = 0x47;
 const VK_H: u32 = 0x48;
+const VK_K: u32 = 0x4B;
 const VK_L: u32 = 0x4C;
 const VK_M: u32 = 0x4D;
 const VK_N: u32 = 0x4E;
 const VK_P: u32 = 0x50;
 const VK_R: u32 = 0x52;
+const VK_S: u32 = 0x53;
 const VK_T: u32 = 0x54;
+const VK_X: u32 = 0x58;
 
 /// 壳的最终结果:会话层据此选择完成路径。R21 起携带即时标注图元
 /// (坐标相对冻结帧物理像素,由会话层平移到裁剪坐标系)。
@@ -344,6 +348,7 @@ fn quiet_action_for(action: SelectionAction) -> Option<QuietAction> {
         | SelectionAction::Cancel
         | SelectionAction::CopyColor
         | SelectionAction::Tool(_)
+        | SelectionAction::Mode(_)
         | SelectionAction::Undo
         | SelectionAction::Redo
         | SelectionAction::Delete
@@ -654,18 +659,23 @@ fn map_virtual_key(vk: u32) -> Option<LogicalKey> {
         VK_C => Some(LogicalKey::CopyColor),
         // 文本编辑的退格/删除(非编辑态下引擎忽略)。
         VK_BACK | VK_DELETE => Some(LogicalKey::Delete),
-        // R21 修订:工具快捷键(A/R/E/L/M/B/H/P/N/T)进入标注模式并选工具;
+        // R5 注册表:工具快捷键(A/R/E/H/M/T/N/S/G/K/X)进入标注模式并选工具;
+        // L/P/B 是合并工具的等效模式(直线/画笔/模糊)。C 保留为取色。
         // 非选中态/关闭即时标注时由引擎忽略。
+        VK_A => Some(LogicalKey::Tool(AnnotationTool::Arrow)),
         VK_R => Some(LogicalKey::Tool(AnnotationTool::Rect)),
         VK_E => Some(LogicalKey::Tool(AnnotationTool::Ellipse)),
-        VK_L => Some(LogicalKey::Tool(AnnotationTool::Line)),
-        VK_A => Some(LogicalKey::Tool(AnnotationTool::Arrow)),
-        VK_N => Some(LogicalKey::Tool(AnnotationTool::Number)),
-        VK_T => Some(LogicalKey::Tool(AnnotationTool::Text)),
-        VK_P => Some(LogicalKey::Tool(AnnotationTool::Pen)),
         VK_H => Some(LogicalKey::Tool(AnnotationTool::Highlighter)),
         VK_M => Some(LogicalKey::Tool(AnnotationTool::Mosaic)),
-        VK_B => Some(LogicalKey::Tool(AnnotationTool::Blur)),
+        VK_T => Some(LogicalKey::Tool(AnnotationTool::Text)),
+        VK_N => Some(LogicalKey::Tool(AnnotationTool::Number)),
+        VK_S => Some(LogicalKey::Tool(AnnotationTool::Spotlight)),
+        VK_G => Some(LogicalKey::Tool(AnnotationTool::Magnifier)),
+        VK_K => Some(LogicalKey::Tool(AnnotationTool::Sticker)),
+        VK_X => Some(LogicalKey::Tool(AnnotationTool::Erase)),
+        VK_L => Some(LogicalKey::Mode(ToolMode::Line)),
+        VK_P => Some(LogicalKey::Mode(ToolMode::Pen)),
+        VK_B => Some(LogicalKey::Mode(ToolMode::Blur)),
         _ => None,
     }
 }
@@ -1174,9 +1184,11 @@ unsafe extern "system" fn wnd_proc(
                         }
                     }
                     if let Some(key) = map_virtual_key(vk) {
-                        // 工具快捷键仅在无 Ctrl 时生效(Ctrl+Z/Y 已在上方处理;
+                        // 工具/模式快捷键仅在无 Ctrl 时生效(Ctrl+Z/Y 已在上方处理;
                         // 其余 Ctrl 组合不切换标注工具)。
-                        if state.ctrl_down && matches!(key, LogicalKey::Tool(_)) {
+                        if state.ctrl_down
+                            && matches!(key, LogicalKey::Tool(_) | LogicalKey::Mode(_))
+                        {
                             return false;
                         }
                         return feed_event(state, InputEvent::Key { key, shift }, hwnd);
@@ -1819,32 +1831,16 @@ mod tests {
         assert_eq!(map_virtual_key(VK_CONTROL), None);
         assert_eq!(map_virtual_key(VK_Z), None);
         assert_eq!(
+            map_virtual_key(VK_A),
+            Some(LogicalKey::Tool(AnnotationTool::Arrow))
+        );
+        assert_eq!(
             map_virtual_key(VK_R),
             Some(LogicalKey::Tool(AnnotationTool::Rect))
         );
         assert_eq!(
             map_virtual_key(VK_E),
             Some(LogicalKey::Tool(AnnotationTool::Ellipse))
-        );
-        assert_eq!(
-            map_virtual_key(VK_L),
-            Some(LogicalKey::Tool(AnnotationTool::Line))
-        );
-        assert_eq!(
-            map_virtual_key(VK_A),
-            Some(LogicalKey::Tool(AnnotationTool::Arrow))
-        );
-        assert_eq!(
-            map_virtual_key(VK_N),
-            Some(LogicalKey::Tool(AnnotationTool::Number))
-        );
-        assert_eq!(
-            map_virtual_key(VK_T),
-            Some(LogicalKey::Tool(AnnotationTool::Text))
-        );
-        assert_eq!(
-            map_virtual_key(VK_P),
-            Some(LogicalKey::Tool(AnnotationTool::Pen))
         );
         assert_eq!(
             map_virtual_key(VK_H),
@@ -1855,8 +1851,37 @@ mod tests {
             Some(LogicalKey::Tool(AnnotationTool::Mosaic))
         );
         assert_eq!(
+            map_virtual_key(VK_T),
+            Some(LogicalKey::Tool(AnnotationTool::Text))
+        );
+        assert_eq!(
+            map_virtual_key(VK_N),
+            Some(LogicalKey::Tool(AnnotationTool::Number))
+        );
+        assert_eq!(
+            map_virtual_key(VK_S),
+            Some(LogicalKey::Tool(AnnotationTool::Spotlight))
+        );
+        assert_eq!(
+            map_virtual_key(VK_G),
+            Some(LogicalKey::Tool(AnnotationTool::Magnifier))
+        );
+        assert_eq!(
+            map_virtual_key(VK_K),
+            Some(LogicalKey::Tool(AnnotationTool::Sticker))
+        );
+        assert_eq!(
+            map_virtual_key(VK_X),
+            Some(LogicalKey::Tool(AnnotationTool::Erase))
+        );
+        assert_eq!(
+            map_virtual_key(VK_L),
+            Some(LogicalKey::Mode(ToolMode::Line))
+        );
+        assert_eq!(map_virtual_key(VK_P), Some(LogicalKey::Mode(ToolMode::Pen)));
+        assert_eq!(
             map_virtual_key(VK_B),
-            Some(LogicalKey::Tool(AnnotationTool::Blur))
+            Some(LogicalKey::Mode(ToolMode::Blur))
         );
         assert_eq!(map_virtual_key(0x51), None);
     }
