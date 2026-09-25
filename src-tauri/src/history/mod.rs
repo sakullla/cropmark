@@ -131,16 +131,24 @@ fn write_index(dir: &Path, entries: &[HistoryEntry]) -> Result<(), String> {
     };
     let text = serde_json::to_string_pretty(&index).map_err(|error| error.to_string())?;
     let tmp = dir.join(INDEX_TMP_FILE);
-    fs::write(&tmp, text).map_err(|error| i18n::tp("error.history.write_index", &[("error", &error.to_string())]))?;
-    fs::rename(&tmp, dir.join(INDEX_FILE)).map_err(|error| i18n::tp("error.history.rename_index", &[("error", &error.to_string())]))
+    fs::write(&tmp, text).map_err(|error| {
+        i18n::tp(
+            "error.history.write_index",
+            &[("error", &error.to_string())],
+        )
+    })?;
+    fs::rename(&tmp, dir.join(INDEX_FILE)).map_err(|error| {
+        i18n::tp(
+            "error.history.rename_index",
+            &[("error", &error.to_string())],
+        )
+    })
 }
 
 fn index_notice(state: IndexState) -> Option<String> {
     match state {
         IndexState::Ready | IndexState::Missing => None,
-        IndexState::Corrupted => {
-            Some(i18n::t("error.history.corrupted"))
-        }
+        IndexState::Corrupted => Some(i18n::t("error.history.corrupted")),
         IndexState::Unsupported => Some(i18n::t("error.history.unsupported")),
     }
 }
@@ -188,7 +196,8 @@ pub fn record_frame(
     let png = encode_png(frame).map_err(|error| error.user_message())?;
     let thumb = thumbnail_png(frame)?;
     let _guard = lock_store();
-    fs::create_dir_all(dir).map_err(|error| i18n::tp("error.history.create_dir", &[("error", &error.to_string())]))?;
+    fs::create_dir_all(dir)
+        .map_err(|error| i18n::tp("error.history.create_dir", &[("error", &error.to_string())]))?;
     let (mut entries, _) = load_index(dir);
     let id = next_entry_id(dir, created_at);
     let entry = HistoryEntry {
@@ -200,10 +209,18 @@ pub fn record_frame(
         file_name: format!("{id}.png"),
         thumb_name: format!("{id}{THUMB_SUFFIX}"),
     };
-    fs::write(dir.join(&entry.file_name), &png)
-        .map_err(|error| i18n::tp("error.history.write_image", &[("error", &error.to_string())]))?;
-    fs::write(dir.join(&entry.thumb_name), &thumb)
-        .map_err(|error| i18n::tp("error.history.write_thumb", &[("error", &error.to_string())]))?;
+    fs::write(dir.join(&entry.file_name), &png).map_err(|error| {
+        i18n::tp(
+            "error.history.write_image",
+            &[("error", &error.to_string())],
+        )
+    })?;
+    fs::write(dir.join(&entry.thumb_name), &thumb).map_err(|error| {
+        i18n::tp(
+            "error.history.write_thumb",
+            &[("error", &error.to_string())],
+        )
+    })?;
     entries.insert(0, entry.clone());
     // 系统时间回拨也不破坏"淘汰最旧"语义。
     sort_entries(&mut entries);
@@ -270,8 +287,8 @@ pub fn load_entry_frame(dir: &Path, id: &str) -> Result<Frame, String> {
 pub fn read_entry(dir: &Path, id: &str) -> Result<(HistoryEntry, Vec<u8>), String> {
     let _guard = lock_store();
     let entry = find_entry(dir, id)?;
-    let png = fs::read(dir.join(&entry.file_name))
-        .map_err(|_| i18n::t("error.history.image_missing"))?;
+    let png =
+        fs::read(dir.join(&entry.file_name)).map_err(|_| i18n::t("error.history.image_missing"))?;
     Ok((entry, png))
 }
 
@@ -307,7 +324,12 @@ pub fn clear_entries(dir: &Path) -> Result<(), String> {
             }
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(i18n::tp("error.history.clear", &[("error", &error.to_string())])),
+        Err(error) => {
+            return Err(i18n::tp(
+                "error.history.clear",
+                &[("error", &error.to_string())],
+            ))
+        }
     }
     Ok(())
 }

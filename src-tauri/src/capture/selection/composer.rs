@@ -1610,7 +1610,8 @@ impl Composer {
         let line = magnifier_readout_line(cursor, center);
         let text_w = text::measure_width(&line, layout.font).unwrap_or(0.0);
         let swatch = (layout.pill_h - 8).max(10);
-        let footer_w = (swatch + 8 + text_w.ceil() as i32 + layout.pill_pad_x).min(panel.width - layout.pad * 2);
+        let footer_w = (swatch + 8 + text_w.ceil() as i32 + layout.pill_pad_x)
+            .min(panel.width - layout.pad * 2);
         let footer_x = panel.x + (panel.width - footer_w) / 2;
         let footer_y = panel.y + layout.pad + layout.edge + layout.gap;
         let sw = IntRect {
@@ -2847,7 +2848,12 @@ mod tests {
         let composed = composer.compose(&scene);
         let read = |x: i32, y: i32| {
             let i = ((y as u32 * 160 + x as u32) * 4) as usize;
-            [composed[i], composed[i + 1], composed[i + 2], composed[i + 3]]
+            [
+                composed[i],
+                composed[i + 1],
+                composed[i + 2],
+                composed[i + 3],
+            ]
         };
         let scheme = system_prefers_dark();
         let accent = accent_for_scheme(scheme);
