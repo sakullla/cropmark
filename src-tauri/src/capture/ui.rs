@@ -64,13 +64,14 @@ pub struct ToastPayload {
     pub message: String,
 }
 
-/// R24:Web 覆盖层能力子集。只携带覆盖层实际会消费的开关(Wayland 的标注
+/// R24:Web 覆盖层能力子集。只携带覆盖层实际会消费的能力(Wayland 的标注
 /// 入口/提示据此渲染);新增字段不影响旧前端——前端按结构类型读取已知字段,
-/// 未知字段天然忽略,不要求与后端同版本。
+/// 未知字段天然忽略,不要求与后端同版本。R19:旧入口开关已按常开语义移除,
+/// 可挂载的浮层能力固定为全开,仅在确实挂不上工作区动作时为 `unhosted`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OverlayCapabilities {
-    /// 选区即时标注:关闭后覆盖层不提供标注入口。
+    /// 选区即时标注:旧开关移除后保持开启。
     pub inline_annotation: bool,
     /// 网页浮层能否挂上复制/保存/贴图/取字/进一步编辑。能挂上时为 true。
     pub workspace_actions: bool,
@@ -81,15 +82,15 @@ pub struct OverlayCapabilities {
 }
 
 impl OverlayCapabilities {
-    /// 从功能设置取覆盖层能力子集。网页浮层可以挂这些动作。
-    pub fn from_features(features: crate::settings::FeatureSettings) -> Self {
+    /// 网页浮层可挂全部工作区动作与即时标注(R19:固定全开)。
+    pub fn hosted() -> Self {
         Self {
-            inline_annotation: features.inline_annotation,
+            inline_annotation: true,
             workspace_actions: true,
-            copy: features.toolbar_copy,
-            save: features.toolbar_save,
-            pin: features.pin_entry && features.toolbar_pin,
-            ocr: features.ocr_entry,
+            copy: true,
+            save: true,
+            pin: true,
+            ocr: true,
         }
     }
 
@@ -920,8 +921,7 @@ mod tests {
             scale: 1.0,
         };
         let monitor = MonitorGeom::from_physical("m", 0, 0, 4, 4, 1.0);
-        let capabilities =
-            OverlayCapabilities::from_features(crate::settings::FeatureSettings::default());
+        let capabilities = OverlayCapabilities::hosted();
         // R13:前端按 `reducedCapabilities` 渲染能力说明,字段名必须是 camelCase。
         let reduced = overlay_payload(
             CaptureMode::Region,
@@ -959,21 +959,22 @@ mod tests {
     }
 
     #[test]
-    fn overlay_capabilities_track_inline_annotation_setting() {
-        let on = OverlayCapabilities::from_features(crate::settings::FeatureSettings::default());
-        assert!(on.inline_annotation);
-        let off = OverlayCapabilities::from_features(crate::settings::FeatureSettings {
-            inline_annotation: false,
-            ..crate::settings::FeatureSettings::default()
-        });
-        assert!(!off.inline_annotation);
-        let json = serde_json::to_value(off).expect("capabilities serialize");
-        assert_eq!(json["inlineAnnotation"], serde_json::json!(false));
+    fn hosted_capabilities_enable_every_hosted_action() {
+        // R19:旧入口开关移除后,可挂载浮层的全部动作与即时标注固定开启。
+        let hosted = OverlayCapabilities::hosted();
+        assert!(hosted.inline_annotation);
+        assert!(hosted.workspace_actions);
+        assert!(hosted.copy);
+        assert!(hosted.save);
+        assert!(hosted.pin);
+        assert!(hosted.ocr);
+        let json = serde_json::to_value(hosted).expect("capabilities serialize");
+        assert_eq!(json["inlineAnnotation"], serde_json::json!(true));
         assert_eq!(json["workspaceActions"], serde_json::json!(true));
-        assert!(json["copy"].is_boolean());
-        assert!(json["save"].is_boolean());
-        assert!(json["pin"].is_boolean());
-        assert!(json["ocr"].is_boolean());
+        assert_eq!(json["copy"], serde_json::json!(true));
+        assert_eq!(json["save"], serde_json::json!(true));
+        assert_eq!(json["pin"], serde_json::json!(true));
+        assert_eq!(json["ocr"], serde_json::json!(true));
     }
 
     #[test]
@@ -1006,10 +1007,7 @@ mod tests {
             &monitor,
             Vec::new(),
             true,
-            OverlayCapabilities::from_features(crate::settings::FeatureSettings {
-                inline_annotation: false,
-                ..crate::settings::FeatureSettings::default()
-            }),
+            OverlayCapabilities::unhosted(),
         )
         .expect("payload builds");
         let json = serde_json::to_value(&payload).expect("payload serializes");

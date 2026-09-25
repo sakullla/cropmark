@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -62,71 +63,125 @@ impl AnnotationDefaults {
     }
 }
 
-/// 功能入口与能力开关(默认全开):前六项决定选区操作条/右键菜单/预览工具条
-/// 的动作集(`capture::selection::FeatureFlags` 与之对应);R24 后四项为跨链路
-/// 能力开关:光标提示(选区壳)、上次区域(托盘直取与记录)、OCR 方向纠正、
-/// 选区即时标注(选区/Web 覆盖层)。关闭只停用能力,不删除既有数据。
+/// 功能开关(R19):每个新增能力一个独立开关,默认按精选表;关闭只停用入口与
+/// 新增行为,不删除既有数据。旧 `FeatureSettings` 的 10 项遗留开关(入口/工具栏
+/// /光标提示/上次区域/方向纠正/即时标注)已按常开语义移除,其能力保持开启,
+/// 旧配置中的 `features` 键不再反序列化(未知字段被忽略)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
-pub struct FeatureSettings {
-    pub ocr_entry: bool,
-    pub pin_entry: bool,
-    pub magnifier: bool,
-    pub toolbar_copy: bool,
-    pub toolbar_save: bool,
-    pub toolbar_pin: bool,
-    /// R24:选区光标提示;关闭后壳内光标固定十字。
-    pub cursor_hints: bool,
-    /// R24:托盘"上次区域"直取与成功区域截图的自动记录。
-    pub last_region: bool,
-    /// R24:OCR 方向纠正;关闭后仅按正置识别。
-    pub ocr_orientation: bool,
-    /// R24:选区即时标注;关闭后选区无标注工具,标注仍进预览编辑器。
-    pub inline_annotation: bool,
+pub struct FeatureToggles {
+    pub long_capture: bool,
+    pub pin_enhance: bool,
+    pub pin_restore: bool,
+    pub export_beautify: bool,
+    pub capture_cursor: bool,
+    pub history_tools: bool,
+    pub clipboard_pin: bool,
+    pub multi_monitor: bool,
+    pub ocr_panel: bool,
+    pub onboarding: bool,
+    pub filename_template: bool,
 }
 
-impl Default for FeatureSettings {
+impl Default for FeatureToggles {
+    /// R19 精选:长截图、贴图增强、历史检索与收藏、剪贴板贴图、多屏全屏、
+    /// OCR 结果面板、首次引导默认开启;导出美化、捕获光标、贴图重启恢复、
+    /// 文件名模板默认关闭。
     fn default() -> Self {
         Self {
-            ocr_entry: true,
-            pin_entry: true,
-            magnifier: true,
-            toolbar_copy: true,
-            toolbar_save: true,
-            toolbar_pin: true,
-            cursor_hints: true,
-            last_region: true,
-            ocr_orientation: true,
-            inline_annotation: true,
+            long_capture: true,
+            pin_enhance: true,
+            pin_restore: false,
+            export_beautify: false,
+            capture_cursor: false,
+            history_tools: true,
+            clipboard_pin: true,
+            multi_monitor: true,
+            ocr_panel: true,
+            onboarding: true,
+            filename_template: false,
         }
     }
 }
 
-impl FeatureSettings {
-    /// 布尔开关无非法值,sanitize 仅保持字段形状对称(供 from_stored 统一走
-    /// sanitized 路径)。
-    pub fn sanitized(self) -> Self {
-        self
-    }
-
+impl FeatureToggles {
     /// 按键名设置单个开关(camelCase 优先,兼容 snake_case);未知键返回 None。
     pub fn with_key(self, key: &str, enabled: bool) -> Option<Self> {
         let mut next = self;
         match key {
-            "ocrEntry" | "ocr_entry" => next.ocr_entry = enabled,
-            "pinEntry" | "pin_entry" => next.pin_entry = enabled,
-            "magnifier" => next.magnifier = enabled,
-            "toolbarCopy" | "toolbar_copy" => next.toolbar_copy = enabled,
-            "toolbarSave" | "toolbar_save" => next.toolbar_save = enabled,
-            "toolbarPin" | "toolbar_pin" => next.toolbar_pin = enabled,
-            "cursorHints" | "cursor_hints" => next.cursor_hints = enabled,
-            "lastRegion" | "last_region" => next.last_region = enabled,
-            "ocrOrientation" | "ocr_orientation" => next.ocr_orientation = enabled,
-            "inlineAnnotation" | "inline_annotation" => next.inline_annotation = enabled,
+            "longCapture" | "long_capture" => next.long_capture = enabled,
+            "pinEnhance" | "pin_enhance" => next.pin_enhance = enabled,
+            "pinRestore" | "pin_restore" => next.pin_restore = enabled,
+            "exportBeautify" | "export_beautify" => next.export_beautify = enabled,
+            "captureCursor" | "capture_cursor" => next.capture_cursor = enabled,
+            "historyTools" | "history_tools" => next.history_tools = enabled,
+            "clipboardPin" | "clipboard_pin" => next.clipboard_pin = enabled,
+            "multiMonitor" | "multi_monitor" => next.multi_monitor = enabled,
+            "ocrPanel" | "ocr_panel" => next.ocr_panel = enabled,
+            "onboarding" => next.onboarding = enabled,
+            "filenameTemplate" | "filename_template" => next.filename_template = enabled,
             _ => return None,
         }
         Some(next)
     }
+}
+
+/// 标注工具 id 白名单(R19):被合并的 line/pen/blur 不单列,其能力由
+/// arrow/highlighter/mosaic 的模式提供。
+pub const ANNOTATION_TOOL_IDS: [&str; 12] = [
+    "rect",
+    "ellipse",
+    "arrow",
+    "text",
+    "number",
+    "highlighter",
+    "mosaic",
+    "spotlight",
+    "magnifier",
+    "bubble",
+    "sticker",
+    "erase",
+];
+
+/// R19 精选默认:矩形、椭圆、箭头、文本、序号、荧光笔、马赛克开启;
+/// 聚光灯、放大镜、对话气泡、贴纸、内容擦除关闭。
+pub fn default_annotation_tools() -> BTreeMap<String, bool> {
+    let enabled = [
+        "rect",
+        "ellipse",
+        "arrow",
+        "text",
+        "number",
+        "highlighter",
+        "mosaic",
+    ];
+    ANNOTATION_TOOL_IDS
+        .into_iter()
+        .map(|id| (id.to_string(), enabled.contains(&id)))
+        .collect()
+}
+
+/// 旧配置升级:只保留白名单键的已存值,其余回到精选默认;被合并工具不进入
+/// 开关表,未知键忽略。
+pub fn sanitize_annotation_tools(stored: BTreeMap<String, bool>) -> BTreeMap<String, bool> {
+    let mut tools = default_annotation_tools();
+    for (key, value) in stored {
+        if let Some(slot) = tools.get_mut(&key) {
+            *slot = value;
+        }
+    }
+    tools
+}
+
+/// 按键设置单个标注工具开关;未知键返回 None。
+pub fn with_annotation_tool(
+    mut tools: BTreeMap<String, bool>,
+    tool: &str,
+    enabled: bool,
+) -> Option<BTreeMap<String, bool>> {
+    tools.get_mut(tool)?;
+    tools.insert(tool.to_string(), enabled);
+    Some(tools)
 }
 
 /// 延时合法上限(秒)。
@@ -365,8 +420,12 @@ pub struct StoredSettings {
     pub hotkeys: Hotkeys,
     #[serde(default)]
     pub annotation_defaults: AnnotationDefaults,
+    /// R19 功能开关;旧 `features` 键不再反序列化(未知字段被忽略)。
     #[serde(default)]
-    pub features: FeatureSettings,
+    pub toggles: FeatureToggles,
+    /// R19 标注工具逐项开关(工具 id → 是否启用)。
+    #[serde(default)]
+    pub annotation_tools: BTreeMap<String, bool>,
     #[serde(default)]
     pub capture: CaptureSettings,
     #[serde(default)]
@@ -428,7 +487,9 @@ pub struct UiSettings {
     pub autostart: AutostartState,
     pub notice: Option<String>,
     pub annotation_defaults: AnnotationDefaults,
-    pub features: FeatureSettings,
+    /// R19 功能开关与标注工具逐项开关。
+    pub toggles: FeatureToggles,
+    pub annotation_tools: BTreeMap<String, bool>,
     pub capture: CaptureSettings,
     pub history: HistorySettings,
     pub export: ExportSettings,
@@ -443,7 +504,8 @@ pub struct SessionState {
     pub notice: Mutex<Option<String>>,
     pub autostart_rejection: Mutex<Option<AutostartRejection>>,
     pub annotation_defaults: Mutex<AnnotationDefaults>,
-    pub features: Mutex<FeatureSettings>,
+    pub toggles: Mutex<FeatureToggles>,
+    pub annotation_tools: Mutex<BTreeMap<String, bool>>,
     pub capture: Mutex<CaptureSettings>,
     pub history: Mutex<HistorySettings>,
     pub export: Mutex<ExportSettings>,
@@ -460,7 +522,8 @@ impl SessionState {
             notice: Mutex::new(None),
             autostart_rejection: Mutex::new(None),
             annotation_defaults: Mutex::new(stored.annotation_defaults.sanitized()),
-            features: Mutex::new(stored.features.sanitized()),
+            toggles: Mutex::new(stored.toggles),
+            annotation_tools: Mutex::new(sanitize_annotation_tools(stored.annotation_tools)),
             capture: Mutex::new(stored.capture.sanitized()),
             history: Mutex::new(stored.history.sanitized()),
             export: Mutex::new(stored.export.sanitized()),
@@ -471,9 +534,15 @@ impl SessionState {
     }
 }
 
-/// 供截取会话在选区引擎启动时读取当前功能开关。
-pub fn current_features(app: &AppHandle) -> FeatureSettings {
-    *lock(&app.state::<SessionState>().features)
+/// 供各功能入口读取当前功能开关(R19);内存值即时生效,随设置写盘持久化。
+pub fn current_toggles(app: &AppHandle) -> FeatureToggles {
+    *lock(&app.state::<SessionState>().toggles)
+}
+
+/// 供标注工具入口读取当前逐项开关(R19);关闭只隐藏创建入口,已创建标注
+/// 的渲染、编辑与导出不受影响。
+pub fn current_annotation_tools(app: &AppHandle) -> BTreeMap<String, bool> {
+    lock(&app.state::<SessionState>().annotation_tools).clone()
 }
 
 /// 供选区即时标注(R21)读取当前标注样式默认值;只读克隆,不做平台查询,
@@ -522,12 +591,9 @@ pub fn current_last_region(app: &AppHandle) -> Option<LastRegion> {
 }
 
 /// 区域截图成功后覆盖记录并重建托盘菜单(R6),"上次区域"立即直取同一区域;
-/// 写盘失败只影响 notice,不丢内存记录。
-/// R24:关闭 lastRegion 后不再记录新区域;既有记录保留,重新开启即可直取。
+/// 写盘失败只影响 notice,不丢内存记录。R19:旧 lastRegion 开关按常开语义
+/// 移除,记录行为保持开启。
 pub fn remember_last_region(app: &AppHandle, region: LastRegion) {
-    if !current_features(app).last_region {
-        return;
-    }
     let Some(region) = region.sanitized() else {
         return;
     };
@@ -657,7 +723,9 @@ pub fn snapshot(app: &AppHandle) -> UiSettings {
     let notice = lock(&state.notice).clone();
     let autostart_rejection = lock(&state.autostart_rejection).clone();
     let annotation_defaults = lock(&state.annotation_defaults).clone();
-    let features = *lock(&state.features);
+    // 开关表统一走读取入口,后续功能任务的宿主入口复用同一路径。
+    let toggles = current_toggles(app);
+    let annotation_tools = current_annotation_tools(app);
     let capture = *lock(&state.capture);
     let history = *lock(&state.history);
     let export = lock(&state.export).clone();
@@ -670,7 +738,8 @@ pub fn snapshot(app: &AppHandle) -> UiSettings {
         autostart: autostart::merge_autostart_ui(autostart::current_state(), autostart_rejection),
         notice,
         annotation_defaults,
-        features,
+        toggles,
+        annotation_tools,
         capture,
         history,
         export,
@@ -713,23 +782,43 @@ pub fn set_annotation_defaults(app: AppHandle, defaults: AnnotationDefaults) -> 
     snapshot(&app)
 }
 
-/// 设置单个功能入口开关;内存值立即生效(下一次截取起),随 persist_settings
-/// 统一写盘(hotkeys+annotation_defaults+features),写盘失败沿 notice 提示。
+/// 设置单个功能开关(R19):只接受新键白名单,未知键返回错误;内存值立即
+/// 生效,随 persist_settings 写盘,写盘失败沿 notice 提示。功能入口挂接在
+/// 托盘/选区等宿主上,菜单按 id 分发,重建不丢处理器。
 #[tauri::command]
 pub fn set_feature(app: AppHandle, key: String, enabled: bool) -> Result<UiSettings, String> {
     let next = {
         let state = app.state::<SessionState>();
-        let current = *lock(&state.features);
+        let current = *lock(&state.toggles);
         current
             .with_key(&key, enabled)
             .ok_or_else(|| i18n::tp("error.feature.unknown", &[("key", &key)]))?
     };
-    *lock(&app.state::<SessionState>().features) = next;
+    *lock(&app.state::<SessionState>().toggles) = next;
     let applied = i18n::t("notice.features_applied");
     persist_settings(&app, &applied);
-    // R24:lastRegion 开关改变托盘"上次区域"项的可用状态;菜单事件按 id 分发,
-    // 重建不影响其它入口。
+    // 功能入口挂在托盘/选区等宿主上;菜单事件按 id 分发,重建不丢处理器。
     crate::tray::refresh_menu(&app);
+    Ok(snapshot(&app))
+}
+
+/// 设置单个标注工具开关(R19):只控制创建入口;未知工具返回错误。渲染、
+/// 复制、保存、贴图、取字与撤销/重做保持常驻,不随开关变化。
+#[tauri::command]
+pub fn set_annotation_tool(
+    app: AppHandle,
+    tool: String,
+    enabled: bool,
+) -> Result<UiSettings, String> {
+    let next = {
+        let state = app.state::<SessionState>();
+        let current = lock(&state.annotation_tools).clone();
+        with_annotation_tool(current, &tool, enabled)
+            .ok_or_else(|| i18n::tp("error.annotation_tool.unknown", &[("tool", &tool)]))?
+    };
+    *lock(&app.state::<SessionState>().annotation_tools) = next;
+    let applied = i18n::t("notice.annotation_tools_applied");
+    persist_settings(&app, &applied);
     Ok(snapshot(&app))
 }
 
@@ -760,7 +849,8 @@ fn persist_settings(app: &AppHandle, applied: &str) {
     let stored = StoredSettings {
         hotkeys: lock(&state.hotkeys).clone(),
         annotation_defaults: lock(&state.annotation_defaults).clone(),
-        features: *lock(&state.features),
+        toggles: *lock(&state.toggles),
+        annotation_tools: lock(&state.annotation_tools).clone(),
         capture: *lock(&state.capture),
         history: *lock(&state.history),
         export: lock(&state.export).clone(),
@@ -822,18 +912,23 @@ mod tests {
                 text_size: Some(22.0),
                 number_start: 5,
             },
-            features: FeatureSettings {
-                ocr_entry: false,
-                pin_entry: true,
-                magnifier: false,
-                toolbar_copy: true,
-                toolbar_save: false,
-                toolbar_pin: true,
-                cursor_hints: false,
-                last_region: false,
-                ocr_orientation: false,
-                inline_annotation: true,
+            toggles: FeatureToggles {
+                long_capture: false,
+                pin_enhance: true,
+                pin_restore: true,
+                export_beautify: true,
+                capture_cursor: true,
+                history_tools: false,
+                clipboard_pin: true,
+                multi_monitor: false,
+                ocr_panel: true,
+                onboarding: false,
+                filename_template: true,
             },
+            annotation_tools: BTreeMap::from([
+                ("rect".to_string(), false),
+                ("spotlight".to_string(), true),
+            ]),
             capture: CaptureSettings { delay_seconds: 5 },
             history: HistorySettings {
                 enabled: false,
@@ -857,22 +952,29 @@ mod tests {
         assert!(!text.contains("autostart"));
         assert!(!text.contains("autoCopy"));
         assert!(!text.contains("finishAction"));
+        // R19:旧 features 键不再写入;新开关与工具表按新键名持久化。
+        assert!(!text.contains("\"features\""));
+        assert!(text.contains("\"toggles\""));
+        assert!(text.contains("\"annotationTools\""));
         let loaded = load_from_path(&path);
         assert_eq!(loaded.hotkeys.region, "Ctrl+Alt+R");
         assert_eq!(loaded.annotation_defaults.color, "#2563eb");
         assert_eq!(loaded.annotation_defaults.width, Some(5.0));
         assert_eq!(loaded.annotation_defaults.text_size, Some(22.0));
         assert_eq!(loaded.annotation_defaults.number_start, 5);
-        assert!(!loaded.features.ocr_entry);
-        assert!(loaded.features.pin_entry);
-        assert!(!loaded.features.magnifier);
-        assert!(loaded.features.toolbar_copy);
-        assert!(!loaded.features.toolbar_save);
-        assert!(loaded.features.toolbar_pin);
-        assert!(!loaded.features.cursor_hints);
-        assert!(!loaded.features.last_region);
-        assert!(!loaded.features.ocr_orientation);
-        assert!(loaded.features.inline_annotation);
+        assert!(!loaded.toggles.long_capture);
+        assert!(loaded.toggles.pin_enhance);
+        assert!(loaded.toggles.pin_restore);
+        assert!(loaded.toggles.export_beautify);
+        assert!(loaded.toggles.capture_cursor);
+        assert!(!loaded.toggles.history_tools);
+        assert!(loaded.toggles.clipboard_pin);
+        assert!(!loaded.toggles.multi_monitor);
+        assert!(loaded.toggles.ocr_panel);
+        assert!(!loaded.toggles.onboarding);
+        assert!(loaded.toggles.filename_template);
+        assert_eq!(loaded.annotation_tools.get("rect"), Some(&false));
+        assert_eq!(loaded.annotation_tools.get("spotlight"), Some(&true));
         assert_eq!(loaded.capture.delay_seconds, 5);
         assert!(!loaded.history.enabled);
         assert_eq!(loaded.history.limit, 50);
@@ -959,9 +1061,9 @@ mod tests {
     }
 
     #[test]
-    fn missing_features_field_loads_all_enabled_defaults() {
+    fn missing_toggles_field_loads_selected_defaults() {
         let dir =
-            std::env::temp_dir().join(format!("cropmark-settings-features-{}", std::process::id()));
+            std::env::temp_dir().join(format!("cropmark-settings-toggles-{}", std::process::id()));
         let path = dir.join("settings.json");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(
@@ -970,98 +1072,220 @@ mod tests {
         )
         .unwrap();
         let loaded = load_from_path(&path);
-        assert_eq!(loaded.features, FeatureSettings::default());
-        assert!(loaded.features.ocr_entry);
-        assert!(loaded.features.magnifier);
-        // R24:旧设置文件缺失新开关时按默认开启加载(不因升级被关闭)。
-        assert!(loaded.features.cursor_hints);
-        assert!(loaded.features.last_region);
-        assert!(loaded.features.ocr_orientation);
-        assert!(loaded.features.inline_annotation);
+        assert_eq!(loaded.toggles, FeatureToggles::default());
+        assert_eq!(loaded.annotation_tools, BTreeMap::new());
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn features_survive_sanitized() {
-        let off = FeatureSettings {
-            ocr_entry: false,
-            pin_entry: false,
-            magnifier: false,
-            toolbar_copy: false,
-            toolbar_save: false,
-            toolbar_pin: false,
-            cursor_hints: false,
-            last_region: false,
-            ocr_orientation: false,
-            inline_annotation: false,
-        };
-        assert_eq!(off.sanitized(), off);
+    fn feature_toggle_defaults_follow_the_selected_table() {
+        let defaults = FeatureToggles::default();
+        assert!(defaults.long_capture);
+        assert!(defaults.pin_enhance);
+        assert!(!defaults.pin_restore);
+        assert!(!defaults.export_beautify);
+        assert!(!defaults.capture_cursor);
+        assert!(defaults.history_tools);
+        assert!(defaults.clipboard_pin);
+        assert!(defaults.multi_monitor);
+        assert!(defaults.ocr_panel);
+        assert!(defaults.onboarding);
+        assert!(!defaults.filename_template);
     }
 
     #[test]
-    fn r24_capability_toggles_default_to_enabled() {
-        let defaults = FeatureSettings::default();
-        assert!(defaults.cursor_hints);
-        assert!(defaults.last_region);
-        assert!(defaults.ocr_orientation);
-        assert!(defaults.inline_annotation);
+    fn legacy_feature_settings_are_ignored_on_load() {
+        let parsed: StoredSettings = serde_json::from_str(
+            r#"{"features":{"ocrEntry":false,"pinEntry":false,"magnifier":false,"toolbarCopy":false,"toolbarSave":false,"toolbarPin":false,"cursorHints":false,"lastRegion":false,"ocrOrientation":false,"inlineAnnotation":false}}"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.toggles, FeatureToggles::default());
+        assert_eq!(parsed.annotation_tools, BTreeMap::new());
+        // 旧的 10 项开关不再进入持久化结构。
+        let serialized = serde_json::to_value(&parsed).unwrap();
+        assert!(serialized.get("features").is_none());
+        assert!(serialized.get("toggles").is_some());
+        assert!(serialized.get("annotationTools").is_some());
     }
 
     #[test]
-    fn with_key_applies_known_feature_keys_and_rejects_unknown() {
-        let base = FeatureSettings::default();
-        let off = base
-            .with_key("ocrEntry", false)
-            .expect("camelCase key applies");
-        assert!(!off.ocr_entry);
-        let snake = base
-            .with_key("toolbar_save", false)
-            .expect("snake_case key applies");
-        assert!(!snake.toolbar_save);
-        // R24 四个能力开关:camelCase 与 snake_case 都被白名单接受。
+    fn with_key_applies_known_toggle_keys_and_rejects_unknown() {
+        let base = FeatureToggles::default();
         let cases = [
             (
-                "cursorHints",
-                FeatureSettings {
-                    cursor_hints: false,
+                "longCapture",
+                false,
+                FeatureToggles {
+                    long_capture: false,
                     ..base
                 },
             ),
             (
-                "lastRegion",
-                FeatureSettings {
-                    last_region: false,
+                "pinEnhance",
+                false,
+                FeatureToggles {
+                    pin_enhance: false,
                     ..base
                 },
             ),
             (
-                "ocrOrientation",
-                FeatureSettings {
-                    ocr_orientation: false,
+                "pinRestore",
+                true,
+                FeatureToggles {
+                    pin_restore: true,
                     ..base
                 },
             ),
             (
-                "inlineAnnotation",
-                FeatureSettings {
-                    inline_annotation: false,
+                "exportBeautify",
+                true,
+                FeatureToggles {
+                    export_beautify: true,
+                    ..base
+                },
+            ),
+            (
+                "captureCursor",
+                true,
+                FeatureToggles {
+                    capture_cursor: true,
+                    ..base
+                },
+            ),
+            (
+                "historyTools",
+                false,
+                FeatureToggles {
+                    history_tools: false,
+                    ..base
+                },
+            ),
+            (
+                "clipboardPin",
+                false,
+                FeatureToggles {
+                    clipboard_pin: false,
+                    ..base
+                },
+            ),
+            (
+                "multiMonitor",
+                false,
+                FeatureToggles {
+                    multi_monitor: false,
+                    ..base
+                },
+            ),
+            (
+                "ocrPanel",
+                false,
+                FeatureToggles {
+                    ocr_panel: false,
+                    ..base
+                },
+            ),
+            (
+                "onboarding",
+                false,
+                FeatureToggles {
+                    onboarding: false,
+                    ..base
+                },
+            ),
+            (
+                "filenameTemplate",
+                true,
+                FeatureToggles {
+                    filename_template: true,
                     ..base
                 },
             ),
         ];
-        for (key, expected) in cases {
-            assert_eq!(base.with_key(key, false), Some(expected), "{key}");
+        for (key, enabled, expected) in cases {
+            assert_eq!(base.with_key(key, enabled), Some(expected), "{key}");
         }
-        let snake_hints = base
-            .with_key("cursor_hints", false)
-            .expect("snake_case key applies");
-        assert!(!snake_hints.cursor_hints);
-        let snake_annotation = base
-            .with_key("inline_annotation", false)
-            .expect("snake_case key applies");
-        assert!(!snake_annotation.inline_annotation);
-        assert_eq!(base.with_key("captureHotkey", false), None);
+        // snake_case 同样在白名单内(前端 camelCase,测试/脚本兼容)。
+        assert!(!base.with_key("long_capture", false).unwrap().long_capture);
+        assert!(!base.with_key("ocr_panel", false).unwrap().ocr_panel);
+        assert!(
+            base.with_key("filename_template", true)
+                .unwrap()
+                .filename_template
+        );
+        // 已移除的旧开关不再是合法键。
+        assert_eq!(base.with_key("ocrEntry", false), None);
+        assert_eq!(base.with_key("toolbarSave", false), None);
+        assert_eq!(base.with_key("cursorHints", false), None);
+        assert_eq!(base.with_key("lastRegion", false), None);
+        assert_eq!(base.with_key("inlineAnnotation", false), None);
         assert_eq!(base.with_key("", true), None);
+    }
+
+    #[test]
+    fn annotation_tool_defaults_follow_the_selected_table() {
+        let tools = default_annotation_tools();
+        assert_eq!(tools.len(), ANNOTATION_TOOL_IDS.len());
+        for id in [
+            "rect",
+            "ellipse",
+            "arrow",
+            "text",
+            "number",
+            "highlighter",
+            "mosaic",
+        ] {
+            assert_eq!(tools.get(id), Some(&true), "{id}");
+        }
+        for id in ["spotlight", "magnifier", "bubble", "sticker", "erase"] {
+            assert_eq!(tools.get(id), Some(&false), "{id}");
+        }
+        // 被合并的 line/pen/blur 不单列为开关。
+        for id in ["line", "pen", "blur"] {
+            assert!(!tools.contains_key(id), "{id}");
+        }
+    }
+
+    #[test]
+    fn sanitize_annotation_tools_keeps_known_overrides_and_drops_unknown() {
+        let stored = BTreeMap::from([
+            ("rect".to_string(), false),
+            ("spotlight".to_string(), true),
+            ("line".to_string(), true),
+            ("pen".to_string(), false),
+            ("blur".to_string(), false),
+            ("unknown".to_string(), true),
+        ]);
+        let tools = sanitize_annotation_tools(stored);
+        assert_eq!(tools.get("rect"), Some(&false));
+        assert_eq!(tools.get("spotlight"), Some(&true));
+        assert_eq!(tools.get("ellipse"), Some(&true));
+        for gone in ["line", "pen", "blur", "unknown"] {
+            assert!(!tools.contains_key(gone), "{gone}");
+        }
+        assert_eq!(tools.len(), ANNOTATION_TOOL_IDS.len());
+    }
+
+    #[test]
+    fn with_annotation_tool_sets_known_tool_and_rejects_unknown() {
+        let base = default_annotation_tools();
+        let next = with_annotation_tool(base.clone(), "spotlight", true).expect("known tool");
+        assert_eq!(next.get("spotlight"), Some(&true));
+        assert_eq!(base.get("spotlight"), Some(&false));
+        assert_eq!(with_annotation_tool(base.clone(), "line", true), None);
+        assert_eq!(with_annotation_tool(base, "", true), None);
+    }
+
+    #[test]
+    fn from_stored_fills_missing_annotation_tools_with_defaults() {
+        let state = SessionState::from_stored(StoredSettings {
+            annotation_tools: BTreeMap::from([("rect".to_string(), false)]),
+            ..StoredSettings::default()
+        });
+        let tools = lock(&state.annotation_tools).clone();
+        assert_eq!(tools.get("rect"), Some(&false));
+        assert_eq!(tools.get("erase"), Some(&false));
+        assert_eq!(tools.len(), ANNOTATION_TOOL_IDS.len());
+        assert!(lock(&state.toggles).long_capture);
     }
 
     #[test]
@@ -1078,7 +1302,8 @@ mod tests {
             autostart: merged,
             notice: None,
             annotation_defaults: AnnotationDefaults::default(),
-            features: FeatureSettings::default(),
+            toggles: FeatureToggles::default(),
+            annotation_tools: default_annotation_tools(),
             capture: CaptureSettings::default(),
             history: HistorySettings::default(),
             export: ExportSettings::default(),
@@ -1090,6 +1315,20 @@ mod tests {
         assert!(!ui.autostart.enabled);
         assert_eq!(ui.autostart.message, result.message);
         assert!(ui.autostart.message.as_deref().unwrap().contains("拒绝"));
+        // R19:设置页载荷同时携带功能开关与标注工具表。
+        let serialized = serde_json::to_value(&ui).unwrap();
+        assert_eq!(
+            serialized["toggles"]["longCapture"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            serialized["toggles"]["pinRestore"],
+            serde_json::json!(false)
+        );
+        assert_eq!(
+            serialized["annotationTools"]["spotlight"],
+            serde_json::json!(false)
+        );
     }
 
     #[test]

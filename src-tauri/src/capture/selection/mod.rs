@@ -152,9 +152,10 @@ pub struct AnnotationOverlay<'a> {
     pub text_input: bool,
 }
 
-/// 功能入口开关(默认全开);操作条/菜单动作集由此决定。
-/// `cursor_hints` 为 R24 光标提示开关:关闭后 `cursor_for` 固定十字,
-/// 交互(选择/确认/取消)保持不变。
+/// 选区壳能力集(默认全开);操作条/菜单动作集由此决定。
+/// R19:旧功能入口开关(取字/贴图/复制/保存/放大镜/光标提示/即时标注)已按
+/// 常开语义移除,运行时固定传入全开的 `default()`;字段作为壳/合成器的能力
+/// 契约保留,合成器测试可构造子集验证动作集裁剪。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FeatureFlags {
     pub ocr_entry: bool,

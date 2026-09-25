@@ -693,26 +693,6 @@ fn copy_color_feedback(text: &str, hex: &str) {
     }
 }
 
-/// 把设置里的功能入口开关映射为选区引擎 FeatureFlags(字段一一对应)。
-/// 每次截取启动时读取,关闭的入口下一次截取即消失。
-#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
-fn feature_flags_from(
-    features: crate::settings::FeatureSettings,
-) -> super::selection::FeatureFlags {
-    super::selection::FeatureFlags {
-        ocr_entry: features.ocr_entry,
-        pin_entry: features.pin_entry,
-        magnifier: features.magnifier,
-        toolbar_copy: features.toolbar_copy,
-        toolbar_save: features.toolbar_save,
-        toolbar_pin: features.toolbar_pin,
-        // R24:选区壳光标提示;关闭后引擎固定十字。
-        cursor_hints: features.cursor_hints,
-        // R21:选区即时标注;关闭后选区不出现标注工具。
-        inline_annotation: features.inline_annotation,
-    }
-}
-
 /// R21:选区即时标注的样式与文本输入能力。样式沿用 `AnnotationDefaults`
 /// (R8 记忆);三平台原生壳都具备文本输入通道(Windows WM_CHAR/IME、
 /// macOS NSTextInputClient、Linux X11 XIM+直输回退),工具条含文字工具。
@@ -739,7 +719,9 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
     let picked = tauri::async_runtime::spawn_blocking(move || {
         let (frame, monitor) = grab_pointer_screen(&handle)?;
         store_pixels(&handle, frame.clone(), monitor.clone(), generation)?;
-        let flags = feature_flags_from(crate::settings::current_features(&handle));
+        // R19:旧入口开关(取字/贴图/复制/保存/放大镜/光标提示/即时标注)已按
+        // 常开语义移除,选区壳固定使用全开能力集。
+        let flags = super::selection::FeatureFlags::default();
         let annotation_options = annotation_options_from(&handle);
         // 壳回调在同一线程内同步执行,经 thread-local 取回 AppHandle。
         SHELL_APP.with(|slot| *slot.borrow_mut() = Some(handle.clone()));
@@ -1044,8 +1026,8 @@ fn store_freeze(
         Ok(current.mode)
     })?;
     // R24:Web 覆盖层能力子集随冻结帧下发;前端忽略不认识的字段。
-    let capabilities =
-        ui::OverlayCapabilities::from_features(crate::settings::current_features(app));
+    // R19:旧入口开关移除后,可挂载浮层固定为全开能力集。
+    let capabilities = ui::OverlayCapabilities::hosted();
     let overlay = ui::overlay_payload(
         mode,
         &frame,
@@ -1898,35 +1880,6 @@ mod tests {
     };
     use crate::i18n;
 
-    #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
-    #[test]
-    fn feature_flags_mirror_stored_feature_settings() {
-        let all_on = feature_flags_from(crate::settings::FeatureSettings::default());
-        assert_eq!(all_on, super::super::selection::FeatureFlags::default());
-        let all_off = feature_flags_from(crate::settings::FeatureSettings {
-            ocr_entry: false,
-            pin_entry: false,
-            magnifier: false,
-            toolbar_copy: false,
-            toolbar_save: false,
-            toolbar_pin: false,
-            ..crate::settings::FeatureSettings::default()
-        });
-        assert!(!all_off.ocr_entry);
-        assert!(!all_off.pin_entry);
-        assert!(!all_off.magnifier);
-        assert!(!all_off.toolbar_copy);
-        assert!(!all_off.toolbar_save);
-        assert!(!all_off.toolbar_pin);
-        // R24:cursorHints 开关映射到选区引擎(关闭→固定十字)。
-        let hints_off = feature_flags_from(crate::settings::FeatureSettings {
-            cursor_hints: false,
-            ..crate::settings::FeatureSettings::default()
-        });
-        assert!(!hints_off.cursor_hints);
-        assert!(hints_off.ocr_entry && hints_off.toolbar_copy);
-    }
-
     fn hide_before_capture_steps(mode: CaptureMode, delay_ms: u64) -> Vec<SessionStep> {
         session_steps(!matches!(mode, CaptureMode::Fullscreen), delay_ms)
     }
@@ -2404,8 +2357,7 @@ mod tests {
     fn fixed_capture_opens_the_edit_page_and_ignores_saved_finish_settings() {
         let capture = crate::settings::CaptureSettings::default();
         assert_eq!(capture.delay_seconds, 0);
-        let hosted =
-            ui::OverlayCapabilities::from_features(crate::settings::FeatureSettings::default());
+        let hosted = ui::OverlayCapabilities::hosted();
         assert!(hosted.workspace_actions);
         assert_eq!(workspace_route(true), WorkspaceRoute::Preview);
         assert_eq!(

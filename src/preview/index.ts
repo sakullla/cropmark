@@ -166,10 +166,6 @@ export function mountPreview(root: HTMLElement): () => void {
   // R21:选区即时标注随帧带入时,提示条以「携带说明 + 复制状态」合并显示;
   // 二者共用同一元素,分两次写入会互相覆盖(review P3)。
   let carriedNoteSource: { key: CatalogKey; params?: Record<string, string | number> } | null = null;
-  // 功能入口开关(设置页 features.ocrEntry / features.pinEntry):
-  // 关闭时取字按钮隐藏、O 键停用;关闭贴图后隐藏预览工具条贴图按钮。
-  let ocrEntryEnabled = true;
-  let pinEntryEnabled = true;
   // 贴图再标注(R9):非空表示本会话由贴图进入,确认后写回该 label。
   let writebackLabel: string | null = null;
   let saveQuality: ExportQuality = "high";
@@ -266,7 +262,7 @@ export function mountPreview(root: HTMLElement): () => void {
 
   const syncWritebackUi = (): void => {
     updatePinBtn.hidden = writebackLabel === null;
-    pinBtn.hidden = !pinEntryEnabled || writebackLabel !== null;
+    pinBtn.hidden = writebackLabel !== null;
   };
 
   const syncSaveQuality = (): void => {
@@ -317,9 +313,6 @@ export function mountPreview(root: HTMLElement): () => void {
   });
 
   const activateOcr = (): void => {
-    if (!ocrEntryEnabled) {
-      return;
-    }
     editor?.commitText();
     editor?.deactivateTool();
     editor?.clearSelection();
@@ -603,9 +596,7 @@ export function mountPreview(root: HTMLElement): () => void {
     } else if (button.dataset.action === "save") {
       void save();
     } else if (button.dataset.action === "pin") {
-      if (pinEntryEnabled) {
-        void pin();
-      }
+      void pin();
     } else if (button.dataset.action === "update-pin") {
       void updatePin();
     } else if (button.dataset.action === "close") {
@@ -637,9 +628,7 @@ export function mountPreview(root: HTMLElement): () => void {
   pinBtn.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
-    if (pinEntryEnabled) {
-      void pin();
-    }
+    void pin();
   });
 
   const closeBtn = root.querySelector(".preview-close");
@@ -706,7 +695,7 @@ export function mountPreview(root: HTMLElement): () => void {
       return;
     }
     const key = event.key.toLowerCase();
-    if (ocrEntryEnabled && key === "o") {
+    if (key === "o") {
       event.preventDefault();
       activateOcr();
       return;
@@ -721,31 +710,9 @@ export function mountPreview(root: HTMLElement): () => void {
     }
   });
 
-  // 重读功能入口开关并同步预览 UI:ocrEntryEnabled 同时驱动工具条按钮显隐、
-  // O 键映射与当前取字工具的回退;pinEntryEnabled 驱动贴图按钮显隐;
-  // 每次 reload 都要重读,不能只在首载做一次。
-  const syncFeatureFlags = (settings?: { features?: { ocrEntry?: boolean; pinEntry?: boolean } }): void => {
-    ocrEntryEnabled = settings?.features?.ocrEntry !== false;
-    ocrBtn.hidden = !ocrEntryEnabled;
-    if (!ocrEntryEnabled && ocrActive) {
-      ocrActive = false;
-      ocrBtn.classList.remove("active");
-      editor?.setTool("arrow");
-      copyAllBtn.hidden = true;
-      redraw();
-    }
-    pinEntryEnabled = settings?.features?.pinEntry !== false;
-    syncWritebackUi();
-  };
-  const reloadFeatureFlags = (): void => {
-    void invoke<{ features?: { ocrEntry?: boolean; pinEntry?: boolean } }>("get_ui_settings")
-      .then((settings) => {
-        syncFeatureFlags(settings);
-      })
-      .catch(() => undefined);
-  };
-  // 跨会话记忆:加载时读后端保存的上次样式(读写失败均静默回退当前值);
-  // 同时读取功能入口开关,关闭取字后隐藏预览工具条按钮并停用 O 键。
+  // 跨会话记忆:加载时读后端保存的上次样式与质量档位(读写失败均静默回退
+  // 当前值)。R19:旧取字/贴图入口开关按常开语义移除,工具条按钮与 O 键
+  // 固定可用,不再随设置显隐。
   const loadStyleDefaults = (): void => {
     void invoke<{
       annotationDefaults?: {
@@ -754,11 +721,9 @@ export function mountPreview(root: HTMLElement): () => void {
         textSize?: number | null;
         numberStart?: number;
       };
-      features?: { ocrEntry?: boolean; pinEntry?: boolean };
       export?: { quality?: ExportQuality };
     }>("get_ui_settings")
       .then((settings) => {
-        syncFeatureFlags(settings);
         const quality = settings?.export?.quality;
         if (quality === "high" || quality === "medium" || quality === "low") {
           saveQuality = quality;
@@ -886,9 +851,8 @@ export function mountPreview(root: HTMLElement): () => void {
     editor?.cancelText();
     // 携带说明随新帧重算(image.onload);先清空,避免加载失败时残留旧前缀。
     carriedNoteSource = null;
-    // 每次新帧重读功能入口开关:设置页关闭取字后,复用的预览窗口在下一次
-    // 截取时也要隐藏按钮/停用 O 键;样式默认只在首次加载,不在 reload 重置。
-    reloadFeatureFlags();
+    // R19:旧取字/贴图入口开关按常开语义移除;样式默认只在首次加载,
+    // 不在 reload 重置。
     loadPreview();
   });
   loadPreview();

@@ -30,10 +30,10 @@ pub fn last_region_label(has_region: bool) -> String {
     })
 }
 
-/// R24:"上次区域"项可用 = 功能开关开启且有记录。关闭开关只禁用菜单项,
-/// 不删除既有记录,重新开启后立即可用。
-fn last_region_enabled(features: settings::FeatureSettings, has_region: bool) -> bool {
-    features.last_region && has_region
+/// "上次区域"项可用 = 有记录。R19:旧 lastRegion 开关按常开语义移除,
+/// 无记录时只禁用菜单项并以标签提示,记录保留不受影响。
+fn last_region_enabled(has_region: bool) -> bool {
+    has_region
 }
 
 /// R16:托盘构建失败(Err 或构建期 panic)时的用户可见提示。以安装路径的
@@ -182,13 +182,12 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         true,
         None::<&str>,
     )?;
-    let features = settings::current_features(app);
     let has_last_region = crate::settings::current_last_region(app).is_some();
     let last_region = MenuItem::with_id(
         app,
         LAST_REGION_ID,
         last_region_label(has_last_region),
-        last_region_enabled(features, has_last_region),
+        last_region_enabled(has_last_region),
         None::<&str>,
     )?;
     let window = MenuItem::with_id(
@@ -356,25 +355,11 @@ mod tests {
     }
 
     #[test]
-    fn last_region_item_requires_feature_on_and_record() {
-        let on = settings::FeatureSettings::default();
-        // 开关开启且已有记录:可用。
-        assert!(last_region_enabled(on, true));
+    fn last_region_item_requires_a_record_only() {
+        // 有记录:可用。
+        assert!(last_region_enabled(true));
         // 无记录:禁用(标签提示暂无记录)。
-        assert!(!last_region_enabled(on, false));
-        // R24:关闭 lastRegion 后即使有记录也禁用;既有记录保留,重开即恢复可用。
-        let off = settings::FeatureSettings {
-            last_region: false,
-            ..settings::FeatureSettings::default()
-        };
-        assert!(!last_region_enabled(off, true));
-        assert!(last_region_enabled(
-            settings::FeatureSettings {
-                last_region: true,
-                ..settings::FeatureSettings::default()
-            },
-            true
-        ));
+        assert!(!last_region_enabled(false));
     }
 
     #[test]

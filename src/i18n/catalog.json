@@ -656,8 +656,12 @@
     "en": "Annotation style applied"
   },
   "notice.features_applied": {
-    "zh-CN": "功能入口已应用",
-    "en": "Feature entries applied"
+    "zh-CN": "功能开关已应用",
+    "en": "Feature switches applied"
+  },
+  "notice.annotation_tools_applied": {
+    "zh-CN": "标注工具设置已应用",
+    "en": "Annotation tool settings applied"
   },
   "notice.capture_applied": {
     "zh-CN": "截图设置已应用",
@@ -690,6 +694,10 @@
   "error.feature.unknown": {
     "zh-CN": "未知的功能开关：{key}",
     "en": "Unknown feature switch: {key}"
+  },
+  "error.annotation_tool.unknown": {
+    "zh-CN": "未知的标注工具：{tool}",
+    "en": "Unknown annotation tool: {tool}"
   },
   "language.system": {
     "zh-CN": "跟随系统",
@@ -835,97 +843,185 @@
     "zh-CN": "登录时运行",
     "en": "Run at login"
   },
-  "settings.features.title": {
-    "zh-CN": "功能入口",
-    "en": "Feature entries"
+  "settings.group.capture": {
+    "zh-CN": "采集",
+    "en": "Capture"
   },
-  "settings.features.hint": {
-    "zh-CN": "关闭的入口即刻生效，从下一次截取起消失；截取热键与复制/保存能力始终保留。",
-    "en": "Disabled entries take effect immediately and disappear from the next capture; capture hotkeys and copy/save stay available."
+  "settings.group.output": {
+    "zh-CN": "记录与输出",
+    "en": "Records & output"
   },
-  "settings.feature.ocr_label": {
-    "zh-CN": "取字",
+  "settings.group.general": {
+    "zh-CN": "通用",
+    "en": "General"
+  },
+  "settings.section.toggles": {
+    "zh-CN": "功能开关",
+    "en": "Feature switches"
+  },
+  "settings.section.toggles_hint": {
+    "zh-CN": "逐项控制功能入口；关闭只停用入口与新增行为，已有数据与已创建标注保留，关闭状态跨重启保持。",
+    "en": "Each entry can be turned off independently; disabling only hides the entry and stops new behavior, existing data and annotations are kept, and the state persists across restarts."
+  },
+  "settings.section.features": {
+    "zh-CN": "功能",
+    "en": "Features"
+  },
+  "settings.section.tools": {
+    "zh-CN": "标注工具",
+    "en": "Annotation tools"
+  },
+  "settings.section.tools_hint": {
+    "zh-CN": "只控制工具栏与更多面板中的创建入口；撤销/重做、删除、复制/保存/贴图/取字与已创建标注始终可用。",
+    "en": "Controls the creation entries in the toolbar and more panel only; undo/redo, delete, copy/save/pin/text and existing annotations always stay available."
+  },
+  "settings.section.naming": {
+    "zh-CN": "保存与命名",
+    "en": "Saving & naming"
+  },
+  "settings.toggle.long_capture_label": {
+    "zh-CN": "长截图",
+    "en": "Long capture"
+  },
+  "settings.toggle.long_capture_hint": {
+    "zh-CN": "采集入口出现「长截图」：框选后手动滚动并拼接为完整长图；关闭后入口不出现。",
+    "en": "Adds Long capture to the capture entries: select a region, scroll manually, and get one stitched image. When off the entry is hidden."
+  },
+  "settings.toggle.pin_enhance_label": {
+    "zh-CN": "贴图增强",
+    "en": "Pin enhancements"
+  },
+  "settings.toggle.pin_enhance_hint": {
+    "zh-CN": "贴图支持水平/垂直翻转、点击穿透与编组联动；关闭后保留基础贴图与已有贴图。",
+    "en": "Adds horizontal/vertical flip, click-through, and grouping to pins; when off, basic pins and existing pins remain."
+  },
+  "settings.toggle.pin_restore_label": {
+    "zh-CN": "重启后恢复贴图",
+    "en": "Restore pins on restart"
+  },
+  "settings.toggle.pin_restore_hint": {
+    "zh-CN": "重启后恢复仍存在的贴图及其位置、尺寸与变换；已关闭的贴图不会重现。",
+    "en": "Restores the pins still open, including position, size, and transforms; pins you closed do not reappear."
+  },
+  "settings.toggle.export_beautify_label": {
+    "zh-CN": "导出美化",
+    "en": "Export beautify"
+  },
+  "settings.toggle.export_beautify_hint": {
+    "zh-CN": "预览可为复制与保存输出添加背景、留白、圆角与阴影；关闭后输出保持原始图像。",
+    "en": "Adds background, padding, rounded corners, and shadow to copied and saved output in the preview; when off, output stays the original image."
+  },
+  "settings.toggle.capture_cursor_label": {
+    "zh-CN": "包含鼠标指针",
+    "en": "Include mouse cursor"
+  },
+  "settings.toggle.capture_cursor_hint": {
+    "zh-CN": "采集瞬间把系统鼠标指针绘制进结果，仅当指针位于采集范围内；默认关闭。",
+    "en": "Draws the system pointer into the capture, only when it is inside the captured area; off by default."
+  },
+  "settings.toggle.history_tools_label": {
+    "zh-CN": "历史检索与收藏",
+    "en": "History search & favorites"
+  },
+  "settings.toggle.history_tools_hint": {
+    "zh-CN": "历史视图支持按时间/模式筛选、收藏置顶与备注检索；关闭后保持现有列表行为，数据保留。",
+    "en": "Adds time/mode filters, favorites on top, and note search to history; when off the existing list behavior stays and data is kept."
+  },
+  "settings.toggle.clipboard_pin_label": {
+    "zh-CN": "剪贴板贴图",
+    "en": "Pin from clipboard"
+  },
+  "settings.toggle.clipboard_pin_hint": {
+    "zh-CN": "托盘可从剪贴板创建图片、文本或色块贴图，并可绑定默认未设置的全局快捷键；关闭后入口与快捷键不生效。",
+    "en": "Creates pins from clipboard images, text, or color blocks in the tray, with an unbound global shortcut by default; when off both entry and shortcut stop working."
+  },
+  "settings.toggle.multi_monitor_label": {
+    "zh-CN": "多屏全屏采集",
+    "en": "Multi-monitor fullscreen"
+  },
+  "settings.toggle.multi_monitor_hint": {
+    "zh-CN": "全屏采集可选择指定显示器或全部显示器拼接；关闭后只抓指针所在屏（现状）。",
+    "en": "Fullscreen capture can target a monitor or stitch all monitors; when off it keeps capturing the pointer's monitor only."
+  },
+  "settings.toggle.ocr_panel_label": {
+    "zh-CN": "OCR 结果面板",
+    "en": "OCR result panel"
+  },
+  "settings.toggle.ocr_panel_hint": {
+    "zh-CN": "识别后显示完整文本面板，可搜索关键词并复制片段；关闭后识别与按点/按框/全部复制不变。",
+    "en": "Shows the full-text panel after recognition with keyword search and fragment copy; when off, recognition and point/rect/all copy stay unchanged."
+  },
+  "settings.toggle.onboarding_label": {
+    "zh-CN": "首次使用引导",
+    "en": "First-run guide"
+  },
+  "settings.toggle.onboarding_hint": {
+    "zh-CN": "全新配置首次启动自动显示一次引导，设置中可随时重开；关闭后不再自动出现。",
+    "en": "Shows the guide once on a fresh profile; it can be reopened from settings at any time. When off it never opens automatically."
+  },
+  "settings.toggle.filename_template_label": {
+    "zh-CN": "保存文件名模板",
+    "en": "Save filename template"
+  },
+  "settings.toggle.filename_template_hint": {
+    "zh-CN": "保存对话框默认文件名按模板生成，非法字符自动替换，空模板回退 Cropmark 时间戳；关闭后使用现有默认命名。",
+    "en": "Builds the default save filename from a template, replaces invalid characters, and falls back to the Cropmark timestamp when empty; when off the existing default naming is used."
+  },
+  "settings.tool.rect": {
+    "zh-CN": "矩形",
+    "en": "Rectangle"
+  },
+  "settings.tool.ellipse": {
+    "zh-CN": "椭圆",
+    "en": "Ellipse"
+  },
+  "settings.tool.arrow": {
+    "zh-CN": "箭头",
+    "en": "Arrow"
+  },
+  "settings.tool.text": {
+    "zh-CN": "文本",
     "en": "Text"
   },
-  "settings.feature.ocr_hint": {
-    "zh-CN": "关闭后选区菜单与预览工具条不再显示取字，O 键停用。",
-    "en": "When off, the selection menu and preview toolbar hide text recognition, and the O key is disabled."
+  "settings.tool.number": {
+    "zh-CN": "序号",
+    "en": "Number"
   },
-  "settings.feature.pin_label": {
-    "zh-CN": "贴图",
-    "en": "Pin"
+  "settings.tool.highlighter": {
+    "zh-CN": "荧光笔",
+    "en": "Highlighter"
   },
-  "settings.feature.pin_hint": {
-    "zh-CN": "关闭后选区菜单不再显示贴图入口。",
-    "en": "When off, the selection menu no longer shows the pin entry."
+  "settings.tool.mosaic": {
+    "zh-CN": "马赛克",
+    "en": "Mosaic"
   },
-  "settings.feature.magnifier_label": {
-    "zh-CN": "放大镜",
-    "en": "Magnifier"
+  "settings.tool.spotlight": {
+    "zh-CN": "聚光灯",
+    "en": "Spotlight"
   },
-  "settings.feature.magnifier_hint": {
-    "zh-CN": "选区时跟随指针的像素放大镜；关闭后选区内 C 键取色同时停用。",
-    "en": "Pixel magnifier that follows the pointer during selection; turning it off also disables color picking with the C key."
+  "settings.tool.magnifier": {
+    "zh-CN": "标注放大镜",
+    "en": "Annotation magnifier"
   },
-  "settings.feature.toolbar_copy_label": {
-    "zh-CN": "操作条·复制",
-    "en": "Toolbar · Copy"
+  "settings.tool.bubble": {
+    "zh-CN": "对话气泡",
+    "en": "Speech bubble"
   },
-  "settings.feature.toolbar_copy_hint": {
-    "zh-CN": "选区操作条上的复制按钮。",
-    "en": "The copy button on the selection toolbar."
+  "settings.tool.sticker": {
+    "zh-CN": "贴纸",
+    "en": "Sticker"
   },
-  "settings.feature.toolbar_save_label": {
-    "zh-CN": "操作条·保存",
-    "en": "Toolbar · Save"
-  },
-  "settings.feature.toolbar_save_hint": {
-    "zh-CN": "选区操作条上的保存按钮。",
-    "en": "The save button on the selection toolbar."
-  },
-  "settings.feature.toolbar_pin_label": {
-    "zh-CN": "操作条·贴图",
-    "en": "Toolbar · Pin"
-  },
-  "settings.feature.toolbar_pin_hint": {
-    "zh-CN": "选区操作条上的贴图按钮。",
-    "en": "The pin button on the selection toolbar."
-  },
-  "settings.feature.cursor_hints_label": {
-    "zh-CN": "光标提示",
-    "en": "Cursor hints"
-  },
-  "settings.feature.cursor_hints_hint": {
-    "zh-CN": "选区时按位置切换移动/缩放光标；关闭后固定十字。",
-    "en": "Shows move/resize cursors by position during selection; when off the cursor stays a crosshair."
-  },
-  "settings.feature.last_region_label": {
-    "zh-CN": "上次区域",
-    "en": "Last region"
-  },
-  "settings.feature.last_region_hint": {
-    "zh-CN": "托盘“上次区域”直取；关闭后该项禁用且不再记录新区域，已有记录保留。",
-    "en": "Tray shortcut to capture the last region; when off the item is disabled and new regions are no longer recorded, while the existing record stays."
-  },
-  "settings.feature.ocr_orientation_label": {
-    "zh-CN": "取字方向纠正",
-    "en": "Text orientation"
-  },
-  "settings.feature.ocr_orientation_hint": {
-    "zh-CN": "倒置或旋转的截图也能识别；关闭后仅按正置识别。",
-    "en": "Recognizes upside-down or rotated screenshots; when off only upright images are recognized."
-  },
-  "settings.feature.inline_annotation_label": {
-    "zh-CN": "选区即时标注",
-    "en": "Inline annotation"
-  },
-  "settings.feature.inline_annotation_hint": {
-    "zh-CN": "选定区域后可直接标注；关闭后选区不显示标注工具，标注仍可进入预览编辑器。",
-    "en": "Annotate directly after selecting a region; when off the selection shows no annotation tools and annotation still opens in the preview editor."
+  "settings.tool.erase": {
+    "zh-CN": "内容擦除",
+    "en": "Erase content"
   },
   "settings.about.title": {
     "zh-CN": "关于",
     "en": "About"
+  },
+  "settings.about.version_label": {
+    "zh-CN": "版本",
+    "en": "Version"
   },
   "settings.about.hint": {
     "zh-CN": "独立系统截图工具，界面与托盘只使用 Cropmark 名称与图标。",

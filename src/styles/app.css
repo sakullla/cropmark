@@ -297,6 +297,31 @@ h1 {
   color: var(--muted);
 }
 
+/* R19:一级分组内的小节用发丝线分隔,分组标题(h1)与节标题(h2)形成层级,
+   不再以多个同级卡片平铺。 */
+.block + .block {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.block h2 {
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.35;
+  color: var(--ink);
+}
+
+.subheading {
+  margin: 16px 0 0;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
 .hint {
   margin: 0;
   color: var(--muted);
@@ -405,6 +430,26 @@ h1 {
 
 .feature-row .hint {
   margin-top: 2px;
+}
+
+/* R19:标注工具逐项开关数量较多,两列网格保持开关与名称可读。 */
+.tool-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+  margin-top: 10px;
+}
+
+.tool-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.tool-row .label {
+  font-size: 14px;
+  font-weight: 600;
 }
 
 .setting-row {
@@ -538,6 +583,14 @@ h1 {
   margin: 4px 0 6px;
   font-size: 18px;
   font-weight: 700;
+}
+
+.about-version {
+  flex: 0 0 auto;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .card.about .mark {

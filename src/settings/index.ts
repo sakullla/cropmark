@@ -1,3 +1,4 @@
+import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { autostartHelp, hotkeyErrorText } from "../errors";
@@ -23,18 +24,24 @@ export interface AutostartState {
   message: string | null;
 }
 
-export interface FeatureSettings {
-  ocrEntry: boolean;
-  pinEntry: boolean;
-  magnifier: boolean;
-  toolbarCopy: boolean;
-  toolbarSave: boolean;
-  toolbarPin: boolean;
-  cursorHints: boolean;
-  lastRegion: boolean;
-  ocrOrientation: boolean;
-  inlineAnnotation: boolean;
+/// R19:功能开关(与 Rust `FeatureToggles` 字段一一对应);默认值由后端给出,
+/// 前端只渲染并回写,不自行决定默认。
+export interface FeatureToggles {
+  longCapture: boolean;
+  pinEnhance: boolean;
+  pinRestore: boolean;
+  exportBeautify: boolean;
+  captureCursor: boolean;
+  historyTools: boolean;
+  clipboardPin: boolean;
+  multiMonitor: boolean;
+  ocrPanel: boolean;
+  onboarding: boolean;
+  filenameTemplate: boolean;
 }
+
+/// R19:标注工具逐项开关(工具 id → 是否启用);被合并工具不在表中。
+export type AnnotationToolToggles = Record<string, boolean>;
 
 export interface CaptureSettings {
   delaySeconds: number;
@@ -57,7 +64,8 @@ export interface UiSettings {
   hotkeyErrors: HotkeyErrors;
   autostart: AutostartState;
   notice: string | null;
-  features: FeatureSettings;
+  toggles: FeatureToggles;
+  annotationTools: AnnotationToolToggles;
   capture: CaptureSettings;
   history: HistorySettings;
   tray: TrayState;
@@ -65,59 +73,86 @@ export interface UiSettings {
   resolvedLanguage: string;
 }
 
-type FeatureKey = keyof FeatureSettings;
+type ToggleKey = keyof FeatureToggles;
 
-const FEATURE_ITEMS: Array<{ key: FeatureKey; labelKey: CatalogKey; hintKey: CatalogKey }> = [
-  {
-    key: "ocrEntry",
-    labelKey: "settings.feature.ocr_label",
-    hintKey: "settings.feature.ocr_hint",
+const TOGGLE_ITEMS: Record<ToggleKey, { labelKey: CatalogKey; hintKey: CatalogKey }> = {
+  longCapture: {
+    labelKey: "settings.toggle.long_capture_label",
+    hintKey: "settings.toggle.long_capture_hint",
   },
-  {
-    key: "pinEntry",
-    labelKey: "settings.feature.pin_label",
-    hintKey: "settings.feature.pin_hint",
+  pinEnhance: {
+    labelKey: "settings.toggle.pin_enhance_label",
+    hintKey: "settings.toggle.pin_enhance_hint",
   },
-  {
-    key: "magnifier",
-    labelKey: "settings.feature.magnifier_label",
-    hintKey: "settings.feature.magnifier_hint",
+  pinRestore: {
+    labelKey: "settings.toggle.pin_restore_label",
+    hintKey: "settings.toggle.pin_restore_hint",
   },
-  {
-    key: "toolbarCopy",
-    labelKey: "settings.feature.toolbar_copy_label",
-    hintKey: "settings.feature.toolbar_copy_hint",
+  exportBeautify: {
+    labelKey: "settings.toggle.export_beautify_label",
+    hintKey: "settings.toggle.export_beautify_hint",
   },
-  {
-    key: "toolbarSave",
-    labelKey: "settings.feature.toolbar_save_label",
-    hintKey: "settings.feature.toolbar_save_hint",
+  captureCursor: {
+    labelKey: "settings.toggle.capture_cursor_label",
+    hintKey: "settings.toggle.capture_cursor_hint",
   },
-  {
-    key: "toolbarPin",
-    labelKey: "settings.feature.toolbar_pin_label",
-    hintKey: "settings.feature.toolbar_pin_hint",
+  historyTools: {
+    labelKey: "settings.toggle.history_tools_label",
+    hintKey: "settings.toggle.history_tools_hint",
   },
-  {
-    key: "cursorHints",
-    labelKey: "settings.feature.cursor_hints_label",
-    hintKey: "settings.feature.cursor_hints_hint",
+  clipboardPin: {
+    labelKey: "settings.toggle.clipboard_pin_label",
+    hintKey: "settings.toggle.clipboard_pin_hint",
   },
-  {
-    key: "lastRegion",
-    labelKey: "settings.feature.last_region_label",
-    hintKey: "settings.feature.last_region_hint",
+  multiMonitor: {
+    labelKey: "settings.toggle.multi_monitor_label",
+    hintKey: "settings.toggle.multi_monitor_hint",
   },
-  {
-    key: "ocrOrientation",
-    labelKey: "settings.feature.ocr_orientation_label",
-    hintKey: "settings.feature.ocr_orientation_hint",
+  ocrPanel: {
+    labelKey: "settings.toggle.ocr_panel_label",
+    hintKey: "settings.toggle.ocr_panel_hint",
   },
-  {
-    key: "inlineAnnotation",
-    labelKey: "settings.feature.inline_annotation_label",
-    hintKey: "settings.feature.inline_annotation_hint",
+  onboarding: {
+    labelKey: "settings.toggle.onboarding_label",
+    hintKey: "settings.toggle.onboarding_hint",
   },
+  filenameTemplate: {
+    labelKey: "settings.toggle.filename_template_label",
+    hintKey: "settings.toggle.filename_template_hint",
+  },
+};
+
+// R19:新增功能开关集中在「通用 → 功能开关 → 功能」;采集组只放包含鼠标指针,
+// 记录与输出组只放保存文件名模板(与 R19 的归属一致)。
+const GENERAL_TOGGLES: ToggleKey[] = [
+  "longCapture",
+  "pinEnhance",
+  "pinRestore",
+  "exportBeautify",
+  "historyTools",
+  "clipboardPin",
+  "multiMonitor",
+  "ocrPanel",
+  "onboarding",
+];
+
+const CAPTURE_TOGGLES: ToggleKey[] = ["captureCursor"];
+const OUTPUT_TOGGLES: ToggleKey[] = ["filenameTemplate"];
+
+// R19:标注工具展示顺序;后端只回传开关表,顺序在这里固定。
+const TOOL_ITEMS: Array<{ id: string; labelKey: CatalogKey }> = [
+  { id: "rect", labelKey: "settings.tool.rect" },
+  { id: "ellipse", labelKey: "settings.tool.ellipse" },
+  { id: "arrow", labelKey: "settings.tool.arrow" },
+  { id: "text", labelKey: "settings.tool.text" },
+  { id: "number", labelKey: "settings.tool.number" },
+  { id: "highlighter", labelKey: "settings.tool.highlighter" },
+  { id: "mosaic", labelKey: "settings.tool.mosaic" },
+  { id: "spotlight", labelKey: "settings.tool.spotlight" },
+  { id: "magnifier", labelKey: "settings.tool.magnifier" },
+  { id: "bubble", labelKey: "settings.tool.bubble" },
+  { id: "sticker", labelKey: "settings.tool.sticker" },
+  { id: "erase", labelKey: "settings.tool.erase" },
 ];
 
 const MODE_LABEL_KEY: Record<CaptureMode, CatalogKey> = {
@@ -147,87 +182,111 @@ export function mountSettings(root: HTMLElement): () => void {
       <main class="content">
         <p class="notice" role="alert" hidden></p>
         <p class="notice tray-notice" data-tray-notice role="status" hidden></p>
-        <section class="card" aria-labelledby="hotkeys-title">
-          <h1 id="hotkeys-title" data-i18n="settings.hotkeys.title">热键</h1>
-          <p class="hint" data-i18n="settings.hotkeys.hint">点击热键按钮后按下新组合，Esc 取消；改动立即生效。</p>
-          <div class="rows" data-hotkeys></div>
+        <section class="card group" aria-labelledby="group-capture-title">
+          <h1 id="group-capture-title" data-i18n="settings.group.capture">采集</h1>
+          <section class="block" aria-labelledby="hotkeys-title">
+            <h2 id="hotkeys-title" data-i18n="settings.hotkeys.title">热键</h2>
+            <p class="hint" data-i18n="settings.hotkeys.hint">点击热键按钮后按下新组合，Esc 取消；改动立即生效。</p>
+            <div class="rows" data-hotkeys></div>
+          </section>
+          <section class="block" aria-labelledby="capture-title">
+            <h2 id="capture-title" data-i18n="settings.capture.title">截图</h2>
+            <div class="setting-row">
+              <div>
+                <div class="label" id="delay-label" data-i18n="settings.capture.delay_label">延时秒数</div>
+                <p class="hint" data-i18n="settings.capture.delay_hint">0–60 秒，热键与托盘截取按此倒计时；0 为立即截取。</p>
+              </div>
+              <input type="number" class="number-input" data-capture="delay" min="0" max="60" step="1" inputmode="numeric" aria-labelledby="delay-label" />
+            </div>
+            <p class="error" data-capture-error role="alert" hidden></p>
+            <div class="rows feature-rows" data-toggles="capture"></div>
+          </section>
         </section>
-        <section class="card" aria-labelledby="capture-title">
-          <h1 id="capture-title" data-i18n="settings.capture.title">截图</h1>
-          <div class="setting-row">
-            <div>
-              <div class="label" id="delay-label" data-i18n="settings.capture.delay_label">延时秒数</div>
-              <p class="hint" data-i18n="settings.capture.delay_hint">0–60 秒，热键与托盘截取按此倒计时；0 为立即截取。</p>
+        <section class="card group" aria-labelledby="group-output-title">
+          <h1 id="group-output-title" data-i18n="settings.group.output">记录与输出</h1>
+          <section class="block" aria-labelledby="history-title">
+            <h2 id="history-title" data-i18n="settings.history.title">历史记录</h2>
+            <p class="hint" data-i18n="settings.history.hint">截图完成后在本机保留最近记录，可重新复制、贴图或删除；数据只保存在本机。</p>
+            <div class="setting-row">
+              <div>
+                <div class="label" id="history-enabled-label" data-i18n="settings.history.enabled_label">保留截图历史</div>
+                <p class="hint" data-i18n="settings.history.enabled_hint">关闭后不再新增记录；已有记录保留，可在历史窗口清空。</p>
+              </div>
+              <button type="button" class="switch" data-history="enabled" role="switch" aria-checked="true" aria-labelledby="history-enabled-label">
+                <span class="knob"></span>
+              </button>
             </div>
-            <input type="number" class="number-input" data-capture="delay" min="0" max="60" step="1" inputmode="numeric" aria-labelledby="delay-label" />
-          </div>
-          <p class="error" data-capture-error role="alert" hidden></p>
+            <div class="setting-row">
+              <div>
+                <div class="label" id="history-limit-label" data-i18n="settings.history.limit_label">记录上限</div>
+                <p class="hint" data-i18n="settings.history.limit_hint">5–200 条，超出上限时自动淘汰最旧记录。</p>
+              </div>
+              <input type="number" class="number-input" data-history="limit" min="5" max="200" step="1" inputmode="numeric" aria-labelledby="history-limit-label" />
+            </div>
+            <p class="error" data-history-error role="alert" hidden></p>
+            <div class="setting-row">
+              <div>
+                <div class="label" id="history-open-label" data-i18n="settings.history.open_label">浏览历史</div>
+                <p class="hint" data-i18n="settings.history.open_hint">打开历史窗口，按时间查看缩略图并重新复制、贴图或删除。</p>
+              </div>
+              <button type="button" class="choice" data-action="open-history" aria-labelledby="history-open-label" data-i18n="settings.history.open_button">打开历史记录</button>
+            </div>
+          </section>
+          <section class="block" aria-labelledby="naming-title">
+            <h2 id="naming-title" data-i18n="settings.section.naming">保存与命名</h2>
+            <div class="rows feature-rows" data-toggles="output"></div>
+          </section>
         </section>
-        <section class="card" aria-labelledby="history-title">
-          <h1 id="history-title" data-i18n="settings.history.title">历史记录</h1>
-          <p class="hint" data-i18n="settings.history.hint">截图完成后在本机保留最近记录，可重新复制、贴图或删除；数据只保存在本机。</p>
-          <div class="setting-row">
-            <div>
-              <div class="label" id="history-enabled-label" data-i18n="settings.history.enabled_label">保留截图历史</div>
-              <p class="hint" data-i18n="settings.history.enabled_hint">关闭后不再新增记录；已有记录保留，可在历史窗口清空。</p>
+        <section class="card group" aria-labelledby="group-general-title">
+          <h1 id="group-general-title" data-i18n="settings.group.general">通用</h1>
+          <section class="block" aria-labelledby="language-title">
+            <h2 id="language-title" data-i18n="settings.language.title">语言</h2>
+            <p class="hint" data-i18n="settings.language.hint">切换后界面立即更新，无需重启；选择会跨会话保留。</p>
+            <div class="setting-row">
+              <div>
+                <div class="label" id="language-label" data-i18n="settings.language.label">界面语言</div>
+              </div>
+              <div class="choices" data-language role="radiogroup" aria-labelledby="language-label">
+                ${LANGUAGE_OPTIONS.map(
+                  ({ value, labelKey }) =>
+                    `<button type="button" class="choice" role="radio" data-language-value="${value}" aria-checked="false" data-i18n="${labelKey}">${t(labelKey)}</button>`,
+                ).join("")}
+              </div>
             </div>
-            <button type="button" class="switch" data-history="enabled" role="switch" aria-checked="true" aria-labelledby="history-enabled-label">
-              <span class="knob"></span>
-            </button>
-          </div>
-          <div class="setting-row">
-            <div>
-              <div class="label" id="history-limit-label" data-i18n="settings.history.limit_label">记录上限</div>
-              <p class="hint" data-i18n="settings.history.limit_hint">5–200 条，超出上限时自动淘汰最旧记录。</p>
+          </section>
+          <section class="block" aria-labelledby="autostart-title">
+            <h2 id="autostart-title" data-i18n="settings.autostart.title">开机启动</h2>
+            <div class="autostart-row">
+              <div>
+                <div class="label" id="autostart-label" data-i18n="settings.autostart.label">登录时运行</div>
+                <p class="hint autostart-help"></p>
+              </div>
+              <button type="button" class="switch" data-action="autostart" role="switch" aria-checked="false" aria-labelledby="autostart-label">
+                <span class="knob"></span>
+              </button>
             </div>
-            <input type="number" class="number-input" data-history="limit" min="5" max="200" step="1" inputmode="numeric" aria-labelledby="history-limit-label" />
-          </div>
-          <p class="error" data-history-error role="alert" hidden></p>
-          <div class="setting-row">
-            <div>
-              <div class="label" id="history-open-label" data-i18n="settings.history.open_label">浏览历史</div>
-              <p class="hint" data-i18n="settings.history.open_hint">打开历史窗口，按时间查看缩略图并重新复制、贴图或删除。</p>
-            </div>
-            <button type="button" class="choice" data-action="open-history" aria-labelledby="history-open-label" data-i18n="settings.history.open_button">打开历史记录</button>
-          </div>
-        </section>
-        <section class="card" aria-labelledby="autostart-title">
-          <h1 id="autostart-title" data-i18n="settings.autostart.title">开机启动</h1>
-          <div class="autostart-row">
-            <div>
-              <div class="label" id="autostart-label" data-i18n="settings.autostart.label">登录时运行</div>
-              <p class="hint autostart-help"></p>
-            </div>
-            <button type="button" class="switch" data-action="autostart" role="switch" aria-checked="false" aria-labelledby="autostart-label">
-              <span class="knob"></span>
-            </button>
-          </div>
-        </section>
-        <section class="card" aria-labelledby="features-title">
-          <h1 id="features-title" data-i18n="settings.features.title">功能入口</h1>
-          <p class="hint" data-i18n="settings.features.hint">关闭的入口即刻生效，从下一次截取起消失；截取热键与复制/保存能力始终保留。</p>
-          <div class="rows feature-rows" data-features></div>
-        </section>
-        <section class="card" aria-labelledby="language-title">
-          <h1 id="language-title" data-i18n="settings.language.title">语言</h1>
-          <p class="hint" data-i18n="settings.language.hint">切换后界面立即更新，无需重启；选择会跨会话保留。</p>
-          <div class="setting-row">
-            <div>
-              <div class="label" id="language-label" data-i18n="settings.language.label">界面语言</div>
-            </div>
-            <div class="choices" data-language role="radiogroup" aria-labelledby="language-label">
-              ${LANGUAGE_OPTIONS.map(
-                ({ value, labelKey }) =>
-                  `<button type="button" class="choice" role="radio" data-language-value="${value}" aria-checked="false" data-i18n="${labelKey}">${t(labelKey)}</button>`,
-              ).join("")}
-            </div>
-          </div>
+          </section>
+          <section class="block" aria-labelledby="toggles-title">
+            <h2 id="toggles-title" data-i18n="settings.section.toggles">功能开关</h2>
+            <p class="hint" data-i18n="settings.section.toggles_hint">逐项控制功能入口；关闭只停用入口与新增行为，已有数据与已创建标注保留，关闭状态跨重启保持。</p>
+            <h3 class="subheading" data-i18n="settings.section.features">功能</h3>
+            <div class="rows feature-rows" data-toggles="general"></div>
+            <h3 class="subheading" data-i18n="settings.section.tools">标注工具</h3>
+            <p class="hint" data-i18n="settings.section.tools_hint">只控制工具栏与更多面板中的创建入口；撤销/重做、删除、复制/保存/贴图/取字与已创建标注始终可用。</p>
+            <div class="tool-grid" data-tools></div>
+          </section>
         </section>
         <section class="card about" aria-labelledby="about-title">
           <h1 id="about-title" data-i18n="settings.about.title">关于</h1>
           <span class="mark" aria-hidden="true"></span>
           <p class="about-name">Cropmark</p>
           <p class="hint" data-i18n="settings.about.hint">独立系统截图工具，界面与托盘只使用 Cropmark 名称与图标。</p>
+          <div class="setting-row">
+            <div>
+              <div class="label" id="about-version-label" data-i18n="settings.about.version_label">版本</div>
+            </div>
+            <span class="about-version" data-version>—</span>
+          </div>
           <div class="setting-row">
             <div>
               <div class="label" id="quit-label" data-i18n="settings.about.quit_label">退出 Cropmark</div>
@@ -242,7 +301,10 @@ export function mountSettings(root: HTMLElement): () => void {
 
   const noticeEl = root.querySelector(".notice");
   const hotkeyRoot = root.querySelector("[data-hotkeys]");
-  const featureRoot = root.querySelector("[data-features]");
+  const captureToggleRoot = root.querySelector("[data-toggles=capture]");
+  const outputToggleRoot = root.querySelector("[data-toggles=output]");
+  const generalToggleRoot = root.querySelector("[data-toggles=general]");
+  const toolRoot = root.querySelector("[data-tools]");
   const helpEl = root.querySelector(".autostart-help");
   const switchEl = root.querySelector("[data-action=autostart]");
   const closeEl = root.querySelector("[data-action=close]");
@@ -255,10 +317,14 @@ export function mountSettings(root: HTMLElement): () => void {
   const trayNoticeEl = root.querySelector("[data-tray-notice]");
   const quitEl = root.querySelector("[data-action=quit]");
   const languageRoot = root.querySelector("[data-language]");
+  const versionEl = root.querySelector("[data-version]");
   if (
     !(noticeEl instanceof HTMLElement) ||
     !(hotkeyRoot instanceof HTMLElement) ||
-    !(featureRoot instanceof HTMLElement) ||
+    !(captureToggleRoot instanceof HTMLElement) ||
+    !(outputToggleRoot instanceof HTMLElement) ||
+    !(generalToggleRoot instanceof HTMLElement) ||
+    !(toolRoot instanceof HTMLElement) ||
     !(helpEl instanceof HTMLElement) ||
     !(switchEl instanceof HTMLButtonElement) ||
     !(closeEl instanceof HTMLButtonElement) ||
@@ -332,6 +398,75 @@ export function mountSettings(root: HTMLElement): () => void {
     });
   };
 
+  const makeToggleButton = (
+    datasetKey: "toggleFeature" | "toggleTool",
+    value: string,
+    labelId: string,
+    enabled: boolean,
+  ): HTMLButtonElement => {
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "switch";
+    toggle.dataset[datasetKey] = value;
+    toggle.setAttribute("role", "switch");
+    toggle.setAttribute("aria-checked", enabled ? "true" : "false");
+    toggle.setAttribute("aria-labelledby", labelId);
+    const knob = document.createElement("span");
+    knob.className = "knob";
+    toggle.appendChild(knob);
+    if (enabled) {
+      toggle.classList.add("on");
+    }
+    return toggle;
+  };
+
+  const renderFeatureToggles = (
+    container: HTMLElement,
+    keys: ToggleKey[],
+    toggles: FeatureToggles,
+  ): void => {
+    container.replaceChildren();
+    for (const key of keys) {
+      const meta = TOGGLE_ITEMS[key];
+      const enabled = toggles[key];
+      const row = document.createElement("div");
+      row.className = "feature-row";
+
+      const text = document.createElement("div");
+      const label = document.createElement("div");
+      label.className = "label";
+      label.id = `feature-label-${key}`;
+      label.textContent = t(meta.labelKey);
+      const hint = document.createElement("p");
+      hint.className = "hint";
+      hint.textContent = t(meta.hintKey);
+      text.append(label, hint);
+
+      row.append(text, makeToggleButton("toggleFeature", key, label.id, enabled));
+      container.append(row);
+    }
+  };
+
+  const renderToolToggles = (
+    container: HTMLElement,
+    tools: AnnotationToolToggles,
+  ): void => {
+    container.replaceChildren();
+    for (const item of TOOL_ITEMS) {
+      const enabled = tools[item.id] === true;
+      const row = document.createElement("div");
+      row.className = "tool-row";
+
+      const label = document.createElement("div");
+      label.className = "label";
+      label.id = `tool-label-${item.id}`;
+      label.textContent = t(item.labelKey);
+
+      row.append(label, makeToggleButton("toggleTool", item.id, label.id, enabled));
+      container.append(row);
+    }
+  };
+
   const render = (settings: UiSettings): void => {
     lastSettings = settings;
     if (settings.notice) {
@@ -402,39 +537,10 @@ export function mountSettings(root: HTMLElement): () => void {
       hotkeyRoot.append(row);
     }
 
-    featureRoot.replaceChildren();
-    for (const item of FEATURE_ITEMS) {
-      const enabled = settings.features[item.key];
-      const row = document.createElement("div");
-      row.className = "feature-row";
-
-      const text = document.createElement("div");
-      const label = document.createElement("div");
-      label.className = "label";
-      label.id = `feature-label-${item.key}`;
-      label.textContent = t(item.labelKey);
-      const hint = document.createElement("p");
-      hint.className = "hint";
-      hint.textContent = t(item.hintKey);
-      text.append(label, hint);
-
-      const toggle = document.createElement("button");
-      toggle.type = "button";
-      toggle.className = "switch";
-      toggle.dataset.feature = item.key;
-      toggle.setAttribute("role", "switch");
-      toggle.setAttribute("aria-checked", enabled ? "true" : "false");
-      toggle.setAttribute("aria-labelledby", label.id);
-      const knob = document.createElement("span");
-      knob.className = "knob";
-      toggle.appendChild(knob);
-      if (enabled) {
-        toggle.classList.add("on");
-      }
-
-      row.append(text, toggle);
-      featureRoot.append(row);
-    }
+    renderFeatureToggles(captureToggleRoot, CAPTURE_TOGGLES, settings.toggles);
+    renderFeatureToggles(outputToggleRoot, OUTPUT_TOGGLES, settings.toggles);
+    renderFeatureToggles(generalToggleRoot, GENERAL_TOGGLES, settings.toggles);
+    renderToolToggles(toolRoot, settings.annotationTools);
 
     switchEl.setAttribute("aria-checked", settings.autostart.enabled ? "true" : "false");
     switchEl.classList.toggle("on", settings.autostart.enabled);
@@ -625,24 +731,38 @@ export function mountSettings(root: HTMLElement): () => void {
       });
   });
 
-  featureRoot.addEventListener("click", (event) => {
+  // R19:功能开关与标注工具逐项开关共用一套点击委托;写回后按后端返回的
+  // 新设置整页重渲染,保证开关状态与实际持久化值一致。
+  root.addEventListener("click", (event) => {
     const target = event.target;
-    if (!(target instanceof Element)) {
+    if (!(target instanceof Element) || applying) {
       return;
     }
-    const button = target.closest("[data-feature]");
-    if (!(button instanceof HTMLButtonElement) || !button.dataset.feature) {
+    const featureButton = target.closest("[data-toggle-feature]");
+    if (featureButton instanceof HTMLButtonElement && featureButton.dataset.toggleFeature) {
+      const key = featureButton.dataset.toggleFeature as ToggleKey;
+      const next = featureButton.getAttribute("aria-checked") !== "true";
+      applying = true;
+      void invoke<UiSettings>("set_feature", { key, enabled: next })
+        .then(render)
+        .catch(showInvokeError)
+        .finally(() => {
+          applying = false;
+        });
       return;
     }
-    const key = button.dataset.feature as FeatureKey;
-    const next = button.getAttribute("aria-checked") !== "true";
-    applying = true;
-    void invoke<UiSettings>("set_feature", { key, enabled: next })
-      .then(render)
-      .catch(showInvokeError)
-      .finally(() => {
-        applying = false;
-      });
+    const toolButton = target.closest("[data-toggle-tool]");
+    if (toolButton instanceof HTMLButtonElement && toolButton.dataset.toggleTool) {
+      const tool = toolButton.dataset.toggleTool;
+      const next = toolButton.getAttribute("aria-checked") !== "true";
+      applying = true;
+      void invoke<UiSettings>("set_annotation_tool", { tool, enabled: next })
+        .then(render)
+        .catch(showInvokeError)
+        .finally(() => {
+          applying = false;
+        });
+    }
   });
 
   hotkeyRoot.addEventListener("click", (event) => {
@@ -675,11 +795,22 @@ export function mountSettings(root: HTMLElement): () => void {
     void applyHotkey(recording, accelerator);
   });
 
+  // R19:关于组显示当前版本;读取失败时保持占位符,不阻塞其余设置。
+  if (versionEl instanceof HTMLElement) {
+    void getVersion()
+      .then((version) => {
+        versionEl.textContent = version;
+      })
+      .catch(() => {
+        versionEl.textContent = "—";
+      });
+  }
+
   void refresh();
 
   // 语言切换:静态标签由 main 的 applyTranslations 更新;这里先按当前状态
-  // 重渲染动态行,再从后端重取一次(热键错误/开机启动/无托盘提示由后端按
-  // 新语言重新解析)。
+  // 重渲染动态行(热键/开关/工具/历史/语言选项),再从后端重取一次
+  // (热键错误/开机启动/无托盘提示由后端按新语言重新解析)。
   return () => {
     if (lastSettings) {
       render(lastSettings);

@@ -31,11 +31,8 @@ pub fn dispatch_capture_with_delay(app: &tauri::AppHandle, mode: CaptureMode, de
 
 /// 托盘"上次区域"直取(R6):不进入交互选区,按记录区域抓屏裁剪;
 /// 延时与热键/托盘主项同源,触发路径与常规截取一致。
-/// R24:关闭 lastRegion 后不再直取(托盘项此时为禁用态,这里兜底过期菜单点击)。
+/// R19:旧 lastRegion 开关按常开语义移除,有记录即可直取。
 pub fn dispatch_last_region(app: &tauri::AppHandle) {
-    if !settings::current_features(app).last_region {
-        return;
-    }
     let delay_ms = settings::current_capture(app).delay_ms();
     let _ = app.emit("capture-requested", CaptureMode::Region);
     capture::begin_last_region(app, delay_ms);
@@ -179,6 +176,7 @@ pub fn run() {
             settings::set_autostart_enabled,
             settings::set_annotation_defaults,
             settings::set_feature,
+            settings::set_annotation_tool,
             settings::set_capture_settings,
             settings::set_history_settings,
             capture::get_overlay_frame,
