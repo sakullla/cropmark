@@ -372,7 +372,7 @@ export function mountSettings(root: HTMLElement): () => void {
       button.type = "button";
       button.className = "hotkey-btn";
       button.dataset.mode = mode;
-      button.title = t("settings.hotkey.title");
+      button.dataset.tooltip = t("settings.hotkey.title");
       button.setAttribute(
         "aria-label",
         recording === mode

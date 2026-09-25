@@ -208,7 +208,7 @@ export function mountHistory(root: HTMLElement): () => void {
     time.className = "history-time";
     const formatted = formatTime(entry.createdAt);
     time.textContent = formatted.label;
-    time.title = formatted.title;
+    time.dataset.tooltip = formatted.title;
     const size = document.createElement("div");
     size.className = "history-size";
     size.textContent = `${entry.width} × ${entry.height}`;
@@ -236,6 +236,7 @@ export function mountHistory(root: HTMLElement): () => void {
       button.textContent = t(labelKey);
       if (entry.imageMissing && action !== "delete") {
         button.disabled = true;
+        // 禁用控件不响应自绘提示的悬停;原因提示保留原生 title(R2 允许例外)。
         button.title = t("history.image_missing_title");
       }
       if (action === "delete") {
