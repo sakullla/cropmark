@@ -9,6 +9,7 @@ mod hotkeys;
 mod i18n;
 mod ocr;
 mod pin;
+mod pin_store;
 mod settings;
 mod single_instance;
 mod tray;
@@ -158,6 +159,9 @@ pub fn run() {
             };
             hotkeys::apply_to_app(app.handle(), &hotkeys);
             capture::precreate_windows(app.handle());
+            // R2:仅当贴图增强与「重启后恢复」同时开启时恢复上次会话仍存在的
+            // 贴图,并按当前显示器可见区域钳制;已关闭的贴图不重现。
+            pin::restore_persisted(app.handle());
             // R15:托盘(或降级)、热键与预建窗口就绪,启动路径到此结束;
             // 门控日志只读时钟,不引入启动期同步 IO。
             log_startup_ready(startup_started, tray_ready);
@@ -210,6 +214,18 @@ pub fn run() {
             ocr::copy_ocr_all,
             pin::pin_current,
             pin::get_pin_image,
+            pin::get_pin_state,
+            pin::get_pin_options,
+            pin::rotate_pin,
+            pin::flip_pin,
+            pin::set_pin_opacity,
+            pin::set_pin_click_through,
+            pin::exit_pin_click_through,
+            pin::group_all_pins,
+            pin::ungroup_pin,
+            pin::move_pin,
+            pin::zoom_pin,
+            pin::reset_pin_zoom,
             pin::copy_pin,
             pin::save_pin,
             pin::begin_pin_edit,
@@ -228,9 +244,9 @@ pub fn run() {
             quit_app,
         ])
         .on_window_event(|window, event| {
-            // 贴图窗口销毁(手动关闭/显示器断开/退出)即释放标签与源图。
+            // 贴图窗口销毁(手动关闭/显示器断开/退出)即释放标签、源图与存储记录。
             if matches!(event, tauri::WindowEvent::Destroyed) {
-                pin::handle_destroyed(window.label());
+                pin::handle_destroyed(window.app_handle(), window.label());
                 // 预览窗销毁时收尾可能存在的贴图再标注会话(恢复来源贴图置顶)。
                 if window.label() == capture::ui::PREVIEW {
                     capture::close_preview(window.app_handle().clone());
@@ -240,6 +256,13 @@ pub fn run() {
                     capture::scroll::handle_window_destroyed(window.app_handle());
                 }
                 front::demote_if_idle(window.app_handle());
+            }
+            // R2:DPI/缩放变化后立即把越界贴图拉回可见区域(显示器数量变化
+            // 由 pin.rs 的后台监视器兜底)。
+            if let tauri::WindowEvent::ScaleFactorChanged { .. } = event {
+                if pin::is_pin_label(window.label()) {
+                    pin::clamp_pin_label(window.app_handle(), window.label());
+                }
             }
         })
         .build(tauri::generate_context!())

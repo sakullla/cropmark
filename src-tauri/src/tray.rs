@@ -20,6 +20,10 @@ pub const LAST_REGION_ID: &str = "capture-last-region";
 /// R1 托盘长截图入口的菜单 id(功能开关开启时出现)。
 pub const LONG_CAPTURE_ID: &str = "capture-long";
 
+/// R2 托盘「退出贴图穿透」的菜单 id:任一贴图处于穿透时出现,
+/// 是穿透状态必达的全局退出路径。
+pub const EXIT_CLICK_THROUGH_ID: &str = "pin-exit-click-through";
+
 /// 一次性延时档位(秒):托盘「延时」子菜单,点击即按该秒数做区域截取。
 /// 窗口/全屏延时走设置里的延时秒数,避免 delay×mode 的嵌套菜单。
 pub const FIXED_DELAY_SECONDS: [u64; 3] = [3, 5, 10];
@@ -42,6 +46,12 @@ fn last_region_enabled(has_region: bool) -> bool {
 /// R1:长截图入口可见 = 功能开关开启;关闭时不构建菜单项(入口不出现)。
 fn long_capture_enabled(enabled: bool) -> bool {
     enabled
+}
+
+/// R2:只要仍有贴图处于穿透,托盘就必须保留退出项——穿透会拦截窗口自身
+/// 的鼠标事件,托盘是唯一可达的恢复入口;安全出口优先于开关隐藏规则。
+fn exit_click_through_visible(any_click_through: bool) -> bool {
+    any_click_through
 }
 
 /// R16:托盘构建失败(Err 或构建期 panic)时的用户可见提示。以安装路径的
@@ -165,6 +175,7 @@ fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
             let _ = crate::history::open_window(app);
         }
         LAST_REGION_ID => crate::dispatch_last_region(app),
+        EXIT_CLICK_THROUGH_ID => crate::pin::exit_pin_click_through(app.clone()),
         "quit" => app.exit(0),
         id => {
             if let Some(action) = menu_action(id) {
@@ -239,18 +250,26 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     )?;
     let history_item =
         MenuItem::with_id(app, "history", i18n::t("tray.history"), true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", i18n::t("tray.quit"), true, None::<&str>)?;
-    Menu::with_items(
+    // R2:穿透中的贴图无法接收鼠标事件,托盘项是唯一退出路径。
+    let exit_click_through = MenuItem::with_id(
         app,
-        &[
-            &capture,
-            &PredefinedMenuItem::separator(app)?,
-            &settings_item,
-            &history_item,
-            &PredefinedMenuItem::separator(app)?,
-            &quit,
-        ],
-    )
+        EXIT_CLICK_THROUGH_ID,
+        i18n::t("tray.exit_click_through"),
+        true,
+        None::<&str>,
+    )?;
+    let quit = MenuItem::with_id(app, "quit", i18n::t("tray.quit"), true, None::<&str>)?;
+    let first_separator = PredefinedMenuItem::separator(app)?;
+    let second_separator = PredefinedMenuItem::separator(app)?;
+    let mut items: Vec<&dyn IsMenuItem<tauri::Wry>> =
+        vec![&capture, &first_separator, &settings_item, &history_item];
+    let click_through_visible = exit_click_through_visible(crate::pin::has_click_through());
+    if click_through_visible {
+        items.push(&exit_click_through);
+    }
+    items.push(&second_separator);
+    items.push(&quit);
+    Menu::with_items(app, &items)
 }
 
 /// 一次性延时:只挂区域截取。窗口/全屏用设置页的延时,避免每个档位再拆三种模式。
@@ -388,13 +407,27 @@ mod tests {
             Some(action(CaptureMode::LongCapture, DelayChoice::Configured))
         );
         // 长截图没有一次性延时子菜单项。
-        assert_eq!(menu_action("capture-long-delay-3"), Some(action(CaptureMode::LongCapture, DelayChoice::Once(3000))));
+        assert_eq!(
+            menu_action("capture-long-delay-3"),
+            Some(action(CaptureMode::LongCapture, DelayChoice::Once(3000)))
+        );
     }
 
     #[test]
     fn long_capture_entry_only_when_the_toggle_is_on() {
         assert!(long_capture_enabled(true));
         assert!(!long_capture_enabled(false));
+    }
+
+    #[test]
+    fn exit_click_through_only_when_a_pin_is_click_through() {
+        assert!(exit_click_through_visible(true));
+        assert!(!exit_click_through_visible(false));
+    }
+
+    #[test]
+    fn exit_click_through_id_is_not_parsed_as_a_capture_mode() {
+        assert_eq!(menu_action(EXIT_CLICK_THROUGH_ID), None);
     }
 
     #[test]

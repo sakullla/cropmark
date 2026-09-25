@@ -43,6 +43,10 @@
     "zh-CN": "历史记录",
     "en": "History"
   },
+  "tray.exit_click_through": {
+    "zh-CN": "退出贴图穿透",
+    "en": "Exit pin click-through"
+  },
   "tray.quit": {
     "zh-CN": "退出",
     "en": "Quit"
@@ -646,6 +650,10 @@
   "error.pin.not_editing": {
     "zh-CN": "当前预览不在贴图再标注模式。",
     "en": "The preview is not in pin re-annotation mode."
+  },
+  "error.pin.click_through": {
+    "zh-CN": "无法切换点击穿透：{error}",
+    "en": "Could not toggle click-through: {error}"
   },
   "error.pin.save_to_path": {
     "zh-CN": "无法保存贴图到「{path}」：{error}",
@@ -1899,6 +1907,10 @@
     "zh-CN": "关闭贴图",
     "en": "Close pin"
   },
+  "pin.toolbar.close_group_title": {
+    "zh-CN": "关闭整组贴图",
+    "en": "Close pin group"
+  },
   "pin.toolbar.close": {
     "zh-CN": "关闭贴图",
     "en": "Close pin"
@@ -1914,6 +1926,34 @@
   "pin.menu.rotate": {
     "zh-CN": "顺时针旋转 90°",
     "en": "Rotate 90° clockwise"
+  },
+  "pin.menu.flip_h": {
+    "zh-CN": "水平翻转",
+    "en": "Flip horizontally"
+  },
+  "pin.menu.flip_v": {
+    "zh-CN": "垂直翻转",
+    "en": "Flip vertically"
+  },
+  "pin.menu.click_through": {
+    "zh-CN": "开启点击穿透",
+    "en": "Enable click-through"
+  },
+  "pin.menu.click_through_off": {
+    "zh-CN": "关闭点击穿透",
+    "en": "Disable click-through"
+  },
+  "pin.menu.group": {
+    "zh-CN": "编组全部贴图",
+    "en": "Group all pins"
+  },
+  "pin.menu.ungroup": {
+    "zh-CN": "从编组中解组",
+    "en": "Ungroup this pin"
+  },
+  "pin.menu.close_group": {
+    "zh-CN": "关闭整组",
+    "en": "Close pin group"
   },
   "pin.menu.opacity": {
     "zh-CN": "透明度",
@@ -1950,6 +1990,74 @@
   "pin.note.reload_failed": {
     "zh-CN": "贴图更新失败，请重新贴图。",
     "en": "The pin could not be updated. Pin again."
+  },
+  "pin.note.flipped": {
+    "zh-CN": "已翻转贴图。",
+    "en": "Pin flipped."
+  },
+  "pin.note.click_through_on": {
+    "zh-CN": "已开启点击穿透；可从托盘「退出贴图穿透」恢复交互。",
+    "en": "Click-through is on. Use \"Exit pin click-through\" in the tray to restore interaction."
+  },
+  "pin.note.click_through_off": {
+    "zh-CN": "已退出点击穿透。",
+    "en": "Click-through is off."
+  },
+  "pin.note.grouped": {
+    "zh-CN": "已编组 {count} 张贴图。",
+    "en": "Grouped {count} pins."
+  },
+  "pin.note.ungrouped": {
+    "zh-CN": "已从编组中解组。",
+    "en": "Removed this pin from the group."
+  },
+  "pin.click_through.unsupported": {
+    "zh-CN": "当前平台不支持点击穿透。",
+    "en": "Click-through is not supported on this platform."
+  },
+  "pin.click_through.no_tray": {
+    "zh-CN": "托盘不可用，穿透后无法退出，已禁用。",
+    "en": "The tray is unavailable, so click-through cannot be exited and is disabled."
+  },
+  "pin.error.flip": {
+    "zh-CN": "无法翻转贴图。",
+    "en": "Could not flip the pin."
+  },
+  "pin.error.rotate": {
+    "zh-CN": "无法旋转贴图。",
+    "en": "Could not rotate the pin."
+  },
+  "pin.error.zoom": {
+    "zh-CN": "无法缩放贴图。",
+    "en": "Could not zoom the pin."
+  },
+  "pin.error.opacity": {
+    "zh-CN": "无法调整透明度。",
+    "en": "Could not adjust opacity."
+  },
+  "pin.error.reset": {
+    "zh-CN": "无法重置缩放。",
+    "en": "Could not reset zoom."
+  },
+  "pin.error.click_through": {
+    "zh-CN": "无法切换点击穿透。",
+    "en": "Could not toggle click-through."
+  },
+  "pin.error.group": {
+    "zh-CN": "无法编组贴图。",
+    "en": "Could not group the pins."
+  },
+  "pin.error.ungroup": {
+    "zh-CN": "无法解组贴图。",
+    "en": "Could not ungroup the pin."
+  },
+  "pin.error.group_need_two": {
+    "zh-CN": "至少需要两张贴图才能编组。",
+    "en": "At least two pins are needed to group."
+  },
+  "pin.error.disabled": {
+    "zh-CN": "贴图增强已在设置中关闭。",
+    "en": "Pin enhancements are disabled in Settings."
   },
   "pin.error.copy": {
     "zh-CN": "无法复制贴图。",

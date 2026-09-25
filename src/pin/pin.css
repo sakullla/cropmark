@@ -154,6 +154,18 @@
   color: var(--accent);
 }
 
+/* 点击穿透在平台不支持或托盘不可用时保持可点击:点按只提示原因,
+   视觉上按禁用呈现,不进入无法退出的状态。 */
+.pin-menu button.is-disabled {
+  color: var(--muted);
+  opacity: var(--control-disabled-opacity);
+  cursor: not-allowed;
+}
+
+.pin-menu button.is-disabled:hover {
+  background: transparent;
+}
+
 .pin-menu-row {
   display: flex;
   align-items: center;
