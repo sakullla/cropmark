@@ -22,17 +22,6 @@
   pointer-events: none;
 }
 
-.pin-root.is-broken .pin-stage::after {
-  content: "贴图已失效";
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--ink);
-  font: 13px/1.4 "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-}
-
 .pin-toolbar {
   position: absolute;
   top: 6px;
@@ -52,6 +41,9 @@
   opacity: 1;
 }
 
+/* 覆于图像之上的工具条是唯一半透明变体:hover 保留实底 accent/danger
+   (--accent-soft 在照片上不可辨)并用共享亮度,按压缩放统一用共享亮度;
+   圆角与过渡取共享控件规范。 */
 .pin-toolbar button {
   display: flex;
   align-items: center;
@@ -62,15 +54,21 @@
   min-height: 24px;
   padding: 0;
   border: none;
-  border-radius: 7px;
+  border-radius: var(--radius-control-sm);
   background: color-mix(in srgb, var(--tooltip-bg) 58%, transparent);
   color: var(--tooltip-ink);
   cursor: pointer;
+  transition: var(--control-transition);
 }
 
 .pin-toolbar button:hover {
   background: var(--accent);
   color: var(--on-accent);
+  filter: var(--control-hover-filter);
+}
+
+.pin-toolbar button:active {
+  filter: var(--control-pressed-filter);
 }
 
 .pin-toolbar svg {
@@ -94,6 +92,18 @@
 .pin-toolbar .pin-close:hover {
   background: var(--danger);
   color: var(--on-danger);
+  filter: var(--control-hover-filter);
+}
+
+.pin-toolbar .pin-close:active {
+  filter: var(--control-pressed-filter);
+}
+
+/* 工具条贴右上角,自绘提示右对齐,小窗右缘不再裁切。 */
+.pin-toolbar [data-tooltip]::after {
+  left: auto;
+  right: 0;
+  transform: none;
 }
 
 .pin-menu {
@@ -106,8 +116,8 @@
   padding: 4px;
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 8px;
-  box-shadow: 0 8px 24px color-mix(in srgb, var(--ink) 18%, transparent);
+  border-radius: var(--radius-menu);
+  box-shadow: var(--shadow);
 }
 
 .pin-menu button {
@@ -115,16 +125,21 @@
   min-height: 24px;
   padding: 6px 10px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-control-sm);
   background: transparent;
   color: var(--ink);
   font: 13px/1.4 "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   text-align: left;
   cursor: pointer;
+  transition: var(--control-transition);
 }
 
 .pin-menu button:hover {
-  background: var(--accent-soft);
+  background: var(--control-hover-bg);
+}
+
+.pin-menu button:active {
+  filter: var(--control-pressed-filter);
 }
 
 .pin-menu button.active {
@@ -162,7 +177,7 @@
   max-width: calc(100% - 16px);
   padding: 4px 10px;
   transform: translateX(-50%);
-  border-radius: 8px;
+  border-radius: var(--radius-control);
   background: color-mix(in srgb, var(--tooltip-bg) 75%, transparent);
   color: var(--tooltip-ink);
   font: 12px/1.4 "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
