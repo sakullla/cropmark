@@ -9,7 +9,8 @@
 
 .overlay-root {
   position: relative;
-  cursor: crosshair;
+  /* 热点在 25×25 图像中心，与 clientX/clientY 的作用像素对齐。图像失败时仍退回系统十字。 */
+  cursor: url("./selection-crosshair.png") 12 12, crosshair;
   background: #000;
   --selection-stroke: var(--accent);
   --selection-halo: var(--focus-gap);
