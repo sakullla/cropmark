@@ -28,6 +28,8 @@ interface PinState {
   grouped: boolean;
   groupSize: number;
   clickThrough: boolean;
+  // R8:文本贴图复制回原始文本,其余复制图像;文案与提示随之切换。
+  copyKind: "image" | "text";
   logicalWidth: number;
   logicalHeight: number;
   windowWidth: number;
@@ -91,6 +93,8 @@ export function mountPin(root: HTMLElement): () => void {
   const note = root.querySelector("[data-note]");
   const opacityBtn = root.querySelector("[data-action=opacity]");
   const closeToolbarBtn = root.querySelector("[data-action=close]");
+  const copyToolbarBtn = root.querySelector("[data-action=copy]");
+  const copyMenuBtn = root.querySelector("[data-menu-action=copy]");
   const clickThroughBtn = root.querySelector("[data-menu-action=click-through]");
   const groupBtn = root.querySelector("[data-menu-action=group]");
   const ungroupBtn = root.querySelector("[data-menu-action=ungroup]");
@@ -102,6 +106,8 @@ export function mountPin(root: HTMLElement): () => void {
     !(note instanceof HTMLElement) ||
     !(opacityBtn instanceof HTMLButtonElement) ||
     !(closeToolbarBtn instanceof HTMLButtonElement) ||
+    !(copyToolbarBtn instanceof HTMLButtonElement) ||
+    !(copyMenuBtn instanceof HTMLButtonElement) ||
     !(clickThroughBtn instanceof HTMLButtonElement) ||
     !(groupBtn instanceof HTMLButtonElement) ||
     !(ungroupBtn instanceof HTMLButtonElement) ||
@@ -206,6 +212,13 @@ export function mountPin(root: HTMLElement): () => void {
     closeToolbarBtn.dataset.tooltip = t(
       grouped ? "pin.toolbar.close_group_title" : "pin.toolbar.close_title",
     );
+
+    // R8:文本贴图的复制目标是原始文本而非渲染图像,标题与菜单同步。
+    const copyText = state?.copyKind === "text";
+    copyToolbarBtn.dataset.tooltip = t(
+      copyText ? "pin.toolbar.copy_text_title" : "pin.toolbar.copy_title",
+    );
+    copyMenuBtn.textContent = t(copyText ? "pin.menu.copy_text" : "pin.menu.copy");
   };
 
   // 后端返回的 PNG 已应用旋转/翻转/透明度,画布只按窗口尺寸拉伸显示。
@@ -298,7 +311,7 @@ export function mountPin(root: HTMLElement): () => void {
     busy = true;
     try {
       await invoke("copy_pin", { label: win.label });
-      showNoteKey("pin.note.copied");
+      showNoteKey(state?.copyKind === "text" ? "pin.note.copied_text" : "pin.note.copied");
     } catch (error) {
       showNote(invokeError(error, t("pin.error.copy")), true);
     } finally {

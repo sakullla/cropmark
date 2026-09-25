@@ -5,6 +5,11 @@ use arboard::ImageData;
 #[cfg(windows)]
 mod windows;
 
+/// R8 剪贴板读取(图片/文本/色块判定),供剪贴板贴图入口使用。
+pub mod read;
+/// R8 文本/色块贴图的 Rust 排版渲染与原文元数据。
+pub mod text_render;
+
 use crate::capture::buffer::Frame;
 use crate::capture::error::CaptureError;
 

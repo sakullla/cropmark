@@ -764,6 +764,18 @@ pub fn set_hotkey(app: AppHandle, mode: CaptureMode, accelerator: String) -> UiS
     snapshot(&app)
 }
 
+/// R8:设置/清除剪贴板贴图全局快捷键(空串清除绑定)。默认未绑定,未绑定时
+/// 不注册也不报错;非法/冲突组合与既有热键一致地保存并展示可见错误。
+#[tauri::command]
+pub fn set_pin_clipboard_hotkey(app: AppHandle, accelerator: String) -> UiSettings {
+    let mut hotkeys = lock(&app.state::<SessionState>().hotkeys).clone();
+    hotkeys.set_pin_clipboard(accelerator);
+    let applied = i18n::t("notice.hotkey_applied");
+    persist_settings(&app, &applied);
+    hotkeys::apply_to_app(&app, &hotkeys);
+    snapshot(&app)
+}
+
 #[tauri::command]
 pub fn set_autostart_enabled(app: AppHandle, enabled: bool) -> UiSettings {
     let result = autostart::set_enabled(enabled);
@@ -905,6 +917,7 @@ mod tests {
                 region: "Ctrl+Alt+R".into(),
                 window: "Alt+Shift+W".into(),
                 fullscreen: "Alt+Shift+S".into(),
+                pin_clipboard: "Ctrl+Alt+P".into(),
             },
             annotation_defaults: AnnotationDefaults {
                 color: "#2563eb".into(),
@@ -958,6 +971,7 @@ mod tests {
         assert!(text.contains("\"annotationTools\""));
         let loaded = load_from_path(&path);
         assert_eq!(loaded.hotkeys.region, "Ctrl+Alt+R");
+        assert_eq!(loaded.hotkeys.pin_clipboard, "Ctrl+Alt+P");
         assert_eq!(loaded.annotation_defaults.color, "#2563eb");
         assert_eq!(loaded.annotation_defaults.width, Some(5.0));
         assert_eq!(loaded.annotation_defaults.text_size, Some(22.0));
@@ -992,6 +1006,17 @@ mod tests {
             })
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn legacy_hotkeys_without_clipboard_pin_keep_the_rest_intact() {
+        let parsed: StoredSettings = serde_json::from_str(
+            r#"{"hotkeys":{"region":"Ctrl+Alt+R","window":"Alt+Shift+W","fullscreen":"Alt+Shift+S"}}"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.hotkeys.region, "Ctrl+Alt+R");
+        assert!(parsed.hotkeys.pin_clipboard.is_empty());
+        assert_eq!(parsed.toggles, FeatureToggles::default());
     }
 
     #[test]

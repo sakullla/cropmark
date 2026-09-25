@@ -20,6 +20,9 @@ pub const LAST_REGION_ID: &str = "capture-last-region";
 /// R1 托盘长截图入口的菜单 id(功能开关开启时出现)。
 pub const LONG_CAPTURE_ID: &str = "capture-long";
 
+/// R8 托盘「从剪贴板贴图」入口的菜单 id(clipboard_pin 开启时出现)。
+pub const CLIPBOARD_PIN_ID: &str = "pin-from-clipboard";
+
 /// R2 托盘「退出贴图穿透」的菜单 id:任一贴图处于穿透时出现,
 /// 是穿透状态必达的全局退出路径。
 pub const EXIT_CLICK_THROUGH_ID: &str = "pin-exit-click-through";
@@ -45,6 +48,12 @@ fn last_region_enabled(has_region: bool) -> bool {
 
 /// R1:长截图入口可见 = 功能开关开启;关闭时不构建菜单项(入口不出现)。
 fn long_capture_enabled(enabled: bool) -> bool {
+    enabled
+}
+
+/// R8:剪贴板贴图入口可见 = clipboard_pin 开启;关闭时不构建菜单项,
+/// 全局快捷键同时失效(动作入口按同一开关判定)。
+fn clipboard_pin_visible(enabled: bool) -> bool {
     enabled
 }
 
@@ -176,6 +185,7 @@ fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
         }
         LAST_REGION_ID => crate::dispatch_last_region(app),
         EXIT_CLICK_THROUGH_ID => crate::pin::exit_pin_click_through(app.clone()),
+        CLIPBOARD_PIN_ID => crate::pin::pin_from_clipboard(app),
         "quit" => app.exit(0),
         id => {
             if let Some(action) = menu_action(id) {
@@ -250,6 +260,14 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     )?;
     let history_item =
         MenuItem::with_id(app, "history", i18n::t("tray.history"), true, None::<&str>)?;
+    // R8:剪贴板贴图入口仅在功能开关开启时出现;快捷键由 pin 侧同一开关判定。
+    let clipboard_pin = MenuItem::with_id(
+        app,
+        CLIPBOARD_PIN_ID,
+        i18n::t("tray.pin_from_clipboard"),
+        true,
+        None::<&str>,
+    )?;
     // R2:穿透中的贴图无法接收鼠标事件,托盘项是唯一退出路径。
     let exit_click_through = MenuItem::with_id(
         app,
@@ -263,6 +281,9 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let second_separator = PredefinedMenuItem::separator(app)?;
     let mut items: Vec<&dyn IsMenuItem<tauri::Wry>> =
         vec![&capture, &first_separator, &settings_item, &history_item];
+    if clipboard_pin_visible(settings::current_toggles(app).clipboard_pin) {
+        items.push(&clipboard_pin);
+    }
     let click_through_visible = exit_click_through_visible(crate::pin::has_click_through());
     if click_through_visible {
         items.push(&exit_click_through);
@@ -417,6 +438,17 @@ mod tests {
     fn long_capture_entry_only_when_the_toggle_is_on() {
         assert!(long_capture_enabled(true));
         assert!(!long_capture_enabled(false));
+    }
+
+    #[test]
+    fn clipboard_pin_entry_only_when_the_toggle_is_on() {
+        assert!(clipboard_pin_visible(true));
+        assert!(!clipboard_pin_visible(false));
+    }
+
+    #[test]
+    fn clipboard_pin_id_is_not_parsed_as_a_capture_mode() {
+        assert_eq!(menu_action(CLIPBOARD_PIN_ID), None);
     }
 
     #[test]

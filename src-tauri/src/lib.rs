@@ -177,6 +177,7 @@ pub fn run() {
             settings::get_language,
             settings::set_language,
             settings::set_hotkey,
+            settings::set_pin_clipboard_hotkey,
             settings::set_autostart_enabled,
             settings::set_annotation_defaults,
             settings::set_feature,

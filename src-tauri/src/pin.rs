@@ -50,6 +50,7 @@ static NEXT_TOKEN: AtomicU64 = AtomicU64::new(1);
 
 /// 贴图源内容与增强状态(R2):源图常驻供复制/保存/旋转/翻转/透明度/再标注共用;
 /// 旋转、翻转、透明度、几何与分组由 Rust 持有并持久化,前端只做显示同步。
+/// R8:文本贴图的原始文本保留在 `text`,复制回剪贴板用原文而不是渲染像素。
 #[derive(Debug, Clone)]
 struct PinEntry {
     id: String,
@@ -69,6 +70,8 @@ struct PinEntry {
     flip_v: bool,
     opacity: f32,
     group: Option<String>,
+    /// 文本贴图的完整原文;图片/色块贴图为 None。
+    text: Option<String>,
     /// 穿透是会话内状态:不持久化,重启后一律恢复为可交互。
     click_through: bool,
     /// 内容版本自增,用于判断哪些贴图的 PNG 需要重写。
@@ -101,6 +104,7 @@ impl PinEntry {
             flip_v: false,
             opacity: 1.0,
             group: None,
+            text: None,
             click_through: false,
             content_seq: 1,
             persisted_seq: 0,
@@ -619,6 +623,17 @@ pub fn open_pin(
     logical_width: f64,
     logical_height: f64,
 ) -> Result<WebviewWindow, String> {
+    open_pin_with_text(app, frame, logical_width, logical_height, None)
+}
+
+/// R8:带原文的文本贴图入口;`text` 只影响复制回剪贴板的内容,图像仍是渲染结果。
+pub fn open_pin_with_text(
+    app: &AppHandle,
+    frame: Frame,
+    logical_width: f64,
+    logical_height: f64,
+    text: Option<String>,
+) -> Result<WebviewWindow, String> {
     let cursor = NEXT_SLOT.load(Ordering::SeqCst);
     let slot = with_store(|slots| pick_slot(cursor, |slot| slots[slot].is_some()))
         .ok_or_else(pin_full_message)?;
@@ -629,7 +644,9 @@ pub fn open_pin(
     let (x, y) = pin_origin(cursor_pos, work, width, height);
 
     with_store(|slots| {
-        slots[slot] = Some(PinEntry::new(next_token('p'), frame, width, height, (x, y)));
+        let mut entry = PinEntry::new(next_token('p'), frame, width, height, (x, y));
+        entry.text = text;
+        slots[slot] = Some(entry);
     });
     let window = match ensure_pin_window(app, slot) {
         Ok(window) => window,
@@ -770,6 +787,114 @@ pub fn pin_retained(app: &AppHandle) {
 }
 
 // ---------------------------------------------------------------------------
+// R8 剪贴板贴图:托盘入口与可选全局快捷键共用。
+// ---------------------------------------------------------------------------
+
+struct ClipboardPinPrepare {
+    frame: Frame,
+    /// 文本贴图的完整原文;图片/色块为 None。
+    text: Option<String>,
+    truncated: bool,
+}
+
+/// 剪贴板内容 → 贴图内容:图片直接贴;整段色值生成色块;
+/// 其余文本按目标显示器缩放排版为文本贴图。空/不支持格式返回提示文案。
+fn prepare_clipboard_pin(scale: f64) -> Result<ClipboardPinPrepare, String> {
+    use crate::clipboard::read::ClipboardContent;
+    use crate::clipboard::text_render;
+
+    match crate::clipboard::read::read_content()? {
+        ClipboardContent::Image(frame) => Ok(ClipboardPinPrepare {
+            frame,
+            text: None,
+            truncated: false,
+        }),
+        ClipboardContent::Text(text) => {
+            if let Some(color) = text_render::parse_color(&text) {
+                return Ok(ClipboardPinPrepare {
+                    frame: text_render::render_color_block(color, scale),
+                    text: None,
+                    truncated: false,
+                });
+            }
+            let rendered = text_render::render_text(&text, scale).map_err(fail)?;
+            Ok(ClipboardPinPrepare {
+                frame: rendered.frame,
+                text: Some(rendered.text),
+                truncated: rendered.truncated,
+            })
+        }
+        ClipboardContent::Empty => Err(i18n::t("clipboard.hint.empty")),
+        ClipboardContent::Unsupported => Err(i18n::t("clipboard.hint.unsupported")),
+    }
+}
+
+/// 贴图内容按指针所在显示器的缩放因子排版,窗口逻辑尺寸与文字视觉大小
+/// 在各 DPI 下保持一致;无光标/显示器信息时退回主显示器,再退回 1x。
+fn pointer_scale(app: &AppHandle) -> f64 {
+    let monitor = app
+        .cursor_position()
+        .ok()
+        .and_then(|cursor| app.monitor_from_point(cursor.x, cursor.y).ok().flatten())
+        .or_else(|| app.primary_monitor().ok().flatten());
+    monitor
+        .map(|monitor| monitor.scale_factor().max(f64::EPSILON))
+        .unwrap_or(1.0)
+}
+
+/// R8 入口:从剪贴板创建贴图。功能开关关闭时静默失效(托盘入口同步消失);
+/// 读取/排版在阻塞线程完成,建窗与预览贴图走同一条异步路径;失败/空内容
+/// 只提示不建窗。
+pub fn pin_from_clipboard(app: &AppHandle) {
+    if !settings::current_toggles(app).clipboard_pin {
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let scale = pointer_scale(&app);
+        let prepared = match tauri::async_runtime::spawn_blocking(move || {
+            prepare_clipboard_pin(scale)
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(pin_retry_message()),
+        };
+        match prepared {
+            Ok(prepared) => create_clipboard_pin(&app, prepared),
+            Err(message) => crate::capture::ui::show_toast(&app, &message),
+        }
+    });
+}
+
+fn create_clipboard_pin(app: &AppHandle, prepared: ClipboardPinPrepare) {
+    let (_, work) = pointer_work_area(app);
+    let (work_w, work_h) = work.map(|(.., w, h)| (w, h)).unwrap_or((1920.0, 1080.0));
+    let (width, height) = pin_logical_size(
+        prepared.frame.width,
+        prepared.frame.height,
+        prepared.frame.scale,
+        work_w,
+        work_h,
+    );
+    match open_pin_with_text(app, prepared.frame, width, height, prepared.text) {
+        Ok(_) => {
+            if prepared.truncated {
+                crate::capture::ui::show_toast_key_params(
+                    app,
+                    "clipboard.hint.truncated",
+                    &[(
+                        "lines",
+                        &crate::clipboard::text_render::MAX_LINES.to_string(),
+                    )],
+                );
+            }
+        }
+        Err(message) => crate::capture::ui::show_toast(app, &message),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 持久化(ADR-6):变更防抖写盘,关闭立即删除。
 // ---------------------------------------------------------------------------
 
@@ -841,6 +966,8 @@ struct PendingContent {
     id: String,
     seq: u64,
     frame: Frame,
+    /// R8:文本贴图的原文,写盘时以内嵌 PNG 元数据保存。
+    text: Option<String>,
 }
 
 fn snapshot_records() -> Vec<PinRecord> {
@@ -857,6 +984,7 @@ fn snapshot_pending_content() -> Vec<PendingContent> {
                 id: entry.id.clone(),
                 seq: entry.content_seq,
                 frame: source_frame(entry),
+                text: entry.text.clone(),
             })
             .collect()
     })
@@ -895,7 +1023,11 @@ fn write_snapshot(app: &AppHandle) {
     let mut contents = Vec::new();
     let mut written = Vec::new();
     for item in snapshot_pending_content() {
-        match encode_png(&item.frame) {
+        let encoded = match item.text.as_deref() {
+            Some(text) => crate::clipboard::text_render::encode_png_with_text(&item.frame, text),
+            None => encode_png(&item.frame),
+        };
+        match encoded {
             Ok(png) => {
                 contents.push((item.id.clone(), png));
                 written.push((item.id, item.seq));
@@ -965,6 +1097,10 @@ pub fn restore_persisted(app: &AppHandle) {
             eprintln!("Cropmark: 贴图内容缺失，跳过恢复 {}", record.id);
             continue;
         };
+        // R8:文本贴图的原文随 PNG 元数据恢复,复制语义与本次会话一致。
+        let text = std::fs::read(dir.join(record.file_name()))
+            .ok()
+            .and_then(|bytes| crate::clipboard::text_render::extract_text(&bytes));
         let Some(slot) = with_store(|slots| pick_slot(cursor, |slot| slots[slot].is_some())) else {
             break;
         };
@@ -982,6 +1118,7 @@ pub fn restore_persisted(app: &AppHandle) {
             entry.flip_v = record.flip_v;
             entry.opacity = record.opacity;
             entry.group = record.group.clone();
+            entry.text = text;
             // 内容直接来自磁盘,无需再写一次 PNG。
             entry.persisted_seq = entry.content_seq;
             slots[slot] = Some(entry);
@@ -1177,6 +1314,14 @@ pub fn clamp_pin_label(app: &AppHandle, label: &str) {
 // 命令:状态、变换、穿透、编组、几何。
 // ---------------------------------------------------------------------------
 
+/// R8:复制回剪贴板的内容种类(文本贴图复制原文,其余复制图像)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PinCopyKind {
+    Text,
+    Image,
+}
+
 /// 贴图增强状态(前端只做显示同步)。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1190,6 +1335,7 @@ pub struct PinState {
     pub grouped: bool,
     pub group_size: usize,
     pub click_through: bool,
+    pub copy_kind: PinCopyKind,
     pub logical_width: f64,
     pub logical_height: f64,
     pub window_width: f64,
@@ -1229,6 +1375,11 @@ fn state_from(slots: &[Option<PinEntry>; PIN_MAX], label: &str, entry: &PinEntry
         grouped: members > 1,
         group_size: members,
         click_through: entry.click_through,
+        copy_kind: if entry.text.is_some() {
+            PinCopyKind::Text
+        } else {
+            PinCopyKind::Image
+        },
         logical_width: entry.logical_width,
         logical_height: entry.logical_height,
         window_width: entry.window_width,
@@ -1695,13 +1846,20 @@ fn apply_scale(
 // 命令:复制、保存、再标注、关闭。
 // ---------------------------------------------------------------------------
 
-/// 复制当前显示内容(旋转/翻转/透明度已应用)为无损 PNG。
+/// 复制当前显示内容为无损 PNG;R8 文本贴图复制回原始文本而不是渲染图像。
 #[tauri::command]
 pub async fn copy_pin(app: AppHandle, label: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking({
         let app = app.clone();
         move || {
-            let frame = transformed_frame_for(&app, &label)?;
+            if app.get_webview_window(&label).is_none() {
+                return Err(i18n::t("error.pin.window_closed"));
+            }
+            let entry = entry_snapshot(&label)?;
+            if let Some(text) = entry.text.as_deref() {
+                return crate::clipboard::copy_text(text).map_err(fail);
+            }
+            let frame = transformed_frame(&entry);
             let png = encode_png(&frame).map_err(fail)?;
             crate::clipboard::copy_frame_with_png(&frame, &png).map_err(fail)
         }
@@ -2461,6 +2619,18 @@ mod tests {
         let state = state_from(&slots, "pin-1", slots[0].as_ref().unwrap());
         assert!(!state.grouped);
         assert_eq!(state.group_size, 1);
+    }
+
+    #[test]
+    fn copy_kind_marks_text_pins_and_defaults_to_image() {
+        let mut text_entry = entry(frame(1, 1, vec![0; 4]));
+        text_entry.text = Some("第一行\nsecond".into());
+        let slots = slots_with(vec![(0, text_entry)]);
+        let state = state_from(&slots, "pin-1", slots[0].as_ref().unwrap());
+        assert_eq!(state.copy_kind, PinCopyKind::Text);
+        let slots = slots_with(vec![(0, entry(frame(1, 1, vec![0; 4])))]);
+        let state = state_from(&slots, "pin-1", slots[0].as_ref().unwrap());
+        assert_eq!(state.copy_kind, PinCopyKind::Image);
     }
 
     #[test]

@@ -7,16 +7,21 @@ import { icons } from "../icons";
 
 export type CaptureMode = "region" | "window" | "fullscreen";
 
+/// R8:热键行槽位 = 三种采集模式 + 可选的剪贴板贴图(默认未绑定)。
+export type HotkeySlot = CaptureMode | "clipboardpin";
+
 export interface Hotkeys {
   region: string;
   window: string;
   fullscreen: string;
+  pinClipboard: string;
 }
 
 export interface HotkeyErrors {
   region: string | null;
   window: string | null;
   fullscreen: string | null;
+  pinClipboard: string | null;
 }
 
 export interface AutostartState {
@@ -155,10 +160,11 @@ const TOOL_ITEMS: Array<{ id: string; labelKey: CatalogKey }> = [
   { id: "erase", labelKey: "settings.tool.erase" },
 ];
 
-const MODE_LABEL_KEY: Record<CaptureMode, CatalogKey> = {
+const HOTKEY_LABEL_KEY: Record<HotkeySlot, CatalogKey> = {
   region: "settings.mode.region",
   window: "settings.mode.window",
   fullscreen: "settings.mode.fullscreen",
+  clipboardpin: "settings.hotkeys.clipboard_pin_label",
 };
 
 const LANGUAGE_OPTIONS: Array<{ value: LanguageSetting; labelKey: CatalogKey }> = [
@@ -167,7 +173,15 @@ const LANGUAGE_OPTIONS: Array<{ value: LanguageSetting; labelKey: CatalogKey }> 
   { value: "en", labelKey: "language.en" },
 ];
 
-const MODES: CaptureMode[] = ["region", "window", "fullscreen"];
+const HOTKEY_SLOTS: HotkeySlot[] = ["region", "window", "fullscreen", "clipboardpin"];
+
+function hotkeyValue(hotkeys: Hotkeys, slot: HotkeySlot): string {
+  return slot === "clipboardpin" ? hotkeys.pinClipboard : hotkeys[slot];
+}
+
+function hotkeyError(errors: HotkeyErrors, slot: HotkeySlot): string | null {
+  return slot === "clipboardpin" ? errors.pinClipboard : errors[slot];
+}
 
 export function mountSettings(root: HTMLElement): () => void {
   root.innerHTML = `
@@ -341,7 +355,7 @@ export function mountSettings(root: HTMLElement): () => void {
     return () => undefined;
   }
 
-  let recording: CaptureMode | null = null;
+  let recording: HotkeySlot | null = null;
   let applying = false;
   let lastSettings: UiSettings | null = null;
   let captureSettings: CaptureSettings = {
@@ -490,42 +504,48 @@ export function mountSettings(root: HTMLElement): () => void {
     renderLanguage(settings.language);
 
     hotkeyRoot.replaceChildren();
-    for (const mode of MODES) {
-      const modeLabel = t(MODE_LABEL_KEY[mode]);
+    for (const slot of HOTKEY_SLOTS) {
+      const slotLabel = t(HOTKEY_LABEL_KEY[slot]);
+      const optional = slot === "clipboardpin";
+      const accelerator = hotkeyValue(settings.hotkeys, slot);
+      const display =
+        displayAccelerator(accelerator) || (optional ? t("settings.hotkeys.unbound") : "");
       const row = document.createElement("div");
       row.className = "hotkey-row";
-      const errorText = hotkeyErrorText(settings.hotkeyErrors[mode]);
+      const errorText = hotkeyErrorText(hotkeyError(settings.hotkeyErrors, slot));
       if (errorText) {
         row.classList.add("has-error");
       }
 
       const label = document.createElement("div");
       label.className = "label";
-      label.textContent = modeLabel;
+      label.textContent = slotLabel;
 
       const button = document.createElement("button");
       button.type = "button";
       button.className = "hotkey-btn";
-      button.dataset.mode = mode;
+      button.dataset.mode = slot;
       button.dataset.tooltip = t("settings.hotkey.title");
       button.setAttribute(
         "aria-label",
-        recording === mode
-          ? t("settings.hotkey.aria_recording", { mode: modeLabel })
-          : t("settings.hotkey.aria_current", {
-              mode: modeLabel,
-              accelerator: displayAccelerator(settings.hotkeys[mode]),
-            }),
+        recording === slot
+          ? t("settings.hotkey.aria_recording", { mode: slotLabel })
+          : accelerator
+            ? t("settings.hotkey.aria_current", {
+                mode: slotLabel,
+                accelerator: display,
+              })
+            : t("settings.hotkeys.unbound"),
       );
       button.textContent =
-        recording === mode ? t("settings.hotkey.recording") : displayAccelerator(settings.hotkeys[mode]);
-      if (recording === mode) {
+        recording === slot ? t("settings.hotkey.recording") : display;
+      if (recording === slot) {
         button.classList.add("recording");
       }
 
       const error = document.createElement("p");
       error.className = "error";
-      error.id = `hotkey-error-${mode}`;
+      error.id = `hotkey-error-${slot}`;
       error.setAttribute("role", "alert");
       error.textContent = errorText;
       error.hidden = !errorText;
@@ -533,7 +553,26 @@ export function mountSettings(root: HTMLElement): () => void {
         button.setAttribute("aria-describedby", error.id);
       }
 
-      row.append(label, button, error);
+      row.append(label);
+      // 可选绑定的行在热键按钮旁提供清除按钮;CSSOM 写样式不受未来 CSP 的
+      // style-src 限制,同时保持既有两列网格不变。
+      const controls = document.createElement("div");
+      controls.style.display = "flex";
+      controls.style.alignItems = "center";
+      controls.style.gap = "6px";
+      controls.style.gridArea = "btn";
+      controls.append(button);
+      // R8:可选绑定支持显式清除;录制中不显示清除按钮,避免误触丢输入。
+      if (optional && accelerator && recording !== slot) {
+        const clear = document.createElement("button");
+        clear.type = "button";
+        clear.className = "choice";
+        clear.dataset.hotkeyClear = slot;
+        clear.dataset.tooltip = t("settings.hotkeys.clear_title");
+        clear.textContent = t("settings.hotkeys.clear");
+        controls.append(clear);
+      }
+      row.append(controls, error);
       hotkeyRoot.append(row);
     }
 
@@ -568,10 +607,14 @@ export function mountSettings(root: HTMLElement): () => void {
     }
   };
 
-  const applyHotkey = async (mode: CaptureMode, accelerator: string): Promise<void> => {
+  const applyHotkey = async (slot: HotkeySlot, accelerator: string): Promise<void> => {
     applying = true;
     try {
-      const settings = await invoke<UiSettings>("set_hotkey", { mode, accelerator });
+      // R8:剪贴板贴图热键走独立字段与命令,空串表示清除绑定。
+      const settings =
+        slot === "clipboardpin"
+          ? await invoke<UiSettings>("set_pin_clipboard_hotkey", { accelerator })
+          : await invoke<UiSettings>("set_hotkey", { mode: slot, accelerator });
       recording = null;
       render(settings);
     } catch (error) {
@@ -767,10 +810,19 @@ export function mountSettings(root: HTMLElement): () => void {
 
   hotkeyRoot.addEventListener("click", (event) => {
     const target = event.target;
-    if (!(target instanceof HTMLButtonElement) || !target.dataset.mode) {
+    if (!(target instanceof Element) || applying) {
       return;
     }
-    recording = target.dataset.mode as CaptureMode;
+    const clearButton = target.closest("[data-hotkey-clear]");
+    if (clearButton instanceof HTMLButtonElement && clearButton.dataset.hotkeyClear) {
+      void applyHotkey(clearButton.dataset.hotkeyClear as HotkeySlot, "");
+      return;
+    }
+    const button = target.closest("[data-mode]");
+    if (!(button instanceof HTMLButtonElement) || !button.dataset.mode) {
+      return;
+    }
+    recording = button.dataset.mode as HotkeySlot;
     void refresh();
   });
 

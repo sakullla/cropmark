@@ -47,6 +47,30 @@
     "zh-CN": "退出贴图穿透",
     "en": "Exit pin click-through"
   },
+  "tray.pin_from_clipboard": {
+    "zh-CN": "从剪贴板贴图",
+    "en": "Pin from clipboard"
+  },
+  "clipboard.hint.empty": {
+    "zh-CN": "剪贴板为空，没有可贴图的图片或文本。",
+    "en": "The clipboard is empty; there is no image or text to pin."
+  },
+  "clipboard.hint.unsupported": {
+    "zh-CN": "剪贴板内容不是可贴图的图片或文本。",
+    "en": "The clipboard does not contain a pinnable image or text."
+  },
+  "clipboard.hint.unavailable": {
+    "zh-CN": "无法读取剪贴板，请重试。",
+    "en": "Could not read the clipboard. Try again."
+  },
+  "clipboard.hint.wayland": {
+    "zh-CN": "当前 Wayland 会话无法读取剪贴板；请在 X11 会话或支持 data-control 的合成器下重试。",
+    "en": "The clipboard cannot be read in this Wayland session. Use an X11 session or a compositor with data-control support."
+  },
+  "clipboard.hint.truncated": {
+    "zh-CN": "文本过长，已截断显示（最多 {lines} 行）；复制仍为完整原文。",
+    "en": "Long text was truncated for display (up to {lines} lines); copying still returns the full original text."
+  },
   "tray.quit": {
     "zh-CN": "退出",
     "en": "Quit"
@@ -786,6 +810,22 @@
   "settings.hotkeys.hint": {
     "zh-CN": "点击热键按钮后按下新组合，Esc 取消；改动立即生效。",
     "en": "Click a hotkey button, then press the new combination; press Esc to cancel. Changes take effect immediately."
+  },
+  "settings.hotkeys.clipboard_pin_label": {
+    "zh-CN": "从剪贴板贴图",
+    "en": "Pin from clipboard"
+  },
+  "settings.hotkeys.unbound": {
+    "zh-CN": "未绑定",
+    "en": "Not bound"
+  },
+  "settings.hotkeys.clear": {
+    "zh-CN": "清除",
+    "en": "Clear"
+  },
+  "settings.hotkeys.clear_title": {
+    "zh-CN": "清除该快捷键绑定",
+    "en": "Clear this shortcut"
   },
   "settings.mode.region": {
     "zh-CN": "区域截取",
@@ -1867,6 +1907,10 @@
     "zh-CN": "复制图片（无损 PNG）",
     "en": "Copy image (lossless PNG)"
   },
+  "pin.toolbar.copy_text_title": {
+    "zh-CN": "复制原始文本",
+    "en": "Copy original text"
+  },
   "pin.toolbar.copy": {
     "zh-CN": "复制",
     "en": "Copy"
@@ -1918,6 +1962,10 @@
   "pin.menu.copy": {
     "zh-CN": "复制图片",
     "en": "Copy image"
+  },
+  "pin.menu.copy_text": {
+    "zh-CN": "复制文本",
+    "en": "Copy text"
   },
   "pin.menu.save": {
     "zh-CN": "保存 PNG…",
@@ -1978,6 +2026,10 @@
   "pin.note.copied": {
     "zh-CN": "已复制当前内容（无损 PNG）。",
     "en": "Current content copied (lossless PNG)."
+  },
+  "pin.note.copied_text": {
+    "zh-CN": "已复制原始文本。",
+    "en": "Original text copied."
   },
   "pin.note.saved": {
     "zh-CN": "已保存 {name}。",

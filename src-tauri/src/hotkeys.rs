@@ -29,6 +29,9 @@ pub struct Hotkeys {
     pub region: String,
     pub window: String,
     pub fullscreen: String,
+    /// R8 剪贴板贴图全局快捷键:可选绑定,默认空串(未绑定),不参与冲突检查。
+    #[serde(default)]
+    pub pin_clipboard: String,
 }
 
 impl Default for Hotkeys {
@@ -37,6 +40,7 @@ impl Default for Hotkeys {
             region: "Alt+Shift+A".to_string(),
             window: "Alt+Shift+W".to_string(),
             fullscreen: "Alt+Shift+S".to_string(),
+            pin_clipboard: String::new(),
         }
     }
 }
@@ -60,6 +64,22 @@ impl Hotkeys {
             CaptureMode::LongCapture => {}
         }
     }
+
+    /// R8:剪贴板贴图热键(空串表示未绑定)。
+    pub fn pin_clipboard(&self) -> &str {
+        &self.pin_clipboard
+    }
+
+    pub fn set_pin_clipboard(&mut self, value: String) {
+        self.pin_clipboard = value.trim().to_string();
+    }
+}
+
+/// 热键计划与错误的动作目标:三种采集模式 + R8 剪贴板贴图(可选)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HotkeyTarget {
+    Capture(CaptureMode),
+    ClipboardPin,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,15 +88,18 @@ pub struct HotkeyErrors {
     pub region: Option<String>,
     pub window: Option<String>,
     pub fullscreen: Option<String>,
+    /// R8:仅在已绑定但无法注册时出现(未绑定不报错)。
+    pub pin_clipboard: Option<String>,
 }
 
 impl HotkeyErrors {
-    pub fn set(&mut self, mode: CaptureMode, message: Option<String>) {
-        match mode {
-            CaptureMode::Region => self.region = message,
-            CaptureMode::Window => self.window = message,
-            CaptureMode::Fullscreen => self.fullscreen = message,
-            CaptureMode::LongCapture => {}
+    pub fn set(&mut self, target: HotkeyTarget, message: Option<String>) {
+        match target {
+            HotkeyTarget::Capture(CaptureMode::Region) => self.region = message,
+            HotkeyTarget::Capture(CaptureMode::Window) => self.window = message,
+            HotkeyTarget::Capture(CaptureMode::Fullscreen) => self.fullscreen = message,
+            HotkeyTarget::Capture(CaptureMode::LongCapture) => {}
+            HotkeyTarget::ClipboardPin => self.pin_clipboard = message,
         }
     }
 
@@ -87,6 +110,7 @@ impl HotkeyErrors {
             region: self.region.as_deref().map(i18n::t),
             window: self.window.as_deref().map(i18n::t),
             fullscreen: self.fullscreen.as_deref().map(i18n::t),
+            pin_clipboard: self.pin_clipboard.as_deref().map(i18n::t),
         }
     }
 }
@@ -144,7 +168,7 @@ impl ParsedHotkey {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlannedBinding {
-    pub mode: CaptureMode,
+    pub target: HotkeyTarget,
     pub display: String,
     pub plugin_shortcut: Option<String>,
     pub error: Option<String>,
@@ -200,60 +224,80 @@ pub fn is_system_screenshot(hotkey: &ParsedHotkey) -> bool {
 }
 
 pub fn plan_bindings(hotkeys: &Hotkeys) -> Vec<PlannedBinding> {
-    let mut seen: HashMap<ParsedHotkey, CaptureMode> = HashMap::new();
+    let mut seen: HashMap<ParsedHotkey, HotkeyTarget> = HashMap::new();
     let mut planned = Vec::new();
 
     for mode in CaptureMode::ALL {
-        let raw = hotkeys.get(mode).trim();
-        let display = if raw.is_empty() {
-            String::new()
-        } else {
-            parse_hotkey(raw)
-                .map(|parsed| parsed.to_display())
-                .unwrap_or_else(|_| raw.to_string())
-        };
-
-        match parse_hotkey(raw) {
-            Ok(parsed) if is_system_screenshot(&parsed) => planned.push(PlannedBinding {
-                mode,
-                display,
-                plugin_shortcut: None,
-                error: Some("error.hotkey.system".to_string()),
-            }),
-            Ok(parsed) if !parsed.has_modifier() => planned.push(PlannedBinding {
-                mode,
-                display,
-                plugin_shortcut: None,
-                error: Some("error.hotkey.modifier".to_string()),
-            }),
-            Ok(parsed) => {
-                if let Some(_owner) = seen.get(&parsed) {
-                    planned.push(PlannedBinding {
-                        mode,
-                        display,
-                        plugin_shortcut: None,
-                        error: Some("error.hotkey.conflict".to_string()),
-                    });
-                    continue;
-                }
-                seen.insert(parsed.clone(), mode);
-                planned.push(PlannedBinding {
-                    mode,
-                    display,
-                    plugin_shortcut: Some(parsed.to_plugin()),
-                    error: None,
-                });
-            }
-            Err(error) => planned.push(PlannedBinding {
-                mode,
-                display,
-                plugin_shortcut: None,
-                error: Some(error),
-            }),
-        }
+        planned.push(plan_binding(
+            HotkeyTarget::Capture(mode),
+            hotkeys.get(mode),
+            &mut seen,
+        ));
+    }
+    // R8:剪贴板贴图热键默认未绑定;空值既不注册也不产生错误提示。
+    if !hotkeys.pin_clipboard.trim().is_empty() {
+        planned.push(plan_binding(
+            HotkeyTarget::ClipboardPin,
+            hotkeys.pin_clipboard(),
+            &mut seen,
+        ));
     }
 
     planned
+}
+
+fn plan_binding(
+    target: HotkeyTarget,
+    raw: &str,
+    seen: &mut HashMap<ParsedHotkey, HotkeyTarget>,
+) -> PlannedBinding {
+    let raw = raw.trim();
+    let display = if raw.is_empty() {
+        String::new()
+    } else {
+        parse_hotkey(raw)
+            .map(|parsed| parsed.to_display())
+            .unwrap_or_else(|_| raw.to_string())
+    };
+
+    match parse_hotkey(raw) {
+        Ok(parsed) if is_system_screenshot(&parsed) => PlannedBinding {
+            target,
+            display,
+            plugin_shortcut: None,
+            error: Some("error.hotkey.system".to_string()),
+        },
+        Ok(parsed) if !parsed.has_modifier() => PlannedBinding {
+            target,
+            display,
+            plugin_shortcut: None,
+            error: Some("error.hotkey.modifier".to_string()),
+        },
+        Ok(parsed) => {
+            if seen.contains_key(&parsed) {
+                return PlannedBinding {
+                    target,
+                    display,
+                    plugin_shortcut: None,
+                    error: Some("error.hotkey.conflict".to_string()),
+                };
+            }
+            let plugin = parsed.to_plugin();
+            seen.insert(parsed, target);
+            PlannedBinding {
+                target,
+                display,
+                plugin_shortcut: Some(plugin),
+                error: None,
+            }
+        }
+        Err(error) => PlannedBinding {
+            target,
+            display,
+            plugin_shortcut: None,
+            error: Some(error),
+        },
+    }
 }
 
 pub fn finalize_plan(
@@ -263,14 +307,14 @@ pub fn finalize_plan(
     let mut errors = HotkeyErrors::default();
     for item in plan {
         if let Some(error) = item.error {
-            errors.set(item.mode, Some(error));
+            errors.set(item.target, Some(error));
             continue;
         }
         let Some(shortcut) = item.plugin_shortcut.as_deref() else {
             continue;
         };
         if let Err(_error) = register(shortcut) {
-            errors.set(item.mode, Some("error.hotkey.register".to_string()));
+            errors.set(item.target, Some("error.hotkey.register".to_string()));
         }
     }
     errors
@@ -280,12 +324,12 @@ pub fn apply_to_app(app: &AppHandle, hotkeys: &Hotkeys) -> HotkeyErrors {
     let plan = plan_bindings(hotkeys);
     let _ = app.global_shortcut().unregister_all();
     let errors = finalize_plan(plan, |shortcut| {
-        let mode = plan_mode_for_shortcut(hotkeys, shortcut)
-            .ok_or_else(|| "unknown shortcut".to_string())?;
+        let target =
+            target_for_shortcut(hotkeys, shortcut).ok_or_else(|| "unknown shortcut".to_string())?;
         app.global_shortcut()
             .on_shortcut(shortcut, move |app, _, event| {
                 if event.state == ShortcutState::Pressed {
-                    crate::dispatch_capture(app, mode);
+                    dispatch_target(app, target);
                 }
             })
             .map_err(|error| error.to_string())
@@ -298,13 +342,26 @@ pub fn apply_to_app(app: &AppHandle, hotkeys: &Hotkeys) -> HotkeyErrors {
     errors
 }
 
-fn plan_mode_for_shortcut(hotkeys: &Hotkeys, shortcut: &str) -> Option<CaptureMode> {
-    CaptureMode::ALL.into_iter().find(|mode| {
-        parse_hotkey(hotkeys.get(*mode))
-            .ok()
-            .map(|parsed| parsed.to_plugin() == shortcut)
-            .unwrap_or(false)
-    })
+/// 快捷键按下后的动作分发:R8 剪贴板贴图走开关感知入口(关闭时静默失效),
+/// 其余仍走既有采集链路。
+fn dispatch_target(app: &AppHandle, target: HotkeyTarget) {
+    match target {
+        HotkeyTarget::Capture(mode) => crate::dispatch_capture(app, mode),
+        HotkeyTarget::ClipboardPin => crate::pin::pin_from_clipboard(app),
+    }
+}
+
+fn target_for_shortcut(hotkeys: &Hotkeys, shortcut: &str) -> Option<HotkeyTarget> {
+    let plugin_of = |raw: &str| parse_hotkey(raw).ok().map(|parsed| parsed.to_plugin());
+    for mode in CaptureMode::ALL {
+        if plugin_of(hotkeys.get(mode)).as_deref() == Some(shortcut) {
+            return Some(HotkeyTarget::Capture(mode));
+        }
+    }
+    if plugin_of(hotkeys.pin_clipboard()).as_deref() == Some(shortcut) {
+        return Some(HotkeyTarget::ClipboardPin);
+    }
+    None
 }
 
 fn lock_mutex<T>(mutex: &std::sync::Mutex<T>) -> MutexGuard<'_, T> {
@@ -479,17 +536,18 @@ mod tests {
             region: "Alt+Shift+A".into(),
             window: "alt+shift+KeyA".into(),
             fullscreen: "Alt+Shift+S".into(),
+            ..Hotkeys::default()
         };
         let plan = plan_bindings(&hotkeys);
         let window = plan
             .iter()
-            .find(|item| item.mode == CaptureMode::Window)
+            .find(|item| item.target == HotkeyTarget::Capture(CaptureMode::Window))
             .unwrap();
         assert!(i18n::t(window.error.as_deref().unwrap()).contains("冲突"));
         assert!(window.plugin_shortcut.is_none());
         let region = plan
             .iter()
-            .find(|item| item.mode == CaptureMode::Region)
+            .find(|item| item.target == HotkeyTarget::Capture(CaptureMode::Region))
             .unwrap();
         assert!(region.error.is_none());
     }
@@ -524,13 +582,86 @@ mod tests {
             region: "Win+Shift+S".into(),
             window: "Alt+Shift+W".into(),
             fullscreen: "Alt+Shift+S".into(),
+            ..Hotkeys::default()
         };
         let plan = plan_bindings(&hotkeys);
         let region = plan
             .iter()
-            .find(|item| item.mode == CaptureMode::Region)
+            .find(|item| item.target == HotkeyTarget::Capture(CaptureMode::Region))
             .unwrap();
         assert!(i18n::t(region.error.as_deref().unwrap()).contains("系统截图"));
         assert!(region.plugin_shortcut.is_none());
+    }
+
+    #[test]
+    fn clipboard_pin_hotkey_is_unbound_by_default() {
+        let hotkeys = Hotkeys::default();
+        assert!(hotkeys.pin_clipboard().is_empty());
+        let plan = plan_bindings(&hotkeys);
+        assert!(plan
+            .iter()
+            .all(|item| item.target != HotkeyTarget::ClipboardPin));
+        // 未绑定不产生错误,也不占用冲突表。
+        let errors = finalize_plan(plan, |_| Ok(()));
+        assert!(errors.pin_clipboard.is_none());
+    }
+
+    #[test]
+    fn clipboard_pin_hotkey_plans_and_resolves_when_bound() {
+        let mut hotkeys = Hotkeys::default();
+        hotkeys.set_pin_clipboard(" Ctrl+Alt+P ".into());
+        assert_eq!(hotkeys.pin_clipboard(), "Ctrl+Alt+P");
+        let plan = plan_bindings(&hotkeys);
+        let item = plan
+            .iter()
+            .find(|item| item.target == HotkeyTarget::ClipboardPin)
+            .expect("bound clipboard shortcut is planned");
+        assert_eq!(item.display, "Ctrl+Alt+P");
+        assert_eq!(item.plugin_shortcut.as_deref(), Some("control+alt+KeyP"));
+        assert!(item.error.is_none());
+        assert_eq!(
+            target_for_shortcut(&hotkeys, "control+alt+KeyP"),
+            Some(HotkeyTarget::ClipboardPin)
+        );
+    }
+
+    #[test]
+    fn clipboard_pin_hotkey_conflicts_are_visible_failures() {
+        let mut hotkeys = Hotkeys::default();
+        hotkeys.set_pin_clipboard("Alt+Shift+A".into());
+        let plan = plan_bindings(&hotkeys);
+        let item = plan
+            .iter()
+            .find(|item| item.target == HotkeyTarget::ClipboardPin)
+            .unwrap();
+        // 与区域快捷键重复:计划里报冲突且不注册。
+        assert!(i18n::t(item.error.as_deref().unwrap()).contains("冲突"));
+        assert!(item.plugin_shortcut.is_none());
+
+        hotkeys.set_pin_clipboard("PrintScreen".into());
+        let item = plan_bindings(&hotkeys)
+            .into_iter()
+            .find(|item| item.target == HotkeyTarget::ClipboardPin)
+            .unwrap();
+        assert!(i18n::t(item.error.as_deref().unwrap()).contains("系统截图"));
+
+        hotkeys.set_pin_clipboard("K".into());
+        let item = plan_bindings(&hotkeys)
+            .into_iter()
+            .find(|item| item.target == HotkeyTarget::ClipboardPin)
+            .unwrap();
+        assert!(i18n::t(item.error.as_deref().unwrap()).contains("全局热键"));
+    }
+
+    #[test]
+    fn hotkey_errors_localize_clipboard_pin_field() {
+        let mut errors = HotkeyErrors::default();
+        errors.set(
+            HotkeyTarget::ClipboardPin,
+            Some("error.hotkey.conflict".into()),
+        );
+        let localized = errors.localized();
+        assert!(localized.pin_clipboard.as_deref().unwrap().contains("冲突"));
+        assert!(localized.region.is_none());
     }
 }
