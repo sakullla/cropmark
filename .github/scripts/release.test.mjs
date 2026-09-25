@@ -42,6 +42,11 @@ test("macOS release uses one stable self-signed identity and does not notarize",
   assert.match(agents, /not notarized/);
   assert.match(agents, /Privacy & Security/);
   assert.match(macos, /"signingIdentity": "-"/);
+  const notes = formatNotes(["fix: tray"], "v0.0.9");
+  assert.match(notes, /固定的自签证书/);
+  assert.match(notes, /不提交 Apple 公证/);
+  assert.match(notes, /隐私与安全性/);
+  assert.doesNotMatch(notes, /ad-hoc/);
 });
 
 test("repository versions and bundled models are consistent", () => {

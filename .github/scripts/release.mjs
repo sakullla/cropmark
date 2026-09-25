@@ -77,7 +77,7 @@ export function formatNotes(subjects, previous) {
   lines.push("---", "",
     "Windows x64：NSIS EXE；macOS 14+ Apple Silicon：DMG；Linux x64：DEB / AppImage。",
     "",
-    "macOS 使用 ad-hoc 签名，未经过 Apple 公证。首次启动如被拦截，请在系统设置的“隐私与安全性”中允许打开。截图需要屏幕录制权限。",
+    "macOS 正式包使用固定的自签证书，不提交 Apple 公证。下载后首次打开仍需在系统设置的“隐私与安全性”中允许打开。截图需要屏幕录制权限。",
     "",
     "安装包包含离线 OCR 模型，识别过程不联网。", "");
   return lines.join("\n");
