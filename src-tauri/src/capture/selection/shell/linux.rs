@@ -152,24 +152,43 @@ enum CrosshairPixel {
 struct CrosshairSprite {
     size: usize,
     arm: usize,
+    /// 线芯宽度(物理像素,奇数)。100% 为 3;更高缩放送入后抬到奇数,使热点仍在中心像素。
+    thickness: usize,
 }
 
 impl CrosshairSprite {
     /// 1x 基准臂长(物理像素);实际臂长按 frame.scale 缩放。
     const BASE_ARM: usize = 10;
 
-    /// 最小双色位图(光标创建失败时的兜底规格)。
-    const fn fallback() -> Self {
-        Self { size: 9, arm: 3 }
+    /// 100% 线芯宽度。随 scale 成倍加粗,偶数结果再加 1,保证奇数宽。
+    fn thickness_for_scale(scale: f64) -> usize {
+        let raw = ((3.0 * scale.max(0.1)).round() as usize).max(3);
+        if raw % 2 == 0 {
+            raw + 1
+        } else {
+            raw
+        }
     }
 
-    /// 按冻结帧 DPI 缩放生成规格:臂长随 frame.scale 缩放(200% 时
-    /// 翻倍),线芯恒 1 物理像素;边长保持奇数,热点在交叉点。
+    /// 最小双色位图(光标创建失败时的兜底规格)。线芯仍为 3 物理像素。
+    const fn fallback() -> Self {
+        Self {
+            size: 9,
+            arm: 3,
+            thickness: 3,
+        }
+    }
+
+    /// 按冻结帧 DPI 缩放生成规格:臂长与线芯都随 frame.scale 缩放
+    /// (200% 时臂长翻倍,线芯从 3 加到 7)。边长保持奇数,热点在交叉点。
     fn for_scale(scale: f64) -> Self {
         let arm = ((Self::BASE_ARM as f64) * scale.max(0.1)).round().max(3.0) as usize;
+        let thickness = Self::thickness_for_scale(scale);
+        let radius = arm.max(thickness / 2) + 2;
         Self {
-            size: arm * 2 + 5,
+            size: radius * 2 + 1,
             arm,
+            thickness,
         }
     }
 
@@ -178,18 +197,19 @@ impl CrosshairSprite {
         (center, center)
     }
 
-    /// 线芯:横竖臂上距中心 1..=arm 的像素。中心热点像素镂空,
-    /// 指针像素经镂空处直接可见;芯宽恒 1 物理像素。
+    /// 线芯:横竖臂宽为 `thickness`,沿臂距中心 1..=arm。中心热点像素由
+    /// `pixel` 镂空,指针像素经镂空处直接可见。
     fn is_core(self, x: usize, y: usize) -> bool {
         let center = self.size / 2;
-        let dist = if x == center {
-            y.abs_diff(center)
-        } else if y == center {
-            x.abs_diff(center)
-        } else {
+        if x == center && y == center {
             return false;
-        };
-        (1..=self.arm).contains(&dist)
+        }
+        let dx = x.abs_diff(center);
+        let dy = y.abs_diff(center);
+        let half = self.thickness / 2;
+        let horizontal = dy <= half && (1..=self.arm).contains(&dx);
+        let vertical = dx <= half && (1..=self.arm).contains(&dy);
+        horizontal || vertical
     }
 
     fn pixel(self, x: usize, y: usize) -> CrosshairPixel {
@@ -2300,14 +2320,19 @@ mod tests {
 
     fn assert_dual_color_crosshair(sprite: CrosshairSprite) {
         let (cx, cy) = sprite.hotspot();
+        let half = sprite.thickness / 2;
         assert_eq!(sprite.size % 2, 1);
         assert_eq!((cx, cy), (sprite.size / 2, sprite.size / 2));
+        assert!(sprite.thickness >= 3 && sprite.thickness % 2 == 1);
         // 中心热点像素镂空:热点仍对准指针像素,但该像素透明。
         assert_eq!(sprite.pixel(cx, cy), CrosshairPixel::Empty);
-        // 芯从距中心 1 像素处开始,恒 1 物理像素宽。
         assert_eq!(sprite.pixel(cx + 1, cy), CrosshairPixel::Core);
         assert_eq!(sprite.pixel(cx, cy + 1), CrosshairPixel::Core);
-        assert_eq!(sprite.pixel(cx + 1, cy + 1), CrosshairPixel::Outline);
+        assert_eq!(sprite.pixel(cx + half + 1, cy + half), CrosshairPixel::Core);
+        assert_eq!(
+            sprite.pixel(cx + half + 1, cy + half + 1),
+            CrosshairPixel::Outline
+        );
         assert_eq!(
             sprite.pixel(cx, cy.saturating_sub(sprite.arm + 1)),
             CrosshairPixel::Outline
@@ -2341,14 +2366,13 @@ mod tests {
     fn crosshair_sprite_scales_arm_with_frame_scale() {
         let base = CrosshairSprite::for_scale(1.0);
         assert_eq!(base.arm, CrosshairSprite::BASE_ARM);
-        // 200% 时臂长翻倍,边长仍为奇数,芯恒 1 物理像素。
+        assert_eq!(base.thickness, 3);
+        // 200% 时臂长翻倍;线芯 3*2=6,抬到奇数 7,边长仍为奇数。
         let scaled = CrosshairSprite::for_scale(2.0);
         assert_eq!(scaled.arm, base.arm * 2);
+        assert_eq!(scaled.thickness, 7);
         assert_eq!(scaled.size % 2, 1);
         assert_dual_color_crosshair(scaled);
-        let (cx, cy) = scaled.hotspot();
-        assert_eq!(scaled.pixel(cx, cy + 2), CrosshairPixel::Core);
-        assert_eq!(scaled.pixel(cx + 1, cy + 2), CrosshairPixel::Outline);
     }
 
     #[test]

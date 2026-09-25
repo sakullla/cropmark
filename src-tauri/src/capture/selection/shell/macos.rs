@@ -257,24 +257,43 @@ enum CrosshairPixel {
 struct CrosshairSprite {
     size: usize,
     arm: usize,
+    /// 线芯宽度(物理像素,奇数)。100% 为 3;更高缩放送入后抬到奇数,使热点仍在中心像素。
+    thickness: usize,
 }
 
 impl CrosshairSprite {
     /// 1x 基准臂长(物理像素);实际臂长按 frame.scale 缩放。
     const BASE_ARM: usize = 10;
 
-    /// 最小双色位图(光标创建失败时的兜底规格)。
-    const fn fallback() -> Self {
-        Self { size: 9, arm: 3 }
+    /// 100% 线芯宽度。随 scale 成倍加粗,偶数结果再加 1,保证奇数宽。
+    fn thickness_for_scale(scale: f64) -> usize {
+        let raw = ((3.0 * scale.max(0.1)).round() as usize).max(3);
+        if raw % 2 == 0 {
+            raw + 1
+        } else {
+            raw
+        }
     }
 
-    /// 按冻结帧 DPI 缩放生成规格:臂长随 frame.scale 缩放(200% 时
-    /// 翻倍),线芯恒 1 物理像素;边长保持奇数,热点在交叉点。
+    /// 最小双色位图(光标创建失败时的兜底规格)。线芯仍为 3 物理像素。
+    const fn fallback() -> Self {
+        Self {
+            size: 9,
+            arm: 3,
+            thickness: 3,
+        }
+    }
+
+    /// 按冻结帧 DPI 缩放生成规格:臂长与线芯都随 frame.scale 缩放
+    /// (200% 时臂长翻倍,线芯从 3 加到 7)。边长保持奇数,热点在交叉点。
     fn for_scale(scale: f64) -> Self {
         let arm = ((Self::BASE_ARM as f64) * scale.max(0.1)).round().max(3.0) as usize;
+        let thickness = Self::thickness_for_scale(scale);
+        let radius = arm.max(thickness / 2) + 2;
         Self {
-            size: arm * 2 + 5,
+            size: radius * 2 + 1,
             arm,
+            thickness,
         }
     }
 
@@ -283,18 +302,19 @@ impl CrosshairSprite {
         (center, center)
     }
 
-    /// 线芯:横竖臂上距中心 1..=arm 的像素。中心热点像素镂空,
-    /// 指针像素经镂空处直接可见;芯宽恒 1 物理像素。
+    /// 线芯:横竖臂宽为 `thickness`,沿臂距中心 1..=arm。中心热点像素由
+    /// `pixel` 镂空,指针像素经镂空处直接可见。
     fn is_core(self, x: usize, y: usize) -> bool {
         let center = self.size / 2;
-        let dist = if x == center {
-            y.abs_diff(center)
-        } else if y == center {
-            x.abs_diff(center)
-        } else {
+        if x == center && y == center {
             return false;
-        };
-        (1..=self.arm).contains(&dist)
+        }
+        let dx = x.abs_diff(center);
+        let dy = y.abs_diff(center);
+        let half = self.thickness / 2;
+        let horizontal = dy <= half && (1..=self.arm).contains(&dx);
+        let vertical = dx <= half && (1..=self.arm).contains(&dy);
+        horizontal || vertical
     }
 
     fn pixel(self, x: usize, y: usize) -> CrosshairPixel {
@@ -402,7 +422,7 @@ fn nsimage_from_rgba(pixels: Vec<u8>, size: usize, point_size: f64) -> Option<Re
 }
 
 /// 由十字规格生成 NSCursor。位图按物理像素生成,NSImage 尺寸按
-/// frame.scale 折算为点,使线芯在屏幕上恒 1 物理像素。
+/// frame.scale 折算为点,使线芯宽度与规格一致。
 fn cursor_from_sprite(sprite: CrosshairSprite, scale: f64) -> Option<Retained<NSCursor>> {
     let scale = if scale.is_finite() && scale > 0.0 {
         scale
@@ -528,6 +548,25 @@ define_class!(
         #[unsafe(method(drawRect:))]
         fn draw_rect(&self, _dirty_rect: NSRect) {
             draw_cached_image(self);
+        }
+
+        /// AppKit 重建光标矩形时登记整块选区,使询问到的是当前形态。
+        #[unsafe(method(resetCursorRects))]
+        fn reset_cursor_rects(&self) {
+            let Some(cursor) = cursor_image_for_active_state() else {
+                return;
+            };
+            self.addCursorRect_cursor(self.bounds(), &cursor);
+        }
+
+        /// 指针进出光标矩形时 AppKit 会询问;此时按当前形态设置,不依赖上一次形态是否变化。
+        #[unsafe(method(cursorUpdate:))]
+        fn cursor_update(&self, _event: &NSEvent) {
+            STATE.with(|slot| {
+                if let Some(state) = slot.borrow_mut().as_mut() {
+                    push_cursor(state);
+                }
+            });
         }
     }
 
@@ -1189,15 +1228,20 @@ fn event_point(view: &SelectionView, event: &NSEvent) -> (i32, i32) {
 /// drawRect 可能经 view.display 重入,因此 STATE 借用在 present 前释放。
 fn dispatch_input(view: &SelectionView, event: InputEvent) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
-        let dirty = STATE.with(|slot| {
+        let (dirty, cursor_changed) = STATE.with(|slot| {
             let mut guard = slot.borrow_mut();
             let Some(state) = guard.as_mut() else {
-                return false;
+                return (false, false);
             };
             feed_event(state, event, view);
-            apply_cursor(state);
-            state.dirty
+            let cursor_changed = push_cursor(state);
+            (state.dirty, cursor_changed)
         });
+        if cursor_changed {
+            if let Some(window) = view.window() {
+                window.invalidateCursorRectsForView(view);
+            }
+        }
         if dirty {
             // 交给 AppKit 合批到下一帧,避免每次 PointerMove 同步 display 打满 CPU。
             view.setNeedsDisplay(true);
@@ -1211,20 +1255,10 @@ fn dispatch_input(view: &SelectionView, event: InputEvent) {
     }));
 }
 
-/// 依引擎当前提示切换系统光标;形态未变化时跳过 set。resize 提示用 SF
-/// Symbol 自绘,符号不可用时退回双色十字;光标切换不影响选择/确认/取消。
-fn apply_cursor(state: &mut ShellState) {
-    let kind = {
-        let engine = &state.canvas.engine;
-        let (x, y) = engine.cursor();
-        cursor_kind(engine.cursor_for(x, y), engine.state())
-    };
-    if state.applied_cursor == Some(kind) {
-        return;
-    }
-    state.applied_cursor = Some(kind);
+/// 当前形态对应的系统光标。resize 用 SF Symbol,符号不可用时退回双色十字。
+fn cursor_image(state: &mut ShellState, kind: CursorKind) -> Retained<NSCursor> {
     let frame_scale = state.frame_scale;
-    let cursor = match kind {
+    match kind {
         CursorKind::Crosshair => dual_crosshair_cursor(frame_scale),
         CursorKind::OpenHand => NSCursor::openHandCursor(),
         CursorKind::ClosedHand => NSCursor::closedHandCursor(),
@@ -1233,8 +1267,33 @@ fn apply_cursor(state: &mut ShellState) {
             .resize_cursors
             .get(resize)
             .unwrap_or_else(|| dual_crosshair_cursor(frame_scale)),
-    };
-    cursor.set();
+    }
+}
+
+fn current_cursor_kind(state: &ShellState) -> CursorKind {
+    let engine = &state.canvas.engine;
+    let (x, y) = engine.cursor();
+    cursor_kind(engine.cursor_for(x, y), engine.state())
+}
+
+/// 供 `resetCursorRects` 登记。无活动壳时返回 None。
+fn cursor_image_for_active_state() -> Option<Retained<NSCursor>> {
+    STATE.with(|slot| {
+        let mut guard = slot.borrow_mut();
+        let state = guard.as_mut()?;
+        let kind = current_cursor_kind(state);
+        Some(cursor_image(state, kind))
+    })
+}
+
+/// 按当前形态设置光标。形态未变也调用 `set`,避免 AppKit 在选区外移动时把十字换掉。
+/// 返回形态是否变化,供调用方刷新光标矩形。光标切换不影响选择/确认/取消。
+fn push_cursor(state: &mut ShellState) -> bool {
+    let kind = current_cursor_kind(state);
+    let changed = state.applied_cursor != Some(kind);
+    state.applied_cursor = Some(kind);
+    cursor_image(state, kind).set();
+    changed
 }
 
 /// 与 Windows 壳同构的 EngineOutcome 处理:Redraw→重呈现、
@@ -1885,14 +1944,19 @@ mod tests {
 
     fn assert_dual_color_crosshair(sprite: CrosshairSprite) {
         let (cx, cy) = sprite.hotspot();
+        let half = sprite.thickness / 2;
         assert_eq!(sprite.size % 2, 1);
         assert_eq!((cx, cy), (sprite.size / 2, sprite.size / 2));
+        assert!(sprite.thickness >= 3 && sprite.thickness % 2 == 1);
         // 中心热点像素镂空:热点仍对准指针像素,但该像素透明。
         assert_eq!(sprite.pixel(cx, cy), CrosshairPixel::Empty);
-        // 芯从距中心 1 像素处开始,恒 1 物理像素宽。
         assert_eq!(sprite.pixel(cx + 1, cy), CrosshairPixel::Core);
         assert_eq!(sprite.pixel(cx, cy + 1), CrosshairPixel::Core);
-        assert_eq!(sprite.pixel(cx + 1, cy + 1), CrosshairPixel::Outline);
+        assert_eq!(sprite.pixel(cx + half + 1, cy + half), CrosshairPixel::Core);
+        assert_eq!(
+            sprite.pixel(cx + half + 1, cy + half + 1),
+            CrosshairPixel::Outline
+        );
         assert_eq!(
             sprite.pixel(cx, cy.saturating_sub(sprite.arm + 1)),
             CrosshairPixel::Outline
@@ -1901,7 +1965,7 @@ mod tests {
         let rgba = sprite.rgba();
         let core = (cy * sprite.size + cx + 1) * 4;
         assert_eq!(&rgba[core..core + 4], &[0xf7, 0xf7, 0xf7, 0xff]);
-        let outline = ((cy + 1) * sprite.size + cx + 1) * 4;
+        let outline = ((cy + half + 1) * sprite.size + cx + half + 1) * 4;
         assert_eq!(&rgba[outline..outline + 4], &[0x14, 0x14, 0x14, 0xff]);
     }
 
@@ -1915,14 +1979,30 @@ mod tests {
     fn crosshair_sprite_scales_arm_with_frame_scale() {
         let base = CrosshairSprite::for_scale(1.0);
         assert_eq!(base.arm, CrosshairSprite::BASE_ARM);
-        // 200% 时臂长翻倍,边长仍为奇数,芯恒 1 物理像素。
+        assert_eq!(base.thickness, 3);
+        // 200% 时臂长翻倍;线芯 3*2=6,抬到奇数 7,边长仍为奇数。
         let scaled = CrosshairSprite::for_scale(2.0);
         assert_eq!(scaled.arm, base.arm * 2);
+        assert_eq!(scaled.thickness, 7);
         assert_eq!(scaled.size % 2, 1);
         assert_dual_color_crosshair(scaled);
-        let (cx, cy) = scaled.hotspot();
-        assert_eq!(scaled.pixel(cx, cy + 2), CrosshairPixel::Core);
-        assert_eq!(scaled.pixel(cx + 1, cy + 2), CrosshairPixel::Outline);
+    }
+
+    #[test]
+    fn appkit_cursor_queries_reapply_the_current_kind() {
+        let src = include_str!("macos.rs");
+        assert!(
+            src.contains("method(cursorUpdate:)"),
+            "AppKit cursorUpdate must reapply the current cursor"
+        );
+        assert!(
+            src.contains("method(resetCursorRects)"),
+            "cursor rects must publish the current cursor"
+        );
+        assert!(
+            !src.contains("if state.applied_cursor == Some(kind) {\n        return;"),
+            "unchanged cursor kind must still be set"
+        );
     }
 
     #[test]
