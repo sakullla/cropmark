@@ -66,7 +66,7 @@ bash scripts/build-linux.sh
 
 Wayland 下若门户不可用，产品内会说明原因；X11 可走 `XGetImage`。
 
-三平台配置在 `src-tauri/tauri.conf.json` 与 `src-tauri/tauri.{windows,macos,linux}.conf.json`。本地脚本按当前主机架构打包；GitHub Release 固定提供 Windows x64、macOS Apple Silicon、Linux x64 安装包。macOS 使用 ad-hoc 签名，尚未经过 Apple 公证。
+三平台配置在 `src-tauri/tauri.conf.json` 与 `src-tauri/tauri.{windows,macos,linux}.conf.json`。本地脚本按当前主机架构打包；GitHub Release 固定提供 Windows x64、macOS Apple Silicon、Linux x64 安装包。macOS 正式包使用固定的自签证书，不提交 Apple 公证。下载后首次打开仍需在「隐私与安全性」中放行。没有证书环境变量时，本机调试构建仍使用 ad-hoc 签名。
 
 ## 检查与发布
 

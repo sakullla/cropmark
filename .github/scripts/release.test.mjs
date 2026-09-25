@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +14,27 @@ const draft = () => ({
   assets: ["Cropmark_0.1.0_x64-setup.exe", "Cropmark_0.1.0_aarch64.dmg",
     "Cropmark_0.1.0_amd64.deb", "Cropmark_0.1.0_amd64.AppImage"]
     .map((name) => ({ name, state: "uploaded", size: 1024 })),
+});
+
+test("macOS release uses one stable self-signed identity and does not notarize", () => {
+  const workflow = readFileSync(new URL("../workflows/release.yml", import.meta.url), "utf8");
+  const readme = readFileSync(new URL("../../README.md", import.meta.url), "utf8");
+  const agents = readFileSync(new URL("../../AGENTS.md", import.meta.url), "utf8");
+  const macos = readFileSync(new URL("../../src-tauri/tauri.macos.conf.json", import.meta.url), "utf8");
+  assert.match(workflow, /release app is ad-hoc/);
+  assert.doesNotMatch(workflow, /grep -q '\^Signature=adhoc\$' <<< "\$signature"\s*\n\s*codesign/);
+  assert.match(workflow, /test -n "\$\{APPLE_CERTIFICATE\}"/);
+  assert.match(workflow, /test -n "\$\{APPLE_CERTIFICATE_PASSWORD\}"/);
+  assert.match(workflow, /test -n "\$\{APPLE_SIGNING_IDENTITY\}"/);
+  assert.match(workflow, /codesign --verify --deep --strict --verbose=2/);
+  assert.doesNotMatch(workflow, /APPLE_ID|APPLE_PASSWORD|APPLE_API_KEY|APPLE_API_ISSUER/);
+  assert.match(readme, /固定的自签证书/);
+  assert.match(readme, /不提交 Apple 公证/);
+  assert.match(readme, /隐私与安全性/);
+  assert.match(agents, /long-lived self-signed certificate/);
+  assert.match(agents, /not notarized/);
+  assert.match(agents, /Privacy & Security/);
+  assert.match(macos, /"signingIdentity": "-"/);
 });
 
 test("repository versions and bundled models are consistent", () => {

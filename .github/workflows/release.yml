@@ -107,6 +107,28 @@ jobs:
           cache-bin: false
           cache-on-failure: true
       - run: npm ci --prefer-offline --no-audit --no-fund
+      - name: Require stable macOS signing certificate
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          test -n "${APPLE_CERTIFICATE}"
+          test -n "${APPLE_CERTIFICATE_PASSWORD}"
+          test -n "${APPLE_SIGNING_IDENTITY}"
+          {
+            echo "APPLE_CERTIFICATE<<CROPMARK_SIGNING_EOF"
+            echo "${APPLE_CERTIFICATE}"
+            echo "CROPMARK_SIGNING_EOF"
+            echo "APPLE_CERTIFICATE_PASSWORD<<CROPMARK_SIGNING_EOF"
+            echo "${APPLE_CERTIFICATE_PASSWORD}"
+            echo "CROPMARK_SIGNING_EOF"
+            echo "APPLE_SIGNING_IDENTITY<<CROPMARK_SIGNING_EOF"
+            echo "${APPLE_SIGNING_IDENTITY}"
+            echo "CROPMARK_SIGNING_EOF"
+          } >> "${GITHUB_ENV}"
       - name: Build and upload to draft release
         uses: tauri-apps/tauri-action@v1
         env:
@@ -118,7 +140,7 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
           retryAttempts: 2
           args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --verbose -- --locked
-      - name: Verify macOS ad-hoc signature
+      - name: Verify macOS self-signed signature
         if: runner.os == 'macOS'
         env:
           TARGET: ${{ matrix.target }}
@@ -126,9 +148,14 @@ jobs:
           set -euo pipefail
           app="src-tauri/target/$TARGET/release/bundle/macos/Cropmark.app"
           test -d "$app"
+          test -n "${APPLE_SIGNING_IDENTITY}"
           signature=$(codesign --display --verbose=4 "$app" 2>&1)
           echo "$signature"
-          grep -q '^Signature=adhoc$' <<< "$signature"
+          if grep -q '^Signature=adhoc$' <<< "$signature"; then
+            echo "release app is ad-hoc; expected ${APPLE_SIGNING_IDENTITY}" >&2
+            exit 1
+          fi
+          grep -F -q "Authority=${APPLE_SIGNING_IDENTITY}" <<< "$signature"
           codesign --verify --deep --strict --verbose=2 "$app"
 
   verify-release:
