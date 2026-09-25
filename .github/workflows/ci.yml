@@ -65,6 +65,7 @@ jobs:
           workspaces: src-tauri -> target
           cache-workspace-crates: true
           cache-bin: false
+          save-if: ${{ github.event_name != 'pull_request' }}
       - run: npm ci --prefer-offline --no-audit --no-fund
       - run: npm run build
       - name: Test backend

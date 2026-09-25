@@ -54,6 +54,19 @@ test("macOS release uses one stable self-signed identity and does not notarize",
   assert.doesNotMatch(notes, /ad-hoc/);
 });
 
+test("release builds overlap CI but publication waits for validation and verified macOS upload", () => {
+  const workflow = readFileSync(new URL("../workflows/release.yml", import.meta.url), "utf8");
+  const prepare = workflow.split("  prepare:")[1].split("  build:")[0];
+  const build = workflow.split("  build:")[1].split("  verify-release:")[0];
+  const publish = workflow.split("  verify-release:")[1];
+  assert.doesNotMatch(prepare, /\n    needs:/);
+  assert.match(build, /\n    needs: prepare\n/);
+  assert.match(publish, /\n    needs: \[validate, prepare, build\]\n/);
+  assert.ok(build.indexOf("- name: Upload verified macOS disk image") >
+    build.indexOf("- name: Verify macOS self-signed signature"));
+  assert.equal(build.match(/gh release upload/g)?.length, 1);
+});
+
 test("repository versions and bundled models are consistent", () => {
   assert.equal(checkProject(), readVersions()["package.json"]);
 });

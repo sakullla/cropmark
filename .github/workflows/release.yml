@@ -17,7 +17,6 @@ jobs:
 
   prepare:
     name: Prepare draft release
-    needs: validate
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     permissions:
@@ -181,7 +180,6 @@ jobs:
           hdiutil detach "$mount"
           rm -f "$dmg"
           hdiutil convert "$rw" -format UDZO -o "$dmg"
-          gh release upload "${{ github.ref_name }}" "$dmg" --clobber
           security delete-keychain "$keychain"
       - name: Verify macOS self-signed signature
         if: runner.os == 'macOS'
@@ -210,10 +208,22 @@ jobs:
           grep -F -x -q "Authority=${APPLE_SIGNING_IDENTITY}" <<< "$signature"
           codesign --verify --deep --strict --verbose=2 "$app"
           hdiutil detach "$mount"
+      - name: Upload verified macOS disk image
+        if: runner.os == 'macOS'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          arch="${TARGET%%-*}"
+          dmg="src-tauri/target/$TARGET/release/bundle/dmg/Cropmark_${version}_${arch}.dmg"
+          gh release upload "$RELEASE_TAG" "$dmg" --clobber
 
   verify-release:
     name: Verify release assets and publish
-    needs: [prepare, build]
+    needs: [validate, prepare, build]
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     permissions:
