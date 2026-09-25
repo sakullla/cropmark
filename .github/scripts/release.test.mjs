@@ -34,6 +34,10 @@ test("macOS release uses one stable self-signed identity and does not notarize",
   assert.match(workflow, /security import/);
   assert.match(workflow, /codesign --force --options runtime --entitlements/);
   assert.doesNotMatch(workflow, /codesign --force --deep/);
+  assert.match(workflow, /hdiutil resize -size "\$\{rw_size_mib\}m" "\$rw"/);
+  assert.match(workflow, /ditto "\$app" "\$signing_app"/);
+  assert.match(workflow, /ditto "\$signing_app" "\$app"/);
+  assert.doesNotMatch(workflow, /codesign --force[^\n]* "\$app"/);
   assert.match(workflow, /test -L "\$mount\/Applications"/);
   assert.match(macos, /"width": 500/);
   assert.match(macos, /"height": 320/);

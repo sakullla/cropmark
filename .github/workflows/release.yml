@@ -129,14 +129,13 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
           retryAttempts: 2
           args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --verbose -- --locked
-      - name: Build, sign, and upload macOS disk image
+      - name: Build and sign macOS disk image
         if: runner.os == 'macOS'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           TARGET: ${{ matrix.target }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           # CI=true 时 Tauri 会加 --skip-jenkins，跳过安装页的窗口大小和图标位置。
@@ -160,22 +159,32 @@ jobs:
           rw="$RUNNER_TEMP/cropmark-rw.dmg"
           rm -f "$rw"
           hdiutil convert "$dmg" -format UDRW -o "$rw"
+          # Reserve room to replace the ad-hoc signed app with the certificate-signed app.
+          rw_size_mib=$(( ($(stat -f %z "$rw") + 1048575) / 1048576 + 64 ))
+          hdiutil resize -size "${rw_size_mib}m" "$rw"
           mount="$RUNNER_TEMP/cropmark-mnt"
           rm -rf "$mount"
           mkdir -p "$mount"
-          hdiutil attach "$rw" -mountpoint "$mount" -nobrowse -noverify -noautoopen
+          hdiutil attach "$rw" -readwrite -mountpoint "$mount" -nobrowse -noverify -noautoopen
           app="$mount/Cropmark.app"
           test -d "$app"
           test -L "$mount/Applications"
-          # 由内向外签名。--deep 会打乱包内签名，应用会无法打开。
-          find "$app" -type f -print0 | while IFS= read -r -d '' bin; do
+          signing_app="$RUNNER_TEMP/Cropmark.app"
+          rm -rf "$signing_app"
+          ditto "$app" "$signing_app"
+          # Sign on the runner filesystem, then replace the app in the image.
+          # Sign nested Mach-O files before the app; --deep can break their signatures.
+          find "$signing_app" -type f -print0 | while IFS= read -r -d '' bin; do
             if file -b "$bin" | grep -q 'Mach-O'; then
               printf '%s\n' "$bin"
             fi
           done | awk '{ print length($0) "\t" $0 }' | sort -nr | cut -f2- | while IFS= read -r bin; do
-            codesign --force --options runtime --sign "$APPLE_SIGNING_IDENTITY" "$bin"
+            codesign --force --options runtime --keychain "$keychain" --sign "$APPLE_SIGNING_IDENTITY" "$bin"
           done
-          codesign --force --options runtime --entitlements src-tauri/entitlements.plist --sign "$APPLE_SIGNING_IDENTITY" "$app"
+          codesign --force --options runtime --entitlements src-tauri/entitlements.plist --keychain "$keychain" --sign "$APPLE_SIGNING_IDENTITY" "$signing_app"
+          codesign --verify --deep --strict --verbose=2 "$signing_app"
+          rm -rf "$app"
+          ditto "$signing_app" "$app"
           rm -f "$RUNNER_TEMP/cropmark.p12"
           hdiutil detach "$mount"
           rm -f "$dmg"
