@@ -8,7 +8,21 @@
       "entitlements": "entitlements.plist",
       "hardenedRuntime": true,
       "signingIdentity": "-",
-      "bundleName": "Cropmark"
+      "bundleName": "Cropmark",
+      "dmg": {
+        "windowSize": {
+          "width": 500,
+          "height": 320
+        },
+        "appPosition": {
+          "x": 110,
+          "y": 120
+        },
+        "applicationFolderPosition": {
+          "x": 340,
+          "y": 120
+        }
+      }
     }
   }
 }

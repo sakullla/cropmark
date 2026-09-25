@@ -140,10 +140,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          # CI=true 时 Tauri 会加 --skip-jenkins，跳过安装页的窗口大小和图标位置。
+          export TAURI_BUNDLER_DMG_IGNORE_CI=true
           env -u APPLE_CERTIFICATE -u APPLE_CERTIFICATE_PASSWORD -u APPLE_SIGNING_IDENTITY \
-            npm run tauri -- build --target "$TARGET" --bundles app --no-sign -- --locked
-          app="src-tauri/target/$TARGET/release/bundle/macos/Cropmark.app"
-          test -d "$app"
+            npm run tauri -- build --target "$TARGET" --bundles dmg --no-sign -- --locked
+          version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          arch="${TARGET%%-*}"
+          dmg="src-tauri/target/$TARGET/release/bundle/dmg/Cropmark_${version}_${arch}.dmg"
+          test -f "$dmg"
           keychain="$RUNNER_TEMP/cropmark.keychain-db"
           keychain_password="$(openssl rand -hex 16)"
           security create-keychain -p "$keychain_password" "$keychain"
@@ -154,12 +158,29 @@ jobs:
           base64 --decode > "$RUNNER_TEMP/cropmark.p12" <<< "${APPLE_CERTIFICATE}"
           security import "$RUNNER_TEMP/cropmark.p12" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
-          codesign --force --deep --options runtime --entitlements src-tauri/entitlements.plist --sign "$APPLE_SIGNING_IDENTITY" "$app"
+          rw="$RUNNER_TEMP/cropmark-rw.dmg"
+          rm -f "$rw"
+          hdiutil convert "$dmg" -format UDRW -o "$rw"
+          mount="$RUNNER_TEMP/cropmark-mnt"
+          rm -rf "$mount"
+          mkdir -p "$mount"
+          hdiutil attach "$rw" -mountpoint "$mount" -nobrowse -noverify -noautoopen
+          app="$mount/Cropmark.app"
+          test -d "$app"
+          test -L "$mount/Applications"
+          # 由内向外签名。--deep 会打乱包内签名，应用会无法打开。
+          find "$app" -type f -print0 | while IFS= read -r -d '' bin; do
+            if file -b "$bin" | grep -q 'Mach-O'; then
+              printf '%s\n' "$bin"
+            fi
+          done | awk '{ print length($0) "\t" $0 }' | sort -nr | cut -f2- | while IFS= read -r bin; do
+            codesign --force --options runtime --sign "$APPLE_SIGNING_IDENTITY" "$bin"
+          done
+          codesign --force --options runtime --entitlements src-tauri/entitlements.plist --sign "$APPLE_SIGNING_IDENTITY" "$app"
           rm -f "$RUNNER_TEMP/cropmark.p12"
-          version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
-          arch="${TARGET%%-*}"
-          dmg="$RUNNER_TEMP/Cropmark_${version}_${arch}.dmg"
-          hdiutil create -volname Cropmark -srcfolder "$app" -ov -format UDZO "$dmg"
+          hdiutil detach "$mount"
+          rm -f "$dmg"
+          hdiutil convert "$rw" -format UDZO -o "$dmg"
           gh release upload "${{ github.ref_name }}" "$dmg" --clobber
           security delete-keychain "$keychain"
       - name: Verify macOS self-signed signature
@@ -169,7 +190,15 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
           set -euo pipefail
-          app="src-tauri/target/$TARGET/release/bundle/macos/Cropmark.app"
+          version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          arch="${TARGET%%-*}"
+          dmg="src-tauri/target/$TARGET/release/bundle/dmg/Cropmark_${version}_${arch}.dmg"
+          test -f "$dmg"
+          mount="$RUNNER_TEMP/cropmark-verify"
+          rm -rf "$mount"
+          mkdir -p "$mount"
+          hdiutil attach "$dmg" -mountpoint "$mount" -nobrowse -noverify -noautoopen
+          app="$mount/Cropmark.app"
           test -d "$app"
           test -n "${APPLE_SIGNING_IDENTITY}"
           signature=$(codesign --display --verbose=4 "$app" 2>&1)
@@ -180,6 +209,7 @@ jobs:
           fi
           grep -F -x -q "Authority=${APPLE_SIGNING_IDENTITY}" <<< "$signature"
           codesign --verify --deep --strict --verbose=2 "$app"
+          hdiutil detach "$mount"
 
   verify-release:
     name: Verify release assets and publish
