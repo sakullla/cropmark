@@ -71,6 +71,13 @@
   filter: var(--control-pressed-filter);
 }
 
+/* hover/active 的 filter 会给按钮创建独立堆叠上下文;工具条 flex-wrap 换行时,
+   被悬停按钮的自绘提示会被后续行按钮(树序在后)盖住,故悬停/按下时提升局部层级。 */
+.pin-toolbar button:hover,
+.pin-toolbar button:active {
+  z-index: 1;
+}
+
 .pin-toolbar svg {
   display: block;
   width: 14px;
