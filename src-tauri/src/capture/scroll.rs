@@ -7,6 +7,10 @@
 //! 滚动过快都给出可理解的状态提示并允许继续或取消;拼接高度设上限,达到
 //! 上限自动完成并提示。
 //!
+//! 控制窗永不与采集区域相交(四侧放不下时改用其他显示器、收缩贴边,仍无
+//! 合法位置则明确失败不开会话),并在支持排除抓取的平台(Windows/macOS)
+//! 把控制窗从屏幕抓取中排除,避免置顶卡片污染拼接结果。
+//!
 //! 完成结果走 `session::finish_scroll_frame`(现有预览完成路径,历史与
 //! 「上次区域」规则同源);取消、内容未变化、平台不支持三类路径给出提示且
 //! 不写剪贴板、历史或磁盘。
@@ -17,8 +21,8 @@ use std::time::Duration;
 
 use serde::Serialize;
 use tauri::{
-    AppHandle, Emitter, LogicalPosition, Manager, Position, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder,
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, Position, WebviewUrl,
+    WebviewWindow, WebviewWindowBuilder,
 };
 
 use super::buffer::{crop_rgba, Frame};
@@ -50,9 +54,12 @@ pub(crate) const MAX_STITCH_HEIGHT: u32 = 12_000;
 /// 拼接像素总量上限:限制超宽区域的内存占用(高度上限随之收紧)。
 pub(crate) const MAX_STITCH_PIXELS: u64 = 40_000_000;
 
-/// 控制窗逻辑尺寸。
+/// 控制窗期望逻辑尺寸。
 const CONTROL_WIDTH: f64 = 320.0;
 const CONTROL_HEIGHT: f64 = 150.0;
+/// 收缩放置允许的最小可用逻辑尺寸(再小则改用其他显示器或明确失败)。
+const MIN_CONTROL_WIDTH: f64 = 160.0;
+const MIN_CONTROL_HEIGHT: f64 = 80.0;
 /// 控制窗与选区之间的间距(逻辑像素)。
 const CONTROL_GAP: f64 = 10.0;
 
@@ -118,53 +125,97 @@ fn luma(px: &[u8]) -> u32 {
     (u32::from(px[0]) * 299 + u32::from(px[1]) * 587 + u32::from(px[2]) * 114) / 1000
 }
 
+/// `prev` 底部条带与 `next` 中 `candidate` 处同高条带的亮度差总和与采样数;
+/// `step_y` 为纵向采样步长(粗扫 2、并列复核 1)。
+fn strip_diff_sum(
+    prev: &Frame,
+    next: &Frame,
+    strip_y: u32,
+    candidate: u32,
+    step_y: u32,
+) -> (u64, u64) {
+    let stride = prev.width as usize * 4;
+    let strip_h = strip_height(prev.height);
+    let step_y = step_y.max(1);
+    let mut sum = 0u64;
+    let mut count = 0u64;
+    let mut sy = 0u32;
+    while sy < strip_h {
+        let prow = (strip_y + sy) as usize * stride;
+        let nrow = (candidate + sy) as usize * stride;
+        let mut sx = 0u32;
+        while sx < prev.width {
+            let p = prow + sx as usize * 4;
+            let n = nrow + sx as usize * 4;
+            let diff = luma(&prev.rgba[p..p + 4]).abs_diff(luma(&next.rgba[n..n + 4]));
+            sum += u64::from(diff);
+            count += 1;
+            sx += SAMPLE_STEP_X;
+        }
+        sy += step_y;
+    }
+    (sum, count.max(1))
+}
+
+/// 平均亮度差(整数)。
+fn strip_mean_diff(prev: &Frame, next: &Frame, strip_y: u32, candidate: u32, step_y: u32) -> u64 {
+    let (sum, count) = strip_diff_sum(prev, next, strip_y, candidate, step_y);
+    sum / count
+}
+
+/// 并列候选复核上限:超过该数量说明是同色/无纹理的大面积歧义,直接取最小
+/// 位移,不再逐行复核(限制最坏耗时)。
+const TIE_VERIFY_LIMIT: usize = 64;
+
 /// 在 `next` 中寻找 `prev` 底部条带的垂直位置(只允许向上/不动,即只支持
 /// 向下滚动内容):返回条带顶边 y(0..=prev.height-strip);平均亮度差超过
 /// 容忍上限时返回 None。
+///
+/// 判定顺序保证静态纯色画面不会被误判为滚动:先看「无变化基线」(条带原位
+/// `y=strip_y`,即位移 0)是否仍在容忍范围内,是则直接返回原位;否则粗扫
+/// 全量候选,并列(相同最小均值,纯色/周期纹理下常见)的小集合改用逐行采样
+/// 复核,消除小于纵向采样步长的伪并列,复核后仍并列时取最小位移(最大的
+/// `y`),避免把首个精确匹配当成大幅滚动并合成出伪内容。
 pub(crate) fn match_strip_offset(prev: &Frame, next: &Frame) -> Option<u32> {
     if prev.width == 0 || prev.height < 2 || next.width != prev.width || next.height != prev.height
     {
         return None;
     }
-    let stride = prev.width as usize * 4;
-    let strip_h = strip_height(prev.height);
-    let strip_y = prev.height - strip_h;
-    let mut best_y = 0u32;
+    let strip_y = prev.height - strip_height(prev.height);
+    if strip_mean_diff(prev, next, strip_y, strip_y, SAMPLE_STEP_Y) <= MATCH_MAX_MEAN_DIFF {
+        return Some(strip_y);
+    }
     let mut best_mean = u64::MAX;
-    let mut candidate = 0u32;
-    while candidate <= strip_y {
-        let mut sum = 0u64;
-        let mut count = 0u64;
-        let mut sy = 0u32;
-        while sy < strip_h {
-            let prow = (strip_y + sy) as usize * stride;
-            let nrow = (candidate + sy) as usize * stride;
-            let mut sx = 0u32;
-            while sx < prev.width {
-                let p = prow + sx as usize * 4;
-                let n = nrow + sx as usize * 4;
-                let diff = luma(&prev.rgba[p..p + 4]).abs_diff(luma(&next.rgba[n..n + 4]));
-                sum += u64::from(diff);
-                count += 1;
-                sx += SAMPLE_STEP_X;
-            }
-            sy += SAMPLE_STEP_Y;
-        }
-        let mean = sum / count.max(1);
+    let mut tied: Vec<u32> = Vec::new();
+    for candidate in 0..=strip_y {
+        let mean = strip_mean_diff(prev, next, strip_y, candidate, SAMPLE_STEP_Y);
         if mean < best_mean {
             best_mean = mean;
-            best_y = candidate;
-            if mean == 0 {
-                break;
+            tied.clear();
+            tied.push(candidate);
+        } else if mean == best_mean {
+            tied.push(candidate);
+        }
+    }
+    if best_mean > MATCH_MAX_MEAN_DIFF {
+        return None;
+    }
+    if tied.len() > 1 && tied.len() <= TIE_VERIFY_LIMIT {
+        // 逐行复核用未取整的差值总和比较:单个错位像素的均值会被整数除法
+        // 抹成 0,只有总和比较才能把 ±1px 的伪并列剔除。
+        let mut best_y = *tied.last().expect("tied is never empty");
+        let (mut best_sum, mut best_count) = strip_diff_sum(prev, next, strip_y, best_y, 1);
+        for candidate in tied.iter().rev().skip(1) {
+            let (sum, count) = strip_diff_sum(prev, next, strip_y, *candidate, 1);
+            if sum * best_count < best_sum * count {
+                best_sum = sum;
+                best_count = count;
+                best_y = *candidate;
             }
         }
-        candidate += 1;
+        return (best_sum <= MATCH_MAX_MEAN_DIFF * best_count).then_some(best_y);
     }
-    if best_mean <= MATCH_MAX_MEAN_DIFF {
-        Some(best_y)
-    } else {
-        None
-    }
+    Some(*tied.last().expect("tied is never empty"))
 }
 
 /// 垂直拼接器:持有初始区域与最近一帧,按位移追加新内容。
@@ -280,41 +331,195 @@ impl Stitcher {
     }
 }
 
-/// 控制窗位置:优先贴选区右侧,右侧放不下改左侧,再往下/上;都放不下时
-/// 收到显示器逻辑范围右下角(仍尽量不覆盖选区中心)。
-pub(crate) fn control_origin(
-    monitor: &MonitorGeom,
-    region: &RegionSelection,
-    window: (f64, f64),
-) -> (f64, f64) {
-    let scale = if monitor.scale.is_finite() && monitor.scale > 0.0 {
+/// 控制窗最终放置:逻辑尺寸(建窗/改尺寸)与物理位置(最终定位,避免混合
+/// DPI 下逻辑坐标换算漂移)。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ControlPlacement {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    pub physical_x: f64,
+    pub physical_y: f64,
+}
+
+/// 物理像素矩形 `(x, y, width, height)`。
+type PhysicalRect = (f64, f64, f64, f64);
+
+fn monitor_scale(monitor: &MonitorGeom) -> f64 {
+    if monitor.scale.is_finite() && monitor.scale > 0.0 {
         monitor.scale
     } else {
         1.0
-    };
-    let mx = monitor.logical_x as f64;
-    let my = monitor.logical_y as f64;
-    let mw = monitor.logical_width as f64;
-    let mh = monitor.logical_height as f64;
-    let rx = mx + region.x as f64 / scale;
-    let ry = my + region.y as f64 / scale;
-    let rw = region.width as f64 / scale;
-    let rh = region.height as f64 / scale;
+    }
+}
+
+fn monitor_rect(monitor: &MonitorGeom) -> PhysicalRect {
+    (
+        monitor.physical_x as f64,
+        monitor.physical_y as f64,
+        monitor.physical_width as f64,
+        monitor.physical_height as f64,
+    )
+}
+
+/// 显示器逻辑全局坐标 + 逻辑尺寸 → 物理全局矩形(测试用于复核放置结果)。
+#[cfg(test)]
+fn physical_rect(monitor: &MonitorGeom, x: f64, y: f64, width: f64, height: f64) -> PhysicalRect {
+    let scale = monitor_scale(monitor);
+    (
+        monitor.physical_x as f64 + (x - monitor.logical_x as f64) * scale,
+        monitor.physical_y as f64 + (y - monitor.logical_y as f64) * scale,
+        width * scale,
+        height * scale,
+    )
+}
+
+fn rect_contains(outer: PhysicalRect, inner: PhysicalRect) -> bool {
+    inner.0 >= outer.0
+        && inner.1 >= outer.1
+        && inner.0 + inner.2 <= outer.0 + outer.2
+        && inner.1 + inner.3 <= outer.1 + outer.3
+}
+
+fn rects_intersect(a: PhysicalRect, b: PhysicalRect) -> bool {
+    a.0 < b.0 + b.2 && b.0 < a.0 + a.2 && a.1 < b.1 + b.3 && b.1 < a.1 + a.3
+}
+
+fn placement_on(
+    monitor: &MonitorGeom,
+    physical_x: f64,
+    physical_y: f64,
+    width: f64,
+    height: f64,
+) -> ControlPlacement {
+    let scale = monitor_scale(monitor);
+    ControlPlacement {
+        x: monitor.logical_x as f64 + (physical_x - monitor.physical_x as f64) / scale,
+        y: monitor.logical_y as f64 + (physical_y - monitor.physical_y as f64) / scale,
+        width,
+        height,
+        physical_x,
+        physical_y,
+    }
+}
+
+/// 控制窗放置:优先贴选区右侧,右侧放不下改左侧、下侧、上侧;都放不下时
+/// 放到其他显示器;仍放不下则在本显示器上收缩到可用下限以上贴边。
+///
+/// 结果保证完整落在某台显示器内且**与采集区域不相交**(物理像素比较,混合
+/// DPI 下不会把逻辑坐标当物理坐标误判)。没有任何合法位置时返回 None,调用
+/// 方以明确文案失败,而不是把控制窗压进采集区域污染拼接结果。
+pub(crate) fn control_placement(
+    monitors: &[MonitorGeom],
+    region_monitor: &MonitorGeom,
+    region: &RegionSelection,
+    window: (f64, f64),
+) -> Option<ControlPlacement> {
     let (ww, wh) = window;
-    let candidates = [
-        (rx + rw + CONTROL_GAP, ry),
-        (rx - ww - CONTROL_GAP, ry),
-        (rx, ry + rh + CONTROL_GAP),
-        (rx, ry - wh - CONTROL_GAP),
-    ];
-    for (x, y) in candidates {
-        if x >= mx && y >= my && x + ww <= mx + mw && y + wh <= my + mh {
-            return (x, y);
+    let region_rect: PhysicalRect = (
+        region_monitor.physical_x as f64 + region.x as f64,
+        region_monitor.physical_y as f64 + region.y as f64,
+        region.width as f64,
+        region.height as f64,
+    );
+    let scale = monitor_scale(region_monitor);
+    let gap = CONTROL_GAP * scale;
+    let mrect = monitor_rect(region_monitor);
+    let (rx, ry) = (region_rect.0, region_rect.1);
+    let (rw, rh) = (region_rect.2, region_rect.3);
+    let full_w = ww * scale;
+    let full_h = wh * scale;
+    let fits =
+        |rect: PhysicalRect| rect_contains(mrect, rect) && !rects_intersect(rect, region_rect);
+
+    // 1) 选区四侧,完整尺寸。
+    for (x, y) in [
+        (rx + rw + gap, ry),
+        (rx - full_w - gap, ry),
+        (rx, ry + rh + gap),
+        (rx, ry - full_h - gap),
+    ] {
+        if fits((x, y, full_w, full_h)) {
+            return Some(placement_on(region_monitor, x, y, ww, wh));
         }
     }
-    let x = (mx + mw - ww - CONTROL_GAP).max(mx);
-    let y = (my + mh - wh - CONTROL_GAP).max(my);
-    (x, y)
+
+    // 2) 其他显示器(跳过镜像屏等同物理范围的屏幕):完整尺寸,靠近选区投影。
+    let region_center = (rx + rw / 2.0, ry + rh / 2.0);
+    for other in monitors {
+        let orect = monitor_rect(other);
+        if orect == mrect {
+            continue;
+        }
+        let oscale = monitor_scale(other);
+        let ow = ww * oscale;
+        let oh = wh * oscale;
+        let og = CONTROL_GAP * oscale;
+        if orect.2 < ow + 2.0 * og || orect.3 < oh + 2.0 * og {
+            continue;
+        }
+        let x = (region_center.0 - ow / 2.0).clamp(orect.0 + og, orect.0 + orect.2 - ow - og);
+        let y = (region_center.1 - oh / 2.0).clamp(orect.1 + og, orect.1 + orect.3 - oh - og);
+        if !rects_intersect((x, y, ow, oh), region_rect) {
+            return Some(placement_on(other, x, y, ww, wh));
+        }
+    }
+
+    // 3) 本显示器收缩贴边(不低于可用下限),顺序同四侧。
+    let min_w = MIN_CONTROL_WIDTH * scale;
+    let min_h = MIN_CONTROL_HEIGHT * scale;
+    // 右侧:宽度受选区右边界限制。
+    let width = (mrect.0 + mrect.2 - (rx + rw) - gap).min(full_w);
+    if width >= min_w && full_h >= min_h && full_h + 2.0 * gap <= mrect.3 {
+        let x = rx + rw + gap;
+        let y = ry.clamp(mrect.1 + gap, mrect.1 + mrect.3 - full_h - gap);
+        if fits((x, y, width, full_h)) {
+            return Some(placement_on(region_monitor, x, y, width / scale, wh));
+        }
+    }
+    // 左侧。
+    let width = (rx - mrect.0 - gap).min(full_w);
+    if width >= min_w && full_h >= min_h && full_h + 2.0 * gap <= mrect.3 {
+        let x = rx - gap - width;
+        let y = ry.clamp(mrect.1 + gap, mrect.1 + mrect.3 - full_h - gap);
+        if fits((x, y, width, full_h)) {
+            return Some(placement_on(region_monitor, x, y, width / scale, wh));
+        }
+    }
+    // 下方:高度受选区下边界限制。
+    let height = (mrect.1 + mrect.3 - (ry + rh) - gap).min(full_h);
+    let width = full_w.min(mrect.2 - 2.0 * gap);
+    if height >= min_h && width >= min_w {
+        let y = ry + rh + gap;
+        let x = rx.clamp(mrect.0 + gap, mrect.0 + mrect.2 - width - gap);
+        if fits((x, y, width, height)) {
+            return Some(placement_on(
+                region_monitor,
+                x,
+                y,
+                width / scale,
+                height / scale,
+            ));
+        }
+    }
+    // 上方。
+    let height = (ry - mrect.1 - gap).min(full_h);
+    let width = full_w.min(mrect.2 - 2.0 * gap);
+    if height >= min_h && width >= min_w {
+        let y = ry - gap - height;
+        let x = rx.clamp(mrect.0 + gap, mrect.0 + mrect.2 - width - gap);
+        if fits((x, y, width, height)) {
+            return Some(placement_on(
+                region_monitor,
+                x,
+                y,
+                width / scale,
+                height / scale,
+            ));
+        }
+    }
+    None
 }
 
 fn emit_status(app: &AppHandle, status: ScrollStatus) {
@@ -372,7 +577,13 @@ pub(crate) fn start(
         }
     };
     let cap_height = stitch_cap_height(initial.width);
-    if let Err(error) = open_control_window(app, &monitor, &region) {
+    // 其他显示器用于控制窗兜底放置;枚举失败时退化为只考虑选区显示器,
+    // 保证"放不下就明确失败"的不相交契约不变。
+    let monitors = match session::tauri_monitors(app) {
+        monitors if monitors.is_empty() => vec![monitor.clone()],
+        monitors => monitors,
+    };
+    if let Err(error) = open_control_window(app, &monitors, &monitor, &region) {
         release_state(generation);
         dismiss_control_window_now(app);
         return Err(error);
@@ -405,14 +616,24 @@ pub(crate) fn start(
 
 fn open_control_window(
     app: &AppHandle,
+    monitors: &[MonitorGeom],
     monitor: &MonitorGeom,
     region: &RegionSelection,
 ) -> Result<WebviewWindow, CaptureError> {
-    let (x, y) = control_origin(monitor, region, (CONTROL_WIDTH, CONTROL_HEIGHT));
+    let placement = control_placement(monitors, monitor, region, (CONTROL_WIDTH, CONTROL_HEIGHT))
+        .ok_or_else(|| CaptureError::unavailable("error.capture.scroll_no_space"))?;
+    let physical = Position::Physical(PhysicalPosition::new(
+        placement.physical_x.round() as i32,
+        placement.physical_y.round() as i32,
+    ));
     // 复用已存在的控制窗(toast/error 同模式):关闭再同标签重建存在
     // webview 销毁竞态;隐藏复用只重置显示状态并通知前端补拉最新状态。
     if let Some(window) = app.get_webview_window(WINDOW) {
-        let _ = window.set_position(Position::Logical(LogicalPosition { x, y }));
+        // R1:控制窗从抓取中排除(Windows WDA_EXCLUDEFROMCAPTURE /
+        // macOS sharingType=none;其他平台不支持时依赖不相交放置)。
+        let _ = window.set_content_protected(true);
+        let _ = window.set_size(LogicalSize::new(placement.width, placement.height));
+        let _ = window.set_position(physical);
         let _ = window.set_always_on_top(true);
         let _ = window.set_ignore_cursor_events(false);
         let _ = window.show();
@@ -435,10 +656,13 @@ fn open_control_window(
     .closable(true)
     .always_on_top(true)
     .focused(false)
-    .inner_size(CONTROL_WIDTH, CONTROL_HEIGHT)
-    .position(x, y)
+    .content_protected(true)
+    .inner_size(placement.width, placement.height)
+    .position(placement.x, placement.y)
     .build()
     .map_err(|error| CaptureError::api_detail("error.capture.window_build", &error.to_string()))?;
+    // 物理坐标为准:混合 DPI 下逻辑位置换算可能有零点几像素漂移。
+    let _ = window.set_position(physical);
     let _ = window.set_ignore_cursor_events(false);
     Ok(window)
 }
@@ -446,6 +670,7 @@ fn open_control_window(
 /// 收起控制窗:仅隐藏,保留预创建 webview 供下一次会话复用。
 fn dismiss_control_window_now(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(WINDOW) {
+        let _ = window.set_content_protected(false);
         let _ = window.set_always_on_top(false);
         let _ = window.hide();
     }
@@ -729,6 +954,43 @@ mod tests {
         }
     }
 
+    /// 底部 `solid_rows` 行为纯色、其余为行纹的页面(模拟文档底部纯色留白)。
+    fn page_with_solid_bottom(width: u32, height: u32, solid_rows: u32, value: u8) -> Frame {
+        let mut frame = page(width, height, 0);
+        let start = height.saturating_sub(solid_rows) as usize;
+        for y in start..height as usize {
+            for x in 0..width as usize {
+                let i = (y * width as usize + x) * 4;
+                frame.rgba[i] = value;
+                frame.rgba[i + 1] = value;
+                frame.rgba[i + 2] = value;
+            }
+        }
+        frame
+    }
+
+    /// 每两行同值的粗纹理:纵向采样步长为 2 时,±1px 位移会伪装成并列精确匹配。
+    fn coarse_page(width: u32, height: u32, seed: u32) -> Frame {
+        let mut rgba = vec![0u8; width as usize * height as usize * 4];
+        for y in 0..height {
+            let value = (((y / 2) * 53 + seed) % 251) as u8;
+            for x in 0..width {
+                let i = (y as usize * width as usize + x as usize) * 4;
+                let jitter = (x % 3) as u8;
+                rgba[i] = value.saturating_add(jitter);
+                rgba[i + 1] = value;
+                rgba[i + 2] = value.wrapping_sub(jitter);
+                rgba[i + 3] = 255;
+            }
+        }
+        Frame {
+            width,
+            height,
+            rgba,
+            scale: 1.0,
+        }
+    }
+
     #[test]
     fn bottom_strip_matching_estimates_scroll_delta() {
         let page = page(96, 240, 0);
@@ -755,6 +1017,66 @@ mod tests {
         let prev = page(64, 120, 0);
         let next = flat(64, 120, 120);
         assert_eq!(match_strip_offset(&prev, &next), None);
+    }
+
+    #[test]
+    fn solid_static_frame_is_not_mistaken_for_a_scroll() {
+        // 整区纯色:所有候选都精确命中,修复前取首个匹配(y=0)会伪造大幅位移。
+        let frame = flat(64, 120, 200);
+        let strip_y = 120 - strip_height(120);
+        assert_eq!(match_strip_offset(&frame, &frame.clone()), Some(strip_y));
+
+        let mut stitcher = Stitcher::new(frame.clone(), 1000);
+        for tick in 0..(UNCHANGED_HINT_AFTER + 2) {
+            let expected = ScrollTick::Unchanged {
+                hint: tick + 1 >= UNCHANGED_HINT_AFTER,
+            };
+            assert_eq!(stitcher.tick(frame.clone()), expected, "tick {tick}");
+        }
+        assert!(!stitcher.scrolled());
+        assert_eq!(stitcher.appended(), 0);
+        assert!(!stitcher.limit_reached());
+        assert_eq!(stitcher.height(), 120);
+    }
+
+    #[test]
+    fn solid_bottom_band_static_frame_keeps_zero_delta() {
+        // 底部纯色带比条带高:修复前首个精确匹配在 y=40,会追加 40 行伪内容。
+        let page = page_with_solid_bottom(96, 200, 160, 230);
+        let prev = viewport(&page, 0, 120);
+        let strip_y = 120 - strip_height(120);
+        assert_eq!(match_strip_offset(&prev, &prev.clone()), Some(strip_y));
+
+        let mut stitcher = Stitcher::new(prev.clone(), 1000);
+        assert_eq!(stitcher.tick(prev), ScrollTick::Unchanged { hint: false });
+        assert!(!stitcher.scrolled());
+        assert_eq!(stitcher.appended(), 0);
+        assert_eq!(stitcher.height(), 120);
+    }
+
+    #[test]
+    fn solid_bottom_band_does_not_mask_a_real_scroll() {
+        // 纯色带上方仍有纹理:真实滚动时无变化基线不再匹配,位移仍可估计。
+        let page = page_with_solid_bottom(96, 400, 160, 230);
+        let prev = viewport(&page, 0, 120);
+        let next = viewport(&page, 30, 120);
+        let y = match_strip_offset(&prev, &next).expect("scrolled texture must match");
+        assert_eq!(120 - strip_height(120) - y, 30);
+    }
+
+    #[test]
+    fn tie_verification_rejects_parity_shifted_candidates() {
+        // 粗纹理上 ±1px 候选在粗采样下与真实位移并列;逐行复核必须选回真实
+        // 位移,而不是偏 1px 的合成结果。
+        let page = coarse_page(96, 240, 5);
+        let prev = viewport(&page, 0, 120);
+        let strip_y = 120 - strip_height(120);
+        for delta in [2u32, 9, 21] {
+            let next = viewport(&page, delta, 120);
+            let y = match_strip_offset(&prev, &next)
+                .unwrap_or_else(|| panic!("delta {delta} must match"));
+            assert_eq!(strip_y - y, delta, "delta {delta}");
+        }
     }
 
     #[test]
@@ -860,6 +1182,43 @@ mod tests {
         assert!(stitch_cap_height(0) > 0);
     }
 
+    fn placement(
+        monitors: &[MonitorGeom],
+        region_monitor: &MonitorGeom,
+        region: &RegionSelection,
+    ) -> Option<ControlPlacement> {
+        control_placement(
+            monitors,
+            region_monitor,
+            region,
+            (CONTROL_WIDTH, CONTROL_HEIGHT),
+        )
+    }
+
+    /// 放置结果必须完整落在目标显示器内且与采集区域零相交。
+    fn assert_clear(
+        placed: &ControlPlacement,
+        target: &MonitorGeom,
+        region_monitor: &MonitorGeom,
+        region: &RegionSelection,
+    ) {
+        let window = physical_rect(target, placed.x, placed.y, placed.width, placed.height);
+        let region_rect: PhysicalRect = (
+            region_monitor.physical_x as f64 + region.x as f64,
+            region_monitor.physical_y as f64 + region.y as f64,
+            region.width as f64,
+            region.height as f64,
+        );
+        assert!(
+            rect_contains(monitor_rect(target), window),
+            "control window {window:?} is outside its monitor"
+        );
+        assert!(
+            !rects_intersect(window, region_rect),
+            "control window {window:?} intersects the capture region {region_rect:?}"
+        );
+    }
+
     #[test]
     fn control_window_prefers_the_side_of_the_region() {
         let monitor = MonitorGeom::from_physical("m", 0, 0, 1920, 1080, 1.0);
@@ -869,8 +1228,14 @@ mod tests {
             width: 400,
             height: 300,
         };
-        let (x, y) = control_origin(&monitor, &region, (320.0, 150.0));
-        assert_eq!((x, y), (100.0 + 400.0 + CONTROL_GAP, 100.0));
+        let placed = placement(std::slice::from_ref(&monitor), &monitor, &region)
+            .expect("room on the right");
+        assert_eq!((placed.x, placed.y), (100.0 + 400.0 + CONTROL_GAP, 100.0));
+        assert_eq!(
+            (placed.width, placed.height),
+            (CONTROL_WIDTH, CONTROL_HEIGHT)
+        );
+        assert_clear(&placed, &monitor, &monitor, &region);
     }
 
     #[test]
@@ -882,12 +1247,16 @@ mod tests {
             width: 400,
             height: 300,
         };
-        let (x, _) = control_origin(&monitor, &region, (320.0, 150.0));
-        assert_eq!(x, 1500.0 - 320.0 - CONTROL_GAP);
+        let placed =
+            placement(std::slice::from_ref(&monitor), &monitor, &region).expect("room on the left");
+        assert_eq!(placed.x, 1500.0 - CONTROL_WIDTH - CONTROL_GAP);
+        assert_clear(&placed, &monitor, &monitor, &region);
     }
 
     #[test]
-    fn control_window_clamps_into_a_tiny_work_area() {
+    fn fullscreen_region_on_a_single_monitor_has_no_placement() {
+        // 选区占满唯一显示器:四侧、其他显示器、收缩都放不下,必须返回 None,
+        // 由调用方明确失败而不是把控制窗塞进采集区域。
         let monitor = MonitorGeom::from_physical("m", 0, 0, 300, 200, 1.0);
         let region = RegionSelection {
             x: 0,
@@ -895,8 +1264,77 @@ mod tests {
             width: 300,
             height: 200,
         };
-        let (x, y) = control_origin(&monitor, &region, (320.0, 150.0));
-        assert_eq!((x, y), (0.0, 200.0 - 150.0 - CONTROL_GAP));
+        assert_eq!(
+            placement(std::slice::from_ref(&monitor), &monitor, &region),
+            None
+        );
+    }
+
+    #[test]
+    fn near_fullscreen_region_shrinks_the_control_window_above_it() {
+        let monitor = MonitorGeom::from_physical("m", 0, 0, 1920, 1080, 1.0);
+        let region = RegionSelection {
+            x: 0,
+            y: 120,
+            width: 1920,
+            height: 960,
+        };
+        let placed = placement(std::slice::from_ref(&monitor), &monitor, &region)
+            .expect("top margin must fit a shrunken card");
+        assert_eq!((placed.x, placed.y), (CONTROL_GAP, 0.0));
+        assert_eq!(placed.width, CONTROL_WIDTH);
+        assert_eq!(placed.height, 120.0 - CONTROL_GAP);
+        assert_clear(&placed, &monitor, &monitor, &region);
+    }
+
+    #[test]
+    fn fullscreen_region_moves_the_control_window_to_another_monitor() {
+        let primary = MonitorGeom::from_physical("p", 0, 0, 1920, 1080, 1.0);
+        let secondary = MonitorGeom::from_physical("s", 1920, 0, 1920, 1080, 1.0);
+        let monitors = [primary.clone(), secondary.clone()];
+        let region = RegionSelection {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        };
+        let placed = placement(&monitors, &primary, &region).expect("secondary display has room");
+        assert_eq!(placed.physical_x, 1930.0);
+        assert_clear(&placed, &secondary, &primary, &region);
+    }
+
+    #[test]
+    fn mirrored_display_does_not_offer_placement() {
+        // 镜像屏与选区共享物理范围:不能作为"其他显示器"兜底,应明确失败。
+        let primary = MonitorGeom::from_physical("p", 0, 0, 1920, 1080, 1.0);
+        let mirror = MonitorGeom::from_physical("mirror", 0, 0, 1920, 1080, 1.0);
+        let region = RegionSelection {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        };
+        assert_eq!(
+            placement(&[primary.clone(), mirror], &primary, &region),
+            None
+        );
+    }
+
+    #[test]
+    fn placement_compares_geometry_in_physical_pixels() {
+        // 2x 缩放、选区只在物理方向留出顶部边距:收缩结果按物理像素判定不相交。
+        let monitor = MonitorGeom::from_physical("retina", 0, 0, 3840, 2160, 2.0);
+        let region = RegionSelection {
+            x: 0,
+            y: 240,
+            width: 3840,
+            height: 1800,
+        };
+        let placed = placement(std::slice::from_ref(&monitor), &monitor, &region)
+            .expect("top physical margin must fit");
+        assert_eq!((placed.x, placed.y), (CONTROL_GAP, 0.0));
+        assert_eq!(placed.height, 110.0);
+        assert_clear(&placed, &monitor, &monitor, &region);
     }
 
     #[test]
@@ -908,8 +1346,10 @@ mod tests {
             width: 800,
             height: 600,
         };
-        let (x, y) = control_origin(&monitor, &region, (320.0, 150.0));
-        assert_eq!((x, y), (100.0 + 400.0 + CONTROL_GAP, 50.0));
+        let placed = placement(std::slice::from_ref(&monitor), &monitor, &region)
+            .expect("room on the right");
+        assert_eq!((placed.x, placed.y), (100.0 + 400.0 + CONTROL_GAP, 50.0));
+        assert_clear(&placed, &monitor, &monitor, &region);
     }
 
     #[test]
@@ -926,6 +1366,23 @@ mod tests {
         assert_eq!(json["width"], 640);
         assert_eq!(json["height"], 1200);
         assert_eq!(json["appended"], 90);
+    }
+
+    #[test]
+    fn control_window_label_is_covered_by_the_default_capability() {
+        // Tauri 2 按 (window label, capability windows) 放行 plugin 命令;
+        // 控制窗前端的 listen('scroll-status'/'scroll-reload') 依赖 "scroll"
+        // 出现在唯一 capability 的 windows 列表,缺失时会被 ACL 拒绝。
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../../capabilities/default.json"))
+                .expect("default capability must be valid JSON");
+        let windows = capability["windows"]
+            .as_array()
+            .expect("capability must list windows");
+        assert!(
+            windows.iter().any(|label| label == WINDOW),
+            "capability windows {windows:?} must cover {WINDOW}"
+        );
     }
 }
 

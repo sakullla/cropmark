@@ -1037,8 +1037,9 @@ fn require_capture_ready(app: &AppHandle) -> Result<(), CaptureError> {
     })
 }
 
-/// 当前所有显示器(物理几何与缩放),供指针命中与"上次区域"钳制共用。
-fn tauri_monitors(app: &AppHandle) -> Vec<MonitorGeom> {
+/// 当前所有显示器(物理几何与缩放),供指针命中、"上次区域"钳制与长截图
+/// 控制窗放置共用。
+pub(crate) fn tauri_monitors(app: &AppHandle) -> Vec<MonitorGeom> {
     let Ok(monitors) = app.available_monitors() else {
         return Vec::new();
     };

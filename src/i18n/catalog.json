@@ -415,6 +415,10 @@
     "zh-CN": "长截图会话已结束。",
     "en": "The scrolling capture session has ended."
   },
+  "error.capture.scroll_no_space": {
+    "zh-CN": "长截图需要在选区外留出控制条空间。请缩小选区，或把要截取的内容移到另一台显示器后重试。",
+    "en": "Scrolling capture needs room outside the selection for its controls. Shrink the selection, or move the content to another display and try again."
+  },
   "error.capture.pin_busy": {
     "zh-CN": "正在截取，无法进入贴图再标注。",
     "en": "A capture is in progress; cannot enter pin re-annotation."

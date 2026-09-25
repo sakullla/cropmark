@@ -21,6 +21,7 @@ html[data-view="scroll"] #app {
   gap: 6px;
   height: 100%;
   padding: var(--panel-padding);
+  overflow-y: auto;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--radius-panel);
