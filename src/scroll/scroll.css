@@ -1,0 +1,99 @@
+/* R1 长截图控制窗:透明窗内一张独立卡片,置顶显示在选区旁。 */
+
+html[data-view="scroll"],
+html[data-view="scroll"] body,
+html[data-view="scroll"] #app {
+  background: transparent;
+}
+
+.scroll-root {
+  height: 100%;
+  padding: 6px;
+  color: var(--ink);
+  font-family: inherit;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.scroll-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  height: 100%;
+  padding: var(--panel-padding);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--shadow);
+}
+
+.scroll-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.scroll-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.scroll-size {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.scroll-status {
+  margin: 0;
+  min-height: 32px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.scroll-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.scroll-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: auto;
+}
+
+.scroll-actions button {
+  flex: 1;
+  height: 30px;
+  color: var(--ink);
+  font-size: 12px;
+  background: var(--control-fill);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control-sm);
+  cursor: pointer;
+  transition: var(--control-transition);
+}
+
+.scroll-actions button:hover {
+  background: var(--control-hover-bg);
+  border-color: var(--control-hover-border);
+}
+
+.scroll-actions button:active {
+  filter: var(--control-pressed-filter);
+}
+
+.scroll-actions .scroll-finish {
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.scroll-actions .scroll-finish:hover {
+  color: var(--on-accent);
+  background: var(--accent);
+  filter: var(--control-hover-filter);
+}

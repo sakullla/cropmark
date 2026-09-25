@@ -263,6 +263,11 @@ async fn run_capture(
     delay_ms: u64,
     generation: u64,
 ) -> Result<(), CaptureError> {
+    // R1:长截图需要平台连续抓取能力;Wayland/portal 在隐藏产品界面之前
+    // 明确失败并给出文案,不产生剪贴板/历史/磁盘输出。
+    if mode == CaptureMode::LongCapture && !platform::scroll_capture_supported() {
+        return Err(CaptureError::unavailable("error.capture.scroll_unsupported"));
+    }
     let hide_started = Instant::now();
     hide_product_surfaces(app, generation)?;
     if capture_timing_enabled() {
@@ -276,6 +281,8 @@ async fn run_capture(
         CaptureMode::Region => capture_region(app, generation).await,
         CaptureMode::Window => capture_window_mode(app, generation).await,
         CaptureMode::Fullscreen => capture_fullscreen(app, generation).await,
+        // R1:长截图复用区域选区壳选一个固定区域,确认后进入滚动会话。
+        CaptureMode::LongCapture => capture_long_capture(app, generation).await,
     }
 }
 
@@ -721,12 +728,32 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
         store_pixels(&handle, frame.clone(), monitor.clone(), generation)?;
         // R19:旧入口开关(取字/贴图/复制/保存/放大镜/光标提示/即时标注)已按
         // 常开语义移除;R5 标注工具逐项开关(注册表 12 项)注入选区壳,
-        // 关闭的工具不进工具条/「更多」面板/快捷键。
-        let flags = super::selection::FeatureFlags {
-            tools: super::selection::ToolToggles::from_map(
-                &crate::settings::current_annotation_tools(&handle),
-            ),
-            ..super::selection::FeatureFlags::default()
+        // 关闭的工具不进工具条/「更多」面板/快捷键。R1:长截图开关决定入口;
+        // 以长截图模式进入时只保留「开始长截图」确认路径,不出现即时标注与
+        // 静默动作,避免选区内标注的屏幕坐标与拼接结果错位。
+        let mode = with_session(&handle, |session| session.as_ref().map(|current| current.mode))
+            .unwrap_or(CaptureMode::Region);
+        let tools = super::selection::ToolToggles::from_map(
+            &crate::settings::current_annotation_tools(&handle),
+        );
+        let flags = if mode == CaptureMode::LongCapture {
+            super::selection::FeatureFlags {
+                long_capture: true,
+                inline_annotation: false,
+                ocr_entry: false,
+                pin_entry: false,
+                toolbar_copy: false,
+                toolbar_save: false,
+                toolbar_pin: false,
+                tools,
+                ..super::selection::FeatureFlags::default()
+            }
+        } else {
+            super::selection::FeatureFlags {
+                tools,
+                long_capture: crate::settings::current_toggles(&handle).long_capture,
+                ..super::selection::FeatureFlags::default()
+            }
         };
         let annotation_options = annotation_options_from(&handle);
         // 壳回调在同一线程内同步执行,经 thread-local 取回 AppHandle。
@@ -755,7 +782,21 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
         cleanup_cancelled_generation(app, generation);
         return Ok(());
     }
+    // 以长截图模式进入时,Enter/「标注」确认都转为开始滚动会话。
+    let long_mode = with_session(app, |session| {
+        session
+            .as_ref()
+            .is_some_and(|current| current.mode == CaptureMode::LongCapture)
+    });
     match picked {
+        RegionOutcome::LongCapture(rect, annotations) => {
+            start_scroll_session(app, rect, annotations, generation)
+        }
+        RegionOutcome::Preview(rect, annotations) | RegionOutcome::Annotate(rect, annotations)
+            if long_mode =>
+        {
+            start_scroll_session(app, rect, annotations, generation)
+        }
         RegionOutcome::Preview(rect, annotations) | RegionOutcome::Annotate(rect, annotations) => {
             let handle = app.clone();
             tauri::async_runtime::spawn_blocking(move || {
@@ -801,6 +842,38 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
             Ok(())
         }
     }
+}
+
+/// R1:选区确认后交给滚动会话(固定区域周期抓取 + 垂直拼接 + 控制窗)。
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+fn start_scroll_session(
+    app: &AppHandle,
+    rect: super::geometry::PhysicalRect,
+    annotations: Vec<Annotation>,
+    generation: u64,
+) -> Result<(), CaptureError> {
+    super::scroll::start(
+        app,
+        generation,
+        RegionSelection {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+        },
+        annotations,
+    )
+}
+
+/// R1 长截图模式:与区域截取共用原生选区壳;壳确认后进入滚动会话。
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+async fn capture_long_capture(app: &AppHandle, generation: u64) -> Result<(), CaptureError> {
+    capture_region_native(app, generation).await
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+async fn capture_long_capture(_app: &AppHandle, _generation: u64) -> Result<(), CaptureError> {
+    Err(CaptureError::unavailable("error.capture.scroll_unsupported"))
 }
 
 #[cfg(any(windows, target_os = "macos"))]
@@ -1343,6 +1416,61 @@ fn session_matches_generation(app: &AppHandle, generation: u64) -> bool {
 /// 完成路径的代际校验:`expected` 为 None(命令层)恒为 false。
 fn finish_generation_stale(app: &AppHandle, expected: Option<u64>) -> bool {
     expected.is_some_and(|generation| !session_matches_generation(app, generation))
+}
+
+/// R1:滚动会话启动所需的冻结帧与显示器几何(仅同一代际的活动会话);
+/// 会话已被取消/替换时返回取消错误,滚动会话不开始。
+pub(crate) fn scroll_source(
+    app: &AppHandle,
+    generation: u64,
+) -> Result<(Frame, MonitorGeom), CaptureError> {
+    with_session(app, |session| {
+        let current = session.as_ref().ok_or_else(CaptureError::cancelled)?;
+        if current.cancelled || current.generation != generation {
+            return Err(CaptureError::cancelled());
+        }
+        let frame = current.freeze.clone().ok_or_else(|| {
+            CaptureError::invalid_buffer("error.capture.buffer_uninitialized")
+        })?;
+        let monitor = current
+            .monitor
+            .clone()
+            .ok_or_else(|| CaptureError::api("error.capture.no_monitor"))?;
+        Ok((frame, monitor))
+    })
+}
+
+/// R1:滚动会话是否仍属于当前代际(被替换/取消后立即停止抓取且不产出)。
+pub(crate) fn scroll_session_alive(app: &AppHandle, generation: u64) -> bool {
+    session_matches_generation(app, generation)
+}
+
+/// R1:滚动结果走现有预览完成路径(预览、历史与「上次区域」规则);选区
+/// 标注先平移到拼接结果坐标系。代际不符时返回取消错误且不产生输出。
+pub(crate) fn finish_scroll_frame(
+    app: &AppHandle,
+    frame: Frame,
+    annotations: Vec<Annotation>,
+    selection: &RegionSelection,
+    expected: u64,
+) -> Result<(), CaptureError> {
+    if !session_matches_generation(app, expected) {
+        return Err(CaptureError::cancelled());
+    }
+    let translated = crate::annotate::translated_all(
+        &annotations,
+        -(selection.x as f64),
+        -(selection.y as f64),
+    );
+    deliver_fixed_frame(app, frame, translated, None, Some(expected))?;
+    remember_selection_region(app, selection);
+    Ok(())
+}
+
+/// R1:滚动会话取消/内容未变化等不产出路径的统一收尾:释放槽位、恢复
+/// 产品表面并广播取消;不写剪贴板、历史或磁盘。重复调用是 no-op。
+pub(crate) fn cancel_scroll_session(app: &AppHandle, expected: u64) {
+    let _ = cancel_internal(app, Some(expected));
 }
 
 /// 带守卫的静默完成入口:命令层 `finish_region_with` 与原生选区壳的操作条/
@@ -1931,6 +2059,8 @@ mod tests {
                         assert!(!steps.contains(&SessionStep::ShowOverlayOnFreeze));
                         assert_eq!(workspace_route(true), WorkspaceRoute::Preview);
                     }
+                    // R1:长截图无热键,不进入 `CaptureMode::ALL`。
+                    CaptureMode::LongCapture => unreachable!("LongCapture is not a hotkey mode"),
                 }
             }
         }

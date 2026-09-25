@@ -327,14 +327,15 @@ pub fn action_label(action: SelectionAction) -> String {
         SelectionAction::Redo => "selection.tool.redo",
         SelectionAction::Delete => "selection.tool.delete",
         SelectionAction::More => "selection.tool.more",
+        SelectionAction::LongCapture => "selection.action.long_capture",
     })
 }
 
 /// 右键菜单动作过滤(顺序固定,保持现状):
 /// Copy←`toolbar_copy`, Save←`toolbar_save`, Pin←`toolbar_pin && pin_entry`,
-/// Annotate 恒在, Ocr←`ocr_entry`, Cancel 恒在。
+/// Annotate 恒在, LongCapture←`long_capture`(R1), Ocr←`ocr_entry`, Cancel 恒在。
 fn capture_actions(flags: FeatureFlags) -> Vec<SelectionAction> {
-    let mut actions = Vec::with_capacity(6);
+    let mut actions = Vec::with_capacity(7);
     if flags.toolbar_copy {
         actions.push(SelectionAction::Copy);
     }
@@ -345,6 +346,9 @@ fn capture_actions(flags: FeatureFlags) -> Vec<SelectionAction> {
         actions.push(SelectionAction::Pin);
     }
     actions.push(SelectionAction::Annotate);
+    if flags.long_capture {
+        actions.push(SelectionAction::LongCapture);
+    }
     if flags.ocr_entry {
         actions.push(SelectionAction::Ocr);
     }
@@ -353,12 +357,13 @@ fn capture_actions(flags: FeatureFlags) -> Vec<SelectionAction> {
 }
 
 /// 统一横条主行动作集(R5 注册表驱动,与预览编辑器工具条同源):
-/// 即时标注开启时为注册表主行工具(开关允许 + 平台有文本输入通道时的文字)
-/// + 撤销 + Copy←`toolbar_copy` + Save←`toolbar_save` + 取消 + 更多;
-/// 关闭时为 标注 + Copy←`toolbar_copy` + Save←`toolbar_save` + 取消 + 更多。
+/// 即时标注开启时为注册表主行工具(开关允许 + 平台有文本输入通道时的文字)+
+/// 撤销 + LongCapture←`long_capture`(R1) + Copy←`toolbar_copy` +
+/// Save←`toolbar_save` + 取消 + 更多;关闭时为 标注 + LongCapture←
+/// `long_capture` + Copy←`toolbar_copy` + Save←`toolbar_save` + 取消 + 更多。
 /// 关闭复制/保存后主行不再含该项,其余顺序不变。
 pub fn toolbar_buttons(flags: FeatureFlags, text_input: bool) -> Vec<SelectionAction> {
-    let mut buttons = Vec::with_capacity(11);
+    let mut buttons = Vec::with_capacity(12);
     if flags.inline_annotation {
         for tool in AnnotationTool::PRIMARY {
             if !flags.tools.enabled(tool) {
@@ -371,6 +376,9 @@ pub fn toolbar_buttons(flags: FeatureFlags, text_input: bool) -> Vec<SelectionAc
         buttons.push(SelectionAction::Undo);
     } else {
         buttons.push(SelectionAction::Annotate);
+    }
+    if flags.long_capture {
+        buttons.push(SelectionAction::LongCapture);
     }
     if flags.toolbar_copy {
         buttons.push(SelectionAction::Copy);
@@ -1384,7 +1392,7 @@ impl Composer {
             if selected_tool || hover {
                 fill_round_blend(rgba, w, h, inset(*rect, 6), radius, ACTIVE_BG);
             }
-            icons::draw(rgba, w, h, *action, cx, cy, metrics.bar_icon, ink);
+            self.draw_action_icon(rgba, w, h, *action, cx, cy, metrics.bar_icon, ink);
             if sep_index == Some(index) {
                 for y in rect.y + rect.height / 4..rect.bottom() - rect.height / 4 {
                     blend(rgba, w, h, rect.x, y, CHROME_BORDER);
@@ -1411,7 +1419,7 @@ impl Composer {
             }
             let color = if hover { ACCENT_DEEP } else { CHROME_TEXT };
             let (_, cy) = rect.center();
-            icons::draw(
+            self.draw_action_icon(
                 rgba,
                 w,
                 h,
@@ -1482,6 +1490,27 @@ impl Composer {
             font,
             CHROME_TEXT,
         );
+    }
+
+    /// 动作图标:长截图没有位图资产,用几何笔画(竖框 + 向下箭头)绘制;
+    /// 其余动作仍走 `icons` 资产。
+    #[allow(clippy::too_many_arguments)]
+    fn draw_action_icon(
+        &self,
+        rgba: &mut [u8],
+        w: u32,
+        h: u32,
+        action: SelectionAction,
+        cx: i32,
+        cy: i32,
+        size: i32,
+        ink: [u8; 4],
+    ) {
+        if action == SelectionAction::LongCapture {
+            draw_long_capture_icon(rgba, w, h, cx, cy, size, ink);
+            return;
+        }
+        icons::draw(rgba, w, h, action, cx, cy, size, ink);
     }
 
     /// 统一横条与「更多」面板的悬停图标(提示名称用);菜单打开时让位。
@@ -1580,7 +1609,7 @@ impl Composer {
             }
             let color = if hover { ACCENT_DEEP } else { CHROME_TEXT };
             let (_, cy) = rect.center();
-            icons::draw(
+            self.draw_action_icon(
                 rgba,
                 w,
                 h,
@@ -1667,6 +1696,89 @@ impl Composer {
 }
 
 /// 浮层画法:向下 2px 的阴影 → 1px 边 → 浅蓝灰底。
+/// 长截图字形:竖向圆角框内一支向下箭头(表示向下滚动并拼接)。
+fn draw_long_capture_icon(
+    rgba: &mut [u8],
+    w: u32,
+    h: u32,
+    cx: i32,
+    cy: i32,
+    size: i32,
+    ink: [u8; 4],
+) {
+    let size = size.max(12);
+    let half = size / 2;
+    let left = cx - half / 2;
+    let right = cx + half / 2;
+    let top = cy - half;
+    let bottom = cy + half;
+    let stroke = (size / 12).max(2);
+    for offset in 0..stroke {
+        for x in left..=right {
+            blend(rgba, w, h, x, top + offset, ink);
+            blend(rgba, w, h, x, bottom - offset, ink);
+        }
+        for y in top..=bottom {
+            blend(rgba, w, h, left + offset, y, ink);
+            blend(rgba, w, h, right - offset, y, ink);
+        }
+    }
+    let arrow_top = top + stroke * 2 + size / 10;
+    let arrow_bottom = bottom - stroke * 2 - size / 10;
+    let radius = stroke / 2 + 1;
+    blend_line(rgba, w, h, cx, arrow_top, cx, arrow_bottom, radius, ink);
+    blend_line(
+        rgba,
+        w,
+        h,
+        cx,
+        arrow_bottom,
+        cx - size / 6,
+        arrow_bottom - size / 6,
+        radius,
+        ink,
+    );
+    blend_line(
+        rgba,
+        w,
+        h,
+        cx,
+        arrow_bottom,
+        cx + size / 6,
+        arrow_bottom - size / 6,
+        radius,
+        ink,
+    );
+}
+
+/// 混合模式的粗线(图标字形不透明落笔会把底色打穿,这里全部 blend)。
+fn blend_line(
+    rgba: &mut [u8],
+    w: u32,
+    h: u32,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    radius: i32,
+    ink: [u8; 4],
+) {
+    let dx = x1 - x0;
+    let dy = y1 - y0;
+    let steps = dx.abs().max(dy.abs()).max(1);
+    for i in 0..=steps {
+        let x = x0 + dx * i / steps;
+        let y = y0 + dy * i / steps;
+        for oy in -radius..=radius {
+            for ox in -radius..=radius {
+                if ox * ox + oy * oy <= radius * radius {
+                    blend(rgba, w, h, x + ox, y + oy, ink);
+                }
+            }
+        }
+    }
+}
+
 fn place_tooltip(
     anchor: IntRect,
     width: i32,
@@ -2895,6 +3007,46 @@ mod tests {
     }
 
     /// 文本编辑会话按标注色绘制字符并画出光标(无字体环境仅验证不 panic)。
+    /// R1:长截图开关开启时工具条与右键菜单出现入口,关闭时不出现;
+    /// 菜单位置在「标注」之后、取字之前。
+    #[test]
+    fn long_capture_entry_is_gated_by_the_feature_flag() {
+        let enabled = FeatureFlags {
+            long_capture: true,
+            ..FeatureFlags::default()
+        };
+        let items = menu_items(enabled);
+        assert!(items.contains(&SelectionAction::LongCapture));
+        assert!(toolbar_buttons(enabled, true).contains(&SelectionAction::LongCapture));
+        let annotate = items
+            .iter()
+            .position(|action| *action == SelectionAction::Annotate)
+            .unwrap();
+        let long = items
+            .iter()
+            .position(|action| *action == SelectionAction::LongCapture)
+            .unwrap();
+        let ocr = items
+            .iter()
+            .position(|action| *action == SelectionAction::Ocr)
+            .unwrap();
+        assert!(annotate < long && long < ocr);
+
+        let disabled = FeatureFlags::default();
+        assert!(!menu_items(disabled).contains(&SelectionAction::LongCapture));
+        assert!(!toolbar_buttons(disabled, true).contains(&SelectionAction::LongCapture));
+        assert_eq!(action_label(SelectionAction::LongCapture), "长截图");
+    }
+
+    /// R1:长截图没有位图资产,几何字形必须实际落笔。
+    #[test]
+    fn long_capture_icon_paints_ink() {
+        let mut buf = vec![0u8; 48 * 48 * 4];
+        draw_long_capture_icon(&mut buf, 48, 48, 24, 24, 24, [255, 255, 255, 255]);
+        let painted = buf.chunks_exact(4).filter(|px| px[3] > 0).count();
+        assert!(painted > 20, "painted {painted}");
+    }
+
     #[test]
     fn text_edit_overlay_renders_text_and_caret() {
         let frame = solid_frame(240, 160, [30, 30, 30, 255]);

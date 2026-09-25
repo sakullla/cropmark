@@ -15,6 +15,10 @@
     "zh-CN": "全屏",
     "en": "Fullscreen"
   },
+  "tray.long_capture": {
+    "zh-CN": "长截图",
+    "en": "Scrolling capture"
+  },
   "tray.last_region": {
     "zh-CN": "上次区域",
     "en": "Last region"
@@ -74,6 +78,10 @@
   "selection.action.copy_color": {
     "zh-CN": "复制色值",
     "en": "Copy color"
+  },
+  "selection.action.long_capture": {
+    "zh-CN": "长截图",
+    "en": "Scrolling capture"
   },
   "selection.tool.rect": {
     "zh-CN": "矩形",
@@ -395,6 +403,18 @@
     "zh-CN": "当前没有进行中的区域截取。",
     "en": "No region capture is in progress."
   },
+  "error.capture.scroll_unsupported": {
+    "zh-CN": "当前会话不支持长截图：Wayland 下无法持续获取屏幕内容。请在 X11 会话或 Windows / macOS 上使用。",
+    "en": "Scrolling capture is unavailable in this session: continuous screen grabs are not possible on Wayland. Use an X11 session or Windows / macOS."
+  },
+  "error.capture.scroll_busy": {
+    "zh-CN": "已有长截图正在进行，请先完成或取消。",
+    "en": "A scrolling capture is already in progress. Finish or cancel it first."
+  },
+  "error.capture.scroll_missing": {
+    "zh-CN": "长截图会话已结束。",
+    "en": "The scrolling capture session has ended."
+  },
   "error.capture.pin_busy": {
     "zh-CN": "正在截取，无法进入贴图再标注。",
     "en": "A capture is in progress; cannot enter pin re-annotation."
@@ -446,6 +466,14 @@
   "toast.capture_expired": {
     "zh-CN": "截图已过期，请重新截取。",
     "en": "The screenshot has expired. Capture again."
+  },
+  "toast.scroll_no_change": {
+    "zh-CN": "内容未变化，未生成长截图。请滚动目标内容后重试。",
+    "en": "Content did not change, so no scrolling capture was produced. Scroll the target content and try again."
+  },
+  "toast.scroll_limit": {
+    "zh-CN": "已达到长截图高度上限，自动完成。",
+    "en": "Reached the scrolling capture height limit; finishing automatically."
   },
   "toast.cancel_in_progress": {
     "zh-CN": "正在取消上一次截取，请稍后重试。",
@@ -1762,6 +1790,54 @@
   "delay.countdown": {
     "zh-CN": "{seconds} 秒后截取",
     "en": "Capturing in {seconds}s"
+  },
+  "scroll.title": {
+    "zh-CN": "长截图",
+    "en": "Scrolling capture"
+  },
+  "scroll.hint": {
+    "zh-CN": "请在框选区域内向下滚动目标内容，完成后点「完成」。",
+    "en": "Scroll the target content down inside the selected area, then click Finish."
+  },
+  "scroll.finish": {
+    "zh-CN": "完成",
+    "en": "Finish"
+  },
+  "scroll.cancel": {
+    "zh-CN": "取消",
+    "en": "Cancel"
+  },
+  "scroll.height": {
+    "zh-CN": "已拼接 {height} px",
+    "en": "Stitched {height} px"
+  },
+  "scroll.status.running": {
+    "zh-CN": "正在抓取…请滚动目标内容。",
+    "en": "Capturing… scroll the target content."
+  },
+  "scroll.status.unchanged": {
+    "zh-CN": "未检测到内容变化，请继续向下滚动。",
+    "en": "No content change detected. Keep scrolling down."
+  },
+  "scroll.status.fast": {
+    "zh-CN": "滚动过快，可能有内容缺失；请放慢速度。",
+    "en": "Scrolled too fast; content may be missing. Slow down."
+  },
+  "scroll.status.no_match": {
+    "zh-CN": "当前帧无法匹配，请缓慢滚动或取消后重试。",
+    "en": "Could not match this frame. Scroll slowly, or cancel and retry."
+  },
+  "scroll.status.limit": {
+    "zh-CN": "已达到高度上限，正在自动完成…",
+    "en": "Height limit reached; finishing automatically…"
+  },
+  "scroll.status.finishing": {
+    "zh-CN": "正在合成…",
+    "en": "Stitching…"
+  },
+  "scroll.status.failed": {
+    "zh-CN": "抓取失败，请确认窗口可见后重试。",
+    "en": "Capture failed. Make sure the window is visible and retry."
   },
   "error.title": {
     "zh-CN": "无法截取",

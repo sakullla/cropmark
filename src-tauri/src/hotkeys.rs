@@ -14,9 +14,12 @@ pub enum CaptureMode {
     Region,
     Window,
     Fullscreen,
+    /// R1 手动滚动长截图:入口在托盘与选区壳(设置开关控制),无全局快捷键。
+    LongCapture,
 }
 
 impl CaptureMode {
+    /// 可绑定全局快捷键的模式集合(R1 长截图无热键,不在此列)。
     pub const ALL: [CaptureMode; 3] = [Self::Region, Self::Window, Self::Fullscreen];
 }
 
@@ -44,6 +47,8 @@ impl Hotkeys {
             CaptureMode::Region => &self.region,
             CaptureMode::Window => &self.window,
             CaptureMode::Fullscreen => &self.fullscreen,
+            // 长截图不参与热键计划:调用方只用 ALL 中的模式。
+            CaptureMode::LongCapture => "",
         }
     }
 
@@ -52,6 +57,7 @@ impl Hotkeys {
             CaptureMode::Region => self.region = value,
             CaptureMode::Window => self.window = value,
             CaptureMode::Fullscreen => self.fullscreen = value,
+            CaptureMode::LongCapture => {}
         }
     }
 }
@@ -70,6 +76,7 @@ impl HotkeyErrors {
             CaptureMode::Region => self.region = message,
             CaptureMode::Window => self.window = message,
             CaptureMode::Fullscreen => self.fullscreen = message,
+            CaptureMode::LongCapture => {}
         }
     }
 

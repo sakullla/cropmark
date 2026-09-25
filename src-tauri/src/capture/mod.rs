@@ -5,6 +5,7 @@ pub mod hide;
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 pub mod native_overlay;
 pub mod platform;
+pub mod scroll;
 pub mod selection;
 pub mod session;
 pub mod ui;
@@ -22,12 +23,15 @@ use session::{QuietAction, RegionSelection};
 pub fn begin(app: &AppHandle, mode: CaptureMode, delay_ms: u64) {
     // 新截取会替换预览会话:先收尾可能存在的贴图再标注(恢复来源贴图置顶)。
     crate::pin::finish_pin_edit(app);
+    // R1:新截取同样取消进行中的长截图滚动会话(不产出)。
+    scroll::interrupt(app);
     session::begin(app, mode, delay_ms);
 }
 
 /// 托盘"上次区域"直取(R6):按记录区域抓取,不打开交互选区。
 pub fn begin_last_region(app: &AppHandle, delay_ms: u64) {
     crate::pin::finish_pin_edit(app);
+    scroll::interrupt(app);
     session::begin_last_region(app, delay_ms);
 }
 

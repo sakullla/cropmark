@@ -199,6 +199,9 @@ pub fn run() {
             capture::close_capture_error,
             capture::get_delay_state,
             capture::get_capture_error,
+            capture::scroll::finish_scroll_capture,
+            capture::scroll::cancel_scroll_capture,
+            capture::scroll::get_scroll_status,
             export::copy_preview_png,
             export::save_preview_png,
             ocr::recognize_preview,
@@ -232,6 +235,10 @@ pub fn run() {
                 if window.label() == capture::ui::PREVIEW {
                     capture::close_preview(window.app_handle().clone());
                 }
+                // R1:长截图控制窗被外部关闭(Alt+F4 等)按取消处理,不产出。
+                if window.label() == capture::scroll::WINDOW {
+                    capture::scroll::handle_window_destroyed(window.app_handle());
+                }
                 front::demote_if_idle(window.app_handle());
             }
         })
@@ -244,7 +251,10 @@ pub fn run() {
                 }
             }
             // 托盘退出(code=Some(0))等真实退出路径:退出前统一收掉贴图。
-            tauri::RunEvent::Exit => pin::close_all(app),
+            tauri::RunEvent::Exit => {
+                capture::scroll::shutdown(app);
+                pin::close_all(app);
+            }
             _ => {}
         });
 }

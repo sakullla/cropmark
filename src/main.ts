@@ -6,6 +6,7 @@ import { mountCaptureError } from "./overlay/error";
 import { mountOverlay } from "./overlay/index";
 import { mountPin } from "./pin";
 import { mountPreview } from "./preview";
+import { mountScroll } from "./scroll";
 import { mountSettings } from "./settings";
 import { mountToast } from "./toast";
 
@@ -38,6 +39,8 @@ void (async () => {
     applyLanguage = mountPin(root);
   } else if (view === "history") {
     applyLanguage = mountHistory(root);
+  } else if (view === "scroll") {
+    applyLanguage = mountScroll(root);
   }
   const renderLanguage = (): void => {
     applyTranslations(root);

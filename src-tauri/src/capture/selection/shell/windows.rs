@@ -100,6 +100,8 @@ pub enum RegionOutcome {
     Annotate(PhysicalRect, Vec<Annotation>),
     /// 操作条/菜单的 copy/save/pin/ocr 动作:rect 走 Quiet 完成路径并执行动作。
     Quiet(PhysicalRect, QuietAction, Vec<Annotation>),
+    /// R1 操作条/菜单的长截图动作:rect 交给会话层开始滚动会话。
+    LongCapture(PhysicalRect, Vec<Annotation>),
     /// Esc 或菜单「取消」:整个会话取消。
     Cancelled,
 }
@@ -284,6 +286,15 @@ fn feed_event(state: &mut ShellState, event: InputEvent, hwnd: HWND) -> bool {
                 copy_color_value(state);
                 false
             }
+            // R1:以当前选区开始长截图滚动会话。
+            SelectionAction::LongCapture => {
+                if let Some(rect) = state.canvas.engine.selection() {
+                    let annotations = state.canvas.engine.annotations().to_vec();
+                    state.outcome = Some(RegionOutcome::LongCapture(rect, annotations));
+                    return true;
+                }
+                false
+            }
             // 标注工具条动作(工具切换/撤销/重做/删除/更多)在引擎内消费,
             // 不会到达这里;防御性忽略,不结束会话。
             SelectionAction::Tool(_)
@@ -352,6 +363,7 @@ fn quiet_action_for(action: SelectionAction) -> Option<QuietAction> {
         | SelectionAction::Undo
         | SelectionAction::Redo
         | SelectionAction::Delete
+        | SelectionAction::LongCapture
         | SelectionAction::More => None,
     }
 }

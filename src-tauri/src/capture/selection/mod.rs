@@ -365,6 +365,10 @@ pub struct FeatureFlags {
     pub cursor_hints: bool,
     /// R21:选区即时标注;关闭后选区不出现标注工具,`标注` 动作仍进预览编辑器。
     pub inline_annotation: bool,
+    /// R1:长截图入口;会话层按 `FeatureToggles.long_capture` 注入,关闭时
+    /// 工具条/右键菜单不出现该动作(直接以 `LongCapture` 模式进入的选区壳
+    /// 恒为 true)。
+    pub long_capture: bool,
     /// R5/R19:标注工具逐项开关(注册表 12 项);关闭的工具不进工具条/
     /// 「更多」面板/快捷键,已创建标注的渲染与编辑不受影响。
     pub tools: ToolToggles,
@@ -381,6 +385,8 @@ impl Default for FeatureFlags {
             toolbar_pin: true,
             cursor_hints: true,
             inline_annotation: true,
+            // 默认不出现长截图入口:运行时由会话层按功能开关注入。
+            long_capture: false,
             tools: ToolToggles::default(),
         }
     }
@@ -485,6 +491,8 @@ pub enum SelectionAction {
     Delete,
     /// 标注模式「更多」:展开/收起其余工具(仅引擎内部消费)。
     More,
+    /// R1 手动滚动长截图:以当前选区开始滚动会话(功能开关开启时出现)。
+    LongCapture,
 }
 
 /// 一次输入事件的处理结果;除 `None` 外都意味着需要重新合成并呈现。

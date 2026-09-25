@@ -79,6 +79,11 @@ pub fn tray_popup_visible() -> bool {
     found
 }
 
+/// R1:BitBlt 可按任意频率重复抓取,支持长截图滚动会话。
+pub fn scroll_capture_supported() -> bool {
+    true
+}
+
 pub fn enable_per_monitor_v2() {
     use windows::Win32::UI::HiDpi::{
         SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,

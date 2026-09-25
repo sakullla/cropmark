@@ -17,6 +17,9 @@ pub const TRAY_ID: &str = "cropmark-tray";
 /// 托盘"上次区域"直取(R6)的菜单 id。
 pub const LAST_REGION_ID: &str = "capture-last-region";
 
+/// R1 托盘长截图入口的菜单 id(功能开关开启时出现)。
+pub const LONG_CAPTURE_ID: &str = "capture-long";
+
 /// 一次性延时档位(秒):托盘「延时」子菜单,点击即按该秒数做区域截取。
 /// 窗口/全屏延时走设置里的延时秒数,避免 delay×mode 的嵌套菜单。
 pub const FIXED_DELAY_SECONDS: [u64; 3] = [3, 5, 10];
@@ -34,6 +37,11 @@ pub fn last_region_label(has_region: bool) -> String {
 /// 无记录时只禁用菜单项并以标签提示,记录保留不受影响。
 fn last_region_enabled(has_region: bool) -> bool {
     has_region
+}
+
+/// R1:长截图入口可见 = 功能开关开启;关闭时不构建菜单项(入口不出现)。
+fn long_capture_enabled(enabled: bool) -> bool {
+    enabled
 }
 
 /// R16:托盘构建失败(Err 或构建期 panic)时的用户可见提示。以安装路径的
@@ -138,6 +146,7 @@ pub fn menu_action(id: &str) -> Option<MenuAction> {
         "region" => CaptureMode::Region,
         "window" => CaptureMode::Window,
         "fullscreen" => CaptureMode::Fullscreen,
+        "long" => CaptureMode::LongCapture,
         _ => return None,
     };
     let delay = match delay_token {
@@ -204,13 +213,23 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         true,
         None::<&str>,
     )?;
-    let delay = delay_submenu(app)?;
-    let capture = Submenu::with_items(
+    // R1:长截图入口仅在功能开关开启时进入截取子菜单。
+    let long_capture_visible = long_capture_enabled(settings::current_toggles(app).long_capture);
+    let long_capture = MenuItem::with_id(
         app,
-        i18n::t("tray.capture"),
-        true,
-        &[&region, &last_region, &window, &fullscreen, &delay],
+        LONG_CAPTURE_ID,
+        i18n::t("tray.long_capture"),
+        long_capture_visible,
+        None::<&str>,
     )?;
+    let delay = delay_submenu(app)?;
+    let mut capture_items: Vec<&dyn IsMenuItem<tauri::Wry>> =
+        vec![&region, &last_region, &window, &fullscreen];
+    if long_capture_visible {
+        capture_items.push(&long_capture);
+    }
+    capture_items.push(&delay);
+    let capture = Submenu::with_items(app, i18n::t("tray.capture"), true, &capture_items)?;
     let settings_item = MenuItem::with_id(
         app,
         "settings",
@@ -360,6 +379,22 @@ mod tests {
         assert!(last_region_enabled(true));
         // 无记录:禁用(标签提示暂无记录)。
         assert!(!last_region_enabled(false));
+    }
+
+    #[test]
+    fn long_capture_entry_maps_to_long_capture_mode() {
+        assert_eq!(
+            menu_action(LONG_CAPTURE_ID),
+            Some(action(CaptureMode::LongCapture, DelayChoice::Configured))
+        );
+        // 长截图没有一次性延时子菜单项。
+        assert_eq!(menu_action("capture-long-delay-3"), Some(action(CaptureMode::LongCapture, DelayChoice::Once(3000))));
+    }
+
+    #[test]
+    fn long_capture_entry_only_when_the_toggle_is_on() {
+        assert!(long_capture_enabled(true));
+        assert!(!long_capture_enabled(false));
     }
 
     #[test]

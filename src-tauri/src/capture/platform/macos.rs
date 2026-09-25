@@ -214,6 +214,11 @@ pub fn tray_popup_visible() -> bool {
     false
 }
 
+/// R1:ScreenCaptureKit 可按需重复抓屏,支持长截图滚动会话。
+pub fn scroll_capture_supported() -> bool {
+    true
+}
+
 fn take_result(
     call: impl FnOnce(*mut CropmarkSckResult) -> i32,
     fallback_scale: f64,

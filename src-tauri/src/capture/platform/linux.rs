@@ -79,6 +79,13 @@ pub fn tray_popup_visible() -> bool {
     false
 }
 
+/// R1:仅 X11 会话支持连续抓取;Wayland/portal 只有一次性截图能力。
+pub fn scroll_capture_supported() -> bool {
+    crate::capture::platform::scroll_capture_supported_for(linux_capture_backend(
+        wayland_display().as_deref(),
+    ))
+}
+
 fn wayland_display() -> Option<String> {
     std::env::var("WAYLAND_DISPLAY")
         .ok()

@@ -18,6 +18,13 @@ pub fn linux_capture_backend(wayland_display: Option<&str>) -> LinuxCaptureBacke
     }
 }
 
+/// R1:连续抓取(长截图)是否可用。Wayland/portal 只有一次性截图能力,
+/// 无法持续获取屏幕内容,在进入选区前明确失败而不是静默输出错误拼接。
+#[cfg(any(target_os = "linux", test))]
+pub fn scroll_capture_supported_for(backend: LinuxCaptureBackend) -> bool {
+    backend == LinuxCaptureBackend::X11
+}
+
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
@@ -69,6 +76,11 @@ mod backend {
     pub fn tray_popup_visible() -> bool {
         false
     }
+
+    /// R1:无平台连续抓取实现。
+    pub fn scroll_capture_supported() -> bool {
+        false
+    }
 }
 
 pub fn pointer_monitor() -> Result<MonitorGeom, CaptureError> {
@@ -93,6 +105,11 @@ pub fn dismiss_tray_popup() {
 
 pub fn tray_popup_visible() -> bool {
     backend::tray_popup_visible()
+}
+
+/// R1:长截图滚动会话可用的平台能力查询;不可用时入口操作前明确失败。
+pub fn scroll_capture_supported() -> bool {
+    backend::scroll_capture_supported()
 }
 
 pub fn self_pid() -> u32 {
@@ -124,5 +141,12 @@ mod tests {
     fn x11_only_without_wayland_display() {
         assert_eq!(linux_capture_backend(None), LinuxCaptureBackend::X11);
         assert_eq!(linux_capture_backend(Some("")), LinuxCaptureBackend::X11);
+    }
+
+    #[test]
+    fn scroll_capture_requires_a_backend_with_continuous_grabs() {
+        // Wayland/portal 只有一次性截图,长截图必须在开始前失败。
+        assert!(!scroll_capture_supported_for(LinuxCaptureBackend::Portal));
+        assert!(scroll_capture_supported_for(LinuxCaptureBackend::X11));
     }
 }
