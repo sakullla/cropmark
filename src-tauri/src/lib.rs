@@ -177,6 +177,8 @@ pub fn run() {
             settings::set_annotation_defaults,
             settings::set_feature,
             settings::set_annotation_tool,
+            annotate::stickers::get_sticker_catalog,
+            annotate::stickers::get_sticker_image,
             settings::set_capture_settings,
             settings::set_history_settings,
             capture::get_overlay_frame,

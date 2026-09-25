@@ -1,6 +1,7 @@
 pub(crate) mod blur;
 mod mosaic;
 pub(crate) mod raster;
+pub(crate) mod stickers;
 
 pub(crate) use raster::parse_hex_color;
 pub use raster::rasterize;
@@ -23,6 +24,17 @@ pub const MAX_BLUR_SIGMA: f64 = 128.0;
 /// 更小的选区不产生可见遮盖效果，直接视为无效标注。与马赛克既有
 /// `is_exportable` 的 1.0 相比，模糊需要至少 2px 才能改变像素。
 pub const MIN_MASK_EDGE: f64 = 2.0;
+
+/// R5:放大镜默认倍率与允许范围（倍率上限用于避免超大缩放采样）。
+pub const DEFAULT_MAGNIFIER_ZOOM: f64 = 3.0;
+pub const MIN_MAGNIFIER_ZOOM: f64 = 1.2;
+pub const MAX_MAGNIFIER_ZOOM: f64 = 8.0;
+
+/// R5:聚光灯默认暗度（0–1，越大圈外越暗）。
+pub const DEFAULT_SPOTLIGHT_DIM: f64 = 0.55;
+
+/// R5:擦除周边取样的采样环带宽（物理像素）。
+pub const ERASE_SAMPLE_RING: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Point {
@@ -122,6 +134,56 @@ pub enum Annotation {
         #[serde(default = "default_sigma")]
         sigma: f64,
     },
+    /// R5:聚光灯。区域保持原样，其余按 `dim` 变暗。
+    Spotlight {
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+        #[serde(default = "default_dim")]
+        dim: f64,
+    },
+    /// R5:放大镜。区域中心按 `zoom` 倍率就地放大并加边框。
+    Magnifier {
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+        #[serde(default = "default_zoom")]
+        zoom: f64,
+        #[serde(default = "default_color")]
+        color: String,
+    },
+    /// R5:对话气泡。圆角矩形 + 左下指向尾，文本按框宽自动换行。
+    Bubble {
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+        #[serde(default)]
+        text: String,
+        #[serde(default = "default_text_size")]
+        size: f64,
+        #[serde(default = "default_color")]
+        color: String,
+    },
+    /// R5:贴纸。`sticker` 为随包素材 id（`annotate::stickers`）。
+    Sticker {
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+        sticker: String,
+    },
+    /// R5:内容擦除。`color` 为 None 时用区域周边像素均值填充。
+    Erase {
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+        #[serde(default)]
+        color: Option<String>,
+    },
 }
 
 fn default_block() -> u32 {
@@ -134,6 +196,14 @@ fn default_text_size() -> f64 {
 
 fn default_sigma() -> f64 {
     12.0
+}
+
+fn default_dim() -> f64 {
+    DEFAULT_SPOTLIGHT_DIM
+}
+
+fn default_zoom() -> f64 {
+    DEFAULT_MAGNIFIER_ZOOM
 }
 
 fn default_color() -> String {
@@ -172,6 +242,38 @@ impl Annotation {
                     && height.abs() >= MIN_MASK_EDGE
                     && sigma.is_finite()
                     && *sigma > 0.0
+            }
+            Self::Spotlight {
+                width, height, dim, ..
+            } => {
+                width.abs() >= MIN_MASK_EDGE
+                    && height.abs() >= MIN_MASK_EDGE
+                    && dim.is_finite()
+                    && *dim > 0.0
+            }
+            Self::Magnifier {
+                width,
+                height,
+                zoom,
+                ..
+            } => {
+                width.abs() >= MIN_MASK_EDGE
+                    && height.abs() >= MIN_MASK_EDGE
+                    && zoom.is_finite()
+                    && *zoom > 1.0
+            }
+            Self::Bubble { width, height, .. } | Self::Erase { width, height, .. } => {
+                width.abs() >= MIN_MASK_EDGE && height.abs() >= MIN_MASK_EDGE
+            }
+            Self::Sticker {
+                width,
+                height,
+                sticker,
+                ..
+            } => {
+                width.abs() >= MIN_MASK_EDGE
+                    && height.abs() >= MIN_MASK_EDGE
+                    && !sticker.trim().is_empty()
             }
         }
     }
@@ -314,6 +416,77 @@ pub fn translated(op: &Annotation, dx: f64, dy: f64) -> Annotation {
             width: *width,
             height: *height,
             sigma: *sigma,
+        },
+        Annotation::Spotlight {
+            x,
+            y,
+            width,
+            height,
+            dim,
+        } => Annotation::Spotlight {
+            x: x + dx,
+            y: y + dy,
+            width: *width,
+            height: *height,
+            dim: *dim,
+        },
+        Annotation::Magnifier {
+            x,
+            y,
+            width,
+            height,
+            zoom,
+            color,
+        } => Annotation::Magnifier {
+            x: x + dx,
+            y: y + dy,
+            width: *width,
+            height: *height,
+            zoom: *zoom,
+            color: color.clone(),
+        },
+        Annotation::Bubble {
+            x,
+            y,
+            width,
+            height,
+            text,
+            size,
+            color,
+        } => Annotation::Bubble {
+            x: x + dx,
+            y: y + dy,
+            width: *width,
+            height: *height,
+            text: text.clone(),
+            size: *size,
+            color: color.clone(),
+        },
+        Annotation::Sticker {
+            x,
+            y,
+            width,
+            height,
+            sticker,
+        } => Annotation::Sticker {
+            x: x + dx,
+            y: y + dy,
+            width: *width,
+            height: *height,
+            sticker: sticker.clone(),
+        },
+        Annotation::Erase {
+            x,
+            y,
+            width,
+            height,
+            color,
+        } => Annotation::Erase {
+            x: x + dx,
+            y: y + dy,
+            width: *width,
+            height: *height,
+            color: color.clone(),
         },
     }
 }
@@ -603,5 +776,244 @@ mod tests {
             color: default_color(),
         }
         .is_exportable());
+    }
+
+    #[test]
+    fn r5_variants_roundtrip_camel_case_json() {
+        let ops = vec![
+            Annotation::Spotlight {
+                x: 4.0,
+                y: 4.0,
+                width: 40.0,
+                height: 24.0,
+                dim: 0.4,
+            },
+            Annotation::Magnifier {
+                x: 4.0,
+                y: 4.0,
+                width: 40.0,
+                height: 40.0,
+                zoom: 4.0,
+                color: "#2563eb".into(),
+            },
+            Annotation::Bubble {
+                x: 2.0,
+                y: 2.0,
+                width: 60.0,
+                height: 36.0,
+                text: "你好\nworld".into(),
+                size: 18.0,
+                color: "#10b981".into(),
+            },
+            Annotation::Sticker {
+                x: 8.0,
+                y: 8.0,
+                width: 32.0,
+                height: 32.0,
+                sticker: "star".into(),
+            },
+            Annotation::Erase {
+                x: 1.0,
+                y: 2.0,
+                width: 20.0,
+                height: 10.0,
+                color: Some("#111827".into()),
+            },
+            Annotation::Erase {
+                x: 1.0,
+                y: 2.0,
+                width: 20.0,
+                height: 10.0,
+                color: None,
+            },
+        ];
+        for op in ops {
+            let json = serde_json::to_string(&op).unwrap();
+            assert!(json.contains("\"type\""), "got {json}");
+            let back: Annotation = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, op, "roundtrip failed for {json}");
+        }
+    }
+
+    #[test]
+    fn r5_variants_default_fields_when_absent() {
+        let spotlight: Annotation =
+            serde_json::from_str(r#"{"type":"spotlight","x":0,"y":0,"width":20,"height":10}"#)
+                .unwrap();
+        assert!(matches!(
+            &spotlight,
+            Annotation::Spotlight { dim, .. } if (*dim - DEFAULT_SPOTLIGHT_DIM).abs() < f64::EPSILON
+        ));
+        let magnifier: Annotation =
+            serde_json::from_str(r#"{"type":"magnifier","x":0,"y":0,"width":20,"height":20}"#)
+                .unwrap();
+        assert!(matches!(
+            &magnifier,
+            Annotation::Magnifier { zoom, color, .. }
+                if (*zoom - DEFAULT_MAGNIFIER_ZOOM).abs() < f64::EPSILON && color == DEFAULT_COLOR
+        ));
+        let bubble: Annotation =
+            serde_json::from_str(r#"{"type":"bubble","x":0,"y":0,"width":40,"height":30}"#)
+                .unwrap();
+        assert!(matches!(
+            &bubble,
+            Annotation::Bubble { text, size, color, .. }
+                if text.is_empty() && *size == 22.0 && color == DEFAULT_COLOR
+        ));
+        let erase: Annotation =
+            serde_json::from_str(r#"{"type":"erase","x":0,"y":0,"width":10,"height":10}"#).unwrap();
+        assert!(matches!(&erase, Annotation::Erase { color: None, .. }));
+    }
+
+    #[test]
+    fn r5_degenerate_annotations_are_not_exportable() {
+        assert!(!Annotation::Spotlight {
+            x: 0.0,
+            y: 0.0,
+            width: 1.0,
+            height: 10.0,
+            dim: 0.5,
+        }
+        .is_exportable());
+        assert!(!Annotation::Spotlight {
+            x: 0.0,
+            y: 0.0,
+            width: 10.0,
+            height: 10.0,
+            dim: 0.0,
+        }
+        .is_exportable());
+        assert!(!Annotation::Magnifier {
+            x: 0.0,
+            y: 0.0,
+            width: 10.0,
+            height: 10.0,
+            zoom: 1.0,
+            color: default_color(),
+        }
+        .is_exportable());
+        assert!(!Annotation::Sticker {
+            x: 0.0,
+            y: 0.0,
+            width: 10.0,
+            height: 10.0,
+            sticker: "  ".into(),
+        }
+        .is_exportable());
+        assert!(!Annotation::Bubble {
+            x: 0.0,
+            y: 0.0,
+            width: 1.0,
+            height: 1.0,
+            text: "hi".into(),
+            size: 22.0,
+            color: default_color(),
+        }
+        .is_exportable());
+        assert!(!Annotation::Erase {
+            x: 0.0,
+            y: 0.0,
+            width: 0.5,
+            height: 10.0,
+            color: None,
+        }
+        .is_exportable());
+    }
+
+    #[test]
+    fn r5_translated_shifts_new_variants_without_touching_size() {
+        let ops = vec![
+            Annotation::Spotlight {
+                x: 1.0,
+                y: 2.0,
+                width: 8.0,
+                height: 6.0,
+                dim: 0.5,
+            },
+            Annotation::Magnifier {
+                x: 1.0,
+                y: 2.0,
+                width: 8.0,
+                height: 6.0,
+                zoom: 2.0,
+                color: "#2563eb".into(),
+            },
+            Annotation::Bubble {
+                x: 1.0,
+                y: 2.0,
+                width: 8.0,
+                height: 6.0,
+                text: "hi".into(),
+                size: 22.0,
+                color: "#2563eb".into(),
+            },
+            Annotation::Sticker {
+                x: 1.0,
+                y: 2.0,
+                width: 8.0,
+                height: 8.0,
+                sticker: "star".into(),
+            },
+            Annotation::Erase {
+                x: 1.0,
+                y: 2.0,
+                width: 8.0,
+                height: 6.0,
+                color: None,
+            },
+        ];
+        for op in &ops {
+            let moved = translated(op, 5.0, -3.0);
+            match (&op, &moved) {
+                (
+                    Annotation::Spotlight { x, y, dim, .. },
+                    Annotation::Spotlight {
+                        x: mx,
+                        y: my,
+                        dim: mdim,
+                        ..
+                    },
+                ) => {
+                    assert_eq!((*mx, *my, *mdim), (x + 5.0, y - 3.0, *dim));
+                }
+                (
+                    Annotation::Magnifier { x, y, zoom, .. },
+                    Annotation::Magnifier {
+                        x: mx,
+                        y: my,
+                        zoom: mzoom,
+                        ..
+                    },
+                ) => {
+                    assert_eq!((*mx, *my, *mzoom), (x + 5.0, y - 3.0, *zoom));
+                }
+                (
+                    Annotation::Bubble { x, y, text, .. },
+                    Annotation::Bubble {
+                        x: mx,
+                        y: my,
+                        text: mtext,
+                        ..
+                    },
+                ) => {
+                    assert_eq!((*mx, *my, mtext), (x + 5.0, y - 3.0, text));
+                }
+                (
+                    Annotation::Sticker { x, y, sticker, .. },
+                    Annotation::Sticker {
+                        x: mx,
+                        y: my,
+                        sticker: ms,
+                        ..
+                    },
+                ) => {
+                    assert_eq!((*mx, *my, ms), (x + 5.0, y - 3.0, sticker));
+                }
+                (Annotation::Erase { x, y, .. }, Annotation::Erase { x: mx, y: my, .. }) => {
+                    assert_eq!((*mx, *my), (x + 5.0, y - 3.0));
+                }
+                _ => panic!("variant changed shape after translation"),
+            }
+        }
     }
 }

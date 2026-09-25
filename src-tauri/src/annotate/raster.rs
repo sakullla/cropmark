@@ -4,7 +4,10 @@ use ab_glyph::{Font, FontVec, GlyphId, PxScale, ScaleFont};
 
 use super::blur;
 use super::mosaic::pixelate;
-use super::{exportable, Annotation, Point, HIGHLIGHTER_ALPHA};
+use super::{
+    exportable, Annotation, Point, ERASE_SAMPLE_RING, HIGHLIGHTER_ALPHA, MAX_MAGNIFIER_ZOOM,
+    MIN_MAGNIFIER_ZOOM,
+};
 use crate::capture::buffer::Frame;
 use crate::capture::error::CaptureError;
 
@@ -139,6 +142,7 @@ fn apply_one(
                 text,
                 (*size as f32).max(10.0),
                 resolve_color(color),
+                None,
             )?;
         }
         Annotation::Ellipse {
@@ -196,6 +200,7 @@ fn apply_one(
                 &value.to_string(),
                 (*size as f32).max(10.0),
                 resolve_color(color),
+                None,
             )?;
         }
         Annotation::Highlighter {
@@ -239,8 +244,545 @@ fn apply_one(
                 blur::gaussian(rgba, buf_w, buf_h, x, y, w, h, *sigma);
             }
         }
+        Annotation::Spotlight {
+            x,
+            y,
+            width,
+            height,
+            dim,
+        } => {
+            let (x, y, w, h) = normalized(*x, *y, *width, *height);
+            draw_spotlight(
+                rgba,
+                buf_w,
+                buf_h,
+                x,
+                y,
+                w,
+                h,
+                (*dim).clamp(0.0, 1.0) as f32,
+            );
+        }
+        Annotation::Magnifier {
+            x,
+            y,
+            width,
+            height,
+            zoom,
+            color,
+        } => {
+            let (x, y, w, h) = clamped_rect(*x, *y, *width, *height, buf_w, buf_h);
+            if w >= 2 && h >= 2 {
+                magnify(
+                    rgba,
+                    buf_w,
+                    buf_h,
+                    x,
+                    y,
+                    w,
+                    h,
+                    (*zoom).clamp(MIN_MAGNIFIER_ZOOM, MAX_MAGNIFIER_ZOOM),
+                );
+                draw_rect(
+                    rgba,
+                    buf_w,
+                    buf_h,
+                    x as f32,
+                    y as f32,
+                    w as f32,
+                    h as f32,
+                    resolve_stroke(scale, None),
+                    resolve_color(color),
+                );
+            }
+        }
+        Annotation::Bubble {
+            x,
+            y,
+            width,
+            height,
+            text,
+            size,
+            color,
+        } => {
+            // 归一化负宽高,避免样式面板以外的数据(手写/损坏 JSON)触发越界路径。
+            let (x, y, w, h) = normalized(*x, *y, *width, *height);
+            draw_bubble(
+                rgba,
+                buf_w,
+                buf_h,
+                x,
+                y,
+                w,
+                h,
+                text,
+                (*size as f32).max(10.0),
+                resolve_color(color),
+                resolve_stroke(scale, None),
+            )?;
+        }
+        Annotation::Sticker {
+            x,
+            y,
+            width,
+            height,
+            sticker,
+        } => {
+            let (x, y, w, h) = clamped_rect(*x, *y, *width, *height, buf_w, buf_h);
+            if w > 0 && h > 0 {
+                draw_sticker(rgba, buf_w, buf_h, x, y, w, h, sticker);
+            }
+        }
+        Annotation::Erase {
+            x,
+            y,
+            width,
+            height,
+            color,
+        } => {
+            let (x, y, w, h) = clamped_rect(*x, *y, *width, *height, buf_w, buf_h);
+            if w > 0 && h > 0 {
+                erase_region(rgba, buf_w, buf_h, x, y, w, h, color.as_deref());
+            }
+        }
     }
     Ok(())
+}
+
+/// 聚光灯:保持矩形内像素,圈外整体压暗 `dim`(0–1)。
+#[allow(clippy::too_many_arguments)]
+fn draw_spotlight(
+    rgba: &mut [u8],
+    width: u32,
+    height: u32,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    dim: f32,
+) {
+    if dim <= 0.0 || w < 1.0 || h < 1.0 {
+        return;
+    }
+    let x1 = x + w;
+    let y1 = y + h;
+    for py in 0..height {
+        let cy = py as f32 + 0.5;
+        for px in 0..width {
+            let cx = px as f32 + 0.5;
+            if cx >= x && cx < x1 && cy >= y && cy < y1 {
+                continue;
+            }
+            blend_pixel(
+                rgba,
+                width,
+                height,
+                px as i32,
+                py as i32,
+                [0, 0, 0, 255],
+                dim,
+            );
+        }
+    }
+}
+
+/// 放大镜:以区域中心为锚,按 `zoom` 倍率就近采样原像素就地放大;
+/// 先快照整块区域,避免边写边读互相污染。
+#[allow(clippy::too_many_arguments)]
+fn magnify(rgba: &mut [u8], buf_w: u32, _buf_h: u32, x: u32, y: u32, w: u32, h: u32, zoom: f64) {
+    if w < 2 || h < 2 || !zoom.is_finite() || zoom <= 1.0 {
+        return;
+    }
+    let row_bytes = w as usize * 4;
+    let mut region = Vec::with_capacity(row_bytes * h as usize);
+    for py in y..y + h {
+        let start = ((py * buf_w + x) * 4) as usize;
+        region.extend_from_slice(&rgba[start..start + row_bytes]);
+    }
+    let cx = w as f64 / 2.0;
+    let cy = h as f64 / 2.0;
+    let inv = 1.0 / zoom;
+    for dy in 0..h {
+        let sy = (cy + (dy as f64 + 0.5 - cy) * inv)
+            .floor()
+            .clamp(0.0, h as f64 - 1.0) as u32;
+        for dx in 0..w {
+            let sx = (cx + (dx as f64 + 0.5 - cx) * inv)
+                .floor()
+                .clamp(0.0, w as f64 - 1.0) as u32;
+            let si = ((sy * w + sx) * 4) as usize;
+            let di = (((y + dy) * buf_w + x + dx) * 4) as usize;
+            rgba[di..di + 4].copy_from_slice(&region[si..si + 4]);
+        }
+    }
+}
+
+/// 贴纸:按区域尺寸最近邻缩放随包素材,透明像素保留底图。
+#[allow(clippy::too_many_arguments)]
+fn draw_sticker(
+    rgba: &mut [u8],
+    buf_w: u32,
+    _buf_h: u32,
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+    id: &str,
+) {
+    let Some(image) = super::stickers::image(id) else {
+        return;
+    };
+    let iw = image.width();
+    let ih = image.height();
+    if iw == 0 || ih == 0 {
+        return;
+    }
+    for dy in 0..h {
+        let sy = ((dy as u64 * ih as u64) / h as u64).min(ih as u64 - 1) as u32;
+        for dx in 0..w {
+            let sx = ((dx as u64 * iw as u64) / w as u64).min(iw as u64 - 1) as u32;
+            let src = image.get_pixel(sx, sy).0;
+            let di = (((y + dy) * buf_w + x + dx) * 4) as usize;
+            blend_rgba(&mut rgba[di..di + 4], src);
+        }
+    }
+}
+
+/// 内容擦除:选定颜色填充;未选颜色时用区域周边（`ERASE_SAMPLE_RING` 环带）
+/// 像素均值填充,区域外像素不动。
+#[allow(clippy::too_many_arguments)]
+fn erase_region(
+    rgba: &mut [u8],
+    buf_w: u32,
+    buf_h: u32,
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+    color: Option<&str>,
+) {
+    let explicit = color
+        .and_then(parse_hex_color)
+        .map(|c| [c[0], c[1], c[2], 255]);
+    let fill = explicit.unwrap_or_else(|| surrounding_average(rgba, buf_w, buf_h, x, y, w, h));
+    for py in y..y + h {
+        for px in x..x + w {
+            let i = ((py * buf_w + px) * 4) as usize;
+            if i + 3 < rgba.len() {
+                rgba[i..i + 4].copy_from_slice(&fill);
+            }
+        }
+    }
+}
+
+/// 区域周边环带（或区域自身，当区域覆盖整幅图）的平均颜色。
+fn surrounding_average(
+    rgba: &[u8],
+    buf_w: u32,
+    buf_h: u32,
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+) -> [u8; 4] {
+    let x1 = x + w;
+    let y1 = y + h;
+    let ex0 = x.saturating_sub(ERASE_SAMPLE_RING);
+    let ey0 = y.saturating_sub(ERASE_SAMPLE_RING);
+    let ex1 = (x1 + ERASE_SAMPLE_RING).min(buf_w);
+    let ey1 = (y1 + ERASE_SAMPLE_RING).min(buf_h);
+    let mut sum = [0u64; 3];
+    let mut count = 0u64;
+    for py in ey0..ey1 {
+        for px in ex0..ex1 {
+            if px >= x && px < x1 && py >= y && py < y1 {
+                continue;
+            }
+            let i = ((py * buf_w + px) * 4) as usize;
+            if i + 3 >= rgba.len() {
+                continue;
+            }
+            sum[0] += u64::from(rgba[i]);
+            sum[1] += u64::from(rgba[i + 1]);
+            sum[2] += u64::from(rgba[i + 2]);
+            count += 1;
+        }
+    }
+    if count == 0 {
+        // 区域覆盖整幅图:没有周边像素,退化为区域自身均值。
+        for py in y..y1 {
+            for px in x..x1 {
+                let i = ((py * buf_w + px) * 4) as usize;
+                if i + 3 >= rgba.len() {
+                    continue;
+                }
+                sum[0] += u64::from(rgba[i]);
+                sum[1] += u64::from(rgba[i + 1]);
+                sum[2] += u64::from(rgba[i + 2]);
+                count += 1;
+            }
+        }
+    }
+    if count == 0 {
+        return [255, 255, 255, 255];
+    }
+    [
+        (sum[0] / count) as u8,
+        (sum[1] / count) as u8,
+        (sum[2] / count) as u8,
+        255,
+    ]
+}
+
+/// 单像素 alpha over 合成（贴纸等带透明通道的源）。
+fn blend_rgba(dst: &mut [u8], src: [u8; 4]) {
+    if dst.len() < 4 {
+        return;
+    }
+    let a = f32::from(src[3]) / 255.0;
+    if a <= 0.0 {
+        return;
+    }
+    if a >= 1.0 {
+        dst[..4].copy_from_slice(&src);
+        return;
+    }
+    for c in 0..3 {
+        let dst_v = f32::from(dst[c]);
+        dst[c] = (dst_v * (1.0 - a) + f32::from(src[c]) * a).round() as u8;
+    }
+    dst[3] = 255;
+}
+
+/// 对话气泡:圆角矩形主体 + 左下指向尾 + 按框宽换行的文本。
+#[allow(clippy::too_many_arguments)]
+fn draw_bubble(
+    rgba: &mut [u8],
+    width: u32,
+    height: u32,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    text: &str,
+    size: f32,
+    color: [u8; 4],
+    thickness: f32,
+) -> Result<(), CaptureError> {
+    if w < 2.0 || h < 2.0 {
+        return Ok(());
+    }
+    let radius = (w.min(h) * 0.22).clamp(4.0, 18.0);
+    let tail = (h * 0.45).clamp(10.0, 40.0);
+    let base_left = (x + w * 0.14, y + h);
+    let base_right = (x + w * 0.42, y + h);
+    let apex = (x - tail * 0.35, y + h + tail);
+    let white = [255, 255, 255, 255];
+    fill_triangle(rgba, width, height, apex, base_left, base_right, white);
+    fill_rounded_rect(rgba, width, height, x, y, w, h, radius, white);
+    draw_line(
+        rgba,
+        width,
+        height,
+        base_left.0,
+        base_left.1,
+        apex.0,
+        apex.1,
+        thickness,
+        color,
+    );
+    draw_line(
+        rgba,
+        width,
+        height,
+        apex.0,
+        apex.1,
+        base_right.0,
+        base_right.1,
+        thickness,
+        color,
+    );
+    if !text.trim().is_empty() {
+        let padding = (size * 0.6).max(8.0);
+        let max_width = (w - padding * 2.0).max(8.0);
+        let wrapped = wrap_text(size, text, max_width);
+        draw_text(
+            rgba,
+            width,
+            height,
+            x + padding,
+            y + padding,
+            &wrapped,
+            size,
+            color,
+            Some((x, y, w, h)),
+        )?;
+    }
+    stroke_rounded_rect(rgba, width, height, x, y, w, h, radius, thickness, color);
+    Ok(())
+}
+
+/// 按框宽换行:忽略字距微调（换行位置允许与绘制有亚像素差异），
+/// 显式换行符保留;单个字符超宽时仍然成行,避免死循环。
+fn wrap_text(size: f32, text: &str, max_width: f32) -> String {
+    let Some(font) = ui_font() else {
+        return text.to_string();
+    };
+    let scaled = font.as_scaled(PxScale::from(size));
+    let mut lines: Vec<String> = Vec::new();
+    for raw in text.split('\n') {
+        if raw.is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+        let mut line = String::new();
+        let mut width = 0.0f32;
+        for ch in raw.chars() {
+            let advance = scaled.h_advance(font.glyph_id(ch));
+            if !line.is_empty() && width + advance > max_width {
+                lines.push(std::mem::take(&mut line));
+                width = 0.0;
+            }
+            line.push(ch);
+            width += advance;
+        }
+        lines.push(line);
+    }
+    lines.join("\n")
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fill_rounded_rect(
+    rgba: &mut [u8],
+    width: u32,
+    height: u32,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    radius: f32,
+    color: [u8; 4],
+) {
+    let radius = radius.min(w * 0.5).min(h * 0.5).max(0.0);
+    let min_x = x.floor().max(0.0) as i32;
+    let max_x = (x + w).ceil().min(width as f32) as i32;
+    let min_y = y.floor().max(0.0) as i32;
+    let max_y = (y + h).ceil().min(height as f32) as i32;
+    for py in min_y..max_y {
+        for px in min_x..max_x {
+            let fx = px as f32 + 0.5;
+            let fy = py as f32 + 0.5;
+            let nx = fx.clamp(x + radius, x + w - radius);
+            let ny = fy.clamp(y + radius, y + h - radius);
+            let dx = fx - nx;
+            let dy = fy - ny;
+            if dx * dx + dy * dy <= radius * radius {
+                blend_pixel(rgba, width, height, px, py, color, 1.0);
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stroke_rounded_rect(
+    rgba: &mut [u8],
+    width: u32,
+    height: u32,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    radius: f32,
+    thickness: f32,
+    color: [u8; 4],
+) {
+    let radius = radius.min(w * 0.5).min(h * 0.5).max(0.0);
+    let line_radius = (thickness * 0.5).max(0.8);
+    draw_line(
+        rgba,
+        width,
+        height,
+        x + radius,
+        y,
+        x + w - radius,
+        y,
+        thickness,
+        color,
+    );
+    draw_line(
+        rgba,
+        width,
+        height,
+        x + w,
+        y + radius,
+        x + w,
+        y + h - radius,
+        thickness,
+        color,
+    );
+    draw_line(
+        rgba,
+        width,
+        height,
+        x + w - radius,
+        y + h,
+        x + radius,
+        y + h,
+        thickness,
+        color,
+    );
+    draw_line(
+        rgba,
+        width,
+        height,
+        x,
+        y + h - radius,
+        x,
+        y + radius,
+        thickness,
+        color,
+    );
+    let steps = ((radius * std::f32::consts::FRAC_PI_2).ceil() as i32).clamp(6, 256);
+    let corners = [
+        (
+            x + radius,
+            y + radius,
+            std::f32::consts::PI,
+            std::f32::consts::PI * 1.5,
+        ),
+        (
+            x + w - radius,
+            y + radius,
+            std::f32::consts::PI * 1.5,
+            std::f32::consts::TAU,
+        ),
+        (
+            x + w - radius,
+            y + h - radius,
+            0.0,
+            std::f32::consts::FRAC_PI_2,
+        ),
+        (
+            x + radius,
+            y + h - radius,
+            std::f32::consts::FRAC_PI_2,
+            std::f32::consts::PI,
+        ),
+    ];
+    for (ccx, ccy, start, end) in corners {
+        for i in 0..=steps {
+            let t = start + (end - start) * (i as f32 / steps as f32);
+            stamp_disk(
+                rgba,
+                width,
+                height,
+                ccx + radius * t.cos(),
+                ccy + radius * t.sin(),
+                line_radius,
+                color,
+            );
+        }
+    }
 }
 
 /// 半透明折线（荧光笔）：先在区域覆盖掩码上取每像素最大覆盖，
@@ -704,6 +1246,7 @@ fn draw_text(
     text: &str,
     size: f32,
     color: [u8; 4],
+    clip: Option<(f32, f32, f32, f32)>,
 ) -> Result<(), CaptureError> {
     let Some(font) = ui_font() else {
         return Err(CaptureError::api("error.capture.text_font_missing"));
@@ -733,6 +1276,13 @@ fn draw_text(
             outlined.draw(|px, py, cover| {
                 let gx = bounds.min.x as i32 + px as i32;
                 let gy = bounds.min.y as i32 + py as i32;
+                if let Some((cx, cy, cw, ch)) = clip {
+                    let fx = gx as f32 + 0.5;
+                    let fy = gy as f32 + 0.5;
+                    if fx < cx || fx >= cx + cw || fy < cy || fy >= cy + ch {
+                        return;
+                    }
+                }
                 blend_pixel(rgba, width, height, gx, gy, color, cover);
             });
         }
@@ -1244,5 +1794,340 @@ mod tests {
         let luma = |x: u32, y: u32| rendered.rgba[((y * 24 + x) * 4) as usize];
         assert!((i32::from(luma(3, 3)) - i32::from(luma(3, 4))).abs() < 80);
         assert!((i32::from(luma(3, 14)) - i32::from(luma(3, 15))).abs() < 120);
+    }
+
+    fn pixel_at(frame: &Frame, x: u32, y: u32) -> [u8; 4] {
+        let i = ((y * frame.width + x) * 4) as usize;
+        [
+            frame.rgba[i],
+            frame.rgba[i + 1],
+            frame.rgba[i + 2],
+            frame.rgba[i + 3],
+        ]
+    }
+
+    #[test]
+    fn spotlight_darkens_outside_region_only() {
+        let frame = solid(24, 24, [200, 200, 200, 255], 1.0);
+        let op = Annotation::Spotlight {
+            x: 6.0,
+            y: 6.0,
+            width: 12.0,
+            height: 12.0,
+            dim: 0.5,
+        };
+        let rendered = rasterize(&frame, &[op]).unwrap();
+        assert_eq!(
+            pixel_at(&rendered, 12, 12),
+            [200, 200, 200, 255],
+            "inside stays untouched"
+        );
+        let outside = pixel_at(&rendered, 2, 2)[0];
+        assert!(
+            (80..=130).contains(&outside),
+            "outside should be half darkened, got {outside}"
+        );
+        // 边界外侧紧邻像素已变暗,但区域边缘内像素保持原值。
+        assert!(pixel_at(&rendered, 5, 5)[0] < 200);
+        assert_eq!(pixel_at(&rendered, 6, 6), [200, 200, 200, 255]);
+    }
+
+    #[test]
+    fn magnifier_scales_center_content_and_draws_border() {
+        let mut rgba = vec![0u8; 40 * 40 * 4];
+        for y in 0..40u32 {
+            for x in 0..40u32 {
+                let i = ((y * 40 + x) * 4) as usize;
+                let value = x as u8;
+                rgba[i..i + 4].copy_from_slice(&[value, value, value, 255]);
+            }
+        }
+        let frame = Frame {
+            width: 40,
+            height: 40,
+            rgba,
+            scale: 1.0,
+        };
+        let op = Annotation::Magnifier {
+            x: 4.0,
+            y: 4.0,
+            width: 16.0,
+            height: 16.0,
+            zoom: 2.0,
+            color: "#2563eb".into(),
+        };
+        let rendered = rasterize(&frame, &[op]).unwrap();
+        // 2 倍就近放大:以区域中心为锚,相邻目的像素成对同源。
+        let a = pixel_at(&rendered, 8, 12)[0];
+        let b = pixel_at(&rendered, 9, 12)[0];
+        assert_eq!(a, b, "2x nearest-neighbor should duplicate pixels");
+        assert_eq!(pixel_at(&rendered, 12, 12)[0], 12, "center stays in place");
+        assert_eq!(a, 10, "left of center samples the inner source pixel");
+        // 区域外其余像素不受影响。
+        assert_eq!(pixel_at(&rendered, 30, 30)[0], 30);
+        // 边框用标注色绘制在区域边缘。
+        assert!(count_matching(&rendered, |px| px[2] > 180 && px[0] < 90) > 0);
+    }
+
+    #[test]
+    fn sticker_paints_bundled_asset_inside_region_only() {
+        let frame = solid(64, 64, [0, 0, 0, 255], 1.0);
+        let op = Annotation::Sticker {
+            x: 8.0,
+            y: 8.0,
+            width: 48.0,
+            height: 48.0,
+            sticker: "star".into(),
+        };
+        let rendered = rasterize(&frame, &[op]).unwrap();
+        assert_eq!(
+            pixel_at(&rendered, 2, 2),
+            [0, 0, 0, 255],
+            "outside sticker region must stay untouched"
+        );
+        let painted = rendered
+            .rgba
+            .chunks_exact(4)
+            .filter(|px| px[0] > 40 || px[1] > 30)
+            .count();
+        assert!(
+            painted > 100,
+            "sticker should paint visible pixels, got {painted}"
+        );
+
+        let unknown = rasterize(
+            &frame,
+            &[Annotation::Sticker {
+                x: 8.0,
+                y: 8.0,
+                width: 48.0,
+                height: 48.0,
+                sticker: "not-a-sticker".into(),
+            }],
+        )
+        .unwrap();
+        assert_eq!(unknown.rgba, frame.rgba, "unknown sticker is a no-op");
+    }
+
+    #[test]
+    fn bubble_paints_body_tail_border_and_clipped_text() {
+        let frame = solid(80, 64, [0, 0, 0, 255], 1.0);
+        let op = Annotation::Bubble {
+            x: 16.0,
+            y: 12.0,
+            width: 48.0,
+            height: 28.0,
+            text: String::new(),
+            size: 18.0,
+            color: "#e11d48".into(),
+        };
+        let rendered = rasterize(&frame, &[op]).unwrap();
+        let body = pixel_at(&rendered, 40, 24);
+        assert!(
+            body[0] > 220 && body[1] > 220 && body[2] > 220,
+            "bubble body should be filled white, got {body:?}"
+        );
+        assert_eq!(pixel_at(&rendered, 2, 2), [0, 0, 0, 255]);
+        assert!(
+            count_matching(&rendered, |px| px[0] > 150 && px[1] < 100) > 0,
+            "bubble border should use the annotation color"
+        );
+        // 指向尾从主体下缘伸向左下(取三角内部且避开描边线的位置)。
+        let tail = pixel_at(&rendered, 24, 42);
+        assert!(
+            tail[0] > 200 && tail[1] > 200,
+            "tail should connect below the body, got {tail:?}"
+        );
+    }
+
+    #[test]
+    fn bubble_text_wraps_inside_bubble_when_font_exists() {
+        if ui_font().is_none() {
+            return;
+        }
+        let frame = solid(120, 80, [0, 0, 0, 255], 1.0);
+        let bubble = |text: &str| Annotation::Bubble {
+            x: 10.0,
+            y: 10.0,
+            width: 90.0,
+            height: 46.0,
+            text: text.to_string(),
+            size: 18.0,
+            color: "#2563eb".into(),
+        };
+        let baseline = rasterize(&frame, &[bubble("")]).unwrap();
+        let rendered = rasterize(
+            &frame,
+            &[bubble("one two three four five six seven eight nine")],
+        )
+        .unwrap();
+        // 有文字与无文字的差异必须全部落在气泡裁剪框内:文字不越界。
+        let mut changed = 0;
+        for y in 0..80u32 {
+            for x in 0..120u32 {
+                if pixel_at(&baseline, x, y) == pixel_at(&rendered, x, y) {
+                    continue;
+                }
+                assert!(
+                    (10..100).contains(&x) && (10..56).contains(&y),
+                    "text changed pixels outside bubble at {x},{y}"
+                );
+                changed += 1;
+            }
+        }
+        assert!(
+            changed > 10,
+            "wrapped text should be visible, got {changed}"
+        );
+    }
+
+    #[test]
+    fn erase_fills_with_selected_color_or_surrounding_average() {
+        let frame = solid(32, 32, [10, 20, 30, 255], 1.0);
+        let colored = rasterize(
+            &frame,
+            &[Annotation::Erase {
+                x: 8.0,
+                y: 8.0,
+                width: 16.0,
+                height: 16.0,
+                color: Some("#2563eb".into()),
+            }],
+        )
+        .unwrap();
+        assert_eq!(pixel_at(&colored, 16, 16), [0x25, 0x63, 0xeb, 255]);
+        assert_eq!(pixel_at(&colored, 2, 2), [10, 20, 30, 255]);
+
+        // 区域用周边均值填充:黑色区域被浅灰周边覆盖。
+        let mut rgba = vec![0u8; 32 * 32 * 4];
+        for y in 0..32u32 {
+            for x in 0..32u32 {
+                let i = ((y * 32 + x) * 4) as usize;
+                let value = if (8..16).contains(&x) && (8..16).contains(&y) {
+                    0
+                } else {
+                    200
+                };
+                rgba[i..i + 4].copy_from_slice(&[value, value, value, 255]);
+            }
+        }
+        let framed = Frame {
+            width: 32,
+            height: 32,
+            rgba,
+            scale: 1.0,
+        };
+        let averaged = rasterize(
+            &framed,
+            &[Annotation::Erase {
+                x: 8.0,
+                y: 8.0,
+                width: 8.0,
+                height: 8.0,
+                color: None,
+            }],
+        )
+        .unwrap();
+        assert_eq!(
+            pixel_at(&averaged, 12, 12),
+            [200, 200, 200, 255],
+            "auto erase should fill with surrounding average"
+        );
+        assert_eq!(pixel_at(&averaged, 2, 2), [200, 200, 200, 255]);
+    }
+
+    #[test]
+    fn bubble_with_negative_extent_is_normalized_not_panicking() {
+        let frame = solid(64, 64, [0, 0, 0, 255], 1.0);
+        let op = Annotation::Bubble {
+            x: 50.0,
+            y: 50.0,
+            width: -30.0,
+            height: -20.0,
+            text: String::new(),
+            size: 18.0,
+            color: "#e11d48".into(),
+        };
+        let rendered = rasterize(&frame, &[op]).unwrap();
+        // 归一化后区域为(20,30)-(50,50),主体中心应为白色。
+        let body = pixel_at(&rendered, 35, 40);
+        assert!(
+            body[0] > 220 && body[1] > 220 && body[2] > 220,
+            "normalized bubble body should be white, got {body:?}"
+        );
+        assert_eq!(pixel_at(&rendered, 2, 2), [0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn r5_frontend_payload_parses_and_renders() {
+        let json = r##"[
+          {"type":"spotlight","x":2,"y":2,"width":20,"height":12,"dim":0.5},
+          {"type":"magnifier","x":2,"y":2,"width":16,"height":16,"zoom":3,"color":"#2563eb"},
+          {"type":"bubble","x":2,"y":2,"width":60,"height":30,"text":"嗨","size":18,"color":"#e11d48"},
+          {"type":"sticker","x":4,"y":4,"width":20,"height":20,"sticker":"check"},
+          {"type":"erase","x":0,"y":0,"width":8,"height":8,"color":null},
+          {"type":"erase","x":8,"y":0,"width":8,"height":8,"color":"#111827"}
+        ]"##;
+        let ops: Vec<Annotation> = serde_json::from_str(json).unwrap();
+        assert_eq!(ops.len(), 6);
+        // bubble 文本需要系统字体;无字体环境只验证解析路径。
+        if ui_font().is_none() {
+            return;
+        }
+        let frame = solid(32, 32, [255, 255, 255, 255], 1.0);
+        let rendered = rasterize(&frame, &ops).unwrap();
+        assert_eq!(rendered.rgba.len(), frame.rgba.len());
+    }
+
+    #[test]
+    fn r5_tools_compose_and_keep_frame_shape() {
+        let frame = solid(64, 64, [128, 128, 128, 255], 1.0);
+        let ops = vec![
+            Annotation::Spotlight {
+                x: 4.0,
+                y: 4.0,
+                width: 56.0,
+                height: 56.0,
+                dim: 0.3,
+            },
+            Annotation::Magnifier {
+                x: 20.0,
+                y: 20.0,
+                width: 20.0,
+                height: 20.0,
+                zoom: 2.0,
+                color: "#2563eb".into(),
+            },
+            Annotation::Bubble {
+                x: 6.0,
+                y: 6.0,
+                width: 40.0,
+                height: 24.0,
+                text: String::new(),
+                size: 18.0,
+                color: "#e11d48".into(),
+            },
+            Annotation::Sticker {
+                x: 40.0,
+                y: 40.0,
+                width: 16.0,
+                height: 16.0,
+                sticker: "star".into(),
+            },
+            Annotation::Erase {
+                x: 2.0,
+                y: 50.0,
+                width: 10.0,
+                height: 10.0,
+                color: None,
+            },
+        ];
+        let rendered = rasterize(&frame, &ops).unwrap();
+        assert_eq!(rendered.width, 64);
+        assert_eq!(rendered.height, 64);
+        assert_eq!(rendered.rgba.len(), frame.rgba.len());
+        // 全图整体变暗(聚光灯 dim),但未被任何图元覆盖的角落在被压暗后仍保留色相。
+        let corner = pixel_at(&rendered, 63, 0);
+        assert!(corner[0] < 128 && corner[0] > 0);
     }
 }

@@ -5,25 +5,33 @@ import "./editor.css";
 
 // R21:预览编辑器与 Wayland Web 覆盖层共用的标注层。
 // 坐标契约:全部图元使用「冻帧物理像素」坐标;画布(`paint` 的目标 ctx)必须
-// 与冻帧同尺寸,马赛克/高斯模糊直接在该画布上取像素。宿主负责先画底图
-// (预览为源画布,覆盖层为冻帧原图),覆盖层再按选区裁剪合成。
+// 与冻帧同尺寸,马赛克/高斯模糊/聚光灯/放大镜/擦除直接在该画布上取像素。
+// 宿主负责先画底图(预览为源画布,覆盖层为冻帧原图),覆盖层再按选区裁剪合成。
+//
+// R5:工具由 `TOOL_REGISTRY` 单一注册表驱动(创建方式/图标/i18n/快捷键/开关 id),
+// 工具条、更多面板、样式面板模式与快捷键全部读取它;直线/画笔/模糊作为
+// 箭头/荧光笔/马赛克的模式提供,`Annotation` 仍保留全部既有变体用于渲染与
+// 历史再编辑。
 
+/** R5:可作为创建入口的标注工具。合并后的 line/pen/blur 不再是工具,只作为模式。 */
 export type AnnotationTool =
   | "arrow"
   | "rect"
   | "ellipse"
-  | "line"
   | "mosaic"
-  | "blur"
   | "highlighter"
-  | "pen"
   | "number"
-  | "text";
+  | "text"
+  | "spotlight"
+  | "magnifier"
+  | "bubble"
+  | "sticker"
+  | "erase";
 
-// 拖拽式绘制工具:按下为起点、拖动出范围、松开入栈。
-export type DragTool = "arrow" | "rect" | "ellipse" | "line" | "mosaic" | "blur";
-// 自由绘制工具:按住移动采集折线点,松开入栈。
-export type FreehandTool = "highlighter" | "pen";
+/** R5:合并工具的等效模式:arrow→line、highlighter→pen、mosaic→blur。 */
+export type ToolMode = "arrow" | "line" | "highlighter" | "pen" | "mosaic" | "blur";
+
+export type ToolKind = "drag" | "freehand" | "text" | "number" | "sticker";
 
 export type Point = { x: number; y: number };
 
@@ -67,13 +75,46 @@ export type Annotation =
   | { type: "number"; x: number; y: number; value: number; size: number; color: string }
   | { type: "highlighter"; points: Point[]; color: string; strokeWidth: number | null }
   | { type: "pen"; points: Point[]; color: string; strokeWidth: number | null }
-  | { type: "blur"; x: number; y: number; width: number; height: number; sigma: number };
+  | { type: "blur"; x: number; y: number; width: number; height: number; sigma: number }
+  | { type: "spotlight"; x: number; y: number; width: number; height: number; dim: number }
+  | {
+      type: "magnifier";
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      zoom: number;
+      color: string;
+    }
+  | {
+      type: "bubble";
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      text: string;
+      size: number;
+      color: string;
+    }
+  | { type: "sticker"; x: number; y: number; width: number; height: number; sticker: string }
+  | { type: "erase"; x: number; y: number; width: number; height: number; color: string | null };
 
 export interface AnnotationStyle {
   color: string;
   width: number | null;
   textSize: number | null;
   numberStart: number;
+}
+
+/** R5:创建拖拽图元所需的当前工具参数。 */
+export interface DraftSettings {
+  block: number;
+  color: string;
+  strokeWidth: number | null;
+  textSize: number;
+  spotlightDim: number;
+  magnifierZoom: number;
+  eraseFill: string | null;
 }
 
 /** 工具提示词条(由宿主决定呈现方式:预览写提示条,覆盖层可忽略)。 */
@@ -84,6 +125,11 @@ export interface AnnotationHint {
 
 /** 样式持久化等错误:词条键或宿主错误串。 */
 export type AnnotationError = AnnotationHint | string;
+
+/** R5:逐项工具开关表(工具 id → 是否启用);缺失或非布尔值按启用处理。 */
+export interface AnnotationToolToggles {
+  [tool: string]: boolean;
+}
 
 export interface AnnotationEditorOptions {
   /** 定位基准(position:relative),文字编辑器与右键菜单挂在这里。 */
@@ -101,6 +147,8 @@ export interface AnnotationEditorOptions {
   redraw: () => void;
   /** 是否接受标注输入;false 时画布事件/快捷键交给宿主(如取字工具)。 */
   isEditable?: () => boolean;
+  /** R5:逐项工具开关;null/undefined = 全部可用(设置读取失败时保守回退)。 */
+  toolToggles?: AnnotationToolToggles | null;
   /** 工具切换提示;null 表示恢复宿主默认提示。 */
   onToolHint?: (hint: AnnotationHint | null) => void;
   /** 宿主接管工具(如取字)时,手动清除工具条高亮。 */
@@ -134,28 +182,206 @@ export interface AnnotationEditor {
   cancelText: () => void;
   style: () => AnnotationStyle;
   setStyle: (next: Partial<AnnotationStyle>) => void;
+  /** R5:应用逐项工具开关;关闭的工具从工具条与更多面板移除,当前工具被关闭时切换。 */
+  setToolToggles: (toggles: AnnotationToolToggles | null) => void;
   refreshLabels: () => void;
 }
 
-export const ANNOTATION_TOOLS: AnnotationTool[] = [
-  "arrow",
-  "rect",
-  "ellipse",
-  "line",
-  "mosaic",
-  "blur",
-  "highlighter",
-  "pen",
-  "number",
-  "text",
+export interface ToolModeDefinition {
+  id: ToolMode;
+  labelKey: CatalogKey;
+}
+
+export interface ToolDefinition {
+  id: AnnotationTool;
+  /** 常驻工具条(否则收进「更多」面板)。 */
+  primary: boolean;
+  kind: ToolKind;
+  /** 单键快捷键(与既有 A/R/E/L/M/B/H/P/N/T 语义对齐:L/P/B 走保留工具的模式)。 */
+  shortcut: string;
+  icon: string;
+  titleKey: CatalogKey;
+  labelKey: CatalogKey;
+  hintKey?: CatalogKey;
+  /** 合并工具的等效模式;无模式时为 undefined。 */
+  modes?: ToolModeDefinition[];
+  defaultMode?: ToolMode;
+  /** 模式专属提示覆盖 `hintKey`(如画笔/模糊)。 */
+  modeHints?: Partial<Record<ToolMode, CatalogKey>>;
+}
+
+const ARROW_MODES: ToolModeDefinition[] = [
+  { id: "arrow", labelKey: "preview.tool.arrow" },
+  { id: "line", labelKey: "preview.tool.line" },
 ];
 
-/** 预览/覆盖层常驻工具:对齐 Snipaste 一类主栏,少用工具收进「更多」。 */
-export const PRIMARY_TOOLS: AnnotationTool[] = ["arrow", "rect", "ellipse", "pen", "mosaic", "text"];
+const HIGHLIGHTER_MODES: ToolModeDefinition[] = [
+  { id: "highlighter", labelKey: "preview.tool.highlighter" },
+  { id: "pen", labelKey: "preview.tool.pen" },
+];
 
-export const MORE_TOOLS: AnnotationTool[] = ANNOTATION_TOOLS.filter(
-  (tool) => !PRIMARY_TOOLS.includes(tool),
+const MOSAIC_MODES: ToolModeDefinition[] = [
+  { id: "mosaic", labelKey: "preview.tool.mosaic" },
+  { id: "blur", labelKey: "preview.tool.blur" },
+];
+
+/** R5:标注工具单一注册表;工具条/更多面板/快捷键/模式与开关可见性都读这里。 */
+export const TOOL_REGISTRY: ToolDefinition[] = [
+  {
+    id: "arrow",
+    primary: true,
+    kind: "drag",
+    shortcut: "a",
+    icon: icons.arrow,
+    titleKey: "preview.tool.arrow_title",
+    labelKey: "preview.tool.arrow",
+    modes: ARROW_MODES,
+    defaultMode: "arrow",
+  },
+  {
+    id: "rect",
+    primary: true,
+    kind: "drag",
+    shortcut: "r",
+    icon: icons.rect,
+    titleKey: "preview.tool.rect_title",
+    labelKey: "preview.tool.rect",
+  },
+  {
+    id: "ellipse",
+    primary: true,
+    kind: "drag",
+    shortcut: "e",
+    icon: icons.ellipse,
+    titleKey: "preview.tool.ellipse_title",
+    labelKey: "preview.tool.ellipse",
+  },
+  {
+    id: "highlighter",
+    primary: true,
+    kind: "freehand",
+    shortcut: "h",
+    icon: icons.highlighter,
+    titleKey: "preview.tool.highlighter_title",
+    labelKey: "preview.tool.highlighter",
+    hintKey: "preview.note.highlighter_hint",
+    modes: HIGHLIGHTER_MODES,
+    defaultMode: "highlighter",
+    modeHints: { pen: "preview.note.pen_hint" },
+  },
+  {
+    id: "mosaic",
+    primary: true,
+    kind: "drag",
+    shortcut: "m",
+    icon: icons.mosaic,
+    titleKey: "preview.tool.mosaic_title",
+    labelKey: "preview.tool.mosaic",
+    modes: MOSAIC_MODES,
+    defaultMode: "mosaic",
+    modeHints: { blur: "preview.note.blur_hint" },
+  },
+  {
+    id: "text",
+    primary: true,
+    kind: "text",
+    shortcut: "t",
+    icon: icons.text,
+    titleKey: "preview.tool.text_title",
+    labelKey: "preview.tool.text",
+    hintKey: "preview.note.text_hint",
+  },
+  {
+    id: "number",
+    primary: false,
+    kind: "number",
+    shortcut: "n",
+    icon: icons.number,
+    titleKey: "preview.tool.number_title",
+    labelKey: "preview.tool.number",
+    hintKey: "preview.note.number_hint",
+  },
+  {
+    id: "spotlight",
+    primary: false,
+    kind: "drag",
+    shortcut: "s",
+    icon: icons.spotlight,
+    titleKey: "preview.tool.spotlight_title",
+    labelKey: "preview.tool.spotlight",
+    hintKey: "preview.note.spotlight_hint",
+  },
+  {
+    id: "magnifier",
+    primary: false,
+    kind: "drag",
+    shortcut: "g",
+    icon: icons.magnifier,
+    titleKey: "preview.tool.magnifier_title",
+    labelKey: "preview.tool.magnifier",
+    hintKey: "preview.note.magnifier_hint",
+  },
+  {
+    id: "bubble",
+    primary: false,
+    kind: "drag",
+    shortcut: "c",
+    icon: icons.bubble,
+    titleKey: "preview.tool.bubble_title",
+    labelKey: "preview.tool.bubble",
+    hintKey: "preview.note.bubble_hint",
+  },
+  {
+    id: "sticker",
+    primary: false,
+    kind: "sticker",
+    shortcut: "k",
+    icon: icons.sticker,
+    titleKey: "preview.tool.sticker_title",
+    labelKey: "preview.tool.sticker",
+    hintKey: "preview.note.sticker_hint",
+  },
+  {
+    id: "erase",
+    primary: false,
+    kind: "drag",
+    shortcut: "x",
+    icon: icons.erase,
+    titleKey: "preview.tool.erase_title",
+    labelKey: "preview.tool.erase",
+    hintKey: "preview.note.erase_hint",
+  },
+];
+
+const TOOL_BY_ID = new Map<AnnotationTool, ToolDefinition>(
+  TOOL_REGISTRY.map((definition) => [definition.id, definition]),
 );
+
+/** 合并工具的既有快捷键:L/P/B 切到保留工具并同时选中对应模式。 */
+const MODE_SHORTCUTS: Record<string, { tool: AnnotationTool; mode: ToolMode }> = {
+  l: { tool: "arrow", mode: "line" },
+  p: { tool: "highlighter", mode: "pen" },
+  b: { tool: "mosaic", mode: "blur" },
+};
+
+export const ANNOTATION_TOOLS: AnnotationTool[] = TOOL_REGISTRY.map(
+  (definition) => definition.id,
+);
+
+/** 预览/覆盖层常驻工具:对齐 Snipaste 一类主栏,少用工具收进「更多」。 */
+export const PRIMARY_TOOLS: AnnotationTool[] = TOOL_REGISTRY.filter(
+  (definition) => definition.primary,
+).map((definition) => definition.id);
+
+export const MORE_TOOLS: AnnotationTool[] = TOOL_REGISTRY.filter(
+  (definition) => !definition.primary,
+).map((definition) => definition.id);
+
+/** 全部模式定义(含所属工具),样式面板渲染与可见性同步共用。 */
+export const TOOL_MODE_ENTRIES: Array<{ tool: AnnotationTool; mode: ToolModeDefinition }> =
+  TOOL_REGISTRY.flatMap((definition) =>
+    (definition.modes ?? []).map((mode) => ({ tool: definition.id, mode })),
+  );
 
 const FALLBACK_STROKE = "#e11d48";
 const FALLBACK_SELECT = "#1d4ed8";
@@ -168,6 +394,14 @@ const BLUR_SIGMA_MAX = 48;
 export const MIN_NUMBER_START = 1;
 export const MAX_NUMBER_START = 999;
 export const MIN_DRAW_SIZE = 3;
+// R5:气泡最小可创建尺寸(物理像素),小于该尺寸的拖拽不产生图元。
+export const MIN_BUBBLE_WIDTH = 40;
+export const MIN_BUBBLE_HEIGHT = 28;
+export const DEFAULT_SPOTLIGHT_DIM = 0.55;
+export const DEFAULT_MAGNIFIER_ZOOM = 3;
+// 与 Rust annotate::MIN/MAX_MAGNIFIER_ZOOM 对齐;倍率上限避免放大内容失真与采样过载。
+export const MIN_MAGNIFIER_ZOOM = 1.2;
+export const MAX_MAGNIFIER_ZOOM = 8;
 
 // 与 Rust parse_hex_color 对齐:接受 #rgb / #rrggbb / #rrggbbaa,其余形式回退默认色。
 export const HEX_COLOR_RE = /^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
@@ -184,56 +418,64 @@ export const STYLE_TEXT_SIZES: Array<{ value: number; labelKey: CatalogKey }> = 
   { value: 16, labelKey: "preview.style.text_medium" },
   { value: 22, labelKey: "preview.style.text_large" },
 ];
+// 聚光灯暗度/放大镜倍率档位(与 Rust 端 clamp 上限一致)。
+export const SPOTLIGHT_DIM_LEVELS = [0.35, 0.55, 0.75];
+export const MAGNIFIER_ZOOM_LEVELS = [2, 3, 4, 6];
+// 贴纸尺寸档位(逻辑像素,放置时乘冻帧 scale;上限受 Rust 端无限制,只影响创建入口)。
+export const STICKER_SIZES: Array<{ value: number; labelKey: CatalogKey }> = [
+  { value: 64, labelKey: "preview.style.text_small" },
+  { value: 96, labelKey: "preview.style.text_medium" },
+  { value: 144, labelKey: "preview.style.text_large" },
+];
 
-const TOOL_TITLE_KEYS: Record<AnnotationTool, CatalogKey> = {
-  arrow: "preview.tool.arrow_title",
-  rect: "preview.tool.rect_title",
-  ellipse: "preview.tool.ellipse_title",
-  line: "preview.tool.line_title",
-  mosaic: "preview.tool.mosaic_title",
-  blur: "preview.tool.blur_title",
-  highlighter: "preview.tool.highlighter_title",
-  pen: "preview.tool.pen_title",
-  number: "preview.tool.number_title",
-  text: "preview.tool.text_title",
+// R5:随包素材 id → 词条键;Rust `annotate::stickers` 的清单是权威来源,
+// 未登记 id 回退通用「贴纸」文案。
+const STICKER_LABEL_KEYS: Record<string, CatalogKey> = {
+  star: "preview.sticker.star",
+  heart: "preview.sticker.heart",
+  check: "preview.sticker.check",
+  cross: "preview.sticker.cross",
+  exclaim: "preview.sticker.exclaim",
+  smile: "preview.sticker.smile",
 };
 
-const TOOL_LABEL_KEYS: Record<AnnotationTool, CatalogKey> = {
-  arrow: "preview.tool.arrow",
-  rect: "preview.tool.rect",
-  ellipse: "preview.tool.ellipse",
-  line: "preview.tool.line",
-  mosaic: "preview.tool.mosaic",
-  blur: "preview.tool.blur",
-  highlighter: "preview.tool.highlighter",
-  pen: "preview.tool.pen",
-  number: "preview.tool.number",
-  text: "preview.tool.text",
-};
+interface StickerInfo {
+  id: string;
+  width: number;
+  height: number;
+}
 
-const TOOL_HINT_KEYS: Partial<Record<AnnotationTool, CatalogKey>> = {
-  text: "preview.note.text_hint",
-  number: "preview.note.number_hint",
-  pen: "preview.note.pen_hint",
-  highlighter: "preview.note.highlighter_hint",
-  blur: "preview.note.blur_hint",
-};
+// 贴纸素材模块级缓存:多个编辑器实例(预览/覆盖层)共用同一批解码结果。
+const stickerImages = new Map<string, HTMLImageElement>();
+const stickerOrder: string[] = [];
+let stickerLoad: Promise<void> | null = null;
 
-const ICONS: Record<AnnotationTool | "undo" | "style" | "more", string> = {
-  arrow: icons.arrow,
-  rect: icons.rect,
-  ellipse: icons.ellipse,
-  line: icons.line,
-  mosaic: icons.mosaic,
-  blur: icons.blur,
-  highlighter: icons.highlighter,
-  pen: icons.pen,
-  number: icons.number,
-  text: icons.text,
-  undo: icons.undo,
-  style: icons.style,
-  more: icons.more,
-};
+function ensureStickerCatalog(): Promise<void> {
+  if (stickerLoad) {
+    return stickerLoad;
+  }
+  // 素材经后端命令取回(与 Rust 栅格化同一批 include_bytes 资产),
+  // 断网可用;失败时贴纸入口保持隐藏,其它工具不受影响。
+  stickerLoad = (async () => {
+    const catalog = await invoke<StickerInfo[]>("get_sticker_catalog");
+    for (const info of catalog) {
+      if (stickerImages.has(info.id)) {
+        continue;
+      }
+      const bytes = await invoke<ArrayBuffer>("get_sticker_image", { id: info.id });
+      const url = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
+      const image = new Image();
+      image.src = url;
+      await new Promise<void>((resolve, reject) => {
+        image.onload = () => resolve();
+        image.onerror = () => reject(new Error("sticker decode failed"));
+      });
+      stickerImages.set(info.id, image);
+      stickerOrder.push(info.id);
+    }
+  })().catch(() => undefined);
+  return stickerLoad;
+}
 
 // add/remove/replace(move、retext)三类动作构成 undo/redo 栈;replace 存前后值快照。
 type EditAction =
@@ -271,6 +513,22 @@ export function readAnnotationDefaults(settings: unknown): Partial<AnnotationSty
   return style;
 }
 
+/** R5:从设置对象读取逐项工具开关;缺失/非法结构返回 null(全部可用)。 */
+export function readAnnotationToolToggles(settings: unknown): AnnotationToolToggles | null {
+  const tools = (settings as { annotationTools?: Record<string, unknown> } | null)
+    ?.annotationTools;
+  if (!tools || typeof tools !== "object") {
+    return null;
+  }
+  const toggles: AnnotationToolToggles = {};
+  for (const [key, value] of Object.entries(tools)) {
+    if (typeof value === "boolean") {
+      toggles[key] = value;
+    }
+  }
+  return Object.keys(toggles).length > 0 ? toggles : null;
+}
+
 /** 读取跨会话标注样式(读取失败静默回退默认)。 */
 export async function loadAnnotationDefaults(): Promise<Partial<AnnotationStyle>> {
   try {
@@ -280,19 +538,37 @@ export async function loadAnnotationDefaults(): Promise<Partial<AnnotationStyle>
   }
 }
 
-export function isDragTool(tool: AnnotationTool): tool is DragTool {
-  return (
-    tool === "arrow" ||
-    tool === "rect" ||
-    tool === "ellipse" ||
-    tool === "line" ||
-    tool === "mosaic" ||
-    tool === "blur"
-  );
+/** R5:一次读取样式默认与逐项工具开关(读取失败静默回退:默认样式 + 全部工具)。 */
+export async function loadAnnotationSettings(): Promise<{
+  style: Partial<AnnotationStyle>;
+  tools: AnnotationToolToggles | null;
+}> {
+  try {
+    const settings = await invoke<unknown>("get_ui_settings");
+    return {
+      style: readAnnotationDefaults(settings),
+      tools: readAnnotationToolToggles(settings),
+    };
+  } catch {
+    return { style: {}, tools: null };
+  }
 }
 
-export function isFreehandTool(tool: AnnotationTool): tool is FreehandTool {
-  return tool === "pen" || tool === "highlighter";
+export function isDragTool(tool: AnnotationTool): boolean {
+  return TOOL_BY_ID.get(tool)?.kind === "drag";
+}
+
+export function isFreehandTool(tool: AnnotationTool): boolean {
+  return TOOL_BY_ID.get(tool)?.kind === "freehand";
+}
+
+/** 合并工具的模式选择:模式 id 决定创建哪种既有图元。 */
+export function modeForTool(tool: AnnotationTool): ToolMode | null {
+  const definition = TOOL_BY_ID.get(tool);
+  if (!definition?.modes?.length) {
+    return null;
+  }
+  return definition.defaultMode ?? definition.modes[0].id;
 }
 
 // 默认模糊强度随选区短边自适应;上限保证大区域不会慢到卡住界面。
@@ -322,21 +598,36 @@ export function polylineDistance(point: Point, points: Point[]): number {
   return best;
 }
 
+/**
+ * R5:由工具 + 模式 + 当前参数构造拖拽图元草稿。直线/画笔/模糊并入保留工具后,
+ * 模式决定生成 `line`/`pen`/`blur` 既有图元(渲染与导出语义不变)。
+ */
 export function draft(
   tool: AnnotationTool,
+  mode: ToolMode | null,
   start: Point,
   end: Point,
-  block: number,
-  color: string,
-  strokeWidth: number | null,
+  settings: DraftSettings,
 ): Annotation | null {
-  if (tool === "arrow" || tool === "line") {
+  if (tool === "arrow") {
     if (Math.hypot(end.x - start.x, end.y - start.y) < MIN_DRAW_SIZE) {
       return null;
     }
-    return tool === "arrow"
-      ? { type: "arrow", from: start, to: end, color, strokeWidth }
-      : { type: "line", from: start, to: end, color, strokeWidth };
+    return mode === "line"
+      ? {
+          type: "line",
+          from: start,
+          to: end,
+          color: settings.color,
+          strokeWidth: settings.strokeWidth,
+        }
+      : {
+          type: "arrow",
+          from: start,
+          to: end,
+          color: settings.color,
+          strokeWidth: settings.strokeWidth,
+        };
   }
   const x = Math.min(start.x, end.x);
   const y = Math.min(start.y, end.y);
@@ -347,18 +638,66 @@ export function draft(
     return null;
   }
   if (tool === "mosaic") {
-    return { type: "mosaic", x, y, width, height, block };
-  }
-  if (tool === "blur") {
-    return { type: "blur", x, y, width, height, sigma: blurSigma(width, height) };
+    return mode === "blur"
+      ? { type: "blur", x, y, width, height, sigma: blurSigma(width, height) }
+      : { type: "mosaic", x, y, width, height, block: settings.block };
   }
   if (tool === "ellipse") {
-    return { type: "ellipse", x, y, width, height, color, strokeWidth };
+    return { type: "ellipse", x, y, width, height, color: settings.color, strokeWidth: settings.strokeWidth };
   }
   if (tool === "rect") {
-    return { type: "rect", x, y, width, height, color, strokeWidth };
+    return { type: "rect", x, y, width, height, color: settings.color, strokeWidth: settings.strokeWidth };
+  }
+  if (tool === "spotlight") {
+    return { type: "spotlight", x, y, width, height, dim: settings.spotlightDim };
+  }
+  if (tool === "magnifier") {
+    return {
+      type: "magnifier",
+      x,
+      y,
+      width,
+      height,
+      zoom: settings.magnifierZoom,
+      color: settings.color,
+    };
+  }
+  if (tool === "erase") {
+    return { type: "erase", x, y, width, height, color: settings.eraseFill };
+  }
+  if (tool === "bubble") {
+    if (width < MIN_BUBBLE_WIDTH || height < MIN_BUBBLE_HEIGHT) {
+      return null;
+    }
+    return {
+      type: "bubble",
+      x,
+      y,
+      width,
+      height,
+      text: "",
+      size: settings.textSize,
+      color: settings.color,
+    };
   }
   return null;
+}
+
+/** R5:自由绘制图元按模式落为 pen(不透明)或 highlighter(半透明)。 */
+export function freehandDraft(
+  tool: AnnotationTool,
+  mode: ToolMode | null,
+  points: Point[],
+  color: string,
+  strokeWidth: number | null,
+): Annotation | null {
+  if (!isFreehandTool(tool)) {
+    return null;
+  }
+  if (tool === "highlighter" && mode === "pen") {
+    return { type: "pen", points, color, strokeWidth };
+  }
+  return { type: "highlighter", points, color, strokeWidth };
 }
 
 export function paintAnnotation(
@@ -373,6 +712,26 @@ export function paintAnnotation(
   }
   if (op.type === "blur") {
     paintBlur(ctx, op);
+    return;
+  }
+  if (op.type === "spotlight") {
+    paintSpotlight(ctx, op);
+    return;
+  }
+  if (op.type === "magnifier") {
+    paintMagnifier(ctx, op, stroke, lineWidth);
+    return;
+  }
+  if (op.type === "sticker") {
+    paintSticker(ctx, op);
+    return;
+  }
+  if (op.type === "erase") {
+    paintErase(ctx, op);
+    return;
+  }
+  if (op.type === "bubble") {
+    paintBubble(ctx, op, lineWidth);
     return;
   }
   ctx.save();
@@ -564,6 +923,243 @@ function paintBlur(ctx: CanvasRenderingContext2D, op: Extract<Annotation, { type
   ctx.restore();
 }
 
+// R5:聚光灯草稿与成品同一实现;圈外按 dim 压暗,区域本身不动。
+function paintSpotlight(
+  ctx: CanvasRenderingContext2D,
+  op: Extract<Annotation, { type: "spotlight" }>,
+): void {
+  const dim = clamp(op.dim, 0, 1);
+  if (dim <= 0) {
+    return;
+  }
+  ctx.save();
+  ctx.fillStyle = `rgba(0, 0, 0, ${dim})`;
+  ctx.beginPath();
+  ctx.rect(0, 0, ctx.canvas.width, ctx.canvas.height);
+  ctx.rect(op.x, op.y, op.width, op.height);
+  ctx.fill("evenodd");
+  ctx.restore();
+}
+
+// R5:放大镜预览:把区域内容按倍率围绕中心放大并裁剪回区域,再画边框。
+// 与 Rust magnify 的就近采样语义一致(不插值),复制/保存结果与画布一致。
+function paintMagnifier(
+  ctx: CanvasRenderingContext2D,
+  op: Extract<Annotation, { type: "magnifier" }>,
+  stroke: string,
+  lineWidth: number,
+): void {
+  const x = clamp(Math.round(op.x), 0, ctx.canvas.width);
+  const y = clamp(Math.round(op.y), 0, ctx.canvas.height);
+  const w = Math.min(Math.round(op.width), ctx.canvas.width - x);
+  const h = Math.min(Math.round(op.height), ctx.canvas.height - y);
+  if (w < 2 || h < 2) {
+    return;
+  }
+  const zoom = clamp(op.zoom, MIN_MAGNIFIER_ZOOM, MAX_MAGNIFIER_ZOOM);
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x, y, w, h);
+  ctx.clip();
+  const smoothing = ctx.imageSmoothingEnabled;
+  ctx.imageSmoothingEnabled = false;
+  const dw = w * zoom;
+  const dh = h * zoom;
+  ctx.drawImage(ctx.canvas, x, y, w, h, x + w / 2 - dw / 2, y + h / 2 - dh / 2, dw, dh);
+  ctx.imageSmoothingEnabled = smoothing;
+  ctx.restore();
+  ctx.save();
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = lineWidth;
+  ctx.lineJoin = "round";
+  ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+  ctx.restore();
+}
+
+function paintSticker(
+  ctx: CanvasRenderingContext2D,
+  op: Extract<Annotation, { type: "sticker" }>,
+): void {
+  const image = stickerImages.get(op.sticker);
+  if (!image) {
+    return;
+  }
+  // 与 Rust draw_sticker 的就近缩放一致(不插值),复制/保存结果贴近画布。
+  const smoothing = ctx.imageSmoothingEnabled;
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(image, op.x, op.y, op.width, op.height);
+  ctx.imageSmoothingEnabled = smoothing;
+}
+
+// R5:内容擦除预览:选定颜色直接填充;未选颜色时取区域周边像素均值,
+// 与 Rust erase_region 同语义。擦除只改像素,不影响其它图元。
+function paintErase(ctx: CanvasRenderingContext2D, op: Extract<Annotation, { type: "erase" }>): void {
+  const x = clamp(Math.round(op.x), 0, ctx.canvas.width);
+  const y = clamp(Math.round(op.y), 0, ctx.canvas.height);
+  const w = Math.min(Math.round(op.width), ctx.canvas.width - x);
+  const h = Math.min(Math.round(op.height), ctx.canvas.height - y);
+  if (w <= 0 || h <= 0) {
+    return;
+  }
+  const explicitColor =
+    typeof op.color === "string" && HEX_COLOR_RE.test(op.color) ? op.color : null;
+  ctx.save();
+  ctx.fillStyle = explicitColor ?? averageSurrounding(ctx, x, y, w, h);
+  ctx.fillRect(x, y, w, h);
+  ctx.restore();
+}
+
+/** 区域周边 2px 环带均值;整幅图都被覆盖时退化为区域自身均值。 */
+function averageSurrounding(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+): string {
+  const ring = 2;
+  const sx = Math.max(0, x - ring);
+  const sy = Math.max(0, y - ring);
+  const ex = Math.min(ctx.canvas.width, x + w + ring);
+  const ey = Math.min(ctx.canvas.height, y + h + ring);
+  const width = ex - sx;
+  const height = ey - sy;
+  if (width <= 0 || height <= 0) {
+    return "#ffffff";
+  }
+  const data = ctx.getImageData(sx, sy, width, height).data;
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  let n = 0;
+  for (let py = 0; py < height; py += 1) {
+    for (let px = 0; px < width; px += 1) {
+      const absX = sx + px;
+      const absY = sy + py;
+      if (absX >= x && absX < x + w && absY >= y && absY < y + h) {
+        continue;
+      }
+      const i = (py * width + px) * 4;
+      r += data[i];
+      g += data[i + 1];
+      b += data[i + 2];
+      n += 1;
+    }
+  }
+  if (n === 0) {
+    const region = ctx.getImageData(x, y, w, h).data;
+    const count = region.length / 4;
+    for (let i = 0; i < region.length; i += 4) {
+      r += region[i];
+      g += region[i + 1];
+      b += region[i + 2];
+    }
+    n = count;
+  }
+  if (n === 0) {
+    return "#ffffff";
+  }
+  return `rgb(${Math.round(r / n)}, ${Math.round(g / n)}, ${Math.round(b / n)})`;
+}
+
+function roundedRectPath(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  radius: number,
+): void {
+  const r = Math.min(radius, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+/** 按框宽逐字符换行;与 Rust wrap_text 同规则(显式换行符保留)。 */
+function wrapCanvasText(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  maxWidth: number,
+): string[] {
+  const lines: string[] = [];
+  for (const raw of text.split("\n")) {
+    if (raw.length === 0) {
+      lines.push("");
+      continue;
+    }
+    let line = "";
+    for (const ch of Array.from(raw)) {
+      if (line.length > 0 && ctx.measureText(line + ch).width > maxWidth) {
+        lines.push(line);
+        line = ch;
+      } else {
+        line += ch;
+      }
+    }
+    lines.push(line);
+  }
+  return lines;
+}
+
+// R5:对话气泡:圆角矩形主体 + 左下指向尾 + 框内自动换行文本。
+function paintBubble(
+  ctx: CanvasRenderingContext2D,
+  op: Extract<Annotation, { type: "bubble" }>,
+  lineWidth: number,
+): void {
+  const { x, y, width: w, height: h } = op;
+  if (w < 2 || h < 2) {
+    return;
+  }
+  const radius = clamp(Math.min(w, h) * 0.22, 4, 18);
+  const tail = clamp(h * 0.45, 10, 40);
+  const baseLeft = { x: x + w * 0.14, y: y + h };
+  const baseRight = { x: x + w * 0.42, y: y + h };
+  const apex = { x: x - tail * 0.35, y: y + h + tail };
+  ctx.save();
+  ctx.fillStyle = "#ffffff";
+  ctx.beginPath();
+  ctx.moveTo(apex.x, apex.y);
+  ctx.lineTo(baseLeft.x, baseLeft.y);
+  ctx.lineTo(baseRight.x, baseRight.y);
+  ctx.closePath();
+  ctx.fill();
+  roundedRectPath(ctx, x, y, w, h, radius);
+  ctx.fill();
+  ctx.strokeStyle = op.color;
+  ctx.lineWidth = lineWidth;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  ctx.moveTo(baseLeft.x, baseLeft.y);
+  ctx.lineTo(apex.x, apex.y);
+  ctx.lineTo(baseRight.x, baseRight.y);
+  ctx.stroke();
+  if (op.text.trim().length > 0) {
+    const size = Math.max(op.size, 10);
+    const padding = Math.max(8, size * 0.6);
+    ctx.save();
+    roundedRectPath(ctx, x, y, w, h, radius);
+    ctx.clip();
+    ctx.font = `${size}px ${TEXT_FONT_STACK}`;
+    ctx.textBaseline = "top";
+    ctx.fillStyle = op.color;
+    const lines = wrapCanvasText(ctx, op.text, Math.max(8, w - padding * 2));
+    lines.forEach((line, index) => {
+      ctx.fillText(line, x + padding, y + padding + index * size * 1.25);
+    });
+    ctx.restore();
+  }
+  roundedRectPath(ctx, x, y, w, h, radius);
+  ctx.stroke();
+  ctx.restore();
+}
+
 export function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
@@ -618,6 +1214,16 @@ export function annotationBounds(ctx: CanvasRenderingContext2D, op: Annotation):
       maxY = Math.max(maxY, point.y);
     }
     return { minX, minY, maxX, maxY };
+  }
+  if (op.type === "bubble") {
+    // 气泡包含左下指向尾,命中范围比主体略大。
+    const tail = clamp(op.height * 0.45, 10, 40);
+    return {
+      minX: Math.min(op.x, op.x - tail * 0.35),
+      minY: op.y,
+      maxX: op.x + op.width,
+      maxY: op.y + op.height + tail,
+    };
   }
   return { minX: op.x, minY: op.y, maxX: op.x + op.width, maxY: op.y + op.height };
 }
@@ -684,24 +1290,42 @@ export function exportableList(annotations: Annotation[]): Annotation[] {
   return annotations.filter((op) => op.type !== "text" || op.text.trim().length > 0);
 }
 
-function toolButton(tool: AnnotationTool): string {
-  return `<button type="button" data-tool="${tool}" data-i18n-title="${TOOL_TITLE_KEYS[tool]}" data-i18n-aria-label="${TOOL_LABEL_KEYS[tool]}" data-tooltip="${t(TOOL_TITLE_KEYS[tool])}" aria-label="${t(TOOL_LABEL_KEYS[tool])}">${ICONS[tool]}</button>`;
+function toolButton(definition: ToolDefinition): string {
+  return `<button type="button" data-tool="${definition.id}" data-i18n-title="${definition.titleKey}" data-i18n-aria-label="${definition.labelKey}" data-tooltip="${t(definition.titleKey)}" aria-label="${t(definition.labelKey)}">${definition.icon}</button>`;
+}
+
+function modeButton(entry: { tool: AnnotationTool; mode: ToolModeDefinition }): string {
+  return `<button type="button" data-mode-tool="${entry.tool}" data-tool-mode="${entry.mode.id}" data-i18n="${entry.mode.labelKey}" data-tooltip="${t(entry.mode.labelKey)}">${t(entry.mode.labelKey)}</button>`;
+}
+
+function stickerSizeButton(option: { value: number; labelKey: CatalogKey }): string {
+  return `<button type="button" data-sticker-size="${option.value}" data-tooltip="${t("preview.style.option_title", { label: t("preview.style.sticker_size"), value: option.value })}">${t(option.labelKey)}</button>`;
 }
 
 function toolbarMarkup(): string {
-  const primary = PRIMARY_TOOLS.map(toolButton).join("");
-  const extra = MORE_TOOLS.map(toolButton).join("");
+  const primary = TOOL_REGISTRY.filter((definition) => definition.primary)
+    .map(toolButton)
+    .join("");
+  const extra = TOOL_REGISTRY.filter((definition) => !definition.primary)
+    .map(toolButton)
+    .join("");
   return `
     ${primary}
     <div class="annotation-more" data-more-root>
-      <button type="button" data-action="more" data-i18n-title="preview.tool.more_title" data-i18n-aria-label="preview.tool.more" data-tooltip="${t("preview.tool.more_title")}" aria-label="${t("preview.tool.more")}" aria-haspopup="true">${ICONS.more}</button>
+      <button type="button" data-action="more" data-i18n-title="preview.tool.more_title" data-i18n-aria-label="preview.tool.more" data-tooltip="${t("preview.tool.more_title")}" aria-label="${t("preview.tool.more")}" aria-haspopup="true">${icons.more}</button>
       <div class="annotation-more-panel" data-more-panel hidden>${extra}</div>
     </div>
     <span class="toolbar-sep" aria-hidden="true"></span>
-    <button type="button" data-action="undo" data-i18n-title="preview.tool.undo_title" data-i18n-aria-label="preview.tool.undo" data-tooltip="${t("preview.tool.undo_title")}" aria-label="${t("preview.tool.undo")}">${ICONS.undo}</button>
+    <button type="button" data-action="undo" data-i18n-title="preview.tool.undo_title" data-i18n-aria-label="preview.tool.undo" data-tooltip="${t("preview.tool.undo_title")}" aria-label="${t("preview.tool.undo")}">${icons.undo}</button>
     <div class="annotation-style" data-style-root>
-      <button type="button" data-action="style" data-i18n-title="preview.tool.style_title" data-i18n-aria-label="preview.tool.style_title" data-tooltip="${t("preview.tool.style_title")}" aria-label="${t("preview.tool.style_title")}" aria-haspopup="true">${ICONS.style}</button>
+      <button type="button" data-action="style" data-i18n-title="preview.tool.style_title" data-i18n-aria-label="preview.tool.style_title" data-tooltip="${t("preview.tool.style_title")}" aria-label="${t("preview.tool.style_title")}" aria-haspopup="true">${icons.style}</button>
       <div class="annotation-style-panel" data-style-panel hidden>
+        <div class="style-group" data-style-group="mode" hidden>
+          <span class="style-label" data-i18n="preview.style.mode">模式</span>
+          <div class="style-options" role="group" data-i18n-aria-label="preview.style.mode_group" aria-label="工具模式">
+            ${TOOL_MODE_ENTRIES.map(modeButton).join("")}
+          </div>
+        </div>
         <div class="style-group">
           <span class="style-label" data-i18n="preview.style.color">颜色</span>
           <div class="style-options" role="group" data-i18n-aria-label="preview.style.color_group" aria-label="标注颜色">
@@ -747,6 +1371,44 @@ function toolbarMarkup(): string {
             />
           </div>
         </div>
+        <div class="style-group" data-style-group="zoom" hidden>
+          <span class="style-label" data-i18n="preview.style.zoom">倍率</span>
+          <div class="style-options" role="group" data-i18n-aria-label="preview.style.zoom" aria-label="放大倍率">
+            ${MAGNIFIER_ZOOM_LEVELS.map(
+              (value) =>
+                `<button type="button" data-zoom="${value}" data-tooltip="${t("preview.style.option_title", { label: t("preview.style.zoom"), value: `${value}×` })}">${value}×</button>`,
+            ).join("")}
+          </div>
+        </div>
+        <div class="style-group" data-style-group="dim" hidden>
+          <span class="style-label" data-i18n="preview.style.dim">暗度</span>
+          <div class="style-options" role="group" data-i18n-aria-label="preview.style.dim" aria-label="聚光灯暗度">
+            ${SPOTLIGHT_DIM_LEVELS.map(
+              (value) =>
+                `<button type="button" data-dim="${value}" data-tooltip="${t("preview.style.option_title", { label: t("preview.style.dim"), value: `${Math.round(value * 100)}%` })}">${Math.round(value * 100)}%</button>`,
+            ).join("")}
+          </div>
+        </div>
+        <div class="style-group" data-style-group="erase" hidden>
+          <span class="style-label" data-i18n="preview.style.erase_fill">填充</span>
+          <div class="style-options" role="group" data-i18n-aria-label="preview.style.erase_fill" aria-label="擦除填充">
+            <button type="button" data-erase-fill="auto" data-i18n-title="preview.style.erase_auto_title" data-tooltip="${t("preview.style.erase_auto_title")}" aria-label="${t("preview.style.erase_auto_title")}">${t("preview.style.erase_auto")}</button>
+            ${STYLE_COLORS.map(
+              (color) =>
+                `<button type="button" data-erase-fill="${color}" style="--swatch:${color}" data-tooltip="${t("preview.style.color_aria", { color })}" aria-label="${t("preview.style.color_aria", { color })}"></button>`,
+            ).join("")}
+          </div>
+        </div>
+        <div class="style-group" data-style-group="sticker" hidden>
+          <span class="style-label" data-i18n="preview.style.sticker">素材</span>
+          <div class="style-options" role="group" data-i18n-aria-label="preview.style.sticker" aria-label="贴纸素材" data-sticker-options></div>
+        </div>
+        <div class="style-group" data-style-group="sticker-size" hidden>
+          <span class="style-label" data-i18n="preview.style.sticker_size">大小</span>
+          <div class="style-options" role="group" data-i18n-aria-label="preview.style.sticker_size" aria-label="贴纸大小">
+            ${STICKER_SIZES.map(stickerSizeButton).join("")}
+          </div>
+        </div>
       </div>
     </div>
   `;
@@ -786,6 +1448,13 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
   const moreBtn = toolbar.querySelector("[data-action=more]");
   const moreRoot = toolbar.querySelector("[data-more-root]");
   const numberStartInput = toolbar.querySelector("[data-style-number-start]");
+  const modeGroup = toolbar.querySelector("[data-style-group=mode]");
+  const zoomGroup = toolbar.querySelector("[data-style-group=zoom]");
+  const dimGroup = toolbar.querySelector("[data-style-group=dim]");
+  const eraseGroup = toolbar.querySelector("[data-style-group=erase]");
+  const stickerGroup = toolbar.querySelector("[data-style-group=sticker]");
+  const stickerSizeGroup = toolbar.querySelector("[data-style-group=sticker-size]");
+  const stickerOptions = toolbar.querySelector("[data-sticker-options]");
   if (
     !(undoBtn instanceof HTMLButtonElement) ||
     !(stylePanel instanceof HTMLElement) ||
@@ -794,7 +1463,14 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     !(morePanel instanceof HTMLElement) ||
     !(moreBtn instanceof HTMLButtonElement) ||
     !(moreRoot instanceof HTMLElement) ||
-    !(numberStartInput instanceof HTMLInputElement)
+    !(numberStartInput instanceof HTMLInputElement) ||
+    !(modeGroup instanceof HTMLElement) ||
+    !(zoomGroup instanceof HTMLElement) ||
+    !(dimGroup instanceof HTMLElement) ||
+    !(eraseGroup instanceof HTMLElement) ||
+    !(stickerGroup instanceof HTMLElement) ||
+    !(stickerSizeGroup instanceof HTMLElement) ||
+    !(stickerOptions instanceof HTMLElement)
   ) {
     return noopEditor();
   }
@@ -807,6 +1483,8 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
   const measureCtx = ctx;
 
   let tool: AnnotationTool = "arrow";
+  let toolToggles: AnnotationToolToggles | null = options.toolToggles ?? null;
+  const activeModes: Partial<Record<AnnotationTool, ToolMode>> = {};
   let annotations: Annotation[] = [];
   const undoStack: EditAction[] = [];
   const redoStack: EditAction[] = [];
@@ -826,6 +1504,11 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
   let numberStart = MIN_NUMBER_START;
   // 编辑会话内已放置的序号数:下一次放置 = numberStart + numberPlaced。
   let numberPlaced = 0;
+  let spotlightDim = DEFAULT_SPOTLIGHT_DIM;
+  let magnifierZoom = DEFAULT_MAGNIFIER_ZOOM;
+  let eraseFill: string | null = null;
+  let stickerSizeBase: number | null = null;
+  let activeSticker: string | null = null;
 
   const editable = (): boolean => options.isEditable?.() !== false;
 
@@ -833,22 +1516,53 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
 
   const mosaicBlock = (): number => Math.max(8, Math.round(12 * frameScale()));
 
-  const textSize = (): number => {
+  const sizeBase = (base: number | null, fallback: number, min: number): number => {
     const frame = options.frame();
     const dpi = Math.max(frame?.scale ?? 1, 1);
     const longestEdge = Math.max(frame?.width ?? 0, frame?.height ?? 0);
-    return Math.max(22, Math.round((styleTextBase ?? 28) * Math.max(dpi, longestEdge / 1920)));
+    return Math.max(min, Math.round((base ?? fallback) * Math.max(dpi, longestEdge / 1920)));
   };
+
+  const textSize = (): number => sizeBase(styleTextBase, 28, 22);
+
+  const stickerSize = (): number => sizeBase(stickerSizeBase, 96, 24);
+
+  // R5:贴纸入口只在素材实际可用时出现;开关关闭的其它工具一律隐藏。
+  const isToolEnabled = (id: AnnotationTool): boolean => {
+    if (id === "sticker" && stickerImages.size === 0) {
+      return false;
+    }
+    return toolToggles === null || toolToggles[id] !== false;
+  };
+
+  const modeFor = (id: AnnotationTool): ToolMode | null => {
+    const definition = TOOL_BY_ID.get(id);
+    if (!definition?.modes?.length) {
+      return null;
+    }
+    return activeModes[id] ?? definition.defaultMode ?? definition.modes[0].id;
+  };
+
+  const toolSettings = (): DraftSettings => ({
+    block: mosaicBlock(),
+    color: styleColor,
+    strokeWidth: styleWidth,
+    textSize: textSize(),
+    spotlightDim,
+    magnifierZoom,
+    eraseFill,
+  });
+
   // 与 Rust raster resolve_stroke 同一数值推导:逻辑档位 × scale 后 clamp 2..8。
   const strokeFor = (opWidth: number | null): number =>
     Math.min(8, Math.max(2, (opWidth ?? 3) * frameScale()));
   const colorFor = (opColor: string): string =>
     HEX_COLOR_RE.test(opColor) ? opColor : strokeColor;
   const annotationStyle = (op: Annotation): { color: string; lineWidth: number } => {
-    if (op.type === "mosaic" || op.type === "blur") {
+    if (op.type === "mosaic" || op.type === "blur" || op.type === "spotlight" || op.type === "sticker" || op.type === "erase") {
       return { color: strokeColor, lineWidth: strokeFor(null) };
     }
-    if (op.type === "text" || op.type === "number") {
+    if (op.type === "text" || op.type === "number" || op.type === "bubble" || op.type === "magnifier") {
       return { color: colorFor(op.color), lineWidth: strokeFor(null) };
     }
     return { color: colorFor(op.color), lineWidth: strokeFor(op.strokeWidth) };
@@ -881,6 +1595,18 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
 
   const syncUndo = (): void => {
     undoBtn.disabled = undoStack.length === 0 && !editorOpen();
+  };
+
+  const syncToolVisibility = (): void => {
+    toolbar.querySelectorAll<HTMLButtonElement>("[data-tool]").forEach((button) => {
+      const value = button.dataset.tool;
+      button.hidden = !value || !isAnnotationTool(value) || !isToolEnabled(value);
+    });
+    const moreVisible = MORE_TOOLS.some((id) => isToolEnabled(id));
+    moreRoot.hidden = !moreVisible;
+    if (!moreVisible) {
+      toggleMorePanel(false);
+    }
   };
 
   // 几何命中:从最上层(数组末尾)往下找,箭头/直线/自由绘制按线段距离,
@@ -981,12 +1707,17 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     const origin = editorOrigin;
     const target = editTarget;
     hideEditor();
-    if (target !== null && annotations[target]?.type === "text") {
-      const before = annotations[target];
+    const targetOp = target !== null ? annotations[target] : undefined;
+    if (targetOp && (targetOp.type === "text" || targetOp.type === "bubble")) {
       if (text.trim().length === 0) {
-        pushAction({ kind: "remove", index: target, op: before });
-      } else if (text !== before.text) {
-        pushAction({ kind: "replace", index: target, before, after: { ...before, text } });
+        pushAction({ kind: "remove", index: target as number, op: targetOp });
+      } else if (text !== targetOp.text) {
+        pushAction({
+          kind: "replace",
+          index: target as number,
+          before: targetOp,
+          after: { ...targetOp, text },
+        });
       }
     } else if (text.trim().length > 0) {
       pushAction({
@@ -1036,13 +1767,22 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     showEditor(point, "", textSize());
   };
 
-  // 双击文字原位重编辑:载入原文本与原字号,提交时走 retext 动作。
+  // 双击文字/气泡原位重编辑:载入原文本与原字号,提交时走 replace 动作。
   const openTextEditor = (index: number): void => {
     if (composing) {
       return;
     }
     const op = annotations[index];
-    if (!op || op.type !== "text") {
+    if (!op) {
+      return;
+    }
+    let origin: Point;
+    if (op.type === "text") {
+      origin = { x: op.x, y: op.y };
+    } else if (op.type === "bubble") {
+      const padding = Math.max(8, op.size * 0.6);
+      origin = { x: op.x + padding, y: op.y + padding };
+    } else {
       return;
     }
     commitEditor();
@@ -1050,7 +1790,7 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     selected = null;
     moving = false;
     moveState = null;
-    showEditor({ x: op.x, y: op.y }, op.text, op.size);
+    showEditor(origin, op.text, op.size);
   };
 
   const deleteSelected = (): void => {
@@ -1137,7 +1877,10 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
   };
 
   const emitToolHint = (): void => {
-    const key = TOOL_HINT_KEYS[tool];
+    const definition = TOOL_BY_ID.get(tool);
+    const mode = modeFor(tool);
+    const key =
+      (mode ? definition?.modeHints?.[mode] : undefined) ?? definition?.hintKey ?? null;
     if (key === "preview.note.number_hint") {
       options.onToolHint?.({ key, params: { start: numberStart } });
       return;
@@ -1157,6 +1900,7 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     commitEditor();
     tool = next;
     syncToolUi();
+    syncStylePanel();
     selected = null;
     moving = false;
     moveState = null;
@@ -1165,6 +1909,18 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     current = null;
     freehand = [];
     options.onToolChange?.(next);
+    emitToolHint();
+    redraw();
+  };
+
+  /** 合并工具快捷键:切到保留工具并选中等效模式。 */
+  const setToolMode = (nextTool: AnnotationTool, mode: ToolMode): void => {
+    if (tool !== nextTool) {
+      setTool(nextTool);
+    }
+    activeModes[nextTool] = mode;
+    syncToolUi();
+    syncStylePanel();
     emitToolHint();
     redraw();
   };
@@ -1194,7 +1950,76 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
       });
   };
 
+  const replaceChildren = (host: Element, children: Element[]): void => {
+    host.replaceChildren(...children);
+  };
+
+  const renderStickerOptions = (): void => {
+    const buttons: HTMLElement[] = [];
+    for (const id of stickerOrder) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.stickerId = id;
+      const labelKey = STICKER_LABEL_KEYS[id];
+      const label = labelKey ? t(labelKey) : t("preview.tool.sticker");
+      button.dataset.tooltip = label;
+      button.setAttribute("aria-label", label);
+      const image = document.createElement("img");
+      image.src = stickerImages.get(id)?.src ?? "";
+      image.alt = "";
+      button.appendChild(image);
+      buttons.push(button);
+    }
+    replaceChildren(stickerOptions, buttons);
+    if (!activeSticker || !stickerImages.has(activeSticker)) {
+      activeSticker = stickerOrder[0] ?? null;
+    }
+    syncStickerSelection();
+  };
+
+  const setGroupActive = (
+    host: Element,
+    attribute: string,
+    active: string,
+  ): void => {
+    host.querySelectorAll<HTMLButtonElement>(`[${attribute}]`).forEach((button) => {
+      button.classList.toggle("active", button.getAttribute(attribute) === active);
+    });
+  };
+
+  const syncStickerSelection = (): void => {
+    setGroupActive(stickerOptions, "data-sticker-id", activeSticker ?? "");
+  };
+
   const syncStylePanel = (): void => {
+    const definition = TOOL_BY_ID.get(tool);
+    const modes = definition?.modes ?? [];
+    modeGroup.hidden = modes.length === 0;
+    if (modes.length > 0) {
+      const active = modeFor(tool);
+      modeGroup.querySelectorAll<HTMLButtonElement>("[data-mode-tool]").forEach((button) => {
+        button.hidden = button.dataset.modeTool !== tool;
+        button.classList.toggle("active", button.dataset.toolMode === active);
+      });
+    }
+    zoomGroup.hidden = tool !== "magnifier";
+    if (tool === "magnifier") {
+      setGroupActive(zoomGroup, "data-zoom", String(magnifierZoom));
+    }
+    dimGroup.hidden = tool !== "spotlight";
+    if (tool === "spotlight") {
+      setGroupActive(dimGroup, "data-dim", String(spotlightDim));
+    }
+    eraseGroup.hidden = tool !== "erase";
+    if (tool === "erase") {
+      setGroupActive(eraseGroup, "data-erase-fill", eraseFill ?? "auto");
+    }
+    stickerGroup.hidden = tool !== "sticker";
+    stickerSizeGroup.hidden = tool !== "sticker";
+    if (tool === "sticker") {
+      setGroupActive(stickerSizeGroup, "data-sticker-size", String(stickerSizeBase ?? 96));
+      syncStickerSelection();
+    }
     const activeColor = styleColor.toLowerCase();
     stylePanel.querySelectorAll<HTMLButtonElement>("[data-style-color]").forEach((button) => {
       button.classList.toggle("active", (button.dataset.styleColor ?? "").toLowerCase() === activeColor);
@@ -1277,6 +2102,22 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     setAnnotations([]);
   };
 
+  const setToolToggles = (next: AnnotationToolToggles | null): void => {
+    toolToggles = next ?? null;
+    syncToolVisibility();
+    if (!isToolEnabled(tool)) {
+      // 当前工具被关闭:切到第一个可用工具;全部关闭时保留内部工具但不再创建。
+      const fallback = ANNOTATION_TOOLS.find((id) => isToolEnabled(id));
+      if (fallback) {
+        setTool(fallback);
+        return;
+      }
+    }
+    syncToolUi();
+    syncStylePanel();
+    redraw();
+  };
+
   stylePanel.addEventListener("click", (event) => {
     const button = event.target instanceof Element ? event.target.closest("button") : null;
     if (!(button instanceof HTMLButtonElement)) {
@@ -1285,17 +2126,38 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     const nextColor = button.dataset.styleColor;
     const nextWidth = button.dataset.styleWidth;
     const nextTextSize = button.dataset.styleTextSize;
+    const nextMode = button.dataset.toolMode;
+    const nextZoom = button.dataset.zoom;
+    const nextDim = button.dataset.dim;
+    const nextEraseFill = button.dataset.eraseFill;
+    const nextStickerId = button.dataset.stickerId;
+    const nextStickerSize = button.dataset.stickerSize;
     if (nextColor) {
       styleColor = nextColor;
     } else if (nextWidth !== undefined) {
       styleWidth = Number(nextWidth);
     } else if (nextTextSize !== undefined) {
       styleTextBase = Number(nextTextSize);
+    } else if (nextMode && isAnnotationTool(tool)) {
+      activeModes[tool] = nextMode as ToolMode;
+      emitToolHint();
+    } else if (nextZoom !== undefined) {
+      magnifierZoom = clamp(Number(nextZoom), MIN_MAGNIFIER_ZOOM, MAX_MAGNIFIER_ZOOM);
+    } else if (nextDim !== undefined) {
+      spotlightDim = clamp(Number(nextDim), 0, 1);
+    } else if (nextEraseFill !== undefined) {
+      eraseFill = nextEraseFill === "auto" ? null : nextEraseFill;
+    } else if (nextStickerId) {
+      activeSticker = nextStickerId;
+    } else if (nextStickerSize !== undefined) {
+      stickerSizeBase = Number(nextStickerSize);
     } else {
       return;
     }
     syncStylePanel();
-    persistStyle();
+    if (nextColor || nextWidth !== undefined || nextTextSize !== undefined) {
+      persistStyle();
+    }
     redraw();
   });
 
@@ -1335,18 +2197,38 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     }
   });
 
+  const placeSticker = (point: Point): void => {
+    const frame = options.frame();
+    const id = activeSticker;
+    if (!frame || !id || !stickerImages.has(id)) {
+      return;
+    }
+    const size = stickerSize();
+    const x = clamp(point.x - size / 2, 0, Math.max(0, frame.width - size));
+    const y = clamp(point.y - size / 2, 0, Math.max(0, frame.height - size));
+    pushAction({
+      kind: "add",
+      index: annotations.length,
+      op: { type: "sticker", x, y, width: size, height: size, sticker: id },
+    });
+    redraw();
+    syncUndo();
+  };
+
   canvas.addEventListener("mousedown", (event) => {
     if (event.button !== 0 || !options.frame() || !editable()) {
       return;
     }
     hideContextMenu();
     const point = physicalPoint(event);
-    if (tool === "text") {
+    const toolActive = isToolEnabled(tool);
+    if (toolActive && tool === "text") {
       placeEditor(point);
       return;
     }
     commitEditor();
     // 绘制工具下先做命中:命中已放标注则进入选中+拖移,否则清空选中并回到绘制起笔。
+    // 工具被逐项开关关闭时仍允许选中/移动/删除已有标注(编辑操作常驻)。
     const hit = hitAnnotation(point);
     if (hit !== -1) {
       event.preventDefault();
@@ -1357,6 +2239,9 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
       return;
     }
     selected = null;
+    if (!toolActive) {
+      return;
+    }
     if (tool === "number") {
       // 序号工具点击即放置:起始值 + 本次会话已放置数,并立即入栈可撤销。
       const value = numberStart + numberPlaced;
@@ -1368,6 +2253,10 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
       });
       redraw();
       syncUndo();
+      return;
+    }
+    if (tool === "sticker") {
+      placeSticker(point);
       return;
     }
     dragging = true;
@@ -1382,7 +2271,8 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     }
     const point = physicalPoint(event);
     const hit = hitAnnotation(point);
-    if (hit !== -1 && annotations[hit]?.type === "text") {
+    const op = hit !== -1 ? annotations[hit] : undefined;
+    if (op && (op.type === "text" || op.type === "bubble")) {
       event.preventDefault();
       openTextEditor(hit);
     }
@@ -1488,17 +2378,18 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     if (isFreehandTool(tool)) {
       const points = freehand;
       freehand = [];
-      if (points.length >= 2 && polylineLength(points) >= MIN_DRAW_SIZE) {
-        pushAction({
-          kind: "add",
-          index: annotations.length,
-          op: { type: tool, points, color: styleColor, strokeWidth: styleWidth },
-        });
+      const op = freehandDraft(tool, modeFor(tool), points, styleColor, styleWidth);
+      if (op && polylineLength(points) >= MIN_DRAW_SIZE) {
+        pushAction({ kind: "add", index: annotations.length, op });
       }
     } else if (isDragTool(tool) && start && current) {
-      const op = draft(tool, start, current, mosaicBlock(), styleColor, styleWidth);
+      const op = draft(tool, modeFor(tool), start, current, toolSettings());
       if (op) {
         pushAction({ kind: "add", index: annotations.length, op });
+        // 气泡创建后直接进入文本编辑:拖出形状即输入内容。
+        if (op.type === "bubble") {
+          openTextEditor(annotations.length - 1);
+        }
       }
     }
     start = null;
@@ -1659,8 +2550,17 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
       }
       return;
     }
-    const nextTool = TOOL_KEYS[event.key.toLowerCase()];
-    if (nextTool) {
+    const lower = event.key.toLowerCase();
+    const modeShortcut = MODE_SHORTCUTS[lower];
+    if (modeShortcut) {
+      if (isToolEnabled(modeShortcut.tool)) {
+        event.preventDefault();
+        setToolMode(modeShortcut.tool, modeShortcut.mode);
+      }
+      return;
+    }
+    const nextTool = annotationToolForKey(lower);
+    if (nextTool && isToolEnabled(nextTool)) {
       event.preventDefault();
       setTool(nextTool);
     }
@@ -1672,8 +2572,21 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
       if (!value || !isAnnotationTool(value)) {
         return;
       }
-      button.dataset.tooltip = t(TOOL_TITLE_KEYS[value]);
-      button.setAttribute("aria-label", t(TOOL_LABEL_KEYS[value]));
+      const definition = TOOL_BY_ID.get(value);
+      if (!definition) {
+        return;
+      }
+      button.dataset.tooltip = t(definition.titleKey);
+      button.setAttribute("aria-label", t(definition.labelKey));
+    });
+    toolbar.querySelectorAll<HTMLButtonElement>("[data-tool-mode]").forEach((button) => {
+      const entry = TOOL_MODE_ENTRIES.find(
+        (item) => item.tool === button.dataset.modeTool && item.mode.id === button.dataset.toolMode,
+      );
+      if (entry) {
+        button.textContent = t(entry.mode.labelKey);
+        button.dataset.tooltip = t(entry.mode.labelKey);
+      }
     });
     stylePanel.querySelectorAll<HTMLButtonElement>("[data-style-width]").forEach((button) => {
       const option = STYLE_WIDTHS.find((item) => String(item.value) === button.dataset.styleWidth);
@@ -1697,16 +2610,65 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
         });
       }
     });
+    stylePanel.querySelectorAll<HTMLButtonElement>("[data-sticker-size]").forEach((button) => {
+      const option = STICKER_SIZES.find(
+        (item) => String(item.value) === button.dataset.stickerSize,
+      );
+      if (option) {
+        button.textContent = t(option.labelKey);
+        button.dataset.tooltip = t("preview.style.option_title", {
+          label: t("preview.style.sticker_size"),
+          value: option.value,
+        });
+      }
+    });
+    stylePanel.querySelectorAll<HTMLButtonElement>("[data-zoom]").forEach((button) => {
+      const value = button.dataset.zoom ?? "";
+      button.dataset.tooltip = t("preview.style.option_title", {
+        label: t("preview.style.zoom"),
+        value: `${value}×`,
+      });
+    });
+    stylePanel.querySelectorAll<HTMLButtonElement>("[data-dim]").forEach((button) => {
+      const value = Number(button.dataset.dim ?? 0);
+      button.dataset.tooltip = t("preview.style.option_title", {
+        label: t("preview.style.dim"),
+        value: `${Math.round(value * 100)}%`,
+      });
+    });
     stylePanel.querySelectorAll<HTMLButtonElement>("[data-style-color]").forEach((button) => {
       const color = button.dataset.styleColor ?? "";
       button.dataset.tooltip = color;
       button.setAttribute("aria-label", t("preview.style.color_aria", { color }));
     });
+    stylePanel.querySelectorAll<HTMLButtonElement>("[data-erase-fill]").forEach((button) => {
+      const value = button.dataset.eraseFill ?? "";
+      if (value === "auto") {
+        button.dataset.tooltip = t("preview.style.erase_auto_title");
+      } else {
+        button.dataset.tooltip = t("preview.style.color_aria", { color: value });
+      }
+    });
+    stickerOptions.querySelectorAll<HTMLButtonElement>("[data-sticker-id]").forEach((button) => {
+      const id = button.dataset.stickerId ?? "";
+      const labelKey = STICKER_LABEL_KEYS[id];
+      const label = labelKey ? t(labelKey) : t("preview.tool.sticker");
+      button.dataset.tooltip = label;
+      button.setAttribute("aria-label", label);
+    });
   };
 
+  syncToolVisibility();
   syncToolUi();
   syncStylePanel();
   syncUndo();
+  // 素材异步就绪后刷新入口可用性/缩略图;失败时贴纸入口保持隐藏。
+  void ensureStickerCatalog().then(() => {
+    renderStickerOptions();
+    syncToolVisibility();
+    syncStylePanel();
+    redraw();
+  });
 
   return {
     paint: (target: CanvasRenderingContext2D): void => {
@@ -1718,21 +2680,18 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
         paintSelectionBox(target, annotations[selected], selectColor, frameScale());
       }
       if (dragging && start && current && isDragTool(tool)) {
-        const op = draft(tool, start, current, mosaicBlock(), styleColor, styleWidth);
+        const op = draft(tool, modeFor(tool), start, current, toolSettings());
         if (op) {
           const style = annotationStyle(op);
           paintAnnotation(target, op, style.color, style.lineWidth);
         }
       }
       if (dragging && freehand.length >= 2 && isFreehandTool(tool)) {
-        const op: Annotation = {
-          type: tool,
-          points: freehand,
-          color: styleColor,
-          strokeWidth: styleWidth,
-        };
-        const style = annotationStyle(op);
-        paintAnnotation(target, op, style.color, style.lineWidth);
+        const op = freehandDraft(tool, modeFor(tool), freehand, styleColor, styleWidth);
+        if (op) {
+          const style = annotationStyle(op);
+          paintAnnotation(target, op, style.color, style.lineWidth);
+        }
       }
     },
     tool: () => tool,
@@ -1762,30 +2721,27 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     cancelText: cancelEditor,
     style: () => ({ color: styleColor, width: styleWidth, textSize: styleTextBase, numberStart }),
     setStyle,
+    setToolToggles,
     refreshLabels,
   };
 }
 
-const TOOL_KEYS: Record<string, AnnotationTool> = {
-  a: "arrow",
-  r: "rect",
-  e: "ellipse",
-  l: "line",
-  m: "mosaic",
-  b: "blur",
-  h: "highlighter",
-  p: "pen",
-  n: "number",
-  t: "text",
-};
+const SHORTCUTS: Record<string, AnnotationTool> = Object.fromEntries(
+  TOOL_REGISTRY.map((definition) => [definition.shortcut, definition.id]),
+) as Record<string, AnnotationTool>;
 
 export function isAnnotationTool(value: string): value is AnnotationTool {
   return (ANNOTATION_TOOLS as string[]).includes(value);
 }
 
-/** 工具快捷键 → 工具(A/R/E/L/M/B/H/P/N/T);宿主在非标注工具激活时也可用。 */
+/** 工具快捷键 → 工具(A/R/E/M/H/N/T/S/G/C/K/X);L/P/B 返回保留工具(模式见编辑器内)。 */
 export function annotationToolForKey(key: string): AnnotationTool | null {
-  return TOOL_KEYS[key.toLowerCase()] ?? null;
+  const lower = key.toLowerCase();
+  const modeShortcut = MODE_SHORTCUTS[lower];
+  if (modeShortcut) {
+    return modeShortcut.tool;
+  }
+  return SHORTCUTS[lower] ?? null;
 }
 
 /** 降级编辑器:上下文缺失时宿主可继续工作(不产生标注)。 */
@@ -1811,6 +2767,7 @@ function noopEditor(): AnnotationEditor {
     cancelText: () => undefined,
     style: () => ({ color: FALLBACK_STROKE, width: null, textSize: null, numberStart: MIN_NUMBER_START }),
     setStyle: () => undefined,
+    setToolToggles: () => undefined,
     refreshLabels: () => undefined,
   };
 }

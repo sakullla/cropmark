@@ -28,6 +28,13 @@
   display: block;
 }
 
+/* R5:逐项工具开关关闭后入口从工具条与更多面板移除;[hidden] 优先级低于
+   下方 display 规则,需显式归零。 */
+.annotation-tools button[hidden],
+.annotation-tools .annotation-more[hidden] {
+  display: none;
+}
+
 .annotation-tools .toolbar-sep {
   width: 1px;
   height: 16px;
@@ -110,6 +117,10 @@
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.style-group[hidden] {
+  display: none;
 }
 
 .style-label {
@@ -201,6 +212,61 @@
 }
 
 .style-options button[data-style-color].active::before {
+  box-shadow:
+    0 0 0 2px var(--accent),
+    inset 0 0 0 1px color-mix(in srgb, var(--ink) 14%, transparent);
+}
+
+/* R5:贴纸素材缩略图(同一套色块按钮的选中态)。 */
+.style-options button[data-sticker-id] {
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  min-height: 24px;
+  padding: 2px;
+  border-radius: var(--radius-control-sm);
+}
+
+.style-options button[data-sticker-id] img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  pointer-events: none;
+}
+
+.style-options button[data-erase-fill][data-erase-fill="auto"] {
+  min-width: 56px;
+}
+
+/* 擦除填充的色块按钮与标注颜色共用外观,但属性独立。 */
+.style-options button[data-erase-fill]:not([data-erase-fill="auto"]) {
+  position: relative;
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  min-height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  background: transparent;
+}
+
+.style-options button[data-erase-fill]:not([data-erase-fill="auto"])::before {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: var(--swatch);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 14%, transparent);
+}
+
+.style-options button[data-erase-fill]:not([data-erase-fill="auto"]):hover {
+  background: var(--control-hover-bg);
+  border-color: var(--control-hover-border);
+}
+
+.style-options button[data-erase-fill]:not([data-erase-fill="auto"]).active::before {
   box-shadow:
     0 0 0 2px var(--accent),
     inset 0 0 0 1px color-mix(in srgb, var(--ink) 14%, transparent);

@@ -363,6 +363,10 @@
     "zh-CN": "无法绘制文字：系统未找到可用字体。",
     "en": "Cannot draw text: no usable system font was found."
   },
+  "error.capture.sticker_missing": {
+    "zh-CN": "贴纸素材缺失：{id}",
+    "en": "Sticker asset is missing: {id}"
+  },
   "error.capture.preview_missing": {
     "zh-CN": "没有可预览的截图。",
     "en": "No preview screenshot is available."
@@ -1147,6 +1151,46 @@
     "zh-CN": "文字",
     "en": "Text"
   },
+  "preview.tool.spotlight_title": {
+    "zh-CN": "聚光灯 (S)",
+    "en": "Spotlight (S)"
+  },
+  "preview.tool.spotlight": {
+    "zh-CN": "聚光灯",
+    "en": "Spotlight"
+  },
+  "preview.tool.magnifier_title": {
+    "zh-CN": "放大镜 (G)",
+    "en": "Magnifier (G)"
+  },
+  "preview.tool.magnifier": {
+    "zh-CN": "放大镜",
+    "en": "Magnifier"
+  },
+  "preview.tool.bubble_title": {
+    "zh-CN": "对话气泡 (C)",
+    "en": "Speech bubble (C)"
+  },
+  "preview.tool.bubble": {
+    "zh-CN": "对话气泡",
+    "en": "Speech bubble"
+  },
+  "preview.tool.sticker_title": {
+    "zh-CN": "贴纸 (K)",
+    "en": "Sticker (K)"
+  },
+  "preview.tool.sticker": {
+    "zh-CN": "贴纸",
+    "en": "Sticker"
+  },
+  "preview.tool.erase_title": {
+    "zh-CN": "内容擦除 (X)",
+    "en": "Erase content (X)"
+  },
+  "preview.tool.erase": {
+    "zh-CN": "内容擦除",
+    "en": "Erase content"
+  },
   "preview.tool.undo_title": {
     "zh-CN": "撤销 (Ctrl+Z)",
     "en": "Undo (Ctrl+Z)"
@@ -1230,6 +1274,66 @@
   "preview.style.option_title": {
     "zh-CN": "{label} ({value})",
     "en": "{label} ({value})"
+  },
+  "preview.style.mode": {
+    "zh-CN": "模式",
+    "en": "Mode"
+  },
+  "preview.style.mode_group": {
+    "zh-CN": "工具模式",
+    "en": "Tool mode"
+  },
+  "preview.style.zoom": {
+    "zh-CN": "倍率",
+    "en": "Zoom"
+  },
+  "preview.style.dim": {
+    "zh-CN": "暗度",
+    "en": "Dim"
+  },
+  "preview.style.erase_fill": {
+    "zh-CN": "填充",
+    "en": "Fill"
+  },
+  "preview.style.erase_auto": {
+    "zh-CN": "周边",
+    "en": "Surrounding"
+  },
+  "preview.style.erase_auto_title": {
+    "zh-CN": "用选区周边像素均值填充",
+    "en": "Fill with the average of surrounding pixels"
+  },
+  "preview.style.sticker": {
+    "zh-CN": "素材",
+    "en": "Asset"
+  },
+  "preview.style.sticker_size": {
+    "zh-CN": "大小",
+    "en": "Size"
+  },
+  "preview.sticker.star": {
+    "zh-CN": "星星",
+    "en": "Star"
+  },
+  "preview.sticker.heart": {
+    "zh-CN": "爱心",
+    "en": "Heart"
+  },
+  "preview.sticker.check": {
+    "zh-CN": "对勾",
+    "en": "Check"
+  },
+  "preview.sticker.cross": {
+    "zh-CN": "叉号",
+    "en": "Cross"
+  },
+  "preview.sticker.exclaim": {
+    "zh-CN": "感叹号",
+    "en": "Exclamation"
+  },
+  "preview.sticker.smile": {
+    "zh-CN": "笑脸",
+    "en": "Smile"
   },
   "preview.quality.label": {
     "zh-CN": "质量",
@@ -1366,6 +1470,26 @@
   "preview.note.blur_hint": {
     "zh-CN": "按住拖出高斯模糊区域，保存后不可还原原始内容。",
     "en": "Press and drag to blur an area; the original content cannot be recovered after saving."
+  },
+  "preview.note.spotlight_hint": {
+    "zh-CN": "拖出保持明亮的区域，圈外自动压暗。",
+    "en": "Drag the area to keep bright; everything outside is dimmed."
+  },
+  "preview.note.magnifier_hint": {
+    "zh-CN": "拖出放大区域，画面按所选倍率围绕中心放大。",
+    "en": "Drag the area to magnify; the content scales around its center."
+  },
+  "preview.note.bubble_hint": {
+    "zh-CN": "拖出气泡后输入文字；Enter 确认，双击已放气泡可再编辑。",
+    "en": "Drag a bubble and type; Enter confirms, double-click a placed bubble to edit again."
+  },
+  "preview.note.sticker_hint": {
+    "zh-CN": "点击放置贴纸，拖动可移动；样式面板切换素材与大小。",
+    "en": "Click to place a sticker, drag to move; switch asset and size in the style panel."
+  },
+  "preview.note.erase_hint": {
+    "zh-CN": "拖出要擦除的区域；默认用周边像素填充，也可在样式面板选颜色。",
+    "en": "Drag over content to erase; fill uses surrounding pixels by default, or pick a color in the style panel."
   },
   "preview.note.ocr_running": {
     "zh-CN": "正在识别…",
