@@ -30,6 +30,13 @@ pub fn dispatch_capture_with_delay(app: &tauri::AppHandle, mode: CaptureMode, de
     capture::begin(app, mode, delay_ms);
 }
 
+/// 托盘全屏子菜单(R9)。热键仍走 `dispatch_capture(Fullscreen)`,只抓指针屏。
+pub fn dispatch_fullscreen(app: &tauri::AppHandle, target: capture::session::FullscreenTarget) {
+    let delay_ms = settings::current_capture(app).delay_ms();
+    let _ = app.emit("capture-requested", CaptureMode::Fullscreen);
+    capture::begin_fullscreen(app, delay_ms, target);
+}
+
 /// 托盘"上次区域"直取(R6):不进入交互选区,按记录区域抓屏裁剪;
 /// 延时与热键/托盘主项同源,触发路径与常规截取一致。
 /// R19:旧 lastRegion 开关按常开语义移除,有记录即可直取。

@@ -15,6 +15,18 @@
     "zh-CN": "全屏",
     "en": "Fullscreen"
   },
+  "tray.fullscreen_pointer": {
+    "zh-CN": "指针所在屏",
+    "en": "Pointer screen"
+  },
+  "tray.fullscreen_all": {
+    "zh-CN": "全部显示器",
+    "en": "All displays"
+  },
+  "tray.fullscreen_screen": {
+    "zh-CN": "显示器 {index}（{width}×{height}）",
+    "en": "Display {index} ({width}×{height})"
+  },
   "tray.long_capture": {
     "zh-CN": "长截图",
     "en": "Scrolling capture"
@@ -367,6 +379,22 @@
     "zh-CN": "没有可用的显示器。",
     "en": "No monitor is available."
   },
+  "error.capture.monitor_unavailable": {
+    "zh-CN": "所选显示器已不可用。请重新打开菜单选择后再截取；本次没有保存结果。",
+    "en": "The selected display is no longer available. Open the menu and choose again; nothing was saved."
+  },
+  "error.capture.stitch_failed": {
+    "zh-CN": "拼接全部显示器失败。请检查显示器连接后重试；本次没有保存结果。",
+    "en": "Could not stitch all displays. Check the displays and try again; nothing was saved."
+  },
+  "error.capture.stitch_unsupported": {
+    "zh-CN": "当前桌面不能按物理布局提供整屏画面。请改用指针所在屏或指定显示器；本次没有保存结果。",
+    "en": "This desktop cannot provide a full image laid out by physical position. Use the pointer screen or one display; nothing was saved."
+  },
+  "error.capture.desktop_too_large": {
+    "zh-CN": "拼接后的图像过大，已取消本次全屏采集；没有保存结果。",
+    "en": "The stitched image would be too large, so this fullscreen capture was cancelled; nothing was saved."
+  },
   "error.capture.screencapturekit_windows": {
     "zh-CN": "ScreenCaptureKit 无法列出窗口。",
     "en": "ScreenCaptureKit could not list windows."
@@ -478,6 +506,10 @@
   "error.linux.wayland_pointer": {
     "zh-CN": "当前 Wayland 会话无法读取指针所在显示器。请确认已安装并启用 xdg-desktop-portal，或在 X11 会话中使用 Cropmark。",
     "en": "The pointer's monitor cannot be read in this Wayland session. Make sure xdg-desktop-portal is installed and enabled, or use Cropmark in an X11 session."
+  },
+  "toast.cursor_unavailable": {
+    "zh-CN": "当前桌面无法取得鼠标指针，本次结果不含指针。",
+    "en": "This desktop cannot capture the mouse pointer, so this result does not include it."
   },
   "toast.copied": {
     "zh-CN": "已复制到剪贴板。",

@@ -21,11 +21,25 @@ use geometry::LogicalRect;
 use session::{QuietAction, RegionSelection};
 
 pub fn begin(app: &AppHandle, mode: CaptureMode, delay_ms: u64) {
+    begin_with_target(app, mode, delay_ms, session::FullscreenTarget::Pointer);
+}
+
+/// 托盘全屏子菜单:指针屏、指定显示器或全部拼接。热键不走这里。
+pub fn begin_fullscreen(app: &AppHandle, delay_ms: u64, target: session::FullscreenTarget) {
+    begin_with_target(app, CaptureMode::Fullscreen, delay_ms, target);
+}
+
+fn begin_with_target(
+    app: &AppHandle,
+    mode: CaptureMode,
+    delay_ms: u64,
+    target: session::FullscreenTarget,
+) {
     // 新截取会替换预览会话:先收尾可能存在的贴图再标注(恢复来源贴图置顶)。
     crate::pin::finish_pin_edit(app);
     // R1:新截取同样取消进行中的长截图滚动会话(不产出)。
     scroll::interrupt(app);
-    session::begin(app, mode, delay_ms);
+    session::begin(app, mode, delay_ms, target);
 }
 
 /// 托盘"上次区域"直取(R6):按记录区域抓取,不打开交互选区。

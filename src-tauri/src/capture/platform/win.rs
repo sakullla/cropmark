@@ -17,10 +17,13 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EndMenu, EnumWindows, GetClassNameW, GetCursorPos, GetWindow, GetWindowLongW, GetWindowRect,
-    GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible, GWL_EXSTYLE, GW_OWNER,
-    WS_EX_TOOLWINDOW,
+    CopyIcon, DestroyIcon, DrawIconEx, EndMenu, EnumWindows, GetClassNameW, GetCursorInfo,
+    GetCursorPos, GetIconInfo, GetWindow, GetWindowLongW, GetWindowRect, GetWindowTextW,
+    GetWindowThreadProcessId, IsIconic, IsWindowVisible, CURSORINFO, CURSOR_SHOWING, DI_NORMAL,
+    GWL_EXSTYLE, GW_OWNER, HICON, ICONINFO, WS_EX_TOOLWINDOW,
 };
+
+use super::{CursorMode, CursorOutcome};
 
 use crate::capture::buffer::{accept_buffer, Frame, RawBuffer};
 use crate::capture::error::{classify_platform_failure, CaptureError, PlatformFailure};
@@ -37,6 +40,13 @@ pub fn pointer_monitor() -> Result<MonitorGeom, CaptureError> {
 }
 
 pub fn capture_monitor(monitor: &MonitorGeom) -> Result<Frame, CaptureError> {
+    capture_monitor_with_cursor(monitor, CursorMode::Off).map(|(frame, _)| frame)
+}
+
+pub fn capture_monitor_with_cursor(
+    monitor: &MonitorGeom,
+    mode: CursorMode,
+) -> Result<(Frame, CursorOutcome), CaptureError> {
     unsafe {
         capture_rect(
             monitor.physical_x,
@@ -44,8 +54,18 @@ pub fn capture_monitor(monitor: &MonitorGeom) -> Result<Frame, CaptureError> {
             monitor.physical_width,
             monitor.physical_height,
             monitor.scale,
+            mode,
         )
     }
+}
+
+pub fn capture_display(
+    monitor: &MonitorGeom,
+    _siblings: &[MonitorGeom],
+    mode: CursorMode,
+) -> Result<(Frame, CursorOutcome), CaptureError> {
+    // 虚拟桌面坐标允许任意 i32 原点(主屏左侧/上方为负)。
+    capture_monitor_with_cursor(monitor, mode)
 }
 
 pub fn list_windows(self_pid: u32) -> Result<Vec<ListedWindow>, CaptureError> {
@@ -60,8 +80,15 @@ pub fn list_windows(self_pid: u32) -> Result<Vec<ListedWindow>, CaptureError> {
 }
 
 pub fn capture_window(id: &str) -> Result<Frame, CaptureError> {
+    capture_window_with_cursor(id, CursorMode::Off).map(|(frame, _)| frame)
+}
+
+pub fn capture_window_with_cursor(
+    id: &str,
+    mode: CursorMode,
+) -> Result<(Frame, CursorOutcome), CaptureError> {
     let hwnd = parse_hwnd(id)?;
-    unsafe { capture_hwnd(hwnd) }
+    unsafe { capture_hwnd(hwnd, mode) }
 }
 
 pub fn dismiss_tray_popup() {
@@ -134,7 +161,8 @@ unsafe fn capture_rect(
     width: u32,
     height: u32,
     scale: f64,
-) -> Result<Frame, CaptureError> {
+    mode: CursorMode,
+) -> Result<(Frame, CursorOutcome), CaptureError> {
     if width == 0 || height == 0 {
         return Err(classify_platform_failure(PlatformFailure::BufferZeroSize));
     }
@@ -145,6 +173,7 @@ unsafe fn capture_rect(
         width,
         height,
         scale,
+        cursor_rect(mode, x, y, width, height),
     );
     ReleaseDC(None, hdc_screen);
     captured
@@ -208,7 +237,8 @@ unsafe fn capture_dc(
     width: u32,
     height: u32,
     scale: f64,
-) -> Result<Frame, CaptureError> {
+    cursor: Option<(i32, i32, u32, u32)>,
+) -> Result<(Frame, CursorOutcome), CaptureError> {
     let hdc_mem = CreateCompatibleDC(Some(hdc_screen));
     if hdc_mem.is_invalid() {
         return Err(classify_platform_failure(PlatformFailure::Api(
@@ -229,11 +259,71 @@ unsafe fn capture_dc(
         let _ = DeleteDC(hdc_mem);
         return Err(error);
     }
-    let result = dibits_to_frame(hdc_mem, bitmap, width, height, scale);
+    let cursor_outcome = match cursor {
+        Some((x, y, cursor_w, cursor_h)) => paint_cursor(hdc_mem, x, y, cursor_w, cursor_h),
+        None => CursorOutcome::NotRequested,
+    };
+    let result = dibits_to_frame(hdc_mem, bitmap, width, height, scale)
+        .map(|frame| (frame, cursor_outcome));
     SelectObject(hdc_mem, old);
     let _ = DeleteObject(bitmap.into());
     let _ = DeleteDC(hdc_mem);
     result
+}
+
+fn cursor_rect(mode: CursorMode, x: i32, y: i32, width: u32, height: u32) -> Option<(i32, i32, u32, u32)> {
+    match mode {
+        CursorMode::Off => None,
+        CursorMode::WhenInside => Some((x, y, width, height)),
+    }
+}
+
+/// GetCursorInfo + CopyIcon/DrawIconEx。热点不在矩形内则不画。
+/// 绘制失败只降级为不含指针,不让已经抓到的画面作废。
+unsafe fn paint_cursor(hdc: HDC, origin_x: i32, origin_y: i32, width: u32, height: u32) -> CursorOutcome {
+    if width == 0 || height == 0 {
+        return CursorOutcome::Outside;
+    }
+    let mut info = CURSORINFO {
+        cbSize: size_of::<CURSORINFO>() as u32,
+        ..Default::default()
+    };
+    if GetCursorInfo(&mut info).is_err() {
+        return CursorOutcome::Unavailable;
+    }
+    if info.flags.0 & CURSOR_SHOWING.0 == 0 {
+        return CursorOutcome::Outside;
+    }
+    let hot_x = info.ptScreenPos.x;
+    let hot_y = info.ptScreenPos.y;
+    let right = origin_x.saturating_add(width as i32);
+    let bottom = origin_y.saturating_add(height as i32);
+    if hot_x < origin_x || hot_y < origin_y || hot_x >= right || hot_y >= bottom {
+        return CursorOutcome::Outside;
+    }
+    let Ok(copied) = CopyIcon(HICON(info.hCursor.0)) else {
+        return CursorOutcome::Unavailable;
+    };
+    let mut icon = ICONINFO::default();
+    if GetIconInfo(copied, &mut icon).is_err() {
+        let _ = DestroyIcon(copied);
+        return CursorOutcome::Unavailable;
+    }
+    let draw_x = hot_x - origin_x - icon.xHotspot as i32;
+    let draw_y = hot_y - origin_y - icon.yHotspot as i32;
+    let drawn = DrawIconEx(hdc, draw_x, draw_y, copied, 0, 0, 0, None, DI_NORMAL);
+    if !icon.hbmMask.is_invalid() {
+        let _ = DeleteObject(icon.hbmMask.into());
+    }
+    if !icon.hbmColor.is_invalid() {
+        let _ = DeleteObject(icon.hbmColor.into());
+    }
+    let _ = DestroyIcon(copied);
+    if drawn.is_err() {
+        CursorOutcome::Unavailable
+    } else {
+        CursorOutcome::Included
+    }
 }
 
 unsafe fn dibits_to_frame(
@@ -282,7 +372,7 @@ unsafe fn dibits_to_frame(
     Ok(frame)
 }
 
-unsafe fn capture_hwnd(hwnd: HWND) -> Result<Frame, CaptureError> {
+unsafe fn capture_hwnd(hwnd: HWND, mode: CursorMode) -> Result<(Frame, CursorOutcome), CaptureError> {
     if hwnd.is_invalid() {
         return Err(CaptureError::api("error.capture.window_gone"));
     }
@@ -323,6 +413,7 @@ unsafe fn capture_hwnd(hwnd: HWND) -> Result<Frame, CaptureError> {
         width,
         height,
         scale,
+        cursor_rect(mode, rect.left, rect.top, width, height),
     );
     ReleaseDC(None, hdc_screen);
     captured

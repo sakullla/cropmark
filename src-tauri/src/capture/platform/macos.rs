@@ -39,15 +39,41 @@ struct CropmarkSckWindow {
     title: [c_char; 512],
 }
 
+#[repr(C)]
+struct CropmarkSckDisplay {
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
+    scale: f64,
+}
+
 extern "C" {
     fn cropmark_sck_free(out: *mut CropmarkSckResult);
     fn cropmark_sck_pointer(x: *mut i32, y: *mut i32) -> i32;
     fn cropmark_sck_monitor_at_pointer(out: *mut CropmarkSckMonitor) -> i32;
-    fn cropmark_sck_capture_at_point(px: i32, py: i32, out: *mut CropmarkSckResult) -> i32;
+    fn cropmark_sck_capture_at_point(
+        px: i32,
+        py: i32,
+        shows_cursor: i32,
+        out: *mut CropmarkSckResult,
+    ) -> i32;
     fn cropmark_sck_capture_window(window_id: u32, out: *mut CropmarkSckResult) -> i32;
     fn cropmark_sck_list_windows(out: *mut CropmarkSckWindow, cap: i32, count: *mut i32) -> i32;
+    fn cropmark_sck_list_displays(out: *mut CropmarkSckDisplay, cap: i32, count: *mut i32) -> i32;
+    fn cropmark_sck_capture_display_frame(
+        x: i32,
+        y: i32,
+        w: u32,
+        h: u32,
+        shows_cursor: i32,
+        out: *mut CropmarkSckResult,
+    ) -> i32;
     fn cropmark_sck_permission_state() -> i32;
 }
+
+use super::{CursorMode, CursorOutcome};
+use crate::capture::geometry::{match_sck_display, primary_points_height, DisplayFrame};
 
 /// 屏幕录制权限状态(R23):由 C 桥的 preflight + 每进程请求记录派生。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,6 +136,39 @@ pub fn pointer_monitor() -> Result<MonitorGeom, CaptureError> {
 }
 
 pub fn capture_monitor(monitor: &MonitorGeom) -> Result<Frame, CaptureError> {
+    capture_monitor_with_cursor(monitor, CursorMode::Off).map(|(frame, _)| frame)
+}
+
+pub fn capture_monitor_with_cursor(
+    monitor: &MonitorGeom,
+    mode: CursorMode,
+) -> Result<(Frame, CursorOutcome), CaptureError> {
+    let shows = matches!(mode, CursorMode::WhenInside);
+    let frame = capture_pointer_display(monitor, shows)?;
+    let outcome = if shows {
+        CursorOutcome::Native
+    } else {
+        CursorOutcome::NotRequested
+    };
+    Ok((frame, outcome))
+}
+
+pub fn capture_display(
+    monitor: &MonitorGeom,
+    siblings: &[MonitorGeom],
+    mode: CursorMode,
+) -> Result<(Frame, CursorOutcome), CaptureError> {
+    let shows = matches!(mode, CursorMode::WhenInside);
+    let frame = capture_matched_display(monitor, siblings, shows)?;
+    let outcome = if shows {
+        CursorOutcome::Native
+    } else {
+        CursorOutcome::NotRequested
+    };
+    Ok((frame, outcome))
+}
+
+fn capture_pointer_display(monitor: &MonitorGeom, shows_cursor: bool) -> Result<Frame, CaptureError> {
     let mut px = monitor.logical_x + (monitor.logical_width as i32 / 2);
     let mut py = monitor.logical_y + (monitor.logical_height as i32 / 2);
     unsafe {
@@ -125,8 +184,9 @@ pub fn capture_monitor(monitor: &MonitorGeom) -> Result<Frame, CaptureError> {
         );
     }
     let started = std::time::Instant::now();
+    let shows = i32::from(shows_cursor);
     let result = take_result(
-        |out| unsafe { cropmark_sck_capture_at_point(px, py, out) },
+        |out| unsafe { cropmark_sck_capture_at_point(px, py, shows, out) },
         monitor.scale,
     );
     if timing_enabled() {
@@ -146,6 +206,73 @@ pub fn capture_monitor(monitor: &MonitorGeom) -> Result<Frame, CaptureError> {
         }
     }
     result
+}
+
+fn capture_matched_display(
+    monitor: &MonitorGeom,
+    siblings: &[MonitorGeom],
+    shows_cursor: bool,
+) -> Result<Frame, CaptureError> {
+    let mut raw = vec![
+        CropmarkSckDisplay {
+            x: 0,
+            y: 0,
+            w: 0,
+            h: 0,
+            scale: 1.0,
+        };
+        16
+    ];
+    let mut count = 0i32;
+    let status =
+        unsafe { cropmark_sck_list_displays(raw.as_mut_ptr(), raw.len() as i32, &mut count) };
+    if status == 1 {
+        return Err(classify_platform_failure(PlatformFailure::PermissionDenied));
+    }
+    if status == 3 {
+        return Err(CaptureError::timeout(
+            "error.capture.sck_timeout",
+            "error.capture.timeout_hint",
+        ));
+    }
+    if status != 0 {
+        return Err(CaptureError::unavailable("error.capture.no_monitor"));
+    }
+    let listed = count.max(0) as usize;
+    let displays: Vec<DisplayFrame> = raw
+        .iter()
+        .take(listed)
+        .map(|display| DisplayFrame {
+            x: display.x,
+            y: display.y,
+            width: display.w,
+            height: display.h,
+        })
+        .collect();
+    let height = primary_points_height(if siblings.is_empty() {
+        std::slice::from_ref(monitor)
+    } else {
+        siblings
+    });
+    let Some(index) = match_sck_display(monitor, &displays, height) else {
+        return Err(CaptureError::unavailable(
+            "error.capture.monitor_unavailable",
+        ));
+    };
+    let chosen = displays[index];
+    take_result(
+        |out| unsafe {
+            cropmark_sck_capture_display_frame(
+                chosen.x,
+                chosen.y,
+                chosen.width,
+                chosen.height,
+                i32::from(shows_cursor),
+                out,
+            )
+        },
+        monitor.scale,
+    )
 }
 
 pub fn list_windows(self_pid: u32) -> Result<Vec<ListedWindow>, CaptureError> {
@@ -199,13 +326,26 @@ pub fn list_windows(self_pid: u32) -> Result<Vec<ListedWindow>, CaptureError> {
 }
 
 pub fn capture_window(id: &str) -> Result<Frame, CaptureError> {
+    capture_window_with_cursor(id, CursorMode::Off).map(|(frame, _)| frame)
+}
+
+pub fn capture_window_with_cursor(
+    id: &str,
+    mode: CursorMode,
+) -> Result<(Frame, CursorOutcome), CaptureError> {
     let window_id = id
         .parse::<u32>()
         .map_err(|_| CaptureError::api("error.capture.window_unknown"))?;
-    take_result(
+    // 窗口路径的 SCK 独立窗口不含系统指针;开启开关时降级并保留画面。
+    let frame = take_result(
         |out| unsafe { cropmark_sck_capture_window(window_id, out) },
         2.0,
-    )
+    )?;
+    let outcome = match mode {
+        CursorMode::Off => CursorOutcome::NotRequested,
+        CursorMode::WhenInside => CursorOutcome::Unavailable,
+    };
+    Ok((frame, outcome))
 }
 
 pub fn dismiss_tray_popup() {}

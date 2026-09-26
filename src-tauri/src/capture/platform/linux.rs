@@ -9,11 +9,14 @@ use crate::capture::buffer::{
     accept_buffer, crop_desktop_to_monitor, decode_png, Frame, RawBuffer,
 };
 use crate::capture::error::{classify_platform_failure, CaptureError, PlatformFailure};
-use crate::capture::geometry::{monitor_at_physical, MonitorGeom};
+use crate::capture::geometry::{
+    composite_premul_cursor, cursor_anchor_inside, monitor_at_physical, parse_xfixes_cursor_image,
+    CursorBlit, MonitorGeom,
+};
 use crate::capture::windows_list::{selectable_windows, ListedWindow};
 use crate::i18n;
 
-use super::{linux_capture_backend, LinuxCaptureBackend};
+use super::{linux_capture_backend, CursorMode, CursorOutcome, LinuxCaptureBackend};
 
 /// 门户不可用时的统一提示(R13):说明原因并给出替代路径。
 const PORTAL_UNAVAILABLE_KEY: &str = "error.linux.portal_missing";
@@ -39,24 +42,50 @@ fn wayland_pointer_unavailable() -> CaptureError {
 }
 
 pub fn capture_monitor(monitor: &MonitorGeom) -> Result<Frame, CaptureError> {
+    capture_monitor_with_cursor(monitor, CursorMode::Off).map(|(frame, _)| frame)
+}
+
+pub fn capture_monitor_with_cursor(
+    monitor: &MonitorGeom,
+    mode: CursorMode,
+) -> Result<(Frame, CursorOutcome), CaptureError> {
     match linux_capture_backend(wayland_display().as_deref()) {
         LinuxCaptureBackend::Portal => {
             let frame = portal_fullscreen()?;
-            crop_desktop_to_monitor(
+            let cropped = crop_desktop_to_monitor(
                 frame,
                 monitor,
                 monitor.physical_x.min(0),
                 monitor.physical_y.min(0),
-            )
+            )?;
+            Ok(portal_cursor(cropped, mode))
         }
-        LinuxCaptureBackend::X11 => x11_capture_rect(
+        LinuxCaptureBackend::X11 => x11_capture_rect_cursor(
             monitor.physical_x,
             monitor.physical_y,
             monitor.physical_width,
             monitor.physical_height,
             monitor.scale,
+            mode,
         ),
     }
+}
+
+pub fn capture_display(
+    monitor: &MonitorGeom,
+    _siblings: &[MonitorGeom],
+    mode: CursorMode,
+) -> Result<(Frame, CursorOutcome), CaptureError> {
+    capture_monitor_with_cursor(monitor, mode)
+}
+
+pub fn capture_portal_desktop() -> Result<Frame, CaptureError> {
+    if !uses_portal() {
+        return Err(CaptureError::unavailable(
+            "error.capture.stitch_unsupported",
+        ));
+    }
+    portal_fullscreen()
 }
 
 pub fn list_windows(self_pid: u32) -> Result<Vec<ListedWindow>, CaptureError> {
@@ -67,10 +96,18 @@ pub fn list_windows(self_pid: u32) -> Result<Vec<ListedWindow>, CaptureError> {
 }
 
 pub fn capture_window(id: &str) -> Result<Frame, CaptureError> {
+    capture_window_with_cursor(id, CursorMode::Off).map(|(frame, _)| frame)
+}
+
+pub fn capture_window_with_cursor(
+    id: &str,
+    mode: CursorMode,
+) -> Result<(Frame, CursorOutcome), CaptureError> {
     if uses_portal() {
         return Err(CaptureError::unavailable(PORTAL_WINDOW_CAPTURE_KEY));
     }
-    x11_capture_window(id)
+    let (frame, origin_x, origin_y) = x11_capture_window_at(id)?;
+    Ok(apply_x11_cursor(frame, origin_x, origin_y, mode))
 }
 
 pub fn dismiss_tray_popup() {}
@@ -98,6 +135,15 @@ fn uses_portal() -> bool {
 
 fn portal_fullscreen() -> Result<Frame, CaptureError> {
     pollster::block_on(portal_fullscreen_async())
+}
+
+fn portal_cursor(frame: Frame, mode: CursorMode) -> (Frame, CursorOutcome) {
+    let outcome = match mode {
+        CursorMode::Off => CursorOutcome::NotRequested,
+        // 门户帧没有可合成的指针位图;开启开关时降级并保留画面。
+        CursorMode::WhenInside => CursorOutcome::Unavailable,
+    };
+    (frame, outcome)
 }
 
 async fn portal_fullscreen_async() -> Result<Frame, CaptureError> {
@@ -217,6 +263,99 @@ fn x11_capture_rect(
     Ok(frame)
 }
 
+fn x11_capture_rect_cursor(
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    scale: f64,
+    mode: CursorMode,
+) -> Result<(Frame, CursorOutcome), CaptureError> {
+    let frame = x11_capture_rect(x, y, width, height, scale)?;
+    Ok(apply_x11_cursor(frame, x, y, mode))
+}
+
+fn apply_x11_cursor(
+    mut frame: Frame,
+    origin_x: i32,
+    origin_y: i32,
+    mode: CursorMode,
+) -> (Frame, CursorOutcome) {
+    if mode == CursorMode::Off {
+        return (frame, CursorOutcome::NotRequested);
+    }
+    let image = match read_xfixes_cursor() {
+        Ok(Some(image)) => image,
+        Ok(None) => return (frame, CursorOutcome::Outside),
+        Err(()) => return (frame, CursorOutcome::Unavailable),
+    };
+    let hot_x = i32::from(image.x);
+    let hot_y = i32::from(image.y);
+    if !cursor_anchor_inside(origin_x, origin_y, frame.width, frame.height, hot_x, hot_y) {
+        return (frame, CursorOutcome::Outside);
+    }
+    let drew = composite_premul_cursor(
+        frame.width,
+        frame.height,
+        &mut frame.rgba,
+        origin_x,
+        origin_y,
+        CursorBlit {
+            hot_x,
+            hot_y,
+            sprite_x: hot_x - i32::from(image.x_hot),
+            sprite_y: hot_y - i32::from(image.y_hot),
+            width: u32::from(image.width),
+            height: u32::from(image.height),
+            argb: &image.argb,
+        },
+    );
+    if drew {
+        (frame, CursorOutcome::Included)
+    } else {
+        (frame, CursorOutcome::Unavailable)
+    }
+}
+
+struct XFixesCursorReply(crate::capture::geometry::XFixesCursorImage);
+
+impl x11rb::x11_utils::TryParse for XFixesCursorReply {
+    fn try_parse(value: &[u8]) -> Result<(Self, &[u8]), x11rb::errors::ParseError> {
+        match parse_xfixes_cursor_image(value) {
+            Some((image, rest)) => Ok((Self(image), rest)),
+            None => Err(x11rb::errors::ParseError::InsufficientData),
+        }
+    }
+}
+
+fn read_xfixes_cursor() -> Result<Option<crate::capture::geometry::XFixesCursorImage>, ()> {
+    use std::io::IoSlice;
+    use x11rb::connection::RequestConnection;
+    let (conn, _screen) = x11rb::connect(None).map_err(|_| ())?;
+    let ext = conn
+        .query_extension(b"XFIXES")
+        .map_err(|_| ())?
+        .reply()
+        .map_err(|_| ())?;
+    if !ext.present {
+        return Err(());
+    }
+    let mut request = [ext.major_opcode, 4, 0, 0];
+    request[2..4].copy_from_slice(&1u16.to_ne_bytes());
+    let cookie = conn
+        .send_request_with_reply::<XFixesCursorReply>(
+            &[IoSlice::new(&request)],
+            Vec::<x11rb::utils::RawFdContainer>::new(),
+        )
+        .map_err(|_| ())?;
+    let reply = cookie.reply().map_err(|_| ())?;
+    if reply.0.width == 0 || reply.0.height == 0 {
+        Ok(None)
+    } else {
+        Ok(Some(reply.0))
+    }
+}
+
 fn x11_list_windows(self_pid: u32) -> Result<Vec<ListedWindow>, CaptureError> {
     let (conn, screen_num) =
         x11rb::connect(None).map_err(|_| CaptureError::unavailable(PORTAL_WINDOW_LIST_KEY))?;
@@ -290,17 +429,25 @@ fn frame_extents(conn: &impl Connection, id: u32) -> (i32, i32, i32, i32) {
     )
 }
 
-fn x11_capture_window(id: &str) -> Result<Frame, CaptureError> {
+fn x11_capture_window_at(id: &str) -> Result<(Frame, i32, i32), CaptureError> {
     let window = id
         .parse::<u32>()
         .map_err(|_| CaptureError::api("error.capture.window_unknown"))?;
-    let (conn, _screen_num) =
+    let (conn, screen_num) =
         x11rb::connect(None).map_err(|_| CaptureError::unavailable(PORTAL_WINDOW_CAPTURE_KEY))?;
     let geom = conn
         .get_geometry(window)
         .map_err(|_| CaptureError::api("error.capture.window_read"))?
         .reply()
         .map_err(|_| CaptureError::api("error.capture.window_read"))?;
+    let screen = &conn.setup().roots[screen_num];
+    let translated = conn
+        .translate_coordinates(window, screen.root, 0, 0)
+        .map_err(|_| CaptureError::api("error.capture.window_rect"))?
+        .reply()
+        .map_err(|_| CaptureError::api("error.capture.window_rect"))?;
+    let origin_x = i32::from(translated.dst_x);
+    let origin_y = i32::from(translated.dst_y);
     let image = conn
         .get_image(
             ImageFormat::Z_PIXMAP,
@@ -320,11 +467,12 @@ fn x11_capture_window(id: &str) -> Result<Frame, CaptureError> {
         geom.width as u32,
         geom.height as u32,
     )?;
-    accept_buffer(RawBuffer::ready(
+    let frame = accept_buffer(RawBuffer::ready(
         geom.width as u32,
         geom.height as u32,
         rgba,
-    ))
+    ))?;
+    Ok((frame, origin_x, origin_y))
 }
 
 fn intern(conn: &impl Connection, name: &[u8]) -> Result<xproto::Atom, CaptureError> {

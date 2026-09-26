@@ -42,6 +42,14 @@ typedef struct CropmarkSckWindow {
   char title[512];
 } CropmarkSckWindow;
 
+typedef struct CropmarkSckDisplay {
+  int32_t x;
+  int32_t y;
+  uint32_t w;
+  uint32_t h;
+  double scale;
+} CropmarkSckDisplay;
+
 static void cropmark_set_error(CropmarkSckResult *out, int32_t kind, const char *msg) {
   out->kind = kind;
   out->error = msg ? strdup(msg) : NULL;
@@ -313,6 +321,30 @@ static void cropmark_configure_display_capture(SCStreamConfiguration *config, SC
   config.height = height > 0 ? height : 1;
 }
 
+static bool cropmark_capture_chosen_display(SCShareableContent *content, SCDisplay *chosen,
+                                            bool shows_cursor, CropmarkSckResult *out) {
+  if (!chosen) {
+    cropmark_set_error(out, 4, "没有可用的显示器。");
+    return false;
+  }
+  pid_t selfPid = [[NSRunningApplication currentApplication] processIdentifier];
+  NSMutableArray<SCRunningApplication *> *excluded = [NSMutableArray array];
+  for (SCRunningApplication *application in content.applications) {
+    if (application.processID == selfPid) {
+      [excluded addObject:application];
+      break;
+    }
+  }
+  SCContentFilter *filter = [[SCContentFilter alloc] initWithDisplay:chosen
+                                               excludingApplications:excluded
+                                                    exceptingWindows:@[]];
+  SCStreamConfiguration *config = [SCStreamConfiguration new];
+  cropmark_configure_display_capture(config, chosen);
+  config.showsCursor = shows_cursor ? YES : NO;
+  config.capturesAudio = NO;
+  return cropmark_capture_filter(filter, config, out);
+}
+
 void cropmark_sck_free(CropmarkSckResult *out) {
   if (!out) {
     return;
@@ -360,7 +392,8 @@ int32_t cropmark_sck_monitor_at_pointer(CropmarkSckMonitor *out) {
   return 0;
 }
 
-int32_t cropmark_sck_capture_at_point(int32_t px, int32_t py, CropmarkSckResult *out) {
+int32_t cropmark_sck_capture_at_point(int32_t px, int32_t py, int32_t shows_cursor,
+                                      CropmarkSckResult *out) {
   memset(out, 0, sizeof(*out));
   if (cropmark_sck_ensure_permission() != 0) {
     cropmark_set_error(out, 1, "没有屏幕录制权限，未能截取。");
@@ -392,26 +425,80 @@ int32_t cropmark_sck_capture_at_point(int32_t px, int32_t py, CropmarkSckResult 
   if (!chosen) {
     chosen = content.displays.firstObject;
   }
-  if (!chosen) {
-    cropmark_set_error(out, 4, "没有可用的显示器。");
+  if (!cropmark_capture_chosen_display(content, chosen, shows_cursor != 0, out)) {
     return -1;
   }
-  pid_t selfPid = [[NSRunningApplication currentApplication] processIdentifier];
-  NSMutableArray<SCRunningApplication *> *excluded = [NSMutableArray array];
-  for (SCRunningApplication *application in content.applications) {
-    if (application.processID == selfPid) {
-      [excluded addObject:application];
+  return 0;
+}
+
+int32_t cropmark_sck_list_displays(CropmarkSckDisplay *out, int32_t cap, int32_t *count) {
+  if (count) {
+    *count = 0;
+  }
+  if (cropmark_sck_ensure_permission() != 0) {
+    return 1;
+  }
+  NSError *contentError = nil;
+  SCShareableContent *content = nil;
+  int32_t contentStatus = cropmark_content(&content, &contentError);
+  if (contentStatus == 1) {
+    return 3;
+  }
+  if (contentStatus != 0) {
+    return cropmark_classify_error(contentError) == 1 ? 1 : 2;
+  }
+  int32_t n = 0;
+  for (SCDisplay *display in content.displays) {
+    if (!out || n >= cap) {
+      break;
+    }
+    CGRect frame = display.frame;
+    CGFloat scale = cropmark_backing_scale_for_display(display);
+    out[n].x = (int32_t)llround(CGRectGetMinX(frame));
+    out[n].y = (int32_t)llround(CGRectGetMinY(frame));
+    out[n].w = (uint32_t)llround(CGRectGetWidth(frame));
+    out[n].h = (uint32_t)llround(CGRectGetHeight(frame));
+    out[n].scale = scale > 0 ? (double)scale : 1.0;
+    n++;
+  }
+  if (count) {
+    *count = n;
+  }
+  return 0;
+}
+
+int32_t cropmark_sck_capture_display_frame(int32_t x, int32_t y, uint32_t w, uint32_t h,
+                                           int32_t shows_cursor, CropmarkSckResult *out) {
+  memset(out, 0, sizeof(*out));
+  if (cropmark_sck_ensure_permission() != 0) {
+    cropmark_set_error(out, 1, "没有屏幕录制权限，未能截取。");
+    return -1;
+  }
+  NSError *contentError = nil;
+  SCShareableContent *content = nil;
+  int32_t contentStatus = cropmark_content(&content, &contentError);
+  if (contentStatus == 1) {
+    cropmark_set_error(out, 5, "ScreenCaptureKit 获取可共享内容超时。");
+    return -1;
+  }
+  if (contentStatus != 0) {
+    int kind = cropmark_classify_error(contentError);
+    cropmark_set_error(out, kind,
+                       kind == 1 ? "没有屏幕录制权限，未能截取。"
+                                 : "ScreenCaptureKit 无法获取可共享内容。");
+    return -1;
+  }
+  SCDisplay *chosen = nil;
+  for (SCDisplay *display in content.displays) {
+    CGRect frame = display.frame;
+    if (llround(CGRectGetMinX(frame)) == x && llround(CGRectGetMinY(frame)) == y &&
+        llround(CGRectGetWidth(frame)) == (long long)w &&
+        llround(CGRectGetHeight(frame)) == (long long)h) {
+      chosen = display;
       break;
     }
   }
-  SCContentFilter *filter = [[SCContentFilter alloc] initWithDisplay:chosen
-                                               excludingApplications:excluded
-                                                    exceptingWindows:@[]];
-  SCStreamConfiguration *config = [SCStreamConfiguration new];
-  cropmark_configure_display_capture(config, chosen);
-  config.showsCursor = NO;
-  config.capturesAudio = NO;
-  if (!cropmark_capture_filter(filter, config, out)) {
+  if (!cropmark_capture_chosen_display(content, chosen, shows_cursor != 0, out)) {
     return -1;
   }
   return 0;

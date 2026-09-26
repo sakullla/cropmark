@@ -7,7 +7,10 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use super::buffer::{crop_rgba, encode_png, Frame};
 use super::error::CaptureError;
-use super::geometry::{crop_from_logical, monitor_at_physical, LogicalRect, MonitorGeom};
+use super::geometry::{
+    crop_from_logical, monitor_at_physical, monitor_dest, monitor_key, stitch_views, virtual_canvas,
+    CanvasFault, LogicalRect, MonitorGeom, RgbaView, STITCH_BACKGROUND,
+};
 use super::hide::{
     grab_allowed, hide_not_presented_error, plan_delay, wait_compositor_presented,
     wait_until_hidden, HideWait, RecordedSurface, SurfaceKind,
@@ -18,6 +21,25 @@ use super::windows_list::ListedWindow;
 use crate::annotate::{rasterize_lenient, Annotation};
 use crate::clipboard::{self, ClipboardGuard};
 use crate::hotkeys::CaptureMode;
+
+/// 全屏采集目标。热键与关闭多屏开关时保持指针所在屏。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FullscreenTarget {
+    Pointer,
+    Monitor(String),
+    All,
+}
+
+pub fn effective_fullscreen_target(
+    multi_monitor: bool,
+    target: FullscreenTarget,
+) -> FullscreenTarget {
+    if multi_monitor {
+        target
+    } else {
+        FullscreenTarget::Pointer
+    }
+}
 
 pub struct CaptureRuntime {
     inner: Mutex<Option<ActiveSession>>,
@@ -58,6 +80,10 @@ struct ActiveSession {
     writeback: Option<String>,
     /// 选区「取字」打开预览后由前端消费一次,自动进入取字而不是静默退出。
     pending_ocr: bool,
+    /// 全屏目标;非全屏会话保持指针屏。
+    fullscreen_target: FullscreenTarget,
+    /// 本次采集请求了指针但平台拿不到图像。完成时提示,不阻断输出。
+    cursor_unavailable: bool,
 }
 
 impl ActiveSession {
@@ -82,6 +108,8 @@ impl ActiveSession {
             cancel_requested_at: None,
             writeback: None,
             pending_ocr: false,
+            fullscreen_target: FullscreenTarget::Pointer,
+            cursor_unavailable: false,
         }
     }
 
@@ -209,10 +237,10 @@ pub enum QuietAction {
 /// Retention window for the frame kept after a quiet finish.
 pub const DEFAULT_FRAME_TTL: Duration = Duration::from_secs(30);
 
-pub fn begin(app: &AppHandle, mode: CaptureMode, delay_ms: u64) {
+pub fn begin(app: &AppHandle, mode: CaptureMode, delay_ms: u64, target: FullscreenTarget) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(error) = run(app.clone(), mode, delay_ms).await {
+        if let Err(error) = run(app.clone(), mode, delay_ms, target).await {
             if !error.is_cancelled() {
                 let _ = finish_error(&app, error);
             }
@@ -240,8 +268,13 @@ fn capture_timing_enabled() -> bool {
     std::env::var_os("CROPMARK_CAPTURE_TIMING").is_some()
 }
 
-async fn run(app: AppHandle, mode: CaptureMode, delay_ms: u64) -> Result<(), CaptureError> {
-    let Some(generation) = try_begin_with_delay(&app, mode, delay_ms).await else {
+async fn run(
+    app: AppHandle,
+    mode: CaptureMode,
+    delay_ms: u64,
+    target: FullscreenTarget,
+) -> Result<(), CaptureError> {
+    let Some(generation) = try_begin_with_delay(&app, mode, delay_ms, target).await else {
         return Ok(());
     };
     if capture_timing_enabled() {
@@ -316,7 +349,10 @@ async fn run_last_region(app: AppHandle, delay_ms: u64) -> Result<(), CaptureErr
             return Ok(());
         }
     };
-    let Some(generation) = try_begin_with_delay(&app, CaptureMode::Region, delay_ms).await else {
+    let Some(generation) =
+        try_begin_with_delay(&app, CaptureMode::Region, delay_ms, FullscreenTarget::Pointer)
+            .await
+    else {
         return Ok(());
     };
     hide_product_surfaces(&app, generation)?;
@@ -390,7 +426,9 @@ async fn capture_last_region(
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         require_capture_ready(&handle)?;
-        let frame = platform::capture_monitor(&plan.monitor)?;
+        let cursor = cursor_mode(&handle);
+        let (frame, outcome) = platform::capture_monitor_with_cursor(&plan.monitor, cursor)?;
+        note_cursor(&handle, outcome);
         let (x, y, width, height) = local_crop(&plan.monitor, &plan.region)
             .ok_or_else(|| CaptureError::api("error.capture.last_region_out_of_range"))?;
         let cropped = crop_rgba(&frame, x, y, width, height)?;
@@ -443,7 +481,28 @@ enum BeginStep {
 
 /// 单次触发尝试:在同一把锁内决策并占用槽位。stale/取消看门狗重置时,
 /// 旧会话被取出并在锁外收尾(关闭旧壳、恢复旧产品表面,ADR-16)。
-fn begin_capture(app: &AppHandle, mode: CaptureMode, delay_ms: u64) -> BeginStep {
+fn place_session(
+    slot: &mut Option<ActiveSession>,
+    mode: CaptureMode,
+    delay_ms: u64,
+    now: Instant,
+    target: FullscreenTarget,
+) {
+    let mut session = ActiveSession::new(mode, delay_ms, now);
+    session.fullscreen_target = if mode == CaptureMode::Fullscreen {
+        target
+    } else {
+        FullscreenTarget::Pointer
+    };
+    *slot = Some(session);
+}
+
+fn begin_capture(
+    app: &AppHandle,
+    mode: CaptureMode,
+    delay_ms: u64,
+    target: FullscreenTarget,
+) -> BeginStep {
     let now = Instant::now();
     let mut stale: Option<ActiveSession> = None;
     let overlay_alive = overlay_still_open(app);
@@ -452,18 +511,18 @@ fn begin_capture(app: &AppHandle, mode: CaptureMode, delay_ms: u64) -> BeginStep
             // 实测:Esc 后原生壳窗口已销毁,但取消清理若卡在 Tauri 窗口 API,
             // 会话仍 busy/cancelling,下一次热键被丢掉。壳已不在就强制开新截取。
             stale = slot.take();
-            *slot = Some(ActiveSession::new(mode, delay_ms, now));
+            place_session(slot, mode, delay_ms, now, target.clone());
             BeginStep::Begun(current_generation(slot))
         }
         BeginDecision::IgnoreBusy => BeginStep::Ignored,
         BeginDecision::WaitForCancelClearance => BeginStep::WaitingForCancel,
         BeginDecision::ResetStaleThenBegin => {
             stale = slot.take();
-            *slot = Some(ActiveSession::new(mode, delay_ms, now));
+            place_session(slot, mode, delay_ms, now, target.clone());
             BeginStep::Begun(current_generation(slot))
         }
         BeginDecision::Begin => {
-            *slot = Some(ActiveSession::new(mode, delay_ms, now));
+            place_session(slot, mode, delay_ms, now, target.clone());
             BeginStep::Begun(current_generation(slot))
         }
     });
@@ -544,10 +603,15 @@ fn overlay_still_open(app: &AppHandle) -> bool {
 }
 
 /// 占用会话槽位或短时等待取消清理完成;超时 toast 提示"正在取消"(ADR-16)。
-async fn try_begin_with_delay(app: &AppHandle, mode: CaptureMode, delay_ms: u64) -> Option<u64> {
+async fn try_begin_with_delay(
+    app: &AppHandle,
+    mode: CaptureMode,
+    delay_ms: u64,
+    target: FullscreenTarget,
+) -> Option<u64> {
     let deadline = Instant::now() + CANCEL_CLEARANCE_TIMEOUT;
     loop {
-        match begin_capture(app, mode, delay_ms) {
+        match begin_capture(app, mode, delay_ms, target.clone()) {
             BeginStep::Begun(generation) => return Some(generation),
             BeginStep::Ignored => return None,
             BeginStep::WaitingForCancel => {
@@ -963,13 +1027,30 @@ async fn capture_window_mode(app: &AppHandle, generation: u64) -> Result<(), Cap
 }
 
 async fn capture_fullscreen(app: &AppHandle, generation: u64) -> Result<(), CaptureError> {
+    let requested = with_session(app, |session| {
+        session
+            .as_ref()
+            .map(|current| current.fullscreen_target.clone())
+            .unwrap_or(FullscreenTarget::Pointer)
+    });
+    let target = effective_fullscreen_target(
+        crate::settings::current_toggles(app).multi_monitor,
+        requested,
+    );
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let (frame, monitor) = grab_pointer_screen(&handle)?;
+        let frame = match target {
+            FullscreenTarget::Pointer => {
+                let (frame, _) = grab_pointer_screen(&handle)?;
+                frame
+            }
+            FullscreenTarget::Monitor(key) => capture_keyed_monitor(&handle, &key)?,
+            FullscreenTarget::All => capture_all_monitors(&handle)?,
+        };
         if !session_matches_generation(&handle, generation) {
             return Ok(());
         }
-        deliver_fixed_frame(&handle, frame, Vec::new(), Some(monitor), Some(generation))
+        deliver_fixed_frame(&handle, frame, Vec::new(), None, Some(generation))
     })
     .await
     .map_err(|_| CaptureError::api("error.capture.thread_failed"))?
@@ -998,7 +1079,9 @@ fn grab_pointer_screen(app: &AppHandle) -> Result<(Frame, MonitorGeom), CaptureE
     }
     let started = Instant::now();
     let monitor = tauri_pointer_monitor(app).unwrap_or(platform::pointer_monitor()?);
-    let frame = platform::capture_monitor(&monitor)?;
+    let cursor = cursor_mode(app);
+    let (frame, outcome) = platform::capture_monitor_with_cursor(&monitor, cursor)?;
+    note_cursor(app, outcome);
     if capture_timing_enabled() {
         eprintln!(
             "Cropmark capture: grab done {}x{} scale={} elapsed={:?}",
@@ -1009,6 +1092,182 @@ fn grab_pointer_screen(app: &AppHandle) -> Result<(Frame, MonitorGeom), CaptureE
         );
     }
     Ok((frame, monitor))
+}
+
+fn cursor_mode(app: &AppHandle) -> platform::CursorMode {
+    if !crate::settings::current_toggles(app).capture_cursor {
+        return platform::CursorMode::Off;
+    }
+    let long = with_session(app, |session| {
+        session
+            .as_ref()
+            .is_some_and(|current| current.mode == CaptureMode::LongCapture)
+    });
+    if long {
+        platform::CursorMode::Off
+    } else {
+        platform::CursorMode::WhenInside
+    }
+}
+
+fn note_cursor(app: &AppHandle, outcome: platform::CursorOutcome) {
+    let unavailable = outcome == platform::CursorOutcome::Unavailable;
+    with_session_mut(app, |session| {
+        if let Some(current) = session.as_mut() {
+            current.cursor_unavailable = unavailable;
+        }
+    });
+    if unavailable {
+        eprintln!("Cropmark capture: cursor unavailable");
+    }
+}
+
+fn take_cursor_unavailable(app: &AppHandle) -> bool {
+    with_session_mut(app, |session| {
+        session.as_mut().is_some_and(|current| {
+            let unavailable = current.cursor_unavailable;
+            current.cursor_unavailable = false;
+            unavailable
+        })
+    })
+}
+
+fn capture_keyed_monitor(app: &AppHandle, key: &str) -> Result<Frame, CaptureError> {
+    let monitors = tauri_monitors(app);
+    let monitor = monitors
+        .iter()
+        .find(|monitor| monitor_key(monitor) == key)
+        .cloned()
+        .ok_or_else(|| CaptureError::unavailable("error.capture.monitor_unavailable"))?;
+    let (frame, outcome) = platform::capture_display(&monitor, &monitors, cursor_mode(app))?;
+    note_cursor(app, outcome);
+    Ok(frame)
+}
+
+fn capture_all_monitors(app: &AppHandle) -> Result<Frame, CaptureError> {
+    let monitors = tauri_monitors(app);
+    if monitors.is_empty() {
+        return Err(CaptureError::unavailable(
+            "error.capture.monitor_unavailable",
+        ));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let wayland = std::env::var("WAYLAND_DISPLAY")
+            .ok()
+            .filter(|value| !value.is_empty());
+        if platform::linux_capture_backend(wayland.as_deref()) == platform::LinuxCaptureBackend::Portal
+        {
+            return capture_all_from_portal(app, &monitors);
+        }
+    }
+    capture_all_per_display(app, &monitors)
+}
+
+fn capture_all_per_display(app: &AppHandle, monitors: &[MonitorGeom]) -> Result<Frame, CaptureError> {
+    let canvas = virtual_canvas(monitors).map_err(canvas_error)?;
+    let mode = cursor_mode(app);
+    let mut frames = Vec::with_capacity(monitors.len());
+    let mut outcome = platform::CursorOutcome::NotRequested;
+    for monitor in monitors {
+        let (frame, next) = platform::capture_display(monitor, monitors, mode)?;
+        if frame.width != monitor.physical_width || frame.height != monitor.physical_height {
+            return Err(CaptureError::unavailable("error.capture.stitch_failed"));
+        }
+        outcome = platform::merge_cursor_outcome(outcome, next);
+        frames.push((monitor_dest(&canvas, monitor), frame));
+    }
+    let layers: Vec<(i32, i32, RgbaView<'_>)> = frames
+        .iter()
+        .map(|((x, y), frame)| {
+            (
+                *x,
+                *y,
+                RgbaView {
+                    width: frame.width,
+                    height: frame.height,
+                    rgba: frame.rgba.as_slice(),
+                },
+            )
+        })
+        .collect();
+    let rgba = stitch_views(&canvas, &layers, STITCH_BACKGROUND)
+        .ok_or_else(|| CaptureError::unavailable("error.capture.stitch_failed"))?;
+    note_cursor(app, outcome);
+    Ok(Frame {
+        width: canvas.width,
+        height: canvas.height,
+        rgba,
+        scale: 1.0,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn capture_all_from_portal(app: &AppHandle, monitors: &[MonitorGeom]) -> Result<Frame, CaptureError> {
+    let canvas = virtual_canvas(monitors).map_err(canvas_error)?;
+    let desktop = platform::capture_portal_desktop()?;
+    let outcome = match cursor_mode(app) {
+        platform::CursorMode::Off => platform::CursorOutcome::NotRequested,
+        platform::CursorMode::WhenInside => platform::CursorOutcome::Unavailable,
+    };
+    if desktop.width == canvas.width && desktop.height == canvas.height {
+        note_cursor(app, outcome);
+        return Ok(Frame {
+            width: desktop.width,
+            height: desktop.height,
+            rgba: desktop.rgba,
+            scale: 1.0,
+        });
+    }
+    let mut frames = Vec::with_capacity(monitors.len());
+    for monitor in monitors {
+        let x = i64::from(monitor.physical_x) - i64::from(canvas.origin_x);
+        let y = i64::from(monitor.physical_y) - i64::from(canvas.origin_y);
+        if x < 0 || y < 0 {
+            return Err(CaptureError::unavailable(
+                "error.capture.stitch_unsupported",
+            ));
+        }
+        let cropped = crop_rgba(
+            &desktop,
+            x as u32,
+            y as u32,
+            monitor.physical_width,
+            monitor.physical_height,
+        )
+        .map_err(|_| CaptureError::unavailable("error.capture.stitch_unsupported"))?;
+        frames.push((monitor_dest(&canvas, monitor), cropped));
+    }
+    let layers: Vec<(i32, i32, RgbaView<'_>)> = frames
+        .iter()
+        .map(|((x, y), frame)| {
+            (
+                *x,
+                *y,
+                RgbaView {
+                    width: frame.width,
+                    height: frame.height,
+                    rgba: frame.rgba.as_slice(),
+                },
+            )
+        })
+        .collect();
+    let rgba = stitch_views(&canvas, &layers, STITCH_BACKGROUND)
+        .ok_or_else(|| CaptureError::unavailable("error.capture.stitch_unsupported"))?;
+    note_cursor(app, outcome);
+    Ok(Frame {
+        width: canvas.width,
+        height: canvas.height,
+        rgba,
+        scale: 1.0,
+    })
+}
+
+fn canvas_error(fault: CanvasFault) -> CaptureError {
+    match fault {
+        CanvasFault::Empty => CaptureError::unavailable("error.capture.monitor_unavailable"),
+        CanvasFault::TooLarge => CaptureError::unavailable("error.capture.desktop_too_large"),
+    }
 }
 
 /// R23:macOS 首次触发且尚未授权时,在系统授权弹窗出现前后给出过渡反馈,
@@ -1378,7 +1637,9 @@ pub fn confirm_window(app: &AppHandle, window_id: String) -> Result<(), CaptureE
     if is_cancelled(app) {
         return Err(CaptureError::cancelled());
     }
-    let frame = platform::capture_window(&window_id)?;
+    let cursor = cursor_mode(app);
+    let (frame, outcome) = platform::capture_window_with_cursor(&window_id, cursor)?;
+    note_cursor(app, outcome);
     deliver_fixed_frame(app, frame, Vec::new(), None, None)
 }
 
@@ -1860,6 +2121,9 @@ fn finish_with_ttl(
     // 全部在 spawn_blocking 内,不阻塞完成路径。
     crate::history::record_capture(app, frame);
     crate::pin::restore_after_capture(app);
+    if take_cursor_unavailable(app) {
+        ui::show_toast_key(app, "toast.cursor_unavailable");
+    }
     Ok(FinishSummary { clipboard_written })
 }
 
@@ -2017,6 +2281,22 @@ mod tests {
 
     fn hide_before_capture_steps(mode: CaptureMode, delay_ms: u64) -> Vec<SessionStep> {
         session_steps(!matches!(mode, CaptureMode::Fullscreen), delay_ms)
+    }
+
+    #[test]
+    fn multi_monitor_off_keeps_pointer_screen_only() {
+        assert_eq!(
+            effective_fullscreen_target(false, FullscreenTarget::All),
+            FullscreenTarget::Pointer
+        );
+        assert_eq!(
+            effective_fullscreen_target(false, FullscreenTarget::Monitor("a|0|0|1|1".into())),
+            FullscreenTarget::Pointer
+        );
+        assert_eq!(
+            effective_fullscreen_target(true, FullscreenTarget::All),
+            FullscreenTarget::All
+        );
     }
 
     #[test]

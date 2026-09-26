@@ -25,6 +25,25 @@ pub fn scroll_capture_supported_for(backend: LinuxCaptureBackend) -> bool {
     backend == LinuxCaptureBackend::X11
 }
 
+/// 本次采集是否把系统指针画进结果。默认关闭,输出与现状一致。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CursorMode {
+    Off,
+    /// 仅当指针热点落在采集范围内时写入。
+    WhenInside,
+}
+
+/// 指针合成结果。`Unavailable` 表示平台拿不到指针图像,调用方提示且仍交付画面。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CursorOutcome {
+    NotRequested,
+    Included,
+    Outside,
+    /// 平台自己画了指针(macOS 显示器路径的 showsCursor),不额外提示。
+    Native,
+    Unavailable,
+}
+
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
@@ -59,6 +78,28 @@ mod backend {
         ))
     }
 
+    pub fn capture_monitor_with_cursor(
+        monitor: &MonitorGeom,
+        _mode: CursorMode,
+    ) -> Result<(Frame, CursorOutcome), CaptureError> {
+        capture_monitor(monitor).map(|frame| (frame, CursorOutcome::NotRequested))
+    }
+
+    pub fn capture_display(
+        monitor: &MonitorGeom,
+        _siblings: &[MonitorGeom],
+        mode: CursorMode,
+    ) -> Result<(Frame, CursorOutcome), CaptureError> {
+        capture_monitor_with_cursor(monitor, mode)
+    }
+
+    pub fn capture_window_with_cursor(
+        id: &str,
+        _mode: CursorMode,
+    ) -> Result<(Frame, CursorOutcome), CaptureError> {
+        capture_window(id).map(|frame| (frame, CursorOutcome::NotRequested))
+    }
+
     pub fn list_windows(_self_pid: u32) -> Result<Vec<ListedWindow>, CaptureError> {
         Err(CaptureError::unavailable(
             "error.capture.platform_no_window_list",
@@ -91,12 +132,51 @@ pub fn capture_monitor(monitor: &MonitorGeom) -> Result<Frame, CaptureError> {
     backend::capture_monitor(monitor)
 }
 
+pub fn capture_monitor_with_cursor(
+    monitor: &MonitorGeom,
+    mode: CursorMode,
+) -> Result<(Frame, CursorOutcome), CaptureError> {
+    backend::capture_monitor_with_cursor(monitor, mode)
+}
+
+/// 按显示器几何抓取指定屏(拼接与托盘「指定显示器」)。
+/// macOS 按 SCK 帧匹配,不用指针所在屏。
+pub fn capture_display(
+    monitor: &MonitorGeom,
+    siblings: &[MonitorGeom],
+    mode: CursorMode,
+) -> Result<(Frame, CursorOutcome), CaptureError> {
+    backend::capture_display(monitor, siblings, mode)
+}
+
 pub fn list_windows(self_pid: u32) -> Result<Vec<ListedWindow>, CaptureError> {
     backend::list_windows(self_pid)
 }
 
 pub fn capture_window(id: &str) -> Result<Frame, CaptureError> {
     backend::capture_window(id)
+}
+
+pub fn capture_window_with_cursor(
+    id: &str,
+    mode: CursorMode,
+) -> Result<(Frame, CursorOutcome), CaptureError> {
+    if mode == CursorMode::Off {
+        return capture_window(id).map(|frame| (frame, CursorOutcome::NotRequested));
+    }
+    backend::capture_window_with_cursor(id, mode)
+}
+
+/// 多屏拼接时合并各屏的指针结果:画进任一屏就不提示;全都拿不到才降级。
+pub fn merge_cursor_outcome(left: CursorOutcome, right: CursorOutcome) -> CursorOutcome {
+    use CursorOutcome::*;
+    match (left, right) {
+        (Included, _) | (_, Included) => Included,
+        (Native, _) | (_, Native) => Native,
+        (Unavailable, _) | (_, Unavailable) => Unavailable,
+        (Outside, _) | (_, Outside) => Outside,
+        (NotRequested, NotRequested) => NotRequested,
+    }
 }
 
 pub fn dismiss_tray_popup() {
@@ -119,6 +199,12 @@ pub fn self_pid() -> u32 {
 pub fn enable_per_monitor_v2() {
     #[cfg(windows)]
     win::enable_per_monitor_v2();
+}
+
+/// Wayland 门户的整桌面帧。不可用或只覆盖单屏时由调用方明确失败。
+#[cfg(target_os = "linux")]
+pub fn capture_portal_desktop() -> Result<Frame, CaptureError> {
+    linux::capture_portal_desktop()
 }
 
 #[cfg(test)]
@@ -148,5 +234,25 @@ mod tests {
         // Wayland/portal 只有一次性截图,长截图必须在开始前失败。
         assert!(!scroll_capture_supported_for(LinuxCaptureBackend::Portal));
         assert!(scroll_capture_supported_for(LinuxCaptureBackend::X11));
+    }
+
+    #[test]
+    fn merged_cursor_outcome_toasts_only_when_nothing_was_drawn() {
+        assert_eq!(
+            merge_cursor_outcome(CursorOutcome::Outside, CursorOutcome::Included),
+            CursorOutcome::Included
+        );
+        assert_eq!(
+            merge_cursor_outcome(CursorOutcome::Unavailable, CursorOutcome::Outside),
+            CursorOutcome::Unavailable
+        );
+        assert_eq!(
+            merge_cursor_outcome(CursorOutcome::Native, CursorOutcome::Outside),
+            CursorOutcome::Native
+        );
+        assert_eq!(
+            merge_cursor_outcome(CursorOutcome::Included, CursorOutcome::Unavailable),
+            CursorOutcome::Included
+        );
     }
 }

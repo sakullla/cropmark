@@ -3,9 +3,13 @@
 //! 此处入口。构建失败(Err 或构建期 panic)不在本模块处理,由 `install_guarded`
 //! 归一后交给 `lib.rs` 记录降级并继续启动(R16)。
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::time::Duration;
+
 use tauri::image::Image;
 use tauri::menu::{IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
-use tauri::tray::TrayIconBuilder;
+use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri::AppHandle;
 
 use crate::hotkeys::CaptureMode;
@@ -22,6 +26,13 @@ pub const LONG_CAPTURE_ID: &str = "capture-long";
 
 /// R8 托盘「从剪贴板贴图」入口的菜单 id(clipboard_pin 开启时出现)。
 pub const CLIPBOARD_PIN_ID: &str = "pin-from-clipboard";
+
+/// R9 托盘「全部显示器」菜单 id。
+pub const FULLSCREEN_ALL_ID: &str = "capture-fullscreen-all";
+
+const MONITOR_MENU_INTERVAL: Duration = Duration::from_secs(2);
+static MENU_LAYOUT: Mutex<String> = Mutex::new(String::new());
+static WATCHER_STARTED: AtomicBool = AtomicBool::new(false);
 
 /// R2 托盘「退出贴图穿透」的菜单 id:任一贴图处于穿透时出现,
 /// 是穿透状态必达的全局退出路径。
@@ -55,6 +66,79 @@ fn long_capture_enabled(enabled: bool) -> bool {
 /// 全局快捷键同时失效(动作入口按同一开关判定)。
 fn clipboard_pin_visible(enabled: bool) -> bool {
     enabled
+}
+
+/// R9:多屏开关开启时全屏是子菜单;关闭时保持单一「全屏」项(只抓指针屏)。
+pub fn fullscreen_uses_submenu(multi_monitor: bool) -> bool {
+    multi_monitor
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FullscreenMenuChoice {
+    Pointer,
+    All,
+    Monitor(String),
+}
+
+pub fn fullscreen_monitor_id(key: &str) -> String {
+    format!("capture-fullscreen-mon-{}", encode_monitor_token(key))
+}
+
+pub fn fullscreen_menu_choice(id: &str) -> Option<FullscreenMenuChoice> {
+    if id == "capture-fullscreen" {
+        return Some(FullscreenMenuChoice::Pointer);
+    }
+    if id == FULLSCREEN_ALL_ID {
+        return Some(FullscreenMenuChoice::All);
+    }
+    let token = id.strip_prefix("capture-fullscreen-mon-")?;
+    Some(FullscreenMenuChoice::Monitor(decode_monitor_token(token)?))
+}
+
+pub fn fullscreen_screen_label(index: usize, width: u32, height: u32) -> String {
+    i18n::tp(
+        "tray.fullscreen_screen",
+        &[
+            ("index", &(index + 1).to_string()),
+            ("width", &width.to_string()),
+            ("height", &height.to_string()),
+        ],
+    )
+}
+
+fn encode_monitor_token(key: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(key.len() * 2);
+    for byte in key.bytes() {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+fn decode_monitor_token(token: &str) -> Option<String> {
+    if token.is_empty() || token.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = token.as_bytes();
+    let mut out = Vec::with_capacity(token.len() / 2);
+    let mut index = 0;
+    while index < bytes.len() {
+        let hi = hex_value(bytes[index])?;
+        let lo = hex_value(bytes[index + 1])?;
+        out.push((hi << 4) | lo);
+        index += 2;
+    }
+    String::from_utf8(out).ok()
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 /// R2:只要仍有贴图处于穿透,托盘就必须保留退出项——穿透会拦截窗口自身
@@ -121,8 +205,58 @@ fn install(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         .show_menu_on_left_click(true)
         .tooltip("Cropmark")
         .on_menu_event(handle_menu_event)
+        .on_tray_icon_event(|tray, event| {
+            if matches!(event, TrayIconEvent::Enter { .. }) {
+                refresh_menu_if_layout_changed(tray.app_handle());
+            }
+        })
         .build(app)?;
+    ensure_monitor_menu_watcher(app);
     Ok(())
+}
+
+fn ensure_monitor_menu_watcher(app: &AppHandle) {
+    if WATCHER_STARTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(MONITOR_MENU_INTERVAL);
+        let task = app.clone();
+        if app
+            .run_on_main_thread(move || refresh_menu_if_layout_changed(&task))
+            .is_err()
+        {
+            break;
+        }
+    });
+}
+
+fn layout_signature(app: &AppHandle) -> String {
+    crate::capture::session::tauri_monitors(app)
+        .iter()
+        .map(crate::capture::geometry::monitor_key)
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
+fn remember_layout(signature: &str) {
+    *MENU_LAYOUT.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = signature.to_string();
+}
+
+/// 显示器数量或分辨率变化后重建全屏子菜单。开关关闭时不改菜单。
+pub fn refresh_menu_if_layout_changed(app: &AppHandle) {
+    if !settings::current_toggles(app).multi_monitor {
+        return;
+    }
+    let next = layout_signature(app);
+    let changed = {
+        let current = MENU_LAYOUT.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        current.as_str() != next
+    };
+    if changed {
+        refresh_menu(app);
+    }
 }
 
 /// "上次区域"记录或功能开关变化后重建托盘菜单,标签与可用状态与当前状态一致。
@@ -188,6 +322,19 @@ fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
         CLIPBOARD_PIN_ID => crate::pin::pin_from_clipboard(app),
         "quit" => app.exit(0),
         id => {
+            if let Some(choice) = fullscreen_menu_choice(id) {
+                let target = match choice {
+                    FullscreenMenuChoice::Pointer => {
+                        crate::capture::session::FullscreenTarget::Pointer
+                    }
+                    FullscreenMenuChoice::All => crate::capture::session::FullscreenTarget::All,
+                    FullscreenMenuChoice::Monitor(key) => {
+                        crate::capture::session::FullscreenTarget::Monitor(key)
+                    }
+                };
+                crate::dispatch_fullscreen(app, target);
+                return;
+            }
             if let Some(action) = menu_action(id) {
                 match action.delay {
                     DelayChoice::Configured => crate::dispatch_capture(app, action.mode),
@@ -227,6 +374,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         true,
         None::<&str>,
     )?;
+    let multi_monitor = fullscreen_uses_submenu(settings::current_toggles(app).multi_monitor);
     let fullscreen = MenuItem::with_id(
         app,
         "capture-fullscreen",
@@ -234,6 +382,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         true,
         None::<&str>,
     )?;
+    let fullscreen_menu = fullscreen_submenu(app)?;
     // R1:长截图入口仅在功能开关开启时进入截取子菜单。
     let long_capture_visible = long_capture_enabled(settings::current_toggles(app).long_capture);
     let long_capture = MenuItem::with_id(
@@ -245,7 +394,12 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     )?;
     let delay = delay_submenu(app)?;
     let mut capture_items: Vec<&dyn IsMenuItem<tauri::Wry>> =
-        vec![&region, &last_region, &window, &fullscreen];
+        vec![&region, &last_region, &window];
+    if multi_monitor {
+        capture_items.push(&fullscreen_menu);
+    } else {
+        capture_items.push(&fullscreen);
+    }
     if long_capture_visible {
         capture_items.push(&long_capture);
     }
@@ -290,10 +444,49 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     }
     items.push(&second_separator);
     items.push(&quit);
-    Menu::with_items(app, &items)
+    let menu = Menu::with_items(app, &items)?;
+    remember_layout(&layout_signature(app));
+    Ok(menu)
 }
 
 /// 一次性延时:只挂区域截取。窗口/全屏用设置页的延时,避免每个档位再拆三种模式。
+fn fullscreen_submenu(app: &AppHandle) -> tauri::Result<Submenu<tauri::Wry>> {
+    let pointer = MenuItem::with_id(
+        app,
+        "capture-fullscreen",
+        i18n::t("tray.fullscreen_pointer"),
+        true,
+        None::<&str>,
+    )?;
+    let monitors = crate::capture::session::tauri_monitors(app);
+    let screens = monitors
+        .iter()
+        .enumerate()
+        .map(|(index, monitor)| {
+            MenuItem::with_id(
+                app,
+                fullscreen_monitor_id(&crate::capture::geometry::monitor_key(monitor)),
+                fullscreen_screen_label(index, monitor.physical_width, monitor.physical_height),
+                true,
+                None::<&str>,
+            )
+        })
+        .collect::<tauri::Result<Vec<_>>>()?;
+    let all = MenuItem::with_id(
+        app,
+        FULLSCREEN_ALL_ID,
+        i18n::t("tray.fullscreen_all"),
+        true,
+        None::<&str>,
+    )?;
+    let mut refs: Vec<&dyn IsMenuItem<tauri::Wry>> = vec![&pointer];
+    for screen in &screens {
+        refs.push(screen);
+    }
+    refs.push(&all);
+    Submenu::with_items(app, i18n::t("tray.fullscreen"), true, &refs)
+}
+
 fn delay_submenu(app: &AppHandle) -> tauri::Result<Submenu<tauri::Wry>> {
     let items = FIXED_DELAY_SECONDS
         .into_iter()
@@ -449,6 +642,41 @@ mod tests {
     #[test]
     fn clipboard_pin_id_is_not_parsed_as_a_capture_mode() {
         assert_eq!(menu_action(CLIPBOARD_PIN_ID), None);
+    }
+
+    #[test]
+    fn fullscreen_submenu_follows_the_toggle() {
+        assert!(fullscreen_uses_submenu(true));
+        assert!(!fullscreen_uses_submenu(false));
+    }
+
+    #[test]
+    fn fullscreen_menu_ids_round_trip_monitor_keys() {
+        assert_eq!(
+            fullscreen_menu_choice("capture-fullscreen"),
+            Some(FullscreenMenuChoice::Pointer)
+        );
+        assert_eq!(
+            fullscreen_menu_choice(FULLSCREEN_ALL_ID),
+            Some(FullscreenMenuChoice::All)
+        );
+        let key = r"\\.\DISPLAY1|0|0|1920|1080";
+        let id = fullscreen_monitor_id(key);
+        assert_eq!(
+            fullscreen_menu_choice(&id),
+            Some(FullscreenMenuChoice::Monitor(key.to_string()))
+        );
+        assert_eq!(menu_action(FULLSCREEN_ALL_ID), None);
+        assert_eq!(menu_action(&id), None);
+        assert_eq!(fullscreen_menu_choice("capture-fullscreen-mon-zz"), None);
+    }
+
+    #[test]
+    fn fullscreen_screen_label_includes_index_and_pixels() {
+        let label = fullscreen_screen_label(0, 1920, 1080);
+        assert!(label.contains('1'));
+        assert!(label.contains("1920"));
+        assert!(label.contains("1080"));
     }
 
     #[test]
