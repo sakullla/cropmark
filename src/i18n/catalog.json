@@ -1100,8 +1100,88 @@
     "en": "Save filename template"
   },
   "settings.toggle.filename_template_hint": {
-    "zh-CN": "保存对话框默认文件名按模板生成，非法字符自动替换，空模板回退 Cropmark 时间戳；关闭后使用现有默认命名。",
-    "en": "Builds the default save filename from a template, replaces invalid characters, and falls back to the Cropmark timestamp when empty; when off the existing default naming is used."
+    "zh-CN": "保存对话框默认文件名按模板生成，非法字符自动替换，空模板回退 Cropmark 时间戳；关闭后使用现有默认命名。同名文件会另存为不覆盖的新路径。",
+    "en": "Builds the default save filename from a template, replaces invalid characters, and falls back to the Cropmark timestamp when empty; when off the existing default naming is used. An existing name is saved to a new path instead of being overwritten."
+  },
+  "settings.export.template_label": {
+    "zh-CN": "文件名模板",
+    "en": "Filename template"
+  },
+  "settings.export.template_hint": {
+    "zh-CN": "占位符：{date}、{time}、{datetime}、{mode}（region/window/fullscreen/long）、{seq}。未知占位符保留。只影响本地保存的默认文件名，不影响剪贴板与历史。",
+    "en": "Placeholders: {date}, {time}, {datetime}, {mode} (region/window/fullscreen/long), {seq}. Unknown placeholders are kept. This only changes the default local save name, not the clipboard or history."
+  },
+  "settings.export.template_placeholder": {
+    "zh-CN": "例如 shot_{date}_{mode}_{seq}",
+    "en": "Example: shot_{date}_{mode}_{seq}"
+  },
+  "settings.export.beautify_title": {
+    "zh-CN": "导出美化",
+    "en": "Export beautify"
+  },
+  "settings.export.beautify_hint": {
+    "zh-CN": "开关在「通用 → 功能开关」。开启后预览、复制和保存使用下面的背景、留白、圆角与阴影；标注仍画在原始画面上。格式与质量档位同样生效。",
+    "en": "The switch is under General → Feature switches. When on, preview, copy, and save use the background, padding, corners, and shadow below; annotations stay on the original frame. Format and quality still apply."
+  },
+  "settings.export.preset_label": {
+    "zh-CN": "背景",
+    "en": "Background"
+  },
+  "settings.export.padding_label": {
+    "zh-CN": "留白",
+    "en": "Padding"
+  },
+  "settings.export.padding_hint": {
+    "zh-CN": "0–240 像素，输出四周各加这么多留白。阴影另按圆角占用固定边距。",
+    "en": "0–240 pixels, added on every side. Shadow uses an extra fixed margin derived from the corner radius."
+  },
+  "settings.export.radius_label": {
+    "zh-CN": "圆角",
+    "en": "Corner radius"
+  },
+  "settings.export.radius_hint": {
+    "zh-CN": "0–160 像素。阴影边距由圆角推导，不用单独设置。",
+    "en": "0–160 pixels. Shadow margin is derived from the radius."
+  },
+  "settings.export.shadow_label": {
+    "zh-CN": "阴影",
+    "en": "Shadow"
+  },
+  "settings.export.shadow_hint": {
+    "zh-CN": "在圆角外侧加一圈阴影；关闭后只保留背景、留白和圆角。",
+    "en": "Adds a shadow outside the rounded image; when off, only background, padding, and corners remain."
+  },
+  "settings.export.padding_error": {
+    "zh-CN": "留白需要是 0–240 的整数。",
+    "en": "Padding must be an integer from 0 to 240."
+  },
+  "settings.export.radius_error": {
+    "zh-CN": "圆角需要是 0–160 的整数。",
+    "en": "Corner radius must be an integer from 0 to 160."
+  },
+  "settings.export.preset.paper": {
+    "zh-CN": "纸色",
+    "en": "Paper"
+  },
+  "settings.export.preset.slate": {
+    "zh-CN": "石板",
+    "en": "Slate"
+  },
+  "settings.export.preset.ink": {
+    "zh-CN": "墨色",
+    "en": "Ink"
+  },
+  "settings.export.preset.dawn": {
+    "zh-CN": "黎明",
+    "en": "Dawn"
+  },
+  "settings.export.preset.ocean": {
+    "zh-CN": "海洋",
+    "en": "Ocean"
+  },
+  "settings.export.preset.dusk": {
+    "zh-CN": "暮色",
+    "en": "Dusk"
   },
   "settings.tool.rect": {
     "zh-CN": "矩形",

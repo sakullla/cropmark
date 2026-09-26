@@ -8,8 +8,8 @@ use tauri::{AppHandle, Emitter, Manager};
 use super::buffer::{crop_rgba, encode_png, Frame};
 use super::error::CaptureError;
 use super::geometry::{
-    crop_from_logical, monitor_at_physical, monitor_dest, monitor_key, stitch_views, virtual_canvas,
-    CanvasFault, LogicalRect, MonitorGeom, RgbaView, STITCH_BACKGROUND,
+    crop_from_logical, monitor_at_physical, monitor_dest, monitor_key, stitch_views,
+    virtual_canvas, CanvasFault, LogicalRect, MonitorGeom, RgbaView, STITCH_BACKGROUND,
 };
 use super::hide::{
     grab_allowed, hide_not_presented_error, plan_delay, wait_compositor_presented,
@@ -299,7 +299,9 @@ async fn run_capture(
     // R1:长截图需要平台连续抓取能力;Wayland/portal 在隐藏产品界面之前
     // 明确失败并给出文案,不产生剪贴板/历史/磁盘输出。
     if mode == CaptureMode::LongCapture && !platform::scroll_capture_supported() {
-        return Err(CaptureError::unavailable("error.capture.scroll_unsupported"));
+        return Err(CaptureError::unavailable(
+            "error.capture.scroll_unsupported",
+        ));
     }
     let hide_started = Instant::now();
     hide_product_surfaces(app, generation)?;
@@ -349,9 +351,13 @@ async fn run_last_region(app: AppHandle, delay_ms: u64) -> Result<(), CaptureErr
             return Ok(());
         }
     };
-    let Some(generation) =
-        try_begin_with_delay(&app, CaptureMode::Region, delay_ms, FullscreenTarget::Pointer)
-            .await
+    let Some(generation) = try_begin_with_delay(
+        &app,
+        CaptureMode::Region,
+        delay_ms,
+        FullscreenTarget::Pointer,
+    )
+    .await
     else {
         return Ok(());
     };
@@ -795,8 +801,10 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
         // 关闭的工具不进工具条/「更多」面板/快捷键。R1:长截图开关决定入口;
         // 以长截图模式进入时只保留「开始长截图」确认路径,不出现即时标注与
         // 静默动作,避免选区内标注的屏幕坐标与拼接结果错位。
-        let mode = with_session(&handle, |session| session.as_ref().map(|current| current.mode))
-            .unwrap_or(CaptureMode::Region);
+        let mode = with_session(&handle, |session| {
+            session.as_ref().map(|current| current.mode)
+        })
+        .unwrap_or(CaptureMode::Region);
         let tools = super::selection::ToolToggles::from_map(
             &crate::settings::current_annotation_tools(&handle),
         );
@@ -937,7 +945,9 @@ async fn capture_long_capture(app: &AppHandle, generation: u64) -> Result<(), Ca
 
 #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 async fn capture_long_capture(_app: &AppHandle, _generation: u64) -> Result<(), CaptureError> {
-    Err(CaptureError::unavailable("error.capture.scroll_unsupported"))
+    Err(CaptureError::unavailable(
+        "error.capture.scroll_unsupported",
+    ))
 }
 
 #[cfg(any(windows, target_os = "macos"))]
@@ -1156,7 +1166,8 @@ fn capture_all_monitors(app: &AppHandle) -> Result<Frame, CaptureError> {
         let wayland = std::env::var("WAYLAND_DISPLAY")
             .ok()
             .filter(|value| !value.is_empty());
-        if platform::linux_capture_backend(wayland.as_deref()) == platform::LinuxCaptureBackend::Portal
+        if platform::linux_capture_backend(wayland.as_deref())
+            == platform::LinuxCaptureBackend::Portal
         {
             return capture_all_from_portal(app, &monitors);
         }
@@ -1164,7 +1175,10 @@ fn capture_all_monitors(app: &AppHandle) -> Result<Frame, CaptureError> {
     capture_all_per_display(app, &monitors)
 }
 
-fn capture_all_per_display(app: &AppHandle, monitors: &[MonitorGeom]) -> Result<Frame, CaptureError> {
+fn capture_all_per_display(
+    app: &AppHandle,
+    monitors: &[MonitorGeom],
+) -> Result<Frame, CaptureError> {
     let canvas = virtual_canvas(monitors).map_err(canvas_error)?;
     let mode = cursor_mode(app);
     let mut frames = Vec::with_capacity(monitors.len());
@@ -1203,7 +1217,10 @@ fn capture_all_per_display(app: &AppHandle, monitors: &[MonitorGeom]) -> Result<
 }
 
 #[cfg(target_os = "linux")]
-fn capture_all_from_portal(app: &AppHandle, monitors: &[MonitorGeom]) -> Result<Frame, CaptureError> {
+fn capture_all_from_portal(
+    app: &AppHandle,
+    monitors: &[MonitorGeom],
+) -> Result<Frame, CaptureError> {
     let canvas = virtual_canvas(monitors).map_err(canvas_error)?;
     let desktop = platform::capture_portal_desktop()?;
     let outcome = match cursor_mode(app) {
@@ -1406,6 +1423,11 @@ pub fn preview_frame(app: &AppHandle) -> Result<PreviewPayload, CaptureError> {
             .and_then(|item| item.preview.clone())
             .ok_or_else(|| CaptureError::api("error.capture.preview_missing"))
     })
+}
+
+/// 当前预览/静默会话的采集模式,供文件名模板 `{mode}` 使用。
+pub fn current_capture_mode(app: &AppHandle) -> Option<CaptureMode> {
+    with_session(app, |session| session.as_ref().map(|current| current.mode))
 }
 
 pub fn current_preview_frame(app: &AppHandle) -> Result<Frame, CaptureError> {
@@ -1691,9 +1713,10 @@ pub(crate) fn scroll_source(
         if current.cancelled || current.generation != generation {
             return Err(CaptureError::cancelled());
         }
-        let frame = current.freeze.clone().ok_or_else(|| {
-            CaptureError::invalid_buffer("error.capture.buffer_uninitialized")
-        })?;
+        let frame = current
+            .freeze
+            .clone()
+            .ok_or_else(|| CaptureError::invalid_buffer("error.capture.buffer_uninitialized"))?;
         let monitor = current
             .monitor
             .clone()
@@ -1719,11 +1742,8 @@ pub(crate) fn finish_scroll_frame(
     if !session_matches_generation(app, expected) {
         return Err(CaptureError::cancelled());
     }
-    let translated = crate::annotate::translated_all(
-        &annotations,
-        -(selection.x as f64),
-        -(selection.y as f64),
-    );
+    let translated =
+        crate::annotate::translated_all(&annotations, -(selection.x as f64), -(selection.y as f64));
     deliver_fixed_frame(app, frame, translated, None, Some(expected))?;
     remember_selection_region(app, selection);
     Ok(())

@@ -180,7 +180,15 @@ async fn save_quiet_frame(app: &AppHandle) {
         }
     };
     let export = settings::current_export(app);
-    match crate::export::save_frame_with_dialog(app, frame, export, None).await {
+    match crate::export::save_frame_with_dialog(
+        app,
+        frame,
+        export,
+        None,
+        crate::export::FileNaming::Quiet,
+    )
+    .await
+    {
         Ok(result) if result.saved => {
             let name = result.file_name().unwrap_or(result.format.label());
             ui::show_toast_key_params(app, "toast.saved", &[("name", name)]);

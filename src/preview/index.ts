@@ -92,12 +92,15 @@ export function mountPreview(root: HTMLElement): () => void {
     </div>
     <div class="preview-stage">
       <div class="preview-frame">
-        <canvas></canvas>
+        <div class="preview-output" data-beautify-output>
+          <canvas></canvas>
+        </div>
       </div>
     </div>
   `;
 
   const canvas = root.querySelector("canvas");
+  const outputEl = root.querySelector("[data-beautify-output]");
   const note = root.querySelector(".preview-note");
   const frameEl = root.querySelector(".preview-frame");
   const toolbarEl = root.querySelector("[data-annotation-toolbar]");
@@ -110,6 +113,7 @@ export function mountPreview(root: HTMLElement): () => void {
   const saveQualityToggle = root.querySelector("[data-action=toggle-quality]");
   if (
     !(canvas instanceof HTMLCanvasElement) ||
+    !(outputEl instanceof HTMLElement) ||
     !(note instanceof HTMLElement) ||
     !(frameEl instanceof HTMLElement) ||
     !(toolbarEl instanceof HTMLElement) ||
@@ -170,6 +174,9 @@ export function mountPreview(root: HTMLElement): () => void {
   // 贴图再标注(R9):非空表示本会话由贴图进入,确认后写回该 label。
   let writebackLabel: string | null = null;
   let saveQuality: ExportQuality = "high";
+  // 美化只包在显示层外:画布位图保持冻帧尺寸,标注坐标不平移。
+  let exportBeautify = false;
+  let beautifyOptions: BeautifyOptions = { ...DEFAULT_BEAUTIFY };
 
   const noteText = (source: {
     key: CatalogKey | null;
@@ -240,6 +247,7 @@ export function mountPreview(root: HTMLElement): () => void {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(source, 0, 0);
     editor?.paint(ctx);
+    applyBeautifyChrome();
     if (ocrActive && ocrDoc) {
       const rubber =
         ocrDragging && ocrStart && ocrCurrent ? normalizeRect(ocrStart, ocrCurrent) : null;
@@ -264,6 +272,41 @@ export function mountPreview(root: HTMLElement): () => void {
   const syncWritebackUi = (): void => {
     updatePinBtn.hidden = writebackLabel === null;
     pinBtn.hidden = writebackLabel !== null;
+  };
+
+  const applyBeautifyChrome = (): void => {
+    if (!exportBeautify || !frame) {
+      root.dataset.beautify = "off";
+      outputEl.removeAttribute("style");
+      canvas.style.width = "";
+      canvas.style.height = "";
+      canvas.style.borderRadius = "";
+      canvas.style.boxShadow = "";
+      return;
+    }
+    const layout = beautifyLayout(frame.width, frame.height, beautifyOptions);
+    const availW = Math.max(frameEl.clientWidth, 1);
+    const availH = Math.max(frameEl.clientHeight, 1);
+    const scale = Math.min(availW / layout.outputWidth, availH / layout.outputHeight);
+    if (!Number.isFinite(scale) || scale <= 0) {
+      return;
+    }
+    root.dataset.beautify = "on";
+    outputEl.style.boxSizing = "content-box";
+    outputEl.style.width = `${frame.width * scale}px`;
+    outputEl.style.height = `${frame.height * scale}px`;
+    outputEl.style.padding = `${layout.origin * scale}px`;
+    outputEl.style.background = beautifyBackground(beautifyOptions.preset);
+    canvas.style.width = "100%";
+    canvas.style.height = "100%";
+    canvas.style.borderRadius = `${layout.radius * scale}px`;
+    if (beautifyOptions.shadow && layout.shadowMargin > 0) {
+      const blur = Math.max(1, layout.shadowMargin * 0.45) * scale;
+      const offsetY = Math.max(1, layout.shadowMargin * 0.2) * scale;
+      canvas.style.boxShadow = `0 ${offsetY}px ${blur}px rgba(15, 23, 42, 0.38)`;
+    } else {
+      canvas.style.boxShadow = "none";
+    }
   };
 
   const syncSaveQuality = (): void => {
@@ -722,7 +765,8 @@ export function mountPreview(root: HTMLElement): () => void {
         textSize?: number | null;
         numberStart?: number;
       };
-      export?: { quality?: ExportQuality };
+      export?: { quality?: ExportQuality; beautify?: Partial<BeautifyOptions> };
+      toggles?: { exportBeautify?: boolean };
     }>("get_ui_settings")
       .then((settings) => {
         const quality = settings?.export?.quality;
@@ -730,10 +774,37 @@ export function mountPreview(root: HTMLElement): () => void {
           saveQuality = quality;
           syncSaveQuality();
         }
+        readBeautify(settings);
         editor?.setStyle(readAnnotationDefaults(settings));
         // R5:逐项工具开关只控制创建入口;渲染/编辑/导出不随开关变化。
         editor?.setToolToggles(readAnnotationToolToggles(settings));
         redraw();
+      })
+      .catch(() => undefined);
+  };
+
+  const readBeautify = (settings: {
+    export?: { beautify?: Partial<BeautifyOptions> };
+    toggles?: { exportBeautify?: boolean };
+  }): void => {
+    exportBeautify = settings.toggles?.exportBeautify === true;
+    const stored = settings.export?.beautify;
+    beautifyOptions = {
+      preset: typeof stored?.preset === "string" && stored.preset.length > 0 ? stored.preset : DEFAULT_BEAUTIFY.preset,
+      padding: typeof stored?.padding === "number" ? stored.padding : DEFAULT_BEAUTIFY.padding,
+      radius: typeof stored?.radius === "number" ? stored.radius : DEFAULT_BEAUTIFY.radius,
+      shadow: stored?.shadow !== false,
+    };
+  };
+
+  const reloadAppearance = (): void => {
+    void invoke<{
+      export?: { beautify?: Partial<BeautifyOptions> };
+      toggles?: { exportBeautify?: boolean };
+    }>("get_ui_settings")
+      .then((settings) => {
+        readBeautify(settings);
+        applyBeautifyChrome();
       })
       .catch(() => undefined);
   };
@@ -845,6 +916,15 @@ export function mountPreview(root: HTMLElement): () => void {
     })();
   };
 
+  void listen("export-appearance-changed", () => {
+    reloadAppearance();
+  });
+
+  const chromeObserver = new ResizeObserver(() => {
+    applyBeautifyChrome();
+  });
+  chromeObserver.observe(frameEl);
+
   void listen("preview-reload", () => {
     // 新帧可能带入选区即时标注(R21):列表随帧在 loadPreview 中恢复,
     // 这里先清空避免旧编辑态残留。
@@ -881,6 +961,70 @@ export function mountPreview(root: HTMLElement): () => void {
 }
 
 type Point = { x: number; y: number };
+
+interface BeautifyOptions {
+  preset: string;
+  padding: number;
+  radius: number;
+  shadow: boolean;
+}
+
+interface BeautifyLayout {
+  padding: number;
+  radius: number;
+  shadowMargin: number;
+  origin: number;
+  outputWidth: number;
+  outputHeight: number;
+}
+
+const BEAUTIFY_MAX_PADDING = 240;
+const BEAUTIFY_MAX_RADIUS = 160;
+
+const DEFAULT_BEAUTIFY: BeautifyOptions = {
+  preset: "paper",
+  padding: 32,
+  radius: 16,
+  shadow: true,
+};
+
+/// 与 `beautify.rs` 的 PRESETS 同色。渐变方向为左上到右下。
+const BEAUTIFY_BACKGROUNDS: Record<string, string> = {
+  paper: "#f4f1ea",
+  slate: "#334155",
+  ink: "#0b1220",
+  dawn: "linear-gradient(to bottom right, #fde68a, #fb7185)",
+  ocean: "linear-gradient(to bottom right, #38bdf8, #1e3a8a)",
+  dusk: "linear-gradient(to bottom right, #312e81, #f472b6)",
+};
+
+function beautifyBackground(preset: string): string {
+  return BEAUTIFY_BACKGROUNDS[preset] ?? BEAUTIFY_BACKGROUNDS.paper;
+}
+
+/// 与 Rust `beautify::shadow_margin` / `layout` 同一整数公式。
+function beautifyShadowMargin(radius: number, shadow: boolean): number {
+  if (!shadow) {
+    return 0;
+  }
+  return Math.min(48, Math.max(12, 12 + Math.floor(radius / 2)));
+}
+
+function beautifyLayout(width: number, height: number, options: BeautifyOptions): BeautifyLayout {
+  const padding = Math.min(BEAUTIFY_MAX_PADDING, Math.max(0, Math.floor(options.padding)));
+  const maxRadius = Math.min(BEAUTIFY_MAX_RADIUS, Math.floor(width / 2), Math.floor(height / 2));
+  const radius = Math.min(Math.max(0, maxRadius), Math.max(0, Math.floor(options.radius)));
+  const shadowMargin = beautifyShadowMargin(radius, options.shadow);
+  const origin = padding + shadowMargin;
+  return {
+    padding,
+    radius,
+    shadowMargin,
+    origin,
+    outputWidth: width + origin * 2,
+    outputHeight: height + origin * 2,
+  };
+}
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));

@@ -1,8 +1,10 @@
 mod annotate;
 mod autostart;
+mod beautify;
 mod capture;
 mod clipboard;
 mod export;
+mod filename_template;
 mod front;
 mod history;
 mod hotkeys;
@@ -193,6 +195,7 @@ pub fn run() {
             annotate::stickers::get_sticker_image,
             settings::set_capture_settings,
             settings::set_history_settings,
+            settings::set_export_appearance,
             capture::get_overlay_frame,
             capture::get_preview_frame,
             capture::confirm_region,

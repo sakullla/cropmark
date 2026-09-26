@@ -4,10 +4,11 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::annotate::{parse_hex_color, DEFAULT_COLOR};
 use crate::autostart::{self, AutostartRejection, AutostartState};
+use crate::beautify::BeautifyOptions;
 use crate::hotkeys::{self, CaptureMode, HotkeyErrors, Hotkeys};
 use crate::i18n::{self, Language};
 
@@ -307,13 +308,18 @@ impl ExportQuality {
     }
 }
 
-/// 导出记忆(R3):上次格式、上次目录与质量档位;默认 PNG 且无目录。
+/// 导出记忆(R3/R11):上次格式、目录、质量档位,以及美化参数与文件名模板。
+/// 模板默认空;是否套用由 `filename_template` 开关决定。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ExportSettings {
     pub last_format: ExportFormat,
     pub last_dir: Option<String>,
     pub quality: ExportQuality,
+    #[serde(default)]
+    pub beautify: BeautifyOptions,
+    #[serde(default)]
+    pub filename_template: String,
 }
 
 impl Default for ExportSettings {
@@ -322,17 +328,22 @@ impl Default for ExportSettings {
             last_format: ExportFormat::Png,
             last_dir: None,
             quality: ExportQuality::High,
+            beautify: BeautifyOptions::default(),
+            filename_template: String::new(),
         }
     }
 }
 
 impl ExportSettings {
     /// 空白目录按未记录处理;格式/档位由枚举解析保证合法。
+    /// 美化参数与模板按各自上限清洗,不改上次格式与目录。
     pub fn sanitized(self) -> Self {
         Self {
             last_format: self.last_format,
             last_dir: self.last_dir.filter(|dir| !dir.trim().is_empty()),
             quality: self.quality,
+            beautify: self.beautify.sanitized(),
+            filename_template: crate::filename_template::sanitize_template(&self.filename_template),
         }
     }
 
@@ -574,12 +585,11 @@ pub fn remember_export(
     quality: ExportQuality,
     directory: Option<&std::path::Path>,
 ) {
-    let next = ExportSettings {
-        last_format: format,
-        last_dir: directory.map(|dir| dir.to_string_lossy().into_owned()),
-        quality,
-    }
-    .sanitized();
+    let mut next = current_export(app);
+    next.last_format = format;
+    next.last_dir = directory.map(|dir| dir.to_string_lossy().into_owned());
+    next.quality = quality;
+    let next = next.sanitized();
     *lock(&app.state::<SessionState>().export) = next;
     let applied = i18n::t("notice.export_remembered");
     persist_settings(app, &applied);
@@ -811,7 +821,37 @@ pub fn set_feature(app: AppHandle, key: String, enabled: bool) -> Result<UiSetti
     persist_settings(&app, &applied);
     // 功能入口挂在托盘/选区等宿主上;菜单事件按 id 分发,重建不丢处理器。
     crate::tray::refresh_menu(&app);
+    if matches!(key.as_str(), "exportBeautify" | "export_beautify") {
+        emit_export_appearance(&app);
+    }
     Ok(snapshot(&app))
+}
+
+/// 美化参数与文件名模板(R3/R11)。不改上次格式、目录与质量档位。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportAppearance {
+    pub beautify: BeautifyOptions,
+    pub filename_template: String,
+}
+
+#[tauri::command]
+pub fn set_export_appearance(app: AppHandle, appearance: ExportAppearance) -> UiSettings {
+    {
+        let state = app.state::<SessionState>();
+        let mut export = lock(&state.export).clone();
+        export.beautify = appearance.beautify;
+        export.filename_template = appearance.filename_template;
+        *lock(&state.export) = export.sanitized();
+    }
+    let applied = i18n::t("notice.export_remembered");
+    persist_settings(&app, &applied);
+    emit_export_appearance(&app);
+    snapshot(&app)
+}
+
+fn emit_export_appearance(app: &AppHandle) {
+    let _ = app.emit("export-appearance-changed", ());
 }
 
 /// 设置单个标注工具开关(R19):只控制创建入口;未知工具返回错误。渲染、
@@ -951,6 +991,13 @@ mod tests {
                 last_format: ExportFormat::Jpeg,
                 last_dir: Some("C:/shots".into()),
                 quality: ExportQuality::Low,
+                beautify: BeautifyOptions {
+                    preset: "ink".into(),
+                    padding: 12,
+                    radius: 6,
+                    shadow: false,
+                },
+                filename_template: "shot_{mode}_{seq}".into(),
             },
             last_region: Some(LastRegion {
                 x: -640,
@@ -995,6 +1042,10 @@ mod tests {
         assert_eq!(loaded.export.last_format, ExportFormat::Jpeg);
         assert_eq!(loaded.export.last_dir.as_deref(), Some("C:/shots"));
         assert_eq!(loaded.export.quality, ExportQuality::Low);
+        assert_eq!(loaded.export.beautify.preset, "ink");
+        assert_eq!(loaded.export.beautify.padding, 12);
+        assert!(!loaded.export.beautify.shadow);
+        assert_eq!(loaded.export.filename_template, "shot_{mode}_{seq}");
         assert_eq!(loaded.language, "en");
         assert_eq!(
             loaded.last_region,
@@ -1469,6 +1520,8 @@ mod tests {
         assert_eq!(export.last_format, ExportFormat::Png);
         assert_eq!(export.last_dir, None);
         assert_eq!(export.quality, ExportQuality::High);
+        assert_eq!(export.beautify, BeautifyOptions::default());
+        assert!(export.filename_template.is_empty());
         assert_eq!(export.clone().sanitized(), export);
     }
 
@@ -1508,11 +1561,22 @@ mod tests {
             last_format: ExportFormat::Webp,
             last_dir: Some("   ".into()),
             quality: ExportQuality::Medium,
+            beautify: BeautifyOptions {
+                preset: "missing".into(),
+                padding: 9_999,
+                radius: 9_999,
+                shadow: true,
+            },
+            filename_template: "  a\nb  ".into(),
         }
         .sanitized();
         assert_eq!(blank.last_dir, None);
         assert_eq!(blank.last_format, ExportFormat::Webp);
         assert_eq!(blank.quality, ExportQuality::Medium);
+        assert_eq!(blank.beautify.preset, "paper");
+        assert_eq!(blank.beautify.padding, 240);
+        assert_eq!(blank.beautify.radius, 160);
+        assert_eq!(blank.filename_template, "ab");
         assert!(blank.existing_directory().is_none());
     }
 
@@ -1541,6 +1605,8 @@ mod tests {
         assert_eq!(parsed.export.last_format, ExportFormat::Webp);
         assert_eq!(parsed.export.last_dir.as_deref(), Some("D:/shots"));
         assert_eq!(parsed.export.quality, ExportQuality::Low);
+        assert_eq!(parsed.export.beautify, BeautifyOptions::default());
+        assert!(parsed.export.filename_template.is_empty());
         let serialized = serde_json::to_value(parsed.export).unwrap();
         assert_eq!(serialized["lastFormat"], "webp");
         assert_eq!(serialized["lastDir"], "D:/shots");
@@ -1558,12 +1624,14 @@ mod tests {
             last_format: ExportFormat::Png,
             last_dir: Some(dir.to_string_lossy().into_owned()),
             quality: ExportQuality::High,
+            ..ExportSettings::default()
         };
         assert_eq!(present.existing_directory(), Some(dir.as_path()));
         let missing = ExportSettings {
             last_format: ExportFormat::Png,
             last_dir: Some(dir.join("gone").to_string_lossy().into_owned()),
             quality: ExportQuality::High,
+            ..ExportSettings::default()
         };
         assert!(missing.existing_directory().is_none());
         let _ = fs::remove_dir_all(&dir);

@@ -57,6 +57,22 @@ export interface HistorySettings {
   limit: number;
 }
 
+/// 与 Rust `BeautifyOptions` 一致;颜色在预览与 `beautify.rs` 各有一份。
+export interface BeautifyOptions {
+  preset: string;
+  padding: number;
+  radius: number;
+  shadow: boolean;
+}
+
+export interface ExportSettings {
+  lastFormat: "png" | "jpeg" | "webp";
+  lastDir: string | null;
+  quality: "high" | "medium" | "low";
+  beautify: BeautifyOptions;
+  filenameTemplate: string;
+}
+
 export interface TrayState {
   available: boolean;
   message: string | null;
@@ -73,6 +89,7 @@ export interface UiSettings {
   annotationTools: AnnotationToolToggles;
   capture: CaptureSettings;
   history: HistorySettings;
+  export: ExportSettings;
   tray: TrayState;
   language: string;
   resolvedLanguage: string;
@@ -175,6 +192,35 @@ const LANGUAGE_OPTIONS: Array<{ value: LanguageSetting; labelKey: CatalogKey }> 
 
 const HOTKEY_SLOTS: HotkeySlot[] = ["region", "window", "fullscreen", "clipboardpin"];
 
+const DEFAULT_BEAUTIFY: BeautifyOptions = {
+  preset: "paper",
+  padding: 32,
+  radius: 16,
+  shadow: true,
+};
+
+/// 与 `src-tauri/src/beautify.rs` 的 PRESETS 保持同序、同色。
+const BEAUTIFY_PRESETS: Array<{ id: string; labelKey: CatalogKey; swatch: string }> = [
+  { id: "paper", labelKey: "settings.export.preset.paper", swatch: "#f4f1ea" },
+  { id: "slate", labelKey: "settings.export.preset.slate", swatch: "#334155" },
+  { id: "ink", labelKey: "settings.export.preset.ink", swatch: "#0b1220" },
+  { id: "dawn", labelKey: "settings.export.preset.dawn", swatch: "#fde68a" },
+  { id: "ocean", labelKey: "settings.export.preset.ocean", swatch: "#38bdf8" },
+  { id: "dusk", labelKey: "settings.export.preset.dusk", swatch: "#312e81" },
+];
+
+interface ExportAppearance {
+  beautify: BeautifyOptions;
+  filenameTemplate: string;
+}
+
+function clampInt(value: number, min: number, max: number, fallback: number): number {
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
+
 function hotkeyValue(hotkeys: Hotkeys, slot: HotkeySlot): string {
   return slot === "clipboardpin" ? hotkeys.pinClipboard : hotkeys[slot];
 }
@@ -249,6 +295,47 @@ export function mountSettings(root: HTMLElement): () => void {
           <section class="block" aria-labelledby="naming-title">
             <h2 id="naming-title" data-i18n="settings.section.naming">保存与命名</h2>
             <div class="rows feature-rows" data-toggles="output"></div>
+            <div class="setting-row">
+              <div>
+                <div class="label" id="template-label" data-i18n="settings.export.template_label">文件名模板</div>
+                <p class="hint" data-i18n="settings.export.template_hint">占位符：{date}、{time}、{datetime}、{mode}、{seq}。只影响本地保存的默认文件名。</p>
+              </div>
+            </div>
+            <input type="text" class="number-input" data-filename-template maxlength="180" spellcheck="false" aria-labelledby="template-label" data-i18n-placeholder="settings.export.template_placeholder" placeholder="例如 shot_{date}_{mode}_{seq}" />
+          </section>
+          <section class="block" aria-labelledby="beautify-title">
+            <h2 id="beautify-title" data-i18n="settings.export.beautify_title">导出美化</h2>
+            <p class="hint" data-i18n="settings.export.beautify_hint">开关在「通用 → 功能开关」。开启后预览、复制和保存使用背景、留白、圆角与阴影。</p>
+            <div class="setting-row">
+              <div>
+                <div class="label" id="preset-label" data-i18n="settings.export.preset_label">背景</div>
+              </div>
+            </div>
+            <div class="choices" data-beautify-presets role="radiogroup" aria-labelledby="preset-label"></div>
+            <div class="setting-row">
+              <div>
+                <div class="label" id="padding-label" data-i18n="settings.export.padding_label">留白</div>
+                <p class="hint" data-i18n="settings.export.padding_hint">0–240 像素，输出四周各加这么多留白。</p>
+              </div>
+              <input type="number" class="number-input" data-beautify-padding min="0" max="240" step="1" inputmode="numeric" aria-labelledby="padding-label" />
+            </div>
+            <div class="setting-row">
+              <div>
+                <div class="label" id="radius-label" data-i18n="settings.export.radius_label">圆角</div>
+                <p class="hint" data-i18n="settings.export.radius_hint">0–160 像素。阴影边距由圆角推导。</p>
+              </div>
+              <input type="number" class="number-input" data-beautify-radius min="0" max="160" step="1" inputmode="numeric" aria-labelledby="radius-label" />
+            </div>
+            <p class="error" data-export-error role="alert" hidden></p>
+            <div class="setting-row">
+              <div>
+                <div class="label" id="shadow-label" data-i18n="settings.export.shadow_label">阴影</div>
+                <p class="hint" data-i18n="settings.export.shadow_hint">在圆角外侧加一圈阴影。</p>
+              </div>
+              <button type="button" class="switch" data-beautify-shadow role="switch" aria-checked="true" aria-labelledby="shadow-label">
+                <span class="knob"></span>
+              </button>
+            </div>
           </section>
         </section>
         <section class="card group" aria-labelledby="group-general-title">
@@ -328,6 +415,12 @@ export function mountSettings(root: HTMLElement): () => void {
   const historyLimitEl = root.querySelector("[data-history=limit]");
   const historyErrorEl = root.querySelector("[data-history-error]");
   const historyOpenEl = root.querySelector("[data-action=open-history]");
+  const templateEl = root.querySelector("[data-filename-template]");
+  const presetRoot = root.querySelector("[data-beautify-presets]");
+  const paddingEl = root.querySelector("[data-beautify-padding]");
+  const radiusEl = root.querySelector("[data-beautify-radius]");
+  const exportErrorEl = root.querySelector("[data-export-error]");
+  const shadowEl = root.querySelector("[data-beautify-shadow]");
   const trayNoticeEl = root.querySelector("[data-tray-notice]");
   const quitEl = root.querySelector("[data-action=quit]");
   const languageRoot = root.querySelector("[data-language]");
@@ -348,6 +441,12 @@ export function mountSettings(root: HTMLElement): () => void {
     !(historyLimitEl instanceof HTMLInputElement) ||
     !(historyErrorEl instanceof HTMLElement) ||
     !(historyOpenEl instanceof HTMLButtonElement) ||
+    !(templateEl instanceof HTMLInputElement) ||
+    !(presetRoot instanceof HTMLElement) ||
+    !(paddingEl instanceof HTMLInputElement) ||
+    !(radiusEl instanceof HTMLInputElement) ||
+    !(exportErrorEl instanceof HTMLElement) ||
+    !(shadowEl instanceof HTMLButtonElement) ||
     !(trayNoticeEl instanceof HTMLElement) ||
     !(quitEl instanceof HTMLButtonElement) ||
     !(languageRoot instanceof HTMLElement)
@@ -365,6 +464,15 @@ export function mountSettings(root: HTMLElement): () => void {
     enabled: true,
     limit: 20,
   };
+  let exportAppearance: ExportAppearance = {
+    beautify: { ...DEFAULT_BEAUTIFY },
+    filenameTemplate: "",
+  };
+  templateEl.style.width = "100%";
+  templateEl.style.marginTop = "8px";
+  templateEl.style.textAlign = "left";
+  presetRoot.style.flexWrap = "wrap";
+  presetRoot.style.marginTop = "8px";
 
   const showDelayError = (message: string): void => {
     delayErrorEl.hidden = false;
@@ -591,6 +699,89 @@ export function mountSettings(root: HTMLElement): () => void {
 
     renderCapture(settings.capture);
     renderHistory(settings.history);
+    renderExport(settings);
+  };
+
+  const showExportError = (message: string): void => {
+    exportErrorEl.hidden = false;
+    exportErrorEl.textContent = message;
+  };
+
+  const clearExportError = (): void => {
+    exportErrorEl.hidden = true;
+    exportErrorEl.textContent = "";
+    paddingEl.removeAttribute("aria-invalid");
+    radiusEl.removeAttribute("aria-invalid");
+  };
+
+  const renderExport = (settings: UiSettings): void => {
+    const stored = settings.export?.beautify ?? DEFAULT_BEAUTIFY;
+    const preset = BEAUTIFY_PRESETS.some((item) => item.id === stored.preset)
+      ? stored.preset
+      : DEFAULT_BEAUTIFY.preset;
+    exportAppearance = {
+      beautify: {
+        preset,
+        padding: clampInt(stored.padding, 0, 240, DEFAULT_BEAUTIFY.padding),
+        radius: clampInt(stored.radius, 0, 160, DEFAULT_BEAUTIFY.radius),
+        shadow: stored.shadow !== false,
+      },
+      filenameTemplate: settings.export?.filenameTemplate ?? "",
+    };
+    const templateOn = settings.toggles.filenameTemplate;
+    const beautifyOn = settings.toggles.exportBeautify;
+    if (document.activeElement !== templateEl) {
+      templateEl.value = exportAppearance.filenameTemplate;
+    }
+    templateEl.disabled = !templateOn;
+    if (document.activeElement !== paddingEl) {
+      paddingEl.value = String(exportAppearance.beautify.padding);
+    }
+    if (document.activeElement !== radiusEl) {
+      radiusEl.value = String(exportAppearance.beautify.radius);
+    }
+    paddingEl.disabled = !beautifyOn;
+    radiusEl.disabled = !beautifyOn;
+    shadowEl.disabled = !beautifyOn;
+    shadowEl.setAttribute("aria-checked", exportAppearance.beautify.shadow ? "true" : "false");
+    shadowEl.classList.toggle("on", exportAppearance.beautify.shadow);
+    presetRoot.replaceChildren();
+    for (const item of BEAUTIFY_PRESETS) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "choice";
+      button.dataset.beautifyPreset = item.id;
+      button.setAttribute("role", "radio");
+      button.textContent = t(item.labelKey);
+      button.disabled = !beautifyOn;
+      const selected = item.id === exportAppearance.beautify.preset;
+      button.setAttribute("aria-checked", selected ? "true" : "false");
+      button.classList.toggle("selected", selected);
+      const chip = document.createElement("span");
+      chip.setAttribute("aria-hidden", "true");
+      chip.style.display = "inline-block";
+      chip.style.width = "10px";
+      chip.style.height = "10px";
+      chip.style.marginRight = "6px";
+      chip.style.borderRadius = "999px";
+      chip.style.verticalAlign = "-1px";
+      chip.style.background = item.swatch;
+      chip.style.boxShadow = "inset 0 0 0 1px rgba(0,0,0,0.18)";
+      button.prepend(chip);
+      presetRoot.append(button);
+    }
+  };
+
+  const applyAppearance = async (next: ExportAppearance): Promise<void> => {
+    applying = true;
+    try {
+      const settings = await invoke<UiSettings>("set_export_appearance", { appearance: next });
+      render(settings);
+    } catch (error) {
+      showInvokeError(error);
+    } finally {
+      applying = false;
+    }
   };
 
   const showInvokeError = (error: unknown): void => {
@@ -734,6 +925,103 @@ export function mountSettings(root: HTMLElement): () => void {
 
   historyOpenEl.addEventListener("click", () => {
     void invoke("open_history").catch(showInvokeError);
+  });
+
+  const commitTemplate = (): void => {
+    if (!lastSettings?.toggles.filenameTemplate) {
+      return;
+    }
+    const next = templateEl.value;
+    if (next === exportAppearance.filenameTemplate) {
+      return;
+    }
+    void applyAppearance({ ...exportAppearance, filenameTemplate: next });
+  };
+
+  templateEl.addEventListener("change", () => {
+    if (!applying) {
+      commitTemplate();
+    }
+  });
+
+  const commitBeautifyNumber = (
+    input: HTMLInputElement,
+    field: "padding" | "radius",
+    max: number,
+    errorKey: "settings.export.padding_error" | "settings.export.radius_error",
+  ): void => {
+    if (!lastSettings?.toggles.exportBeautify) {
+      return;
+    }
+    const raw = input.value.trim();
+    if (!/^\d+$/.test(raw)) {
+      input.setAttribute("aria-invalid", "true");
+      showExportError(t(errorKey));
+      return;
+    }
+    const value = Number(raw);
+    if (!Number.isSafeInteger(value) || value < 0 || value > max) {
+      input.setAttribute("aria-invalid", "true");
+      showExportError(t(errorKey));
+      return;
+    }
+    clearExportError();
+    if (value === exportAppearance.beautify[field]) {
+      return;
+    }
+    void applyAppearance({
+      ...exportAppearance,
+      beautify: { ...exportAppearance.beautify, [field]: value },
+    });
+  };
+
+  paddingEl.addEventListener("change", () => {
+    if (!applying) {
+      commitBeautifyNumber(paddingEl, "padding", 240, "settings.export.padding_error");
+    }
+  });
+  radiusEl.addEventListener("change", () => {
+    if (!applying) {
+      commitBeautifyNumber(radiusEl, "radius", 160, "settings.export.radius_error");
+    }
+  });
+  for (const input of [paddingEl, radiusEl, templateEl]) {
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        input.blur();
+      }
+    });
+  }
+
+  shadowEl.addEventListener("click", () => {
+    if (applying || shadowEl.disabled) {
+      return;
+    }
+    void applyAppearance({
+      ...exportAppearance,
+      beautify: { ...exportAppearance.beautify, shadow: shadowEl.getAttribute("aria-checked") !== "true" },
+    });
+  });
+
+  presetRoot.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element) || applying) {
+      return;
+    }
+    const button = target.closest("[data-beautify-preset]");
+    if (!(button instanceof HTMLButtonElement) || button.disabled) {
+      return;
+    }
+    const preset = button.dataset.beautifyPreset;
+    if (!preset || preset === exportAppearance.beautify.preset) {
+      return;
+    }
+    clearExportError();
+    void applyAppearance({
+      ...exportAppearance,
+      beautify: { ...exportAppearance.beautify, preset },
+    });
   });
 
   closeEl.addEventListener("click", () => {

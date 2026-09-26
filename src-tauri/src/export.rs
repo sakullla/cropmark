@@ -4,11 +4,14 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
 use crate::annotate::{rasterize, Annotation};
+use crate::beautify;
 use crate::capture::buffer::{encode_jpeg, encode_png, encode_webp, Frame};
 use crate::capture::error::CaptureError;
 use crate::capture::session;
 use crate::capture::ui;
 use crate::clipboard;
+use crate::filename_template::{self, NameParts};
+use crate::hotkeys::CaptureMode;
 use crate::i18n;
 use crate::settings::{self, ExportFormat, ExportQuality};
 
@@ -62,8 +65,8 @@ fn encode_for_export(frame: &Frame, format: ExportFormat, quality: u8) -> Result
     encoded.map_err(fail)
 }
 
-/// 编码并按目标路径写盘:失败信息包含目标与系统原因,且不触碰预览会话,
-/// 保证标注内容与再次保存的机会都保留。
+/// 编码并按目标路径写盘:先完整编码,再写入同目录临时文件并改名。
+/// 编码失败不会创建目标文件;改名失败会删掉临时文件,不留半成品。
 fn write_export(
     path: &Path,
     frame: &Frame,
@@ -71,64 +74,107 @@ fn write_export(
     quality: u8,
 ) -> Result<(), String> {
     let bytes = encode_for_export(frame, format, quality)?;
-    std::fs::write(path, bytes).map_err(|error| {
-        i18n::tp(
-            "error.capture.save_to_path",
-            &[
-                ("path", &path.display().to_string()),
-                ("error", &error.to_string()),
-            ],
-        )
-    })
+    let partial = partial_path(path);
+    std::fs::write(&partial, &bytes).map_err(|error| save_error(path, &error))?;
+    if let Err(error) = std::fs::rename(&partial, path) {
+        let _ = std::fs::remove_file(&partial);
+        return Err(save_error(path, &error));
+    }
+    Ok(())
+}
+
+fn save_error(path: &Path, error: &std::io::Error) -> String {
+    i18n::tp(
+        "error.capture.save_to_path",
+        &[
+            ("path", &path.display().to_string()),
+            ("error", &error.to_string()),
+        ],
+    )
+}
+
+fn partial_path(path: &Path) -> PathBuf {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("cropmark");
+    path.with_file_name(format!(".{name}.{}.cropmark-part", std::process::id()))
+}
+
+/// 美化只作用于复制与保存。开关关闭时原帧原样返回。
+fn compose_output(app: &AppHandle, frame: Frame) -> Result<Frame, String> {
+    if !settings::current_toggles(app).export_beautify {
+        return Ok(frame);
+    }
+    let options = settings::current_export(app).beautify;
+    beautify::apply(&frame, &options).map_err(fail)
+}
+
+/// 预览保存套用文件名模板;静默保存保持时间戳命名。两者都不覆盖已有文件。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileNaming {
+    Preview,
+    Quiet,
 }
 
 /// 保存对话框默认文件名:本地时间戳,避免每次都叫 `cropmark.png` 互相覆盖。
 /// 形态对齐 Snipaste / ShareX / Flameshot:`Cropmark_2026-09-20_21-45-12.png`。
 pub fn default_capture_file_name(extension: &str) -> String {
-    format!("Cropmark_{}.{}", local_stamp(), extension)
-}
-
-pub fn default_pin_file_name() -> String {
-    format!("Cropmark_pin_{}.png", local_stamp())
-}
-
-fn local_stamp() -> String {
-    let parts = local_date_time();
     format!(
-        "{:04}-{:02}-{:02}_{:02}-{:02}-{:02}",
-        parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]
+        "Cropmark_{}.{}",
+        filename_template::local_stamp(),
+        extension
     )
 }
 
-#[cfg(windows)]
-fn local_date_time() -> [u32; 6] {
-    use windows::Win32::System::SystemInformation::GetLocalTime;
-    let now = unsafe { GetLocalTime() };
-    [
-        u32::from(now.wYear),
-        u32::from(now.wMonth),
-        u32::from(now.wDay),
-        u32::from(now.wHour),
-        u32::from(now.wMinute),
-        u32::from(now.wSecond),
-    ]
+pub fn default_pin_file_name() -> String {
+    format!("Cropmark_pin_{}.png", filename_template::local_stamp())
 }
 
-#[cfg(not(windows))]
-fn local_date_time() -> [u32; 6] {
-    unsafe {
-        let now = libc::time(std::ptr::null_mut());
-        let mut broken = std::mem::zeroed();
-        libc::localtime_r(&now, &mut broken);
-        [
-            (broken.tm_year + 1900) as u32,
-            (broken.tm_mon + 1) as u32,
-            broken.tm_mday as u32,
-            broken.tm_hour as u32,
-            broken.tm_min as u32,
-            broken.tm_sec as u32,
-        ]
+/// `{mode}` 的稳定英文 token。长截图是 `long`,不是 serde 的 `longcapture`。
+pub fn capture_mode_token(mode: CaptureMode) -> &'static str {
+    match mode {
+        CaptureMode::Region => "region",
+        CaptureMode::Window => "window",
+        CaptureMode::Fullscreen => "fullscreen",
+        CaptureMode::LongCapture => "long",
     }
+}
+
+fn suggested_file_name(
+    app: &AppHandle,
+    export: &settings::ExportSettings,
+    naming: FileNaming,
+    extension: &str,
+) -> String {
+    let template_on =
+        naming == FileNaming::Preview && settings::current_toggles(app).filename_template;
+    if !template_on {
+        return uniquify_suggested_name(
+            export.existing_directory(),
+            &default_capture_file_name(extension),
+        );
+    }
+    let mode = session::current_capture_mode(app)
+        .map(capture_mode_token)
+        .unwrap_or("region");
+    filename_template::suggest_with(
+        export.existing_directory(),
+        true,
+        &export.filename_template,
+        &NameParts::now(mode),
+        extension,
+    )
+}
+
+fn uniquify_suggested_name(directory: Option<&Path>, file_name: &str) -> String {
+    let Some(dir) = directory else {
+        return file_name.to_string();
+    };
+    filename_template::unique_path(&dir.join(file_name))
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| file_name.to_string())
 }
 
 /// 用户输入路径 → 实际保存路径与格式(R3):已知扩展名以用户输入为准
@@ -160,7 +206,8 @@ pub fn resolve_target(path: PathBuf, fallback: ExportFormat) -> (PathBuf, Export
 pub fn copy_preview_png(app: AppHandle, annotations: Vec<Annotation>) -> Result<(), String> {
     let frame = session::current_preview_frame(&app).map_err(fail)?;
     let rendered = rasterize(&frame, &annotations).map_err(fail)?;
-    clipboard::copy_frame(&rendered).map_err(fail)
+    let output = compose_output(&app, rendered)?;
+    clipboard::copy_frame(&output).map_err(fail)
 }
 
 /// 预览保存:目标格式由保存对话框返回的扩展名推导,缺失/未知回退设置的
@@ -178,7 +225,7 @@ pub async fn save_preview_png(
         export.quality = quality;
     }
     let parent = app.get_webview_window(ui::PREVIEW);
-    save_frame_with_dialog(&app, frame, export, parent.as_ref()).await
+    save_frame_with_dialog(&app, frame, export, parent.as_ref(), FileNaming::Preview).await
 }
 
 /// 预览保存与静默保存共用的对话框与写盘流程;静默路径无父窗口(parent=None)。
@@ -187,6 +234,7 @@ pub async fn save_frame_with_dialog(
     frame: Frame,
     export: settings::ExportSettings,
     parent: Option<&tauri::WebviewWindow>,
+    naming: FileNaming,
 ) -> Result<SaveResult, String> {
     let fallback = export.last_format;
     let mut dialog = rfd::AsyncFileDialog::new()
@@ -194,7 +242,12 @@ pub async fn save_frame_with_dialog(
             i18n::t("dialog.images_filter"),
             &["png", "jpg", "jpeg", "webp"],
         )
-        .set_file_name(default_capture_file_name(fallback.extension()))
+        .set_file_name(suggested_file_name(
+            app,
+            &export,
+            naming,
+            fallback.extension(),
+        ))
         .set_title(i18n::t("dialog.save_capture_title"));
     if let Some(directory) = export.existing_directory() {
         dialog = dialog.set_directory(directory);
@@ -205,7 +258,10 @@ pub async fn save_frame_with_dialog(
     let Some(file) = dialog.save_file().await else {
         return Ok(SaveResult::cancelled(fallback));
     };
+    // 用户确认后才合成,取消不付出美化成本。编码失败发生在写盘之前。
+    let frame = compose_output(app, frame)?;
     let (path, format) = resolve_target(file.path().to_path_buf(), fallback);
+    let path = filename_template::unique_path(&path);
     write_export(&path, &frame, format, export.quality.value())?;
     session::mark_preview_file_written(app);
     settings::remember_export(app, format, export.quality, path.parent());
@@ -426,6 +482,56 @@ mod tests {
         assert!(error.contains("无法保存到"), "got {error}");
         assert!(error.contains("预览仍保留"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn beautified_output_keeps_format_and_quality_and_background_corners() {
+        use crate::beautify::BeautifyOptions;
+        let frame = checker(48, 32);
+        let options = BeautifyOptions {
+            preset: "slate".into(),
+            padding: 6,
+            radius: 4,
+            shadow: false,
+        };
+        let out = crate::beautify::apply(&frame, &options).unwrap();
+        assert!(out.width > frame.width && out.height > frame.height);
+        let png = encode_for_export(&out, ExportFormat::Png, 90).unwrap();
+        let decoded = decode_png(&png).unwrap();
+        assert_eq!(decoded.width, out.width);
+        assert_eq!(decoded.height, out.height);
+        assert_eq!(&decoded.rgba[0..4], &[0x33, 0x41, 0x55, 255]);
+        let high = encode_for_export(&out, ExportFormat::Jpeg, 90).unwrap();
+        let low = encode_for_export(&out, ExportFormat::Jpeg, 55).unwrap();
+        assert!(high.starts_with(&[0xFF, 0xD8]) && low.starts_with(&[0xFF, 0xD8]));
+        assert!(
+            high.len() > low.len(),
+            "quality tiers should change beautified JPEG size: {} vs {}",
+            high.len(),
+            low.len()
+        );
+        let webp = encode_for_export(&out, ExportFormat::Webp, 75).unwrap();
+        assert!(webp.starts_with(b"RIFF") && &webp[8..12] == b"WEBP");
+    }
+
+    #[test]
+    fn capture_mode_tokens_match_the_filename_contract() {
+        assert_eq!(
+            capture_mode_token(crate::hotkeys::CaptureMode::Region),
+            "region"
+        );
+        assert_eq!(
+            capture_mode_token(crate::hotkeys::CaptureMode::Window),
+            "window"
+        );
+        assert_eq!(
+            capture_mode_token(crate::hotkeys::CaptureMode::Fullscreen),
+            "fullscreen"
+        );
+        assert_eq!(
+            capture_mode_token(crate::hotkeys::CaptureMode::LongCapture),
+            "long"
+        );
     }
 
     #[test]
