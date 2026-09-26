@@ -1302,6 +1302,17 @@ function stickerSizeButton(option: { value: number; labelKey: CatalogKey }): str
   return `<button type="button" data-sticker-size="${option.value}" data-tooltip="${t("preview.style.option_title", { label: t("preview.style.sticker_size"), value: option.value })}">${t(option.labelKey)}</button>`;
 }
 
+// 色块颜色走 CSSOM 自定义属性。写进 HTML style 属性会被 style-src 'self' 拦截。
+function applySwatches(root: ParentNode): void {
+  root.querySelectorAll<HTMLElement>("[data-style-color], [data-erase-fill]").forEach((button) => {
+    const color = button.dataset.styleColor ?? button.dataset.eraseFill ?? "";
+    if (!HEX_COLOR_RE.test(color)) {
+      return;
+    }
+    button.style.setProperty("--swatch", color);
+  });
+}
+
 function toolbarMarkup(): string {
   const primary = TOOL_REGISTRY.filter((definition) => definition.primary)
     .map(toolButton)
@@ -1331,7 +1342,7 @@ function toolbarMarkup(): string {
           <div class="style-options" role="group" data-i18n-aria-label="preview.style.color_group" aria-label="标注颜色">
             ${STYLE_COLORS.map(
               (color) =>
-                `<button type="button" data-style-color="${color}" style="--swatch:${color}" data-tooltip="${color}" aria-label="${t("preview.style.color_aria", { color })}"></button>`,
+                `<button type="button" data-style-color="${color}" data-tooltip="${color}" aria-label="${t("preview.style.color_aria", { color })}"></button>`,
             ).join("")}
           </div>
         </div>
@@ -1395,7 +1406,7 @@ function toolbarMarkup(): string {
             <button type="button" data-erase-fill="auto" data-i18n-title="preview.style.erase_auto_title" data-tooltip="${t("preview.style.erase_auto_title")}" aria-label="${t("preview.style.erase_auto_title")}">${t("preview.style.erase_auto")}</button>
             ${STYLE_COLORS.map(
               (color) =>
-                `<button type="button" data-erase-fill="${color}" style="--swatch:${color}" data-tooltip="${t("preview.style.color_aria", { color })}" aria-label="${t("preview.style.color_aria", { color })}"></button>`,
+                `<button type="button" data-erase-fill="${color}" data-tooltip="${t("preview.style.color_aria", { color })}" aria-label="${t("preview.style.color_aria", { color })}"></button>`,
             ).join("")}
           </div>
         </div>
@@ -1424,6 +1435,7 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
 
   toolbar.classList.add("annotation-tools");
   toolbar.innerHTML = toolbarMarkup();
+  applySwatches(toolbar);
 
   const editor = document.createElement("textarea");
   editor.className = "annotation-text";

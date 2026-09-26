@@ -11,6 +11,13 @@ import { mountScroll } from "./scroll";
 import { mountSettings } from "./settings";
 import { mountToast } from "./toast";
 
+// 视图标记必须在挂载前同步写上。覆盖层背景等选择器依赖 data-view，
+// 且不能留在 HTML 内联脚本里，否则会被 script-src 'self' 拦住。
+const requestedView = new URLSearchParams(location.search).get("view");
+if (requestedView) {
+  document.documentElement.dataset.view = requestedView;
+}
+
 void listen("capture-requested", () => {
   // Rust owns hide-wait and capture; this keeps the resident-shell event consumed.
 });
@@ -22,7 +29,7 @@ void (async () => {
   if (!(root instanceof HTMLElement)) {
     return;
   }
-  const view = new URLSearchParams(location.search).get("view") ?? "settings";
+  const view = requestedView ?? "settings";
   let applyLanguage: () => void = () => undefined;
   if (view === "settings") {
     applyLanguage = mountSettings(root);

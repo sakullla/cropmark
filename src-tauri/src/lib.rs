@@ -90,6 +90,107 @@ fn open_settings_on_main(app: &tauri::AppHandle) {
     });
 }
 
+const DEV_SERVER_PORT: u16 = 1420;
+const DEV_HMR_PORT: u16 = 1421;
+
+/// `TAURI_DEV_HOST` 只接受主机名或 IP。拒绝空白、通配符和能截断 CSP 的分隔符。
+#[cfg(any(dev, test))]
+fn normalize_dev_host(raw: &str) -> Option<String> {
+    let host = raw.trim();
+    if host.is_empty() || host.len() > 253 {
+        return None;
+    }
+    if !host
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | ':'))
+    {
+        return None;
+    }
+    if host.contains(':') {
+        if host.contains(":::") {
+            return None;
+        }
+        return Some(format!("[{host}]"));
+    }
+    if host.starts_with(['.', '-']) || host.ends_with(['.', '-']) || host.contains("..") {
+        return None;
+    }
+    Some(host.to_string())
+}
+
+#[cfg(any(dev, test))]
+fn append_csp_source(policy: &str, directive: &str, source: &str) -> String {
+    let mut directives = policy
+        .split(';')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let mut found = false;
+    for part in &mut directives {
+        let mut tokens = part.split_whitespace();
+        if tokens.next() != Some(directive) {
+            continue;
+        }
+        found = true;
+        if !part.split_whitespace().any(|token| token == source) {
+            part.push(' ');
+            part.push_str(source);
+        }
+        break;
+    }
+    if !found {
+        directives.push(format!("{directive} {source}"));
+    }
+    directives.join("; ")
+}
+
+/// 把开发主机派生源追加到 dev CSP：页面与资源走 1420，HMR websocket 同时覆盖
+/// 默认端口和 `TAURI_DEV_HOST` 显式配置的 1421。已存在的源不重复追加。
+#[cfg(any(dev, test))]
+fn extend_dev_csp(policy: &str, host: &str) -> Option<String> {
+    let host = normalize_dev_host(host)?;
+    let http = format!("http://{host}:{DEV_SERVER_PORT}");
+    let ws_server = format!("ws://{host}:{DEV_SERVER_PORT}");
+    let ws_hmr = format!("ws://{host}:{DEV_HMR_PORT}");
+    let additions = [
+        ("script-src", http.as_str()),
+        ("style-src", http.as_str()),
+        ("img-src", http.as_str()),
+        ("connect-src", http.as_str()),
+        ("connect-src", ws_server.as_str()),
+        ("connect-src", ws_hmr.as_str()),
+    ];
+    let mut next = policy.to_string();
+    for (directive, source) in additions {
+        next = append_csp_source(&next, directive, source);
+    }
+    Some(next)
+}
+
+/// 开发构建才改 `devCsp`。生产策略保持配置文件原文，不读 `TAURI_DEV_HOST`。
+#[cfg(dev)]
+fn apply_dev_host_csp<R: tauri::Runtime>(context: &mut tauri::Context<R>) {
+    let Ok(raw) = std::env::var("TAURI_DEV_HOST") else {
+        return;
+    };
+    if raw.trim().is_empty() {
+        return;
+    }
+    let Some(current) = context.config().app.security.dev_csp.clone() else {
+        return;
+    };
+    match extend_dev_csp(&current.to_string(), &raw) {
+        Some(next) => {
+            context.config_mut().app.security.dev_csp =
+                Some(tauri::utils::config::Csp::Policy(next));
+        }
+        None => {
+            eprintln!("Cropmark: 忽略无效的 TAURI_DEV_HOST，开发 CSP 不追加该来源");
+        }
+    }
+}
+
 pub fn run() {
     // R16:panic hook 要在 Tauri 初始化之前装上,setup 再改绑到平台日志目录。
     logging::prepare();
@@ -129,6 +230,14 @@ pub fn run() {
             eprintln!("Cropmark: 单实例检测不可用,按普通启动继续:{error}");
             None
         }
+    };
+
+    let context = tauri::generate_context!();
+    #[cfg(dev)]
+    let context = {
+        let mut context = context;
+        apply_dev_host_csp(&mut context);
+        context
     };
 
     tauri::Builder::default()
@@ -307,7 +416,7 @@ pub fn run() {
                 }
             }
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("Cropmark failed to start")
         .run(|app, event| match event {
             tauri::RunEvent::ExitRequested { api, code, .. } => {
@@ -326,7 +435,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::should_prevent_exit;
+    use super::{extend_dev_csp, should_prevent_exit};
 
     #[test]
     fn closing_last_settings_window_keeps_tray_alive() {
@@ -336,5 +445,186 @@ mod tests {
     #[test]
     fn tray_quit_still_exits_the_process() {
         assert!(!should_prevent_exit(Some(0)));
+    }
+
+    const PRODUCTION_CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self' ipc: http://ipc.localhost; font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
+    const DEV_CSP: &str = "default-src 'self'; script-src 'self' http://localhost:1420; style-src 'self' http://localhost:1420; img-src 'self' data: blob: http://localhost:1420; connect-src 'self' ipc: http://ipc.localhost http://localhost:1420 ws://localhost:1420 ws://localhost:1421; font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
+
+    const PRODUCTION_URLS: &[&str] = &["http://ipc.localhost"];
+    const DEV_URLS: &[&str] = &[
+        "http://ipc.localhost",
+        "http://localhost:1420",
+        "ws://localhost:1420",
+        "ws://localhost:1421",
+    ];
+
+    fn policy_violations(policy: &str, allowed_urls: &[&str]) -> Vec<String> {
+        const KEYWORDS: &[&str] = &["'self'", "'none'"];
+        const SCHEMES: &[&str] = &["data:", "blob:", "ipc:"];
+        let mut violations = Vec::new();
+        for part in policy
+            .split(';')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+        {
+            let mut tokens = part.split_whitespace();
+            let Some(directive) = tokens.next() else {
+                continue;
+            };
+            if directive.contains('*') {
+                violations.push(format!("wildcard directive {directive}"));
+            }
+            for source in tokens {
+                if source.contains('*') {
+                    violations.push(format!("{directive} wildcard {source}"));
+                    continue;
+                }
+                if source.contains("://") {
+                    if !allowed_urls.contains(&source) {
+                        violations.push(format!("{directive} remote {source}"));
+                    }
+                    continue;
+                }
+                if !KEYWORDS.contains(&source) && !SCHEMES.contains(&source) {
+                    violations.push(format!("{directive} unexpected {source}"));
+                }
+            }
+        }
+        violations
+    }
+
+    fn security_string(config: &serde_json::Value, key: &str) -> String {
+        config["app"]["security"][key]
+            .as_str()
+            .unwrap_or_else(|| panic!("app.security.{key} must be a string"))
+            .to_string()
+    }
+
+    #[test]
+    fn production_csp_has_no_wildcard_or_remote_source() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tauri.conf.json");
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("{error}"));
+        let config: serde_json::Value = serde_json::from_str(&text).expect("parse tauri.conf.json");
+        let csp = security_string(&config, "csp");
+        assert_eq!(csp, PRODUCTION_CSP);
+        assert!(
+            policy_violations(&csp, PRODUCTION_URLS).is_empty(),
+            "{:?}",
+            policy_violations(&csp, PRODUCTION_URLS)
+        );
+        assert!(!csp.contains("localhost:1420"));
+        assert!(!csp.contains("unsafe-inline"));
+        assert!(!csp.contains("unsafe-eval"));
+    }
+
+    #[test]
+    fn dev_csp_only_adds_local_dev_server_and_hmr() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tauri.conf.json");
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("{error}"));
+        let config: serde_json::Value = serde_json::from_str(&text).expect("parse tauri.conf.json");
+        let dev_csp = security_string(&config, "devCsp");
+        assert_eq!(dev_csp, DEV_CSP);
+        assert!(
+            policy_violations(&dev_csp, DEV_URLS).is_empty(),
+            "{:?}",
+            policy_violations(&dev_csp, DEV_URLS)
+        );
+        assert!(dev_csp.contains("http://localhost:1420"));
+        assert!(dev_csp.contains("ws://localhost:1421"));
+        assert!(!dev_csp.contains("unsafe-inline"));
+        assert!(!dev_csp.contains('*'));
+    }
+
+    #[test]
+    fn dev_csp_appends_tauri_dev_host_without_wildcards() {
+        let extended = extend_dev_csp(DEV_CSP, "10.1.2.3").expect("host");
+        assert!(extended.contains("http://10.1.2.3:1420"));
+        assert!(extended.contains("ws://10.1.2.3:1420"));
+        assert!(extended.contains("ws://10.1.2.3:1421"));
+        let mut allowed = DEV_URLS.to_vec();
+        allowed.extend([
+            "http://10.1.2.3:1420",
+            "ws://10.1.2.3:1420",
+            "ws://10.1.2.3:1421",
+        ]);
+        assert!(
+            policy_violations(&extended, &allowed).is_empty(),
+            "{:?}",
+            policy_violations(&extended, &allowed)
+        );
+        assert_eq!(
+            extend_dev_csp(DEV_CSP, "localhost").as_deref(),
+            Some(DEV_CSP)
+        );
+        let ipv6 = extend_dev_csp(DEV_CSP, "::1").expect("ipv6");
+        assert!(ipv6.contains("http://[::1]:1420"));
+        assert!(ipv6.contains("ws://[::1]:1421"));
+        assert!(!ipv6.contains('*'));
+    }
+
+    #[test]
+    fn dev_csp_rejects_injected_host() {
+        assert!(extend_dev_csp(DEV_CSP, "*").is_none());
+        assert!(extend_dev_csp(DEV_CSP, "evil.example; script-src *").is_none());
+        assert!(extend_dev_csp(DEV_CSP, "https://evil.example").is_none());
+        assert!(extend_dev_csp(DEV_CSP, "bad host").is_none());
+        assert!(extend_dev_csp(DEV_CSP, "").is_none());
+        assert!(extend_dev_csp(DEV_CSP, ".").is_none());
+    }
+
+    #[test]
+    fn frontend_has_no_inline_script_or_style_attribute() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../src");
+        let mut files = Vec::new();
+        collect_frontend_sources(&root, &mut files);
+        let mut violations = Vec::new();
+        for path in files {
+            let text = std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("{error}"));
+            let display = path.display().to_string();
+            let lower = text.to_ascii_lowercase();
+            if lower.contains("<style") {
+                violations.push(format!("{display} has <style"));
+            }
+            if text.contains("style=\"") || text.contains("style='") {
+                violations.push(format!("{display} has a style attribute"));
+            }
+            if text.contains("setAttribute(\"style\"") || text.contains("setAttribute('style'") {
+                violations.push(format!("{display} sets a style attribute"));
+            }
+            if script_tag_lacks_src(&lower) {
+                violations.push(format!("{display} has an inline script"));
+            }
+        }
+        assert!(violations.is_empty(), "{violations:?}");
+    }
+
+    fn collect_frontend_sources(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
+        let entries = std::fs::read_dir(dir).unwrap_or_else(|error| panic!("{error}"));
+        for entry in entries {
+            let path = entry.unwrap_or_else(|error| panic!("{error}")).path();
+            if path.is_dir() {
+                collect_frontend_sources(&path, files);
+                continue;
+            }
+            let ext = path.extension().and_then(|value| value.to_str());
+            if matches!(ext, Some("html" | "ts" | "js")) {
+                files.push(path);
+            }
+        }
+    }
+
+    fn script_tag_lacks_src(lower: &str) -> bool {
+        let mut rest = lower;
+        while let Some(index) = rest.find("<script") {
+            let after = &rest[index..];
+            let Some(end) = after.find('>') else {
+                return true;
+            };
+            if !after[..=end].contains("src=") {
+                return true;
+            }
+            rest = &after[end + 1..];
+        }
+        false
     }
 }
