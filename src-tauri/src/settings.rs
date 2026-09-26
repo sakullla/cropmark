@@ -996,8 +996,12 @@ fn persist_settings(app: &AppHandle, applied: &str) {
     let state = app.state::<SessionState>();
     let stored = stored_from_state(&state);
     match save_to_path(&settings_path(app), &stored) {
-        Ok(()) => *lock(&state.notice) = None,
+        Ok(()) => {
+            log::info!("settings persisted");
+            *lock(&state.notice) = None;
+        }
         Err(error) => {
+            log::warn!("settings persist failed kind=io");
             *lock(&state.notice) = Some(i18n::tp(
                 "notice.persist_failed",
                 &[("applied", applied), ("error", &error)],

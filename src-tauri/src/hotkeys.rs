@@ -339,6 +339,16 @@ pub fn apply_to_app(app: &AppHandle, hotkeys: &Hotkeys) -> HotkeyErrors {
         *lock_mutex(&state.hotkeys) = hotkeys.clone();
         *lock_mutex(&state.hotkey_errors) = errors.clone();
     }
+    let failed = [
+        errors.region.is_some(),
+        errors.window.is_some(),
+        errors.fullscreen.is_some(),
+        errors.pin_clipboard.is_some(),
+    ]
+    .iter()
+    .filter(|failed| **failed)
+    .count();
+    log::info!("hotkeys applied failed={failed}");
     errors
 }
 

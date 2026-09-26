@@ -74,12 +74,23 @@ fn write_export(
     quality: u8,
 ) -> Result<(), String> {
     let bytes = encode_for_export(frame, format, quality)?;
+    let byte_len = bytes.len();
+    let width = frame.width;
+    let height = frame.height;
     let partial = partial_path(path);
-    std::fs::write(&partial, &bytes).map_err(|error| save_error(path, &error))?;
+    std::fs::write(&partial, &bytes).map_err(|error| {
+        log::warn!("save failed kind=io");
+        save_error(path, &error)
+    })?;
     if let Err(error) = std::fs::rename(&partial, path) {
         let _ = std::fs::remove_file(&partial);
+        log::warn!("save failed kind=io");
         return Err(save_error(path, &error));
     }
+    log::info!(
+        "save wrote format={} bytes={byte_len} size={width}x{height}",
+        format.extension()
+    );
     Ok(())
 }
 

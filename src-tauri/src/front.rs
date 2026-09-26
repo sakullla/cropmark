@@ -14,9 +14,15 @@ pub const GUIDE: &str = "guide";
 
 /// 显示并前置窗口。macOS 会先把进程从 Accessory 提升为 Regular。
 pub fn reveal(app: &AppHandle, window: &WebviewWindow) {
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
     #[cfg(target_os = "macos")]
     promote(app);
-    let _ = window.show();
+    if window.show().is_err() {
+        log::warn!("window reveal failed label={} kind=show", window.label());
+    } else {
+        log::debug!("window reveal label={}", window.label());
+    }
     let _ = window.unminimize();
     let _ = window.set_focus();
     #[cfg(target_os = "macos")]

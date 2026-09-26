@@ -535,9 +535,14 @@ fn begin_capture(
     match step {
         BeginStep::Begun(generation) => {
             if let Some(stale) = stale {
+                log::warn!("capture reset kind=stale id={generation}");
                 eprintln!("Cropmark: stale busy session reset after {STALE_SESSION_TIMEOUT:?}");
                 reset_stale_session(app, &stale);
             }
+            log::info!(
+                "capture start id={generation} mode={mode:?} delay_ms={delay_ms} target={}",
+                fullscreen_target_kind(&target)
+            );
             // A lingering toast must not leak into the next capture (hide-before-capture);
             // 仅隐藏——toast 窗是预创建复用的 webview,关闭会破坏复用。
             ui::hide_window(app, ui::TOAST);
@@ -549,9 +554,18 @@ fn begin_capture(
             BeginStep::WaitingForCancel
         }
         BeginStep::Ignored => {
+            log::debug!("capture ignored mode={mode:?}");
             close_active_native_shell();
             BeginStep::Ignored
         }
+    }
+}
+
+fn fullscreen_target_kind(target: &FullscreenTarget) -> &'static str {
+    match target {
+        FullscreenTarget::Pointer => "pointer",
+        FullscreenTarget::Monitor(_) => "monitor",
+        FullscreenTarget::All => "all",
     }
 }
 
@@ -1886,6 +1900,7 @@ fn finish_cancel(
     restore: Vec<RecordedSurface>,
     close_shell: bool,
 ) {
+    log::info!("capture cancel id={generation}");
     if close_shell {
         close_active_native_shell();
     }
@@ -2179,11 +2194,19 @@ fn finish_with_ttl(
     // R2:history.enabled 时把最终帧写入本地历史;编码、缩略图与索引写入
     // 全部在 spawn_blocking 内,不阻塞完成路径。模式随这条记录写入索引(R7)。
     let mode = current_capture_mode(app);
+    let (width, height, bytes) = (frame.width, frame.height, png.len());
     crate::history::record_capture(app, frame, mode);
     crate::pin::restore_after_capture(app);
     if take_cursor_unavailable(app) {
         ui::show_toast_key(app, "toast.cursor_unavailable");
     }
+    log::info!(
+        "capture end size={width}x{height} bytes={bytes} disposition={}",
+        match disposition {
+            FinishDisposition::Preview => "preview",
+            FinishDisposition::Quiet => "quiet",
+        }
+    );
     Ok(FinishSummary { clipboard_written })
 }
 
@@ -2272,6 +2295,7 @@ fn finish_error(app: &AppHandle, error: CaptureError) -> Result<(), CaptureError
     }
     with_session_mut(app, |session| *session = None);
     set_last_error(app, Some(error.clone()));
+    log::warn!("capture failed kind={:?}", error.kind);
     let opened = ui::open_error(app, &error);
     if capture_timing_enabled() {
         match &opened {

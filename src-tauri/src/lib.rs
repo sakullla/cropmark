@@ -9,6 +9,7 @@ mod front;
 mod history;
 mod hotkeys;
 mod i18n;
+mod logging;
 mod ocr;
 mod pin;
 mod pin_store;
@@ -90,6 +91,8 @@ fn open_settings_on_main(app: &tauri::AppHandle) {
 }
 
 pub fn run() {
+    // R16:panic hook 要在 Tauri 初始化之前装上,setup 再改绑到平台日志目录。
+    logging::prepare();
     // R15:启动计时从进程入口附近起算,供门控日志在同机 release 构建中
     // 测量冷启动到可交互;未设置环境变量时该对象无任何可观察开销。
     let startup_started = std::time::Instant::now();
@@ -130,7 +133,10 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_log::Builder::new().skip_logger().build())
         .setup(move |app| {
+            logging::install(app.handle());
             let _ = settings_slot.set(app.handle().clone());
             let missed = std::mem::take(
                 &mut *pending_activations
@@ -173,6 +179,11 @@ pub fn run() {
             pin::restore_persisted(app.handle());
             // R15:托盘(或降级)、热键与预建窗口就绪,启动路径到此结束;
             // 门控日志只读时钟,不引入启动期同步 IO。
+            log::info!(
+                "startup ready tray={} elapsed_ms={}",
+                if tray_ready { "ready" } else { "unavailable" },
+                startup_started.elapsed().as_millis()
+            );
             log_startup_ready(startup_started, tray_ready);
             if !tray_ready {
                 if let Err(error) = settings::open_settings(app.handle()) {
@@ -182,6 +193,7 @@ pub fn run() {
                 // 仅托盘安装成功后自动打开一次性引导。打不开也不中止启动:
                 // 热键与采集已经注册,设置里仍可手动重开同一内容。
                 if let Err(error) = settings::open_guide_window(app.handle()) {
+                    log::warn!("guide open failed kind=window");
                     eprintln!("Cropmark: 无法打开首次引导:{error}");
                 }
             }
@@ -263,6 +275,10 @@ pub fn run() {
             history::clear_history,
             history::open_history,
             settings::open_guide,
+            logging::log_directory,
+            logging::open_log_directory,
+            #[cfg(debug_assertions)]
+            logging::debug_trigger_panic,
             quit_app,
         ])
         .on_window_event(|window, event| {

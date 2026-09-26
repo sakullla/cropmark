@@ -296,6 +296,14 @@ pub fn record_frame(
     for old in &removed {
         remove_entry_files(dir, old);
     }
+    log::info!(
+        "history wrote id={} bytes={} size={}x{} mode={}",
+        entry.id,
+        png.len(),
+        entry.width,
+        entry.height,
+        entry.mode.as_deref().unwrap_or("-")
+    );
     Ok(entry)
 }
 
@@ -436,6 +444,7 @@ pub fn clear_entries(dir: &Path) -> Result<(), String> {
 pub fn record_capture(app: &AppHandle, frame: Frame, mode: Option<crate::hotkeys::CaptureMode>) {
     let settings = crate::settings::current_history(app);
     if !settings.enabled {
+        log::debug!("history skipped kind=disabled");
         return;
     }
     let mode = mode
@@ -446,6 +455,7 @@ pub fn record_capture(app: &AppHandle, frame: Frame, mode: Option<crate::hotkeys
         if let Err(error) =
             record_frame(&dir, &frame, settings.limit, now_millis(), mode.as_deref())
         {
+            log::warn!("history write failed kind=io");
             eprintln!("Cropmark: 无法写入截图历史：{error}");
         }
     });
@@ -456,6 +466,7 @@ pub fn prune_async(app: &AppHandle, limit: u32) {
     let dir = history_dir(app);
     tauri::async_runtime::spawn_blocking(move || {
         if let Err(error) = prune_to_limit(&dir, limit) {
+            log::warn!("history prune failed kind=io");
             eprintln!("Cropmark: 无法裁剪历史记录：{error}");
         }
     });

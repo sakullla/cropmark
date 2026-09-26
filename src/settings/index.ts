@@ -377,6 +377,17 @@ export function mountSettings(root: HTMLElement): () => void {
               <button type="button" class="choice" data-action="open-guide" aria-labelledby="help-label" data-i18n="settings.help.button">打开</button>
             </div>
           </section>
+          <section class="block" aria-labelledby="logs-title">
+            <h2 id="logs-title" data-i18n="settings.logs.title">日志位置</h2>
+            <div class="setting-row">
+              <div>
+                <div class="label" id="logs-label" data-i18n="settings.logs.label">日志文件</div>
+                <p class="hint" data-i18n="settings.logs.hint">诊断记录写在本机该文件；同目录的 crash.log 只在发生 panic 时追加。日志不含图像、剪贴板内容或识别文字。</p>
+                <p class="hint" data-log-path>—</p>
+              </div>
+              <button type="button" class="choice" data-action="open-logs" aria-labelledby="logs-label" data-i18n="settings.logs.button">打开</button>
+            </div>
+          </section>
           <section class="block" aria-labelledby="toggles-title">
             <h2 id="toggles-title" data-i18n="settings.section.toggles">功能开关</h2>
             <p class="hint" data-i18n="settings.section.toggles_hint">逐项控制功能入口；关闭只停用入口与新增行为，已有数据与已创建标注保留，关闭状态跨重启保持。</p>
@@ -426,6 +437,8 @@ export function mountSettings(root: HTMLElement): () => void {
   const historyErrorEl = root.querySelector("[data-history-error]");
   const historyOpenEl = root.querySelector("[data-action=open-history]");
   const openGuideEl = root.querySelector("[data-action=open-guide]");
+  const logPathEl = root.querySelector("[data-log-path]");
+  const openLogsEl = root.querySelector("[data-action=open-logs]");
   const templateEl = root.querySelector("[data-filename-template]");
   const presetRoot = root.querySelector("[data-beautify-presets]");
   const paddingEl = root.querySelector("[data-beautify-padding]");
@@ -453,6 +466,8 @@ export function mountSettings(root: HTMLElement): () => void {
     !(historyErrorEl instanceof HTMLElement) ||
     !(historyOpenEl instanceof HTMLButtonElement) ||
     !(openGuideEl instanceof HTMLButtonElement) ||
+    !(logPathEl instanceof HTMLElement) ||
+    !(openLogsEl instanceof HTMLButtonElement) ||
     !(templateEl instanceof HTMLInputElement) ||
     !(presetRoot instanceof HTMLElement) ||
     !(paddingEl instanceof HTMLInputElement) ||
@@ -943,6 +958,30 @@ export function mountSettings(root: HTMLElement): () => void {
     void invoke("open_guide").catch(showInvokeError);
   });
 
+  let logDirectory = "";
+  logPathEl.style.overflowWrap = "anywhere";
+  logPathEl.style.userSelect = "text";
+  const renderLogPath = (): void => {
+    logPathEl.textContent = logDirectory.trim() ? logDirectory : t("settings.logs.unavailable");
+  };
+  const loadLogDirectory = (): void => {
+    void invoke<string>("log_directory")
+      .then((path) => {
+        logDirectory = path;
+        renderLogPath();
+      })
+      .catch(() => {
+        logDirectory = "";
+        renderLogPath();
+      });
+  };
+  loadLogDirectory();
+  openLogsEl.addEventListener("click", () => {
+    void invoke("open_log_directory").catch(() => {
+      showInvokeError(new Error(t("settings.logs.open_failed")));
+    });
+  });
+
   const commitTemplate = (): void => {
     if (!lastSettings?.toggles.filenameTemplate) {
       return;
@@ -1168,6 +1207,7 @@ export function mountSettings(root: HTMLElement): () => void {
   // 重渲染动态行(热键/开关/工具/历史/语言选项),再从后端重取一次
   // (热键错误/开机启动/无托盘提示由后端按新语言重新解析)。
   return () => {
+    renderLogPath();
     if (lastSettings) {
       render(lastSettings);
     }

@@ -50,19 +50,38 @@ pub fn current_state() -> AutostartState {
 }
 
 pub fn set_enabled(enabled: bool) -> AutostartState {
-    if let Err(status) = apply_enabled(enabled) {
-        return map_platform_status(status);
-    }
-    let state = map_platform_status(platform_status());
-    if enabled && !state.enabled && state.message.is_none() {
-        let rejection = AutostartRejection::Rejected;
-        return AutostartState {
-            enabled: false,
-            message: Some(rejection.message()),
-            rejection: Some(rejection),
-        };
-    }
+    let state = if let Err(status) = apply_enabled(enabled) {
+        map_platform_status(status)
+    } else {
+        let state = map_platform_status(platform_status());
+        if enabled && !state.enabled && state.message.is_none() {
+            let rejection = AutostartRejection::Rejected;
+            AutostartState {
+                enabled: false,
+                message: Some(rejection.message()),
+                rejection: Some(rejection),
+            }
+        } else {
+            state
+        }
+    };
+    log::info!(
+        "autostart enabled={} kind={}",
+        state.enabled,
+        autostart_kind(&state)
+    );
     state
+}
+
+fn autostart_kind(state: &AutostartState) -> &'static str {
+    match &state.rejection {
+        Some(AutostartRejection::RequiresApproval) => "approval",
+        Some(AutostartRejection::NotFound) => "not_found",
+        Some(AutostartRejection::Denied(_)) => "denied",
+        Some(AutostartRejection::Rejected) => "rejected",
+        None if state.enabled => "enabled",
+        None => "off",
+    }
 }
 
 pub fn merge_autostart_ui(

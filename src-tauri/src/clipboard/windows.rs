@@ -52,14 +52,20 @@ pub(super) fn copy_frame_with_png(frame: &Frame, png: &[u8]) -> Result<(), Captu
     let dib = dib_v5(frame)?;
     let prepared_at = started.elapsed();
     if !png.starts_with(b"\x89PNG\r\n\x1a\n") {
+        log::warn!("clipboard image failed kind=InvalidBuffer");
         return Err(CaptureError::invalid_buffer("error.capture.png_invalid"));
     }
-    let fail = |error| {
-        eprintln!("Cropmark clipboard write failed: {error}");
+    let fail = |_error| {
+        log::warn!("clipboard write failed kind=image");
         CaptureError::api("error.capture.clipboard_image")
     };
-    let format = clipboard_win::register_format("PNG")
-        .ok_or_else(|| CaptureError::api("error.capture.clipboard_register"))?;
+    let format = match clipboard_win::register_format("PNG") {
+        Some(format) => format,
+        None => {
+            log::warn!("clipboard image failed kind=Api");
+            return Err(CaptureError::api("error.capture.clipboard_register"));
+        }
+    };
     // Match arboard/Chromium's bounded retry for other applications temporarily
     // holding the clipboard. Sleep(0) retries exhaust before its owner releases it.
     let mut attempts = 0;
@@ -76,6 +82,12 @@ pub(super) fn copy_frame_with_png(frame: &Frame, png: &[u8]) -> Result<(), Captu
     clipboard_win::raw::empty().map_err(fail)?;
     clipboard_win::raw::set_without_clear(format.get(), png).map_err(fail)?;
     clipboard_win::raw::set_without_clear(clipboard_win::formats::CF_DIBV5, &dib).map_err(fail)?;
+    log::info!(
+        "clipboard image bytes={} size={}x{}",
+        png.len(),
+        frame.width,
+        frame.height
+    );
     if std::env::var_os("CROPMARK_CAPTURE_TIMING").is_some() {
         eprintln!(
             "Cropmark clipboard: prepare={:?}, write={:?}",

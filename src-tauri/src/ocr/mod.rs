@@ -114,20 +114,32 @@ fn recognize_blocking_inner(
     let mut inner = runtime.lock();
     if inner.engine.is_none() {
         match Engine::load(&resolve_model_dir(app)) {
-            Ok(engine) => inner.engine = Some(engine),
+            Ok(engine) => {
+                log::info!("ocr loaded");
+                inner.engine = Some(engine);
+            }
             Err(error) => {
+                log::warn!("ocr load failed kind={}", error.key());
                 inner.last = None;
                 return Err(error.user_message());
             }
         }
     }
+    let width = frame.width;
+    let height = frame.height;
     let engine = inner.engine.as_mut().expect("ocr engine loaded");
     match engine.recognize(frame, true) {
         Ok(doc) => {
+            log::info!(
+                "ocr recognized spans={} chars={} size={width}x{height}",
+                doc.spans.len(),
+                doc.full_text.chars().count()
+            );
             inner.last = Some(doc.clone());
             Ok(doc)
         }
         Err(error) => {
+            log::warn!("ocr failed kind={}", error.key());
             inner.last = None;
             Err(error.user_message())
         }

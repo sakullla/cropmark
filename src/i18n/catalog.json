@@ -999,6 +999,30 @@
     "zh-CN": "打开",
     "en": "Open"
   },
+  "settings.logs.title": {
+    "zh-CN": "日志位置",
+    "en": "Log location"
+  },
+  "settings.logs.label": {
+    "zh-CN": "日志文件",
+    "en": "Log file"
+  },
+  "settings.logs.hint": {
+    "zh-CN": "诊断记录写在本机该文件；同目录的 crash.log 只在发生 panic 时追加。日志不含图像、剪贴板内容或识别文字。",
+    "en": "Diagnostic records are written to this file on this device; crash.log in the same folder is appended only after a panic. Logs never include images, clipboard contents, or recognized text."
+  },
+  "settings.logs.button": {
+    "zh-CN": "打开",
+    "en": "Open"
+  },
+  "settings.logs.unavailable": {
+    "zh-CN": "日志位置暂不可用",
+    "en": "Log location is unavailable"
+  },
+  "settings.logs.open_failed": {
+    "zh-CN": "无法打开日志文件夹",
+    "en": "Could not open the log folder"
+  },
   "settings.group.capture": {
     "zh-CN": "采集",
     "en": "Capture"
@@ -2566,6 +2590,18 @@
   "guide.history.body": {
     "zh-CN": "完成的截图会进入历史，可再次复制、贴图或删除。设置里可以打开历史并调整保留数量。",
     "en": "Finished captures are kept in history so you can copy, pin, or delete them again. Open history from Settings and adjust how many are kept."
+  },
+  "guide.logs.title": {
+    "zh-CN": "日志位置",
+    "en": "Log location"
+  },
+  "guide.logs.body": {
+    "zh-CN": "诊断日志保存在本机，不含截图、剪贴板或识别文字。下面是日志文件的位置，也可以在设置的通用分组里再次打开。",
+    "en": "Diagnostic logs stay on this device and do not include screenshots, clipboard contents, or recognized text. The log file path is below, and you can open it again from General in Settings."
+  },
+  "guide.logs.button": {
+    "zh-CN": "打开日志文件夹",
+    "en": "Open log folder"
   },
   "guide.done": {
     "zh-CN": "知道了",

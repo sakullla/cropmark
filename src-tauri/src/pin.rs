@@ -635,22 +635,29 @@ pub fn open_pin_with_text(
     text: Option<String>,
 ) -> Result<WebviewWindow, String> {
     let cursor = NEXT_SLOT.load(Ordering::SeqCst);
-    let slot = with_store(|slots| pick_slot(cursor, |slot| slots[slot].is_some()))
-        .ok_or_else(pin_full_message)?;
+    let slot =
+        with_store(|slots| pick_slot(cursor, |slot| slots[slot].is_some())).ok_or_else(|| {
+            log::warn!("pin create failed kind=full");
+            pin_full_message()
+        })?;
     NEXT_SLOT.store((slot + 1) % PIN_MAX, Ordering::SeqCst);
 
     let (cursor_pos, work) = pointer_work_area(app);
     let (width, height) = (logical_width.max(1.0), logical_height.max(1.0));
     let (x, y) = pin_origin(cursor_pos, work, width, height);
+    let (pixel_w, pixel_h) = (frame.width, frame.height);
 
     with_store(|slots| {
         let mut entry = PinEntry::new(next_token('p'), frame, width, height, (x, y));
         entry.text = text;
         slots[slot] = Some(entry);
     });
+    let pin_id =
+        with_store(|slots| slots[slot].as_ref().map(|entry| entry.id.clone())).unwrap_or_default();
     let window = match ensure_pin_window(app, slot) {
         Ok(window) => window,
         Err(error) => {
+            log::warn!("pin create failed id={pin_id} kind=window");
             with_store(|slots| slots[slot] = None);
             return Err(error);
         }
@@ -666,6 +673,7 @@ pub fn open_pin_with_text(
     let _ = window.set_focus();
     schedule_persist(app);
     ensure_monitor_watcher(app);
+    log::info!("pin created id={pin_id} size={pixel_w}x{pixel_h}");
     Ok(window)
 }
 
@@ -1079,6 +1087,7 @@ fn delete_entries(app: &AppHandle, ids: &[String]) {
 pub fn restore_persisted(app: &AppHandle) {
     let toggles = settings::current_toggles(app);
     if !toggles.pin_enhance || !toggles.pin_restore {
+        log::debug!("pin restore skipped kind=disabled");
         return;
     }
     let dir = pin_store::dir(app);
@@ -1094,6 +1103,7 @@ pub fn restore_persisted(app: &AppHandle) {
             break;
         }
         let Some(frame) = pin_store::read_frame_from_dir(&dir, &record) else {
+            log::warn!("pin restore skipped id={} kind=missing", record.id);
             eprintln!("Cropmark: 贴图内容缺失，跳过恢复 {}", record.id);
             continue;
         };
@@ -1126,6 +1136,7 @@ pub fn restore_persisted(app: &AppHandle) {
         let window = match ensure_pin_window(app, slot) {
             Ok(window) => window,
             Err(error) => {
+                log::warn!("pin restore failed id={} kind=window", record.id);
                 eprintln!("Cropmark: 恢复贴图窗口失败:{error}");
                 with_store(|slots| slots[slot] = None);
                 continue;
@@ -1159,6 +1170,7 @@ pub fn restore_persisted(app: &AppHandle) {
     if !kept.is_empty() {
         ensure_monitor_watcher(app);
     }
+    log::info!("pin restore count={}", kept.len());
 }
 
 // ---------------------------------------------------------------------------
@@ -1904,10 +1916,14 @@ pub async fn save_pin(app: AppHandle, label: String) -> Result<PinSaveResult, St
         });
     };
     let path = ensure_png_extension(file.path().to_path_buf());
+    let width = frame.width;
+    let height = frame.height;
     let bytes = tauri::async_runtime::spawn_blocking(move || encode_png(&frame).map_err(fail))
         .await
         .map_err(|_| i18n::t("error.pin.thread_save"))??;
-    std::fs::write(&path, bytes).map_err(|error| {
+    let byte_len = bytes.len();
+    std::fs::write(&path, &bytes).map_err(|error| {
+        log::warn!("save failed kind=io");
         i18n::tp(
             "error.pin.save_to_path",
             &[
@@ -1916,6 +1932,7 @@ pub async fn save_pin(app: AppHandle, label: String) -> Result<PinSaveResult, St
             ],
         )
     })?;
+    log::info!("save wrote format=png bytes={byte_len} size={width}x{height}");
     Ok(PinSaveResult {
         saved: true,
         path: Some(path.to_string_lossy().into_owned()),

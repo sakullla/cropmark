@@ -168,7 +168,12 @@ pub fn unavailable_message() -> String {
 /// 调用之前,捕获后 Tauri/GTK 状态不受影响;捕获后不再重试构建,后续
 /// `refresh_menu` 因 `tray_by_id` 找不到托盘而自动跳过。
 pub fn install_guarded(app: &AppHandle) -> Result<(), String> {
-    guard_install(|| install(app))
+    let result = guard_install(|| install(app));
+    match &result {
+        Ok(()) => log::info!("tray installed"),
+        Err(_) => log::warn!("tray unavailable kind=install"),
+    }
+    result
 }
 
 /// panic 归一化的可测试包装:错误转为文本,panic payload 提取为可读文本。
@@ -241,7 +246,9 @@ fn layout_signature(app: &AppHandle) -> String {
 }
 
 fn remember_layout(signature: &str) {
-    *MENU_LAYOUT.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = signature.to_string();
+    *MENU_LAYOUT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = signature.to_string();
 }
 
 /// 显示器数量或分辨率变化后重建全屏子菜单。开关关闭时不改菜单。
@@ -251,7 +258,9 @@ pub fn refresh_menu_if_layout_changed(app: &AppHandle) {
     }
     let next = layout_signature(app);
     let changed = {
-        let current = MENU_LAYOUT.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let current = MENU_LAYOUT
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         current.as_str() != next
     };
     if changed {
@@ -269,7 +278,10 @@ pub fn refresh_menu(app: &AppHandle) {
         Ok(menu) => {
             let _ = tray.set_menu(Some(menu));
         }
-        Err(error) => eprintln!("Cropmark: 无法更新托盘菜单:{error}"),
+        Err(error) => {
+            log::warn!("tray menu failed kind=build");
+            eprintln!("Cropmark: 无法更新托盘菜单:{error}");
+        }
     }
 }
 
@@ -393,8 +405,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         None::<&str>,
     )?;
     let delay = delay_submenu(app)?;
-    let mut capture_items: Vec<&dyn IsMenuItem<tauri::Wry>> =
-        vec![&region, &last_region, &window];
+    let mut capture_items: Vec<&dyn IsMenuItem<tauri::Wry>> = vec![&region, &last_region, &window];
     if multi_monitor {
         capture_items.push(&fullscreen_menu);
     } else {

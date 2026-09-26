@@ -42,21 +42,47 @@ fn copy_frame_native(frame: &Frame) -> Result<(), CaptureError> {
     }
     let mut clipboard =
         Clipboard::new().map_err(|_| CaptureError::api("error.capture.clipboard_write"))?;
-    clipboard
+    let result = clipboard
         .set_image(ImageData {
             width: frame.width as usize,
             height: frame.height as usize,
             bytes: std::borrow::Cow::Borrowed(&frame.rgba),
         })
-        .map_err(|_| CaptureError::api("error.capture.clipboard_image"))
+        .map_err(|_| CaptureError::api("error.capture.clipboard_image"));
+    log_image_result(frame, &result);
+    result
 }
 
 pub fn copy_text(text: &str) -> Result<(), CaptureError> {
-    let mut clipboard =
-        Clipboard::new().map_err(|_| CaptureError::api("error.capture.clipboard_write"))?;
-    clipboard
+    let bytes = text.len();
+    let mut clipboard = match Clipboard::new() {
+        Ok(clipboard) => clipboard,
+        Err(_) => {
+            log::warn!("clipboard text failed kind=Api");
+            return Err(CaptureError::api("error.capture.clipboard_write"));
+        }
+    };
+    let result = clipboard
         .set_text(text)
-        .map_err(|_| CaptureError::api("error.capture.clipboard_text"))
+        .map_err(|_| CaptureError::api("error.capture.clipboard_text"));
+    match &result {
+        Ok(()) => log::info!("clipboard text bytes={bytes}"),
+        Err(error) => log::warn!("clipboard text failed kind={:?}", error.kind),
+    }
+    result
+}
+
+#[cfg(not(windows))]
+pub(crate) fn log_image_result(frame: &Frame, result: &Result<(), CaptureError>) {
+    match result {
+        Ok(()) => log::info!(
+            "clipboard image bytes={} size={}x{}",
+            frame.rgba.len(),
+            frame.width,
+            frame.height
+        ),
+        Err(error) => log::warn!("clipboard image failed kind={:?}", error.kind),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
