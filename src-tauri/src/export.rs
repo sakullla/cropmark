@@ -101,13 +101,14 @@ fn partial_path(path: &Path) -> PathBuf {
     path.with_file_name(format!(".{name}.{}.cropmark-part", std::process::id()))
 }
 
-/// 美化只作用于复制与保存。开关关闭时原帧原样返回。
+/// 预览复制、预览保存与静默保存共用。静默完成的剪贴板写入对帧副本调用
+/// 同一个 `beautify::compose_frame`。开关关闭时原帧原样返回。
 fn compose_output(app: &AppHandle, frame: Frame) -> Result<Frame, String> {
     if !settings::current_toggles(app).export_beautify {
         return Ok(frame);
     }
     let options = settings::current_export(app).beautify;
-    beautify::apply(&frame, &options).map_err(fail)
+    beautify::compose_frame(frame, true, &options).map_err(fail)
 }
 
 /// 预览保存套用文件名模板;静默保存保持时间戳命名。两者都不覆盖已有文件。

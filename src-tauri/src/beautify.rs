@@ -167,6 +167,19 @@ pub fn apply(frame: &Frame, options: &BeautifyOptions) -> Result<Frame, CaptureE
     })
 }
 
+/// 与预览导出 `compose_output` 同一规则。关闭时原样返回 `frame`。
+/// 还要保留未美化帧的调用方必须传入克隆,避免回写冻结画面。
+pub fn compose_frame(
+    frame: Frame,
+    enabled: bool,
+    options: &BeautifyOptions,
+) -> Result<Frame, CaptureError> {
+    if !enabled {
+        return Ok(frame);
+    }
+    apply(&frame, options)
+}
+
 fn preset_by_id(id: &str) -> &'static Preset {
     PRESETS
         .iter()

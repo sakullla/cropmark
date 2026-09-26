@@ -2030,6 +2030,29 @@ pub fn fallback_workspace_preview(
     open_workspace_preview(app, frame, annotations, None)
 }
 
+/// 静默复制的剪贴板帧:对副本做与 `compose_output` 相同的美化。
+/// 原帧继续留给冻结画面、预览载荷、历史、贴图和 OCR。
+fn quiet_clipboard_frame(
+    frame: &Frame,
+    options: &crate::beautify::BeautifyOptions,
+) -> Result<Frame, CaptureError> {
+    crate::beautify::compose_frame(frame.clone(), true, options)
+}
+
+fn write_finish_clipboard(
+    app: &AppHandle,
+    frame: &Frame,
+    plain_png: &[u8],
+) -> Result<(), CaptureError> {
+    if !crate::settings::current_toggles(app).export_beautify {
+        return clipboard::copy_frame_with_png(frame, plain_png);
+    }
+    let options = crate::settings::current_export(app).beautify;
+    let output = quiet_clipboard_frame(frame, &options)?;
+    let png = encode_png(&output)?;
+    clipboard::copy_frame_with_png(&output, &png)
+}
+
 fn finish_with_ttl(
     app: &AppHandle,
     frame: Frame,
@@ -2057,8 +2080,10 @@ fn finish_with_ttl(
         return Err(CaptureError::cancelled());
     }
     // autoCopy 关闭时不写剪贴板;显式复制路径不受此开关影响。
+    // 美化只写剪贴板副本。冻结帧、预览载荷、历史、贴图和 OCR 继续用未美化帧,
+    // 静默保存因此只在写盘时美化一次。
     let clipboard_error = if auto_copy {
-        clipboard::copy_frame_with_png(&frame, &png).err()
+        write_finish_clipboard(app, &frame, &png).err()
     } else {
         None
     };
@@ -2690,6 +2715,51 @@ mod tests {
 
     fn active_session() -> ActiveSession {
         ActiveSession::new(CaptureMode::Region, 0, Instant::now())
+    }
+
+    fn solid_frame(width: u32, height: u32, color: [u8; 4]) -> Frame {
+        let mut rgba = Vec::with_capacity((width * height * 4) as usize);
+        for _ in 0..width * height {
+            rgba.extend_from_slice(&color);
+        }
+        Frame {
+            width,
+            height,
+            rgba,
+            scale: 1.0,
+        }
+    }
+
+    #[test]
+    fn quiet_copy_beautifies_a_frame_copy_when_export_beautify_is_on() {
+        let frame = solid_frame(8, 8, [12, 34, 56, 255]);
+        let options = crate::beautify::BeautifyOptions {
+            preset: "paper".into(),
+            padding: 4,
+            radius: 0,
+            shadow: false,
+        };
+        let output = quiet_clipboard_frame(&frame, &options).unwrap();
+        assert_eq!((frame.width, frame.height), (8, 8));
+        assert_eq!(&frame.rgba[0..4], &[12, 34, 56, 255]);
+        assert_eq!((output.width, output.height), (16, 16));
+        assert_eq!(&output.rgba[0..4], &[0xF4, 0xF1, 0xEA, 255]);
+        let last = output.rgba.len() - 4;
+        assert_eq!(&output.rgba[last..], &[0xF4, 0xF1, 0xEA, 255]);
+        let origin = ((4 * output.width + 4) * 4) as usize;
+        assert_eq!(&output.rgba[origin..origin + 4], &[12, 34, 56, 255]);
+        let png = encode_png(&output).unwrap();
+        let decoded = crate::capture::buffer::decode_png(&png).unwrap();
+        assert_eq!((decoded.width, decoded.height), (16, 16));
+        assert_eq!(&decoded.rgba[0..4], &[0xF4, 0xF1, 0xEA, 255]);
+        assert_eq!(&decoded.rgba[last..], &[0xF4, 0xF1, 0xEA, 255]);
+        // 写盘会对保留的原帧美化一次,结果应与剪贴板副本一致;
+        // 再对剪贴板帧美化会继续变大,所以保存不能吃这份副本。
+        let saved_once = crate::beautify::compose_frame(frame.clone(), true, &options).unwrap();
+        assert_eq!(saved_once.rgba, output.rgba);
+        let saved_twice = quiet_clipboard_frame(&output, &options).unwrap();
+        assert!(saved_twice.width > output.width);
+        assert!(saved_twice.height > output.height);
     }
 
     #[test]
