@@ -1715,6 +1715,50 @@
     "zh-CN": "已复制全部识别文本。",
     "en": "All recognized text copied."
   },
+  "preview.note.ocr_fragment_copied": {
+    "zh-CN": "已复制片段「{snippet}」",
+    "en": "Copied fragment \"{snippet}\""
+  },
+  "preview.ocr_panel.title": {
+    "zh-CN": "识别结果",
+    "en": "Recognized text"
+  },
+  "preview.ocr_panel.close": {
+    "zh-CN": "关闭结果面板",
+    "en": "Close result panel"
+  },
+  "preview.ocr_panel.search": {
+    "zh-CN": "搜索关键词",
+    "en": "Search keywords"
+  },
+  "preview.ocr_panel.prev": {
+    "zh-CN": "上一处",
+    "en": "Previous"
+  },
+  "preview.ocr_panel.next": {
+    "zh-CN": "下一处",
+    "en": "Next"
+  },
+  "preview.ocr_panel.copy_fragment": {
+    "zh-CN": "复制片段",
+    "en": "Copy fragment"
+  },
+  "preview.ocr_panel.copy_all": {
+    "zh-CN": "复制全部",
+    "en": "Copy all"
+  },
+  "preview.ocr_panel.match_count": {
+    "zh-CN": "{current}/{total}",
+    "en": "{current}/{total}"
+  },
+  "preview.ocr_panel.no_match": {
+    "zh-CN": "无匹配",
+    "en": "No matches"
+  },
+  "preview.ocr_panel.text": {
+    "zh-CN": "识别文本",
+    "en": "Recognized text"
+  },
   "preview.note.saved": {
     "zh-CN": "已保存 {name}。",
     "en": "Saved {name}."

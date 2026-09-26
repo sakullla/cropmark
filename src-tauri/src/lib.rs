@@ -223,6 +223,8 @@ pub fn run() {
             ocr::copy_ocr_point,
             ocr::copy_ocr_rect,
             ocr::copy_ocr_all,
+            ocr::copy_ocr_fragment,
+            ocr::search_ocr_panel,
             pin::pin_current,
             pin::get_pin_image,
             pin::get_pin_state,

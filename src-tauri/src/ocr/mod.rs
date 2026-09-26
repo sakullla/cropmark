@@ -11,7 +11,10 @@ use crate::clipboard;
 use crate::i18n;
 
 use engine::{resolve_model_dir, Engine};
-use hit::{all_indices, hit_point, hit_rect, join_spans, Rect, TextSpan};
+use hit::{
+    all_indices, hit_point, hit_rect, join_spans, panel_matches, panel_text_for, PanelMatch, Rect,
+    TextSpan,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OcrError {
@@ -179,12 +182,54 @@ pub fn copy_ocr_all(app: AppHandle) -> Result<String, String> {
         .last
         .as_ref()
         .ok_or_else(|| OcrError::NoText.user_message())?;
-    let text = if doc.full_text.trim().is_empty() {
+    let text = recognized_text(doc);
+    copy_recognized_text(&text, OcrError::NoText).map_err(|e| e.user_message())
+}
+
+/// 面板复制选中片段或搜索命中的整行。空白、以及不属于本次识别结果的文本都不写入剪贴板。
+#[tauri::command]
+pub fn copy_ocr_fragment(app: AppHandle, text: String) -> Result<String, String> {
+    let fragment = {
+        let runtime = app.state::<OcrRuntime>();
+        let inner = runtime.lock();
+        let doc = inner
+            .last
+            .as_ref()
+            .ok_or_else(|| OcrError::NoText.user_message())?;
+        accepted_fragment(&recognized_text(doc), &text).map_err(|error| error.user_message())?
+    };
+    copy_recognized_text(&fragment, OcrError::NoSelection).map_err(|error| error.user_message())
+}
+
+/// 在最近一次识别全文中搜索。无结果或空查询返回空列表,不改写已保存的识别文本。
+#[tauri::command]
+pub fn search_ocr_panel(app: AppHandle, query: String) -> Vec<PanelMatch> {
+    let runtime = app.state::<OcrRuntime>();
+    let inner = runtime.lock();
+    let Some(doc) = inner.last.as_ref() else {
+        return Vec::new();
+    };
+    panel_matches(&recognized_text(doc), &query)
+}
+
+fn recognized_text(doc: &OcrDocument) -> String {
+    if panel_text_for(&doc.full_text).is_none() {
         join_spans(&doc.spans, &all_indices(&doc.spans))
     } else {
         doc.full_text.clone()
-    };
-    copy_recognized_text(&text, OcrError::NoText).map_err(|e| e.user_message())
+    }
+}
+
+/// 片段必须是本次全文的子串;两端空白去掉后为空则拒绝,避免把空内容写入剪贴板。
+fn accepted_fragment(source: &str, requested: &str) -> Result<String, OcrError> {
+    let source = source.replace("\r\n", "\n").replace('\r', "\n");
+    let normalized = requested.replace("\r\n", "\n").replace('\r', "\n");
+    let text = normalized.trim();
+    if text.is_empty() || !source.contains(text) {
+        Err(OcrError::NoSelection)
+    } else {
+        Ok(text.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -206,6 +251,50 @@ mod tests {
             prepared_clipboard_text("中文", OcrError::NoText),
             Ok("中文")
         );
+    }
+
+    #[test]
+    fn fragment_copy_rejects_blank_and_text_outside_the_result() {
+        let source = "左段右段\n下一段";
+        assert_eq!(accepted_fragment(source, "右段").as_deref(), Ok("右段"));
+        assert_eq!(
+            accepted_fragment(source, "左段右段").as_deref(),
+            Ok("左段右段")
+        );
+        assert_eq!(
+            accepted_fragment("Hello\r\nWorld", "Hello\nWorld").as_deref(),
+            Ok("Hello\nWorld")
+        );
+        assert_eq!(
+            accepted_fragment(source, " \n\t"),
+            Err(OcrError::NoSelection)
+        );
+        assert_eq!(
+            accepted_fragment(source, "不存在"),
+            Err(OcrError::NoSelection)
+        );
+        assert_eq!(accepted_fragment(source, ""), Err(OcrError::NoSelection));
+    }
+
+    #[test]
+    fn recognized_text_uses_full_text_and_falls_back_without_stacking_blank() {
+        let joined = OcrDocument {
+            spans: vec![TextSpan {
+                text: "甲".into(),
+                x: 0.0,
+                y: 0.0,
+                width: 10.0,
+                height: 10.0,
+            }],
+            full_text: "  ".into(),
+        };
+        assert_eq!(recognized_text(&joined), "甲");
+        let stored = OcrDocument {
+            spans: Vec::new(),
+            full_text: "甲\n乙".into(),
+        };
+        assert_eq!(recognized_text(&stored), "甲\n乙");
+        assert!(!recognized_text(&stored).contains("甲乙"));
     }
 
     #[test]

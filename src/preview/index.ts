@@ -96,6 +96,25 @@ export function mountPreview(root: HTMLElement): () => void {
           <canvas></canvas>
         </div>
       </div>
+      <aside class="ocr-panel" data-ocr-panel hidden data-tauri-drag-region="false" data-i18n-aria-label="preview.ocr_panel.text" aria-label="识别文本">
+        <div class="ocr-panel-bar">
+          <h2 data-i18n="preview.ocr_panel.title">识别结果</h2>
+          <button type="button" class="icon-btn" data-action="close-ocr-panel" data-i18n-aria-label="preview.ocr_panel.close" aria-label="关闭结果面板" data-tauri-drag-region="false">${icons.close}</button>
+        </div>
+        <div class="ocr-panel-search">
+          <input type="search" class="ocr-panel-query" data-ocr-search data-i18n-placeholder="preview.ocr_panel.search" data-i18n-aria-label="preview.ocr_panel.search" placeholder="搜索关键词" aria-label="搜索关键词" autocomplete="off" spellcheck="false" data-tauri-drag-region="false" />
+          <div class="ocr-panel-nav">
+            <span class="ocr-panel-count" data-ocr-search-count aria-live="polite"></span>
+            <button type="button" data-action="ocr-search-prev" data-i18n="preview.ocr_panel.prev" disabled>上一处</button>
+            <button type="button" data-action="ocr-search-next" data-i18n="preview.ocr_panel.next" disabled>下一处</button>
+          </div>
+        </div>
+        <div class="ocr-panel-text" data-ocr-text tabindex="0"></div>
+        <div class="ocr-panel-actions">
+          <button type="button" data-action="copy-ocr-fragment" data-i18n="preview.ocr_panel.copy_fragment">复制片段</button>
+          <button type="button" data-action="copy-ocr-all" data-i18n="preview.ocr_panel.copy_all">复制全部</button>
+        </div>
+      </aside>
     </div>
   `;
 
@@ -111,6 +130,12 @@ export function mountPreview(root: HTMLElement): () => void {
   const saveQualityRoot = root.querySelector("[data-save-quality-root]");
   const saveQualityPanel = root.querySelector("[data-save-quality-panel]");
   const saveQualityToggle = root.querySelector("[data-action=toggle-quality]");
+  const ocrPanel = root.querySelector("[data-ocr-panel]");
+  const ocrSearch = root.querySelector("[data-ocr-search]");
+  const ocrSearchCount = root.querySelector("[data-ocr-search-count]");
+  const ocrPanelText = root.querySelector("[data-ocr-text]");
+  const ocrSearchPrev = root.querySelector("[data-action=ocr-search-prev]");
+  const ocrSearchNext = root.querySelector("[data-action=ocr-search-next]");
   if (
     !(canvas instanceof HTMLCanvasElement) ||
     !(outputEl instanceof HTMLElement) ||
@@ -123,7 +148,13 @@ export function mountPreview(root: HTMLElement): () => void {
     !(updatePinBtn instanceof HTMLButtonElement) ||
     !(saveQualityRoot instanceof HTMLElement) ||
     !(saveQualityPanel instanceof HTMLElement) ||
-    !(saveQualityToggle instanceof HTMLButtonElement)
+    !(saveQualityToggle instanceof HTMLButtonElement) ||
+    !(ocrPanel instanceof HTMLElement) ||
+    !(ocrSearch instanceof HTMLInputElement) ||
+    !(ocrSearchCount instanceof HTMLElement) ||
+    !(ocrPanelText instanceof HTMLElement) ||
+    !(ocrSearchPrev instanceof HTMLButtonElement) ||
+    !(ocrSearchNext instanceof HTMLButtonElement)
   ) {
     return () => undefined;
   }
@@ -160,6 +191,14 @@ export function mountPreview(root: HTMLElement): () => void {
   let ocrStart: Point | null = null;
   let ocrCurrent: Point | null = null;
   let ocrGen = 0;
+  // R10:默认开启。关开关只藏面板,不改变按点/按框/全部复制。
+  let ocrPanelEnabled = true;
+  // 用户关闭面板后清掉展示;下一次识别成功才再次出现,且只显示最新全文。
+  let ocrPanelDismissed = true;
+  let ocrPanelRendered = "";
+  let ocrMatches: OcrPanelMatch[] = [];
+  let ocrMatchIndex = 0;
+  let ocrSearchGen = 0;
   let busy = false;
   // 提示条的来源:词条键可在语言切换后重渲染,不透明文案(宿主错误串)保持原样。
   let noteSource: { key: CatalogKey | null; params?: Record<string, string | number>; text: string } | null =
@@ -343,6 +382,7 @@ export function mountPreview(root: HTMLElement): () => void {
       if (ocrActive) {
         ocrActive = false;
         copyAllBtn.hidden = true;
+        renderOcrPanel();
         redraw();
       }
     },
@@ -356,6 +396,140 @@ export function mountPreview(root: HTMLElement): () => void {
     },
   });
 
+  const clearOcrPanelView = (): void => {
+    ocrSearchGen += 1;
+    ocrPanelRendered = "";
+    ocrMatches = [];
+    ocrMatchIndex = 0;
+    ocrSearch.value = "";
+    ocrPanelText.replaceChildren();
+    ocrSearchCount.textContent = "";
+    ocrSearchPrev.disabled = true;
+    ocrSearchNext.disabled = true;
+    ocrPanel.hidden = true;
+  };
+
+  const syncSearchStatus = (): void => {
+    const query = ocrSearch.value.trim();
+    if (!query) {
+      ocrSearchCount.textContent = "";
+    } else if (ocrMatches.length === 0) {
+      ocrSearchCount.textContent = t("preview.ocr_panel.no_match");
+    } else {
+      ocrSearchCount.textContent = t("preview.ocr_panel.match_count", {
+        current: ocrMatchIndex + 1,
+        total: ocrMatches.length,
+      });
+    }
+    const canStep = ocrMatches.length > 0;
+    ocrSearchPrev.disabled = !canStep;
+    ocrSearchNext.disabled = !canStep;
+  };
+
+  const paintPanelText = (text: string, matches: OcrPanelMatch[], current: number): void => {
+    const chars = Array.from(text);
+    ocrPanelText.replaceChildren();
+    if (matches.length === 0) {
+      ocrPanelText.textContent = text;
+      return;
+    }
+    let cursor = 0;
+    matches.forEach((match, index) => {
+      const start = clamp(match.start, 0, chars.length);
+      const end = clamp(match.end, start, chars.length);
+      if (start > cursor) {
+        ocrPanelText.append(document.createTextNode(chars.slice(cursor, start).join("")));
+      }
+      const mark = document.createElement("mark");
+      if (index === current) {
+        mark.className = "is-current";
+      }
+      mark.textContent = chars.slice(start, end).join("");
+      ocrPanelText.append(mark);
+      cursor = end;
+    });
+    if (cursor < chars.length) {
+      ocrPanelText.append(document.createTextNode(chars.slice(cursor).join("")));
+    }
+    ocrPanelText.querySelector("mark.is-current")?.scrollIntoView({ block: "nearest" });
+  };
+
+  // 只替换全文,不把上一次结果拼到后面。关开关或未识别时面板不出现。
+  const renderOcrPanel = (): void => {
+    const text = ocrDoc?.fullText ?? "";
+    const visible =
+      ocrPanelEnabled && ocrActive && !ocrPanelDismissed && text.trim().length > 0;
+    if (!visible) {
+      ocrPanel.hidden = true;
+      return;
+    }
+    ocrPanel.hidden = false;
+    if (ocrPanelRendered !== text) {
+      ocrSearchGen += 1;
+      ocrPanelRendered = text;
+      ocrSearch.value = "";
+      ocrMatches = [];
+      ocrMatchIndex = 0;
+      paintPanelText(text, [], -1);
+      syncSearchStatus();
+    }
+  };
+
+  const closeOcrPanel = (): void => {
+    ocrPanelDismissed = true;
+    clearOcrPanelView();
+    window.getSelection()?.removeAllRanges();
+  };
+
+  const refreshOcrPanelToggle = async (): Promise<void> => {
+    try {
+      const settings = await invoke<{ toggles?: { ocrPanel?: boolean } }>("get_ui_settings");
+      ocrPanelEnabled = settings?.toggles?.ocrPanel !== false;
+    } catch {
+      // 读取失败保持当前值;默认开启与精选设置一致。
+    }
+  };
+
+  const applyOcrSearch = async (): Promise<void> => {
+    const token = ++ocrSearchGen;
+    const text = ocrDoc?.fullText ?? "";
+    const query = ocrSearch.value;
+    if (!ocrPanelEnabled || ocrPanelDismissed || !text.trim() || !query.trim()) {
+      ocrMatches = [];
+      ocrMatchIndex = 0;
+      if (text.trim() && !ocrPanelDismissed && ocrPanelEnabled) {
+        paintPanelText(text, [], -1);
+      }
+      syncSearchStatus();
+      return;
+    }
+    try {
+      const found = await invoke<OcrPanelMatch[]>("search_ocr_panel", { query });
+      if (token !== ocrSearchGen || ocrDoc?.fullText !== text) {
+        return;
+      }
+      ocrMatches = found;
+      ocrMatchIndex = 0;
+      paintPanelText(text, found, found.length > 0 ? 0 : -1);
+      syncSearchStatus();
+    } catch (error) {
+      if (token !== ocrSearchGen) {
+        return;
+      }
+      setNote(invokeError(error, t("preview.error.ocr_fallback")), "error");
+    }
+  };
+
+  const stepOcrMatch = (delta: number): void => {
+    if (ocrMatches.length === 0) {
+      return;
+    }
+    const text = ocrDoc?.fullText ?? "";
+    ocrMatchIndex = (ocrMatchIndex + delta + ocrMatches.length) % ocrMatches.length;
+    paintPanelText(text, ocrMatches, ocrMatchIndex);
+    syncSearchStatus();
+  };
+
   const activateOcr = (): void => {
     editor?.commitText();
     editor?.deactivateTool();
@@ -368,10 +542,16 @@ export function mountPreview(root: HTMLElement): () => void {
     ocrStart = null;
     ocrDragging = false;
     syncCopyAll();
-    if (!ocrDoc) {
+    // 关闭面板后再进入取字会重新识别,避免把上次全文留在面板里。
+    if (!ocrDoc || ocrPanelDismissed) {
       void runOcr();
-    } else if (!note.classList.contains("is-error")) {
-      setNoteKey("preview.note.ocr_hint");
+    } else {
+      void refreshOcrPanelToggle().then(() => {
+        renderOcrPanel();
+      });
+      if (!note.classList.contains("is-error")) {
+        setNoteKey("preview.note.ocr_hint");
+      }
     }
     redraw();
   };
@@ -384,23 +564,37 @@ export function mountPreview(root: HTMLElement): () => void {
     busy = true;
     ocrDoc = null;
     ocrSelected = [];
+    ocrPanelDismissed = true;
+    clearOcrPanelView();
     syncCopyAll();
     setNoteKey("preview.note.ocr_running");
     redraw();
     try {
+      await refreshOcrPanelToggle();
       const doc = await invoke<OcrDocument>("recognize_preview");
       if (token !== ocrGen) {
         return;
       }
+      if (!doc.fullText.trim()) {
+        ocrDoc = null;
+        syncCopyAll();
+        setNote(t("preview.error.no_text"), "error");
+        redraw();
+        return;
+      }
       ocrDoc = doc;
+      ocrPanelDismissed = false;
       syncCopyAll();
       setNoteKey("preview.note.ocr_hint");
+      renderOcrPanel();
       redraw();
     } catch (error) {
       if (token !== ocrGen) {
         return;
       }
       ocrDoc = null;
+      ocrPanelDismissed = true;
+      clearOcrPanelView();
       syncCopyAll();
       setNote(invokeError(error, t("preview.error.ocr_fallback")), "error");
       redraw();
@@ -441,6 +635,42 @@ export function mountPreview(root: HTMLElement): () => void {
       setNoteKey("preview.note.ocr_all_copied", undefined, "success");
     } catch (error) {
       setNote(invokeError(error, t("preview.error.no_text")), "error");
+    } finally {
+      busy = false;
+    }
+  };
+
+  const selectedPanelFragment = (): string | null => {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+      return null;
+    }
+    const node = selection.anchorNode;
+    if (!node || !ocrPanelText.contains(node)) {
+      return null;
+    }
+    const text = selection.toString().replace(/\r\n/g, "\n");
+    return text.trim() ? text : null;
+  };
+
+  const copyOcrFragment = async (): Promise<void> => {
+    if (busy || !ocrDoc) {
+      return;
+    }
+    const selected = selectedPanelFragment();
+    const current = ocrMatches[ocrMatchIndex];
+    const text = selected ?? current?.fragment ?? "";
+    if (!text.trim()) {
+      setNoteKey("preview.error.no_selection", undefined, "error");
+      return;
+    }
+    busy = true;
+    try {
+      const copied = await invoke<string>("copy_ocr_fragment", { text });
+      const snippet = copied.length > 24 ? `${copied.slice(0, 24)}…` : copied;
+      setNoteKey("preview.note.ocr_fragment_copied", { snippet }, "success");
+    } catch (error) {
+      setNote(invokeError(error, t("preview.error.no_selection")), "error");
     } finally {
       busy = false;
     }
@@ -637,6 +867,14 @@ export function mountPreview(root: HTMLElement): () => void {
       void copy();
     } else if (button.dataset.action === "copy-ocr-all") {
       void copyOcrAll();
+    } else if (button.dataset.action === "copy-ocr-fragment") {
+      void copyOcrFragment();
+    } else if (button.dataset.action === "close-ocr-panel") {
+      closeOcrPanel();
+    } else if (button.dataset.action === "ocr-search-prev") {
+      stepOcrMatch(-1);
+    } else if (button.dataset.action === "ocr-search-next") {
+      stepOcrMatch(1);
     } else if (button.dataset.action === "save") {
       void save();
     } else if (button.dataset.action === "pin") {
@@ -766,7 +1004,7 @@ export function mountPreview(root: HTMLElement): () => void {
         numberStart?: number;
       };
       export?: { quality?: ExportQuality; beautify?: Partial<BeautifyOptions> };
-      toggles?: { exportBeautify?: boolean };
+      toggles?: { exportBeautify?: boolean; ocrPanel?: boolean };
     }>("get_ui_settings")
       .then((settings) => {
         const quality = settings?.export?.quality;
@@ -775,9 +1013,11 @@ export function mountPreview(root: HTMLElement): () => void {
           syncSaveQuality();
         }
         readBeautify(settings);
+        ocrPanelEnabled = settings?.toggles?.ocrPanel !== false;
         editor?.setStyle(readAnnotationDefaults(settings));
         // R5:逐项工具开关只控制创建入口;渲染/编辑/导出不随开关变化。
         editor?.setToolToggles(readAnnotationToolToggles(settings));
+        renderOcrPanel();
         redraw();
       })
       .catch(() => undefined);
@@ -925,11 +1165,29 @@ export function mountPreview(root: HTMLElement): () => void {
   });
   chromeObserver.observe(frameEl);
 
+  ocrSearch.addEventListener("input", () => {
+    void applyOcrSearch();
+  });
+  ocrSearch.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.isComposing) {
+      return;
+    }
+    event.preventDefault();
+    stepOcrMatch(event.shiftKey ? -1 : 1);
+  });
+  window.addEventListener("focus", () => {
+    void refreshOcrPanelToggle().then(() => {
+      renderOcrPanel();
+    });
+  });
+
   void listen("preview-reload", () => {
     // 新帧可能带入选区即时标注(R21):列表随帧在 loadPreview 中恢复,
-    // 这里先清空避免旧编辑态残留。
+    // 这里先清空避免旧编辑态残留。识别面板也不保留上一帧的全文。
     ocrDoc = null;
     ocrSelected = [];
+    ocrPanelDismissed = true;
+    clearOcrPanelView();
     editor?.setAnnotations([]);
     editor?.cancelText();
     // 携带说明随新帧重算(image.onload);先清空,避免加载失败时残留旧前缀。
@@ -957,7 +1215,14 @@ export function mountPreview(root: HTMLElement): () => void {
   return () => {
     refreshOptionLabels();
     renderNote();
+    syncSearchStatus();
   };
+}
+
+interface OcrPanelMatch {
+  start: number;
+  end: number;
+  fragment: string;
 }
 
 type Point = { x: number; y: number };

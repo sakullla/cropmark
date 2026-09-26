@@ -350,6 +350,87 @@ fn area_cmp(a: f64, b: f64) -> Ordering {
     a.partial_cmp(&b).unwrap_or(Ordering::Equal)
 }
 
+/// 面板全文。空白视为无文本:不得打开空面板,也不得据此写入剪贴板。
+pub fn panel_text_for(full_text: &str) -> Option<&str> {
+    if full_text.trim().is_empty() {
+        None
+    } else {
+        Some(full_text)
+    }
+}
+
+/// 关键词在面板全文中的命中(字符下标,不是字节)。`fragment` 是命中所在的整行。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PanelMatch {
+    pub start: usize,
+    pub end: usize,
+    pub fragment: String,
+}
+
+/// 字面搜索(ASCII 大小写不敏感)。空查询无命中;命中不跨字符边界。
+pub fn find_keyword_matches(text: &str, query: &str) -> Vec<(usize, usize)> {
+    let query = query.trim();
+    if query.is_empty() || text.is_empty() {
+        return Vec::new();
+    }
+    let query_len = query.len();
+    let mut matches = Vec::new();
+    let mut index = 0;
+    while index < text.len() {
+        let Some(ch) = text[index..].chars().next() else {
+            break;
+        };
+        if index + query_len <= text.len()
+            && text.is_char_boundary(index + query_len)
+            && text[index..index + query_len].eq_ignore_ascii_case(query)
+        {
+            matches.push((index, index + query_len));
+            index += query_len;
+            continue;
+        }
+        index += ch.len_utf8();
+    }
+    matches
+}
+
+/// 命中所在的整行,不含换行符。不把同一行拆成两段。
+pub fn line_fragment(text: &str, byte_index: usize) -> &str {
+    if text.is_empty() {
+        return "";
+    }
+    let mut index = byte_index.min(text.len());
+    while index > 0 && !text.is_char_boundary(index) {
+        index -= 1;
+    }
+    let start = text[..index].rfind('\n').map(|pos| pos + 1).unwrap_or(0);
+    let end = text[index..]
+        .find('\n')
+        .map(|pos| index + pos)
+        .unwrap_or(text.len());
+    &text[start..end]
+}
+
+fn char_index(text: &str, byte: usize) -> usize {
+    let mut byte = byte.min(text.len());
+    while byte > 0 && !text.is_char_boundary(byte) {
+        byte -= 1;
+    }
+    text[..byte].chars().count()
+}
+
+/// 搜索结果:定位区间用字符下标,复制片段取整行。
+pub fn panel_matches(text: &str, query: &str) -> Vec<PanelMatch> {
+    find_keyword_matches(text, query)
+        .into_iter()
+        .map(|(start_byte, end_byte)| PanelMatch {
+            start: char_index(text, start_byte),
+            end: char_index(text, end_byte),
+            fragment: line_fragment(text, start_byte).to_string(),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -405,6 +486,59 @@ mod tests {
         ];
         let all = all_indices(&spans);
         assert_eq!(join_spans(&spans, &all), "Hello\n中文 OCR");
+    }
+
+    #[test]
+    fn copy_all_keeps_reading_order_and_does_not_split_a_line() {
+        // 同行两段即使入库顺序相反也不插入换行;下一行才是新段落。
+        let spans = vec![
+            span("下一段", 0.0, 50.0, 60.0, 20.0),
+            span("右段", 40.0, 0.0, 40.0, 20.0),
+            span("左段", 0.0, 0.0, 40.0, 20.0),
+        ];
+        let text = join_spans(&spans, &all_indices(&spans));
+        assert_eq!(text, "左段右段\n下一段");
+        let lines: Vec<&str> = text.split('\n').collect();
+        assert_eq!(lines, ["左段右段", "下一段"]);
+        assert!(!lines[0].contains('\n'));
+    }
+
+    #[test]
+    fn keyword_search_locates_whole_lines_and_ignores_blank_queries() {
+        let text = "甲关键词\n乙关键词丙";
+        let matches = panel_matches(text, "关键词");
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].fragment, "甲关键词");
+        assert_eq!(matches[1].fragment, "乙关键词丙");
+        assert!(!matches[0].fragment.contains('\n'));
+        assert!(!matches[1].fragment.contains('\n'));
+        assert_eq!(matches[0].start, "甲".chars().count());
+        assert_eq!(
+            text.chars()
+                .skip(matches[0].start)
+                .take(matches[0].end - matches[0].start)
+                .collect::<String>(),
+            "关键词"
+        );
+
+        let folded = panel_matches("Hello\nworld", "HELLO");
+        assert_eq!(folded.len(), 1);
+        assert_eq!(folded[0].fragment, "Hello");
+
+        assert!(panel_matches(text, " ").is_empty());
+        assert!(panel_matches(text, "没有").is_empty());
+        assert_eq!(find_keyword_matches("aaa", "aa").len(), 1);
+    }
+
+    #[test]
+    fn latest_panel_text_replaces_previous_and_blank_is_hidden() {
+        let previous = "旧段落\n同一行不拆";
+        let latest = "新段落\n第二行";
+        let shown = panel_text_for(latest).expect("latest text");
+        assert_eq!(shown, latest);
+        assert!(!shown.contains(previous));
+        assert!(shown.contains('\n'));
+        assert!(panel_text_for(" \n\t").is_none());
     }
 
     #[test]
