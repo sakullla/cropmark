@@ -571,6 +571,18 @@
     "zh-CN": "上次区域已不在当前显示范围内，请重新截取。",
     "en": "The last region is no longer on the current displays. Capture a region again."
   },
+  "toast.history_write_failed": {
+    "zh-CN": "无法写入截图历史，本次截图不会出现在历史里。",
+    "en": "Could not write the capture history; this capture will not appear in history."
+  },
+  "toast.pin_persist_failed": {
+    "zh-CN": "贴图状态保存失败，重启后可能无法恢复当前贴图。",
+    "en": "Could not save pin state; current pins may not be restored after a restart."
+  },
+  "toast.pin_index_failed": {
+    "zh-CN": "贴图索引更新失败，已关闭的贴图可能在重启后重现。",
+    "en": "Could not update the pin index; closed pins may reappear after a restart."
+  },
   "error.ocr.no_text": {
     "zh-CN": "没有识别到文字。",
     "en": "No text was recognized."

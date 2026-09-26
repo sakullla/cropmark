@@ -451,12 +451,14 @@ pub fn record_capture(app: &AppHandle, frame: Frame, mode: Option<crate::hotkeys
         .map(crate::export::capture_mode_token)
         .map(str::to_string);
     let dir = history_dir(app);
+    let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         if let Err(error) =
             record_frame(&dir, &frame, settings.limit, now_millis(), mode.as_deref())
         {
             log::warn!("history write failed kind=io");
             eprintln!("Cropmark: 无法写入截图历史：{error}");
+            crate::capture::ui::show_toast_key(&app, "toast.history_write_failed");
         }
     });
 }
@@ -712,6 +714,21 @@ mod tests {
         assert!(dir.join(&first.file_name).is_file());
         assert!(dir.join(&second.file_name).is_file());
         assert_eq!(load_index(&dir).0.len(), 2);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn record_into_unwritable_dir_returns_error_without_writing() {
+        // 目标路径的父级是已存在文件:create_dir_all 失败,错误向上传播
+        // (record_capture 据此在日志之外弹 toast),不落任何文件。
+        let dir = temp_dir("io-error");
+        fs::create_dir_all(&dir).unwrap();
+        let blocker = dir.join("blocked");
+        fs::write(&blocker, b"file").unwrap();
+        let target = blocker.join("history");
+        let result = record(&target, &solid(8, 8, [0, 0, 0, 255]), 20, 1);
+        assert!(result.is_err());
+        assert!(!target.exists());
         let _ = fs::remove_dir_all(&dir);
     }
 

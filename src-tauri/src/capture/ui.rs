@@ -30,6 +30,10 @@ const TOAST_HEIGHT: f64 = 48.0;
 const TOAST_MARGIN: f64 = 24.0;
 const TOAST_DURATION: Duration = Duration::from_millis(1800);
 
+/// 预览窗最小尺寸:保证工具条与画布基本可用(ADR-6)。
+const PREVIEW_MIN_WIDTH: f64 = 480.0;
+const PREVIEW_MIN_HEIGHT: f64 = 360.0;
+
 /// 最近一次 toast 的来源:词条键+参数可按当前语言重新解析(语言切换后
 /// 前端重拉仍显示正确文案);不透明系统文案按原样保留。
 #[derive(Debug, Clone)]
@@ -635,11 +639,16 @@ fn ensure_window(
     if let Some(window) = app.get_webview_window(label) {
         return Ok(window);
     }
-    builder(app, label, view, transparent, skip_taskbar)?
+    let mut builder = builder(app, label, view, transparent, skip_taskbar)?
         .inner_size(width, height)
         .visible(false)
         .always_on_top(true)
-        .visible_on_all_workspaces(label == OVERLAY)
+        .visible_on_all_workspaces(label == OVERLAY);
+    // 只有预览窗可缩放:限制最小尺寸,保证工具条不被缩到不可用。
+    if label == PREVIEW {
+        builder = builder.min_inner_size(PREVIEW_MIN_WIDTH, PREVIEW_MIN_HEIGHT);
+    }
+    builder
         .build()
         .map_err(|error| CaptureError::api_detail("error.capture.window_build", &error.to_string()))
 }

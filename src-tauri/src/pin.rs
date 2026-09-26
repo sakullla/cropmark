@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -1049,7 +1049,10 @@ fn write_snapshot(app: &AppHandle) {
     }
     match pin_store::persist_to_dir(&dir, &records, &contents) {
         Ok(()) => mark_persisted(&written),
-        Err(error) => eprintln!("Cropmark: 贴图状态写入失败:{error}"),
+        Err(error) => {
+            eprintln!("Cropmark: 贴图状态写入失败:{error}");
+            crate::capture::ui::show_toast_key(app, "toast.pin_persist_failed");
+        }
     }
 }
 
@@ -1077,6 +1080,7 @@ fn delete_entries(app: &AppHandle, ids: &[String]) {
     };
     if let Err(error) = pin_store::write_index_to_dir(&dir, &records) {
         eprintln!("Cropmark: 贴图索引更新失败:{error}");
+        crate::capture::ui::show_toast_key(app, "toast.pin_index_failed");
     }
 }
 
@@ -1922,21 +1926,48 @@ pub async fn save_pin(app: AppHandle, label: String) -> Result<PinSaveResult, St
         .await
         .map_err(|_| i18n::t("error.pin.thread_save"))??;
     let byte_len = bytes.len();
-    std::fs::write(&path, &bytes).map_err(|error| {
-        log::warn!("save failed kind=io");
-        i18n::tp(
-            "error.pin.save_to_path",
-            &[
-                ("path", &path.display().to_string()),
-                ("error", &error.to_string()),
-            ],
-        )
-    })?;
+    let path = write_pin_png(&path, &bytes)?;
     log::info!("save wrote format=png bytes={byte_len} size={width}x{height}");
     Ok(PinSaveResult {
         saved: true,
         path: Some(path.to_string_lossy().into_owned()),
     })
+}
+
+/// 贴图保存写盘(ADR-6):目标已存在时按 ` (n)` 追加非覆盖(复用 unique_path,
+/// 不套文件名模板——模板只管保存对话框默认名);先写同目录临时文件再改名,
+/// 写入中断或改名失败不留目标路径半成品(对齐 export::write_export 模式)。
+fn write_pin_png(path: &Path, bytes: &[u8]) -> Result<PathBuf, String> {
+    let path = crate::filename_template::unique_path(path);
+    let partial = pin_partial_path(&path);
+    std::fs::write(&partial, bytes).map_err(|error| {
+        log::warn!("save failed kind=io");
+        pin_save_error(&path, &error)
+    })?;
+    if let Err(error) = std::fs::rename(&partial, &path) {
+        let _ = std::fs::remove_file(&partial);
+        log::warn!("save failed kind=io");
+        return Err(pin_save_error(&path, &error));
+    }
+    Ok(path)
+}
+
+fn pin_save_error(path: &Path, error: &std::io::Error) -> String {
+    i18n::tp(
+        "error.pin.save_to_path",
+        &[
+            ("path", &path.display().to_string()),
+            ("error", &error.to_string()),
+        ],
+    )
+}
+
+fn pin_partial_path(path: &Path) -> PathBuf {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("cropmark-pin");
+    path.with_file_name(format!(".{name}.{}.cropmark-part", std::process::id()))
 }
 
 /// 当前显示内容(旋转/翻转/透明度已应用);复制/保存/再标注共用。
@@ -2466,6 +2497,56 @@ mod tests {
             ensure_png_extension(PathBuf::from("shot")),
             PathBuf::from("shot.png")
         );
+    }
+
+    fn pin_save_temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "cropmark-pin-save-{}-{name}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn write_pin_png_writes_new_file_without_leftover_partial() {
+        let dir = pin_save_temp_dir("fresh");
+        let path = dir.join("pin.png");
+        let written = write_pin_png(&path, b"png-bytes").unwrap();
+        assert_eq!(written, path);
+        assert_eq!(std::fs::read(&path).unwrap(), b"png-bytes");
+        // 原子写收尾后同目录只留目标文件,没有 .cropmark-part 半成品。
+        let leftovers: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().collect();
+        assert_eq!(leftovers.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_pin_png_appends_index_instead_of_overwriting() {
+        let dir = pin_save_temp_dir("unique");
+        let path = dir.join("pin.png");
+        std::fs::write(&path, b"original").unwrap();
+        let second = write_pin_png(&path, b"second").unwrap();
+        assert_eq!(second, dir.join("pin (1).png"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"original");
+        assert_eq!(std::fs::read(&second).unwrap(), b"second");
+        let third = write_pin_png(&path, b"third").unwrap();
+        assert_eq!(third, dir.join("pin (2).png"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"original");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_pin_png_write_failure_leaves_no_target_or_partial() {
+        let dir = pin_save_temp_dir("io-error");
+        let missing = dir.join("no-such-dir");
+        let path = missing.join("pin.png");
+        // 父目录不存在:临时文件写失败,错误向上传播,不产生目标或半成品。
+        assert!(write_pin_png(&path, b"bytes").is_err());
+        assert!(!path.exists());
+        assert!(!missing.exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
