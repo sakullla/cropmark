@@ -9,6 +9,9 @@ use tauri::{AppHandle, Manager, WebviewWindow};
 
 use crate::capture::ui::{ERROR, HISTORY, PREVIEW, SETTINGS};
 
+/// 首次引导 / 快捷键帮助。按需创建,关闭即销毁,不在启动路径预建。
+pub const GUIDE: &str = "guide";
+
 /// 显示并前置窗口。macOS 会先把进程从 Accessory 提升为 Regular。
 pub fn reveal(app: &AppHandle, window: &WebviewWindow) {
     #[cfg(target_os = "macos")]
@@ -20,7 +23,7 @@ pub fn reveal(app: &AppHandle, window: &WebviewWindow) {
     order_front(window);
 }
 
-/// 没有设置/历史/预览/错误窗、也没有原生选区壳时,退回 Accessory。
+/// 没有设置/历史/预览/错误/引导窗、也没有原生选区壳时,退回 Accessory。
 pub fn demote_if_idle(app: &AppHandle) {
     #[cfg(target_os = "macos")]
     {
@@ -41,7 +44,7 @@ pub fn should_demote(product_ui_visible: bool, shell_active: bool) -> bool {
 }
 
 fn product_ui_visible(app: &AppHandle) -> bool {
-    [SETTINGS, HISTORY, PREVIEW, ERROR]
+    [SETTINGS, HISTORY, PREVIEW, ERROR, GUIDE]
         .into_iter()
         .any(|label| {
             app.get_webview_window(label)

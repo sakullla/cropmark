@@ -448,6 +448,10 @@ pub struct StoredSettings {
     /// 界面语言(R12):`system | zh-CN | en`;未知值按 system 处理。
     #[serde(default = "default_language_setting")]
     pub language: String,
+    /// 首次引导窗口已关闭。默认 false;关闭引导后写 true,之后不再自动打开。
+    /// 旧配置缺少该字段时按未完成处理,开关开启则会自动出现一次。
+    #[serde(default)]
+    pub onboarding_done: bool,
 }
 
 pub fn default_language_setting() -> String {
@@ -523,6 +527,7 @@ pub struct SessionState {
     pub last_region: Mutex<Option<LastRegion>>,
     pub tray: Mutex<TrayState>,
     pub language: Mutex<String>,
+    pub onboarding_done: Mutex<bool>,
 }
 
 impl SessionState {
@@ -541,6 +546,7 @@ impl SessionState {
             last_region: Mutex::new(stored.last_region.and_then(LastRegion::sanitized)),
             tray: Mutex::new(TrayState::available()),
             language: Mutex::new(sanitize_language(&stored.language)),
+            onboarding_done: Mutex::new(stored.onboarding_done),
         }
     }
 }
@@ -680,6 +686,81 @@ pub fn open_settings(app: &AppHandle) -> Result<(), String> {
     .map_err(|error| error.to_string())?;
     crate::front::reveal(app, &window);
     Ok(())
+}
+
+/// 全新配置且「首次使用引导」开启时自动打开一次。关闭窗口后 `done` 为 true。
+pub fn should_auto_open_onboarding(enabled: bool, done: bool) -> bool {
+    enabled && !done
+}
+
+/// 当前会话是否还应在托盘安装成功后自动打开引导。
+pub fn onboarding_pending(app: &AppHandle) -> bool {
+    let state = app.state::<SessionState>();
+    let enabled = lock(&state.toggles).onboarding;
+    let done = *lock(&state.onboarding_done);
+    should_auto_open_onboarding(enabled, done)
+}
+
+/// 打开(或唤出)引导窗口。按需创建,关闭即销毁,不预建、不常驻。
+/// 设置里的「使用帮助」与首次自动打开共用这一扇窗口。
+pub fn open_guide_window(app: &AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(crate::front::GUIDE) {
+        crate::front::reveal(app, &window);
+        return Ok(());
+    }
+
+    let window = WebviewWindowBuilder::new(
+        app,
+        crate::front::GUIDE,
+        WebviewUrl::App("index.html?view=guide".into()),
+    )
+    .title("Cropmark")
+    .inner_size(440.0, 640.0)
+    .resizable(false)
+    .maximizable(false)
+    .minimizable(false)
+    .decorations(false)
+    .transparent(true)
+    .shadow(false)
+    .skip_taskbar(true)
+    .always_on_top(false)
+    .visible(true)
+    .center()
+    .build()
+    .map_err(|error| error.to_string())?;
+    crate::front::reveal(app, &window);
+    Ok(())
+}
+
+/// 从设置页重开引导。async 与 `open_history` 同因:窗口构建要泵平台消息,
+/// 同步 command 会占住主线程。
+#[tauri::command]
+pub async fn open_guide(app: AppHandle) -> Result<(), String> {
+    open_guide_window(&app)
+}
+
+/// 引导窗口关闭(包括中途关闭)后记为已完成。已完成则不再写盘。
+/// 写盘失败时回退内存标记,下次启动仍会自动打开;不清除设置页已有提示。
+pub fn complete_onboarding(app: &AppHandle) {
+    let state = app.state::<SessionState>();
+    {
+        let mut done = lock(&state.onboarding_done);
+        if *done {
+            return;
+        }
+        *done = true;
+    }
+    let stored = stored_from_state(&state);
+    if let Err(error) = save_to_path(&settings_path(app), &stored) {
+        *lock(&state.onboarding_done) = false;
+        *lock(&state.notice) = Some(i18n::tp(
+            "notice.persist_failed",
+            &[
+                ("applied", &i18n::t("notice.onboarding_applied")),
+                ("error", &error),
+            ],
+        ));
+    }
 }
 
 /// 供启动与语言切换调用:读取设置值、解析系统语言并写入进程级当前语言。
@@ -896,9 +977,8 @@ pub fn set_history_settings(app: AppHandle, settings: HistorySettings) -> UiSett
     snapshot(&app)
 }
 
-fn persist_settings(app: &AppHandle, applied: &str) {
-    let state = app.state::<SessionState>();
-    let stored = StoredSettings {
+fn stored_from_state(state: &SessionState) -> StoredSettings {
+    StoredSettings {
         hotkeys: lock(&state.hotkeys).clone(),
         annotation_defaults: lock(&state.annotation_defaults).clone(),
         toggles: *lock(&state.toggles),
@@ -908,7 +988,13 @@ fn persist_settings(app: &AppHandle, applied: &str) {
         export: lock(&state.export).clone(),
         last_region: *lock(&state.last_region),
         language: lock(&state.language).clone(),
-    };
+        onboarding_done: *lock(&state.onboarding_done),
+    }
+}
+
+fn persist_settings(app: &AppHandle, applied: &str) {
+    let state = app.state::<SessionState>();
+    let stored = stored_from_state(&state);
     match save_to_path(&settings_path(app), &stored) {
         Ok(()) => *lock(&state.notice) = None,
         Err(error) => {
@@ -1006,6 +1092,7 @@ mod tests {
                 height: 200,
             }),
             language: "en".into(),
+            onboarding_done: true,
         };
         save_to_path(&path, &stored).unwrap();
         let text = fs::read_to_string(&path).unwrap();
@@ -1047,6 +1134,8 @@ mod tests {
         assert!(!loaded.export.beautify.shadow);
         assert_eq!(loaded.export.filename_template, "shot_{mode}_{seq}");
         assert_eq!(loaded.language, "en");
+        assert!(loaded.onboarding_done);
+        assert!(text.contains("\"onboardingDone\""));
         assert_eq!(
             loaded.last_region,
             Some(LastRegion {
@@ -1893,5 +1982,54 @@ mod tests {
         assert!(
             serialized["resolvedLanguage"] == "zh-CN" || serialized["resolvedLanguage"] == "en"
         );
+    }
+
+    #[test]
+    fn onboarding_auto_opens_once_until_the_window_is_closed() {
+        let defaults = StoredSettings::default();
+        assert!(!defaults.onboarding_done);
+        assert!(defaults.toggles.onboarding);
+        assert!(should_auto_open_onboarding(true, false));
+        assert!(!should_auto_open_onboarding(true, true));
+        assert!(!should_auto_open_onboarding(false, false));
+        assert!(!should_auto_open_onboarding(false, true));
+
+        let fresh: StoredSettings = serde_json::from_str("{}").unwrap();
+        assert!(!fresh.onboarding_done);
+        assert!(should_auto_open_onboarding(
+            fresh.toggles.onboarding,
+            fresh.onboarding_done
+        ));
+
+        // 旧配置没有该字段:视为尚未看过引导,而不是把整份设置判坏。
+        let legacy: StoredSettings = serde_json::from_str(
+            r#"{"hotkeys":{"region":"Alt+Shift+A","window":"Alt+Shift+W","fullscreen":"Alt+Shift+S"}}"#,
+        )
+        .unwrap();
+        assert!(!legacy.onboarding_done);
+        assert_eq!(legacy.hotkeys.region, "Alt+Shift+A");
+
+        let done: StoredSettings =
+            serde_json::from_str(r#"{"onboardingDone":true,"toggles":{"onboarding":true}}"#)
+                .unwrap();
+        assert!(done.onboarding_done);
+        assert!(!should_auto_open_onboarding(
+            done.toggles.onboarding,
+            done.onboarding_done
+        ));
+
+        let disabled: StoredSettings =
+            serde_json::from_str(r#"{"toggles":{"onboarding":false}}"#).unwrap();
+        assert!(!disabled.onboarding_done);
+        assert!(!should_auto_open_onboarding(
+            disabled.toggles.onboarding,
+            disabled.onboarding_done
+        ));
+
+        let state = SessionState::from_stored(StoredSettings {
+            onboarding_done: true,
+            ..StoredSettings::default()
+        });
+        assert!(*lock(&state.onboarding_done));
     }
 }

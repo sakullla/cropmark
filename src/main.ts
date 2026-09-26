@@ -1,6 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { mountHistory } from "./history";
 import { applyTranslations, initI18n, onLanguageChanged } from "./i18n";
+import { mountOnboarding } from "./onboarding";
 import { mountDelay } from "./overlay/delay";
 import { mountCaptureError } from "./overlay/error";
 import { mountOverlay } from "./overlay/index";
@@ -41,6 +42,8 @@ void (async () => {
     applyLanguage = mountHistory(root);
   } else if (view === "scroll") {
     applyLanguage = mountScroll(root);
+  } else if (view === "guide") {
+    applyLanguage = mountOnboarding(root);
   }
   const renderLanguage = (): void => {
     applyTranslations(root);

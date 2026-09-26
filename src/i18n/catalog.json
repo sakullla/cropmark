@@ -807,6 +807,10 @@
     "zh-CN": "语言已切换",
     "en": "Language switched"
   },
+  "notice.onboarding_applied": {
+    "zh-CN": "已关闭首次引导",
+    "en": "First-run guide dismissed"
+  },
   "notice.persist_failed": {
     "zh-CN": "{applied}，但未能写入本机设置：{error}",
     "en": "{applied}, but the local settings could not be written: {error}"
@@ -978,6 +982,22 @@
   "settings.autostart.label": {
     "zh-CN": "登录时运行",
     "en": "Run at login"
+  },
+  "settings.help.title": {
+    "zh-CN": "使用帮助",
+    "en": "Help"
+  },
+  "settings.help.label": {
+    "zh-CN": "快捷键与功能",
+    "en": "Shortcuts and features"
+  },
+  "settings.help.hint": {
+    "zh-CN": "查看与首次引导相同的说明，可随时再次打开。",
+    "en": "Opens the same guide shown on first launch. You can open it again any time."
+  },
+  "settings.help.button": {
+    "zh-CN": "打开",
+    "en": "Open"
   },
   "settings.group.capture": {
     "zh-CN": "采集",
@@ -2494,5 +2514,61 @@
   "history.mode.long": {
     "zh-CN": "长截图",
     "en": "Scrolling capture"
+  },
+  "guide.title": {
+    "zh-CN": "使用帮助",
+    "en": "Shortcut help"
+  },
+  "guide.close": {
+    "zh-CN": "关闭引导",
+    "en": "Close guide"
+  },
+  "guide.intro": {
+    "zh-CN": "Cropmark 启动后留在系统托盘，不占用主窗口。关闭本页不会退出应用，热键和之后的截图都不受影响。",
+    "en": "Cropmark stays in the system tray and does not keep a main window. Closing this page does not quit the app; hotkeys and later captures keep working."
+  },
+  "guide.tray.title": {
+    "zh-CN": "托盘常驻",
+    "en": "Stays in the tray"
+  },
+  "guide.tray.body": {
+    "zh-CN": "从托盘图标打开区域、窗口或全屏截图，也可以进入历史和设置。退出请使用托盘菜单或设置中的退出。",
+    "en": "Use the tray icon for region, window, or fullscreen capture, and to open history or settings. Quit from the tray menu or from Settings."
+  },
+  "guide.hotkeys.title": {
+    "zh-CN": "三种采集热键",
+    "en": "Three capture shortcuts"
+  },
+  "guide.hotkeys.body": {
+    "zh-CN": "下面是当前生效的组合，可在设置里修改。",
+    "en": "These are the shortcuts in effect now. Change them in Settings."
+  },
+  "guide.pin.title": {
+    "zh-CN": "贴图",
+    "en": "Pin"
+  },
+  "guide.pin.body": {
+    "zh-CN": "截图后可以贴在屏幕上对照查看。关掉贴图不会退出托盘中的 Cropmark。",
+    "en": "After a capture you can pin it on screen for reference. Closing a pin does not quit Cropmark in the tray."
+  },
+  "guide.ocr.title": {
+    "zh-CN": "文字识别",
+    "en": "Text recognition"
+  },
+  "guide.ocr.body": {
+    "zh-CN": "在预览中识别画面文字，可按点击位置、框选或全部复制。开启结果面板后还能搜索并复制一段文字。识别使用本机模型，无需联网。",
+    "en": "In the preview, recognize on-screen text and copy it by point, by box, or all at once. With the result panel you can also search and copy a passage. Recognition uses on-device models and needs no network."
+  },
+  "guide.history.title": {
+    "zh-CN": "历史",
+    "en": "History"
+  },
+  "guide.history.body": {
+    "zh-CN": "完成的截图会进入历史，可再次复制、贴图或删除。设置里可以打开历史并调整保留数量。",
+    "en": "Finished captures are kept in history so you can copy, pin, or delete them again. Open history from Settings and adjust how many are kept."
+  },
+  "guide.done": {
+    "zh-CN": "知道了",
+    "en": "Got it"
   }
 }

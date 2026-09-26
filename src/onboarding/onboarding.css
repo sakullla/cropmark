@@ -1,0 +1,106 @@
+/* 引导窗口与设置同属无边框产品窗,色板对齐设置页,避免另起一套冷灰。 */
+
+html[data-view="guide"] {
+  --bg: #f4f3f0;
+  --panel: #f4f3f0;
+  --card: #ffffff;
+  --ink: #1c1c1a;
+  --muted: #5c5f5a;
+  --line: #e3e1db;
+  --control-fill: #ffffff;
+  --accent-soft: #e7eefb;
+  --focus-gap: #ffffff;
+  --shadow: 0 18px 48px rgba(32, 30, 26, 0.14);
+}
+
+@media (prefers-color-scheme: dark) {
+  html[data-view="guide"] {
+    --bg: #161615;
+    --panel: #161615;
+    --card: #232321;
+    --ink: #f4f3f0;
+    --muted: #b4b2aa;
+    --line: #343430;
+    --control-fill: #2a2a27;
+    --accent-soft: #1c2c44;
+    --focus-gap: #161615;
+    --shadow: 0 18px 48px rgba(0, 0, 0, 0.42);
+  }
+}
+
+html[data-view="guide"],
+html[data-view="guide"] body,
+html[data-view="guide"] #app {
+  background: var(--bg);
+  color: var(--ink);
+}
+
+html[data-view="guide"] .shell {
+  background: var(--bg);
+  border-color: color-mix(in srgb, var(--ink) 8%, transparent);
+}
+
+.guide-root {
+  height: 100%;
+}
+
+.guide-section h2 {
+  margin: 0 0 6px;
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--ink);
+}
+
+.guide-hotkeys {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.guide-hotkey {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.guide-hotkey kbd {
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: var(--control-fill);
+  color: var(--ink);
+}
+
+.guide-done {
+  border: 0;
+  min-height: 36px;
+  border-radius: var(--radius-control);
+  background: var(--accent);
+  color: var(--on-accent);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: var(--control-transition);
+}
+
+.guide-done:hover,
+.guide-done:active {
+  filter: var(--control-hover-filter);
+}
+
+.guide-done:active {
+  filter: var(--control-pressed-filter);
+}

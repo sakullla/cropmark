@@ -367,6 +367,16 @@ export function mountSettings(root: HTMLElement): () => void {
               </button>
             </div>
           </section>
+          <section class="block" aria-labelledby="help-title">
+            <h2 id="help-title" data-i18n="settings.help.title">使用帮助</h2>
+            <div class="setting-row">
+              <div>
+                <div class="label" id="help-label" data-i18n="settings.help.label">快捷键与功能</div>
+                <p class="hint" data-i18n="settings.help.hint">查看与首次引导相同的说明，可随时再次打开。</p>
+              </div>
+              <button type="button" class="choice" data-action="open-guide" aria-labelledby="help-label" data-i18n="settings.help.button">打开</button>
+            </div>
+          </section>
           <section class="block" aria-labelledby="toggles-title">
             <h2 id="toggles-title" data-i18n="settings.section.toggles">功能开关</h2>
             <p class="hint" data-i18n="settings.section.toggles_hint">逐项控制功能入口；关闭只停用入口与新增行为，已有数据与已创建标注保留，关闭状态跨重启保持。</p>
@@ -415,6 +425,7 @@ export function mountSettings(root: HTMLElement): () => void {
   const historyLimitEl = root.querySelector("[data-history=limit]");
   const historyErrorEl = root.querySelector("[data-history-error]");
   const historyOpenEl = root.querySelector("[data-action=open-history]");
+  const openGuideEl = root.querySelector("[data-action=open-guide]");
   const templateEl = root.querySelector("[data-filename-template]");
   const presetRoot = root.querySelector("[data-beautify-presets]");
   const paddingEl = root.querySelector("[data-beautify-padding]");
@@ -441,6 +452,7 @@ export function mountSettings(root: HTMLElement): () => void {
     !(historyLimitEl instanceof HTMLInputElement) ||
     !(historyErrorEl instanceof HTMLElement) ||
     !(historyOpenEl instanceof HTMLButtonElement) ||
+    !(openGuideEl instanceof HTMLButtonElement) ||
     !(templateEl instanceof HTMLInputElement) ||
     !(presetRoot instanceof HTMLElement) ||
     !(paddingEl instanceof HTMLInputElement) ||
@@ -925,6 +937,10 @@ export function mountSettings(root: HTMLElement): () => void {
 
   historyOpenEl.addEventListener("click", () => {
     void invoke("open_history").catch(showInvokeError);
+  });
+
+  openGuideEl.addEventListener("click", () => {
+    void invoke("open_guide").catch(showInvokeError);
   });
 
   const commitTemplate = (): void => {

@@ -178,6 +178,12 @@ pub fn run() {
                 if let Err(error) = settings::open_settings(app.handle()) {
                     eprintln!("Cropmark: 无法打开设置窗口:{error}");
                 }
+            } else if settings::onboarding_pending(app.handle()) {
+                // 仅托盘安装成功后自动打开一次性引导。打不开也不中止启动:
+                // 热键与采集已经注册,设置里仍可手动重开同一内容。
+                if let Err(error) = settings::open_guide_window(app.handle()) {
+                    eprintln!("Cropmark: 无法打开首次引导:{error}");
+                }
             }
             Ok(())
         })
@@ -256,6 +262,7 @@ pub fn run() {
             history::set_history_note,
             history::clear_history,
             history::open_history,
+            settings::open_guide,
             quit_app,
         ])
         .on_window_event(|window, event| {
@@ -269,6 +276,10 @@ pub fn run() {
                 // R1:长截图控制窗被外部关闭(Alt+F4 等)按取消处理,不产出。
                 if window.label() == capture::scroll::WINDOW {
                     capture::scroll::handle_window_destroyed(window.app_handle());
+                }
+                // 引导中途关闭同样记为已看过,且不拦截销毁,避免挡住托盘与热键。
+                if window.label() == front::GUIDE {
+                    settings::complete_onboarding(window.app_handle());
                 }
                 front::demote_if_idle(window.app_handle());
             }
