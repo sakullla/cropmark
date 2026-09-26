@@ -1327,6 +1327,10 @@
     "zh-CN": "当前桌面环境未提供托盘，热键仍可用。",
     "en": "The current desktop does not provide a tray; hotkeys still work."
   },
+  "settings.error.invoke_failed": {
+    "zh-CN": "操作失败：{detail}",
+    "en": "Action failed: {detail}"
+  },
   "preview.close": {
     "zh-CN": "关闭",
     "en": "Close"
@@ -2143,6 +2147,22 @@
     "zh-CN": "抓取失败，请确认窗口可见后重试。",
     "en": "Capture failed. Make sure the window is visible and retry."
   },
+  "scroll.appended": {
+    "zh-CN": "已拼接 {count} 段",
+    "en": "{count} strips stitched"
+  },
+  "scroll.action.canceling": {
+    "zh-CN": "正在取消…",
+    "en": "Canceling…"
+  },
+  "scroll.action.cancel_failed": {
+    "zh-CN": "取消失败，请重试。",
+    "en": "Cancel failed. Try again."
+  },
+  "scroll.action.finish_failed": {
+    "zh-CN": "完成失败，请重试。",
+    "en": "Finish failed. Try again."
+  },
   "error.title": {
     "zh-CN": "无法截取",
     "en": "Capture failed"
@@ -2274,6 +2294,14 @@
   "pin.menu.close": {
     "zh-CN": "关闭贴图",
     "en": "Close pin"
+  },
+  "pin.stage_label": {
+    "zh-CN": "贴图画布，按 Enter 或菜单键打开操作菜单",
+    "en": "Pin canvas. Press Enter or the Menu key to open the actions menu."
+  },
+  "pin.menu_label": {
+    "zh-CN": "贴图菜单",
+    "en": "Pin menu"
   },
   "pin.note.copied": {
     "zh-CN": "已复制当前内容（无损 PNG）。",
@@ -2414,6 +2442,10 @@
   "history.empty": {
     "zh-CN": "暂无历史记录。截图完成后会自动出现在这里。",
     "en": "No history yet. Screenshots will appear here automatically."
+  },
+  "history.loading": {
+    "zh-CN": "正在加载历史记录…",
+    "en": "Loading history…"
   },
   "history.unknown_time": {
     "zh-CN": "未知时间",

@@ -8,6 +8,9 @@ import "./pin.css";
 // 透明度档位以 1 → 0.75 → 0.5 → 0.25 循环;与 Rust 侧 alpha 乘算一致。
 const OPACITY_STEPS = [1, 0.75, 0.5, 0.25];
 
+// 结果提示的自动隐藏时长(ADR-2:只有结果提示自动消失,进行中型提示不用它)。
+const NOTE_AUTO_HIDE_MS = 2200;
+
 const ICONS = {
   copy: icons.copy,
   save: icons.save,
@@ -51,7 +54,7 @@ interface PinOptions {
 export function mountPin(root: HTMLElement): () => void {
   root.className = "pin-root";
   root.innerHTML = `
-    <div class="pin-stage" data-tauri-drag-region>
+    <div class="pin-stage" data-tauri-drag-region tabindex="0" data-i18n-aria-label="pin.stage_label" aria-label="贴图">
       <canvas class="pin-canvas"></canvas>
     </div>
     <div class="pin-toolbar">
@@ -62,7 +65,7 @@ export function mountPin(root: HTMLElement): () => void {
       <button type="button" data-action="annotate" data-i18n-title="pin.toolbar.annotate_title" data-i18n-aria-label="pin.toolbar.annotate" title="再标注（确认后更新贴图）" aria-label="再标注">${ICONS.annotate}</button>
       <button type="button" data-action="close" class="pin-close" data-i18n-title="pin.toolbar.close_title" data-i18n-aria-label="pin.toolbar.close" title="关闭贴图" aria-label="关闭贴图">${ICONS.close}</button>
     </div>
-    <div class="pin-menu" data-menu hidden>
+    <div class="pin-menu" data-menu data-i18n-aria-label="pin.menu_label" aria-label="贴图菜单" hidden>
       <button type="button" data-menu-action="copy" data-i18n="pin.menu.copy">复制图片</button>
       <button type="button" data-menu-action="save" data-i18n="pin.menu.save">保存 PNG…</button>
       <button type="button" data-menu-action="rotate" data-i18n="pin.menu.rotate">顺时针旋转 90°</button>
@@ -77,7 +80,7 @@ export function mountPin(root: HTMLElement): () => void {
           ).join("")}
         </div>
       </div>
-      <button type="button" data-menu-action="click-through" data-enhance>开启点击穿透</button>
+      <button type="button" data-menu-action="click-through" data-enhance data-i18n="pin.menu.click_through">开启点击穿透</button>
       <button type="button" data-menu-action="group" data-enhance data-i18n="pin.menu.group">编组全部贴图</button>
       <button type="button" data-menu-action="ungroup" data-enhance data-i18n="pin.menu.ungroup">从编组中解组</button>
       <button type="button" data-menu-action="annotate" data-i18n="pin.menu.annotate">再标注…</button>
@@ -162,7 +165,7 @@ export function mountPin(root: HTMLElement): () => void {
     window.clearTimeout(noteTimer);
     noteTimer = window.setTimeout(() => {
       note.hidden = true;
-    }, 2200);
+    }, NOTE_AUTO_HIDE_MS);
   };
 
   const showNote = (text: string, isError = false): void => {
@@ -233,7 +236,12 @@ export function mountPin(root: HTMLElement): () => void {
   };
 
   const hideMenu = (): void => {
+    // 焦点在菜单内时,关闭后返回 stage,键盘用户不丢失上下文。
+    const focusInside = menu.contains(document.activeElement);
     menu.hidden = true;
+    if (focusInside) {
+      stage.focus();
+    }
   };
 
   const close = (): void => {
@@ -562,7 +570,15 @@ export function mountPin(root: HTMLElement): () => void {
     }
   };
 
-  const openMenu = async (event: MouseEvent): Promise<void> => {
+  // 打开菜单后焦点移入第一个可见项,Esc/点选/外部点击关闭后由 hideMenu 送回 stage。
+  const focusMenu = (): void => {
+    const first = Array.from(menu.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => !button.hidden,
+    );
+    first?.focus();
+  };
+
+  const openMenuAt = async (clientX: number, clientY: number): Promise<void> => {
     if (!state) {
       return;
     }
@@ -580,15 +596,26 @@ export function mountPin(root: HTMLElement): () => void {
     }
     const mw = menu.offsetWidth;
     const mh = menu.offsetHeight;
-    const x = Math.min(Math.max(4, event.clientX), Math.max(4, root.clientWidth - mw - 4));
-    const y = Math.min(Math.max(4, event.clientY), Math.max(4, root.clientHeight - mh - 4));
+    const x = Math.min(Math.max(4, clientX), Math.max(4, root.clientWidth - mw - 4));
+    const y = Math.min(Math.max(4, clientY), Math.max(4, root.clientHeight - mh - 4));
     menu.style.left = `${x}px`;
     menu.style.top = `${y}px`;
+    focusMenu();
   };
 
   stage.addEventListener("contextmenu", (event) => {
     event.preventDefault();
-    void openMenu(event);
+    void openMenuAt(event.clientX, event.clientY);
+  });
+
+  // 键盘打开菜单:聚焦 stage 后按菜单键/Shift+F10/Enter,菜单出现在窗口中心。
+  stage.addEventListener("keydown", (event) => {
+    const menuKey =
+      event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey);
+    if (menuKey || event.key === "Enter") {
+      event.preventDefault();
+      void openMenuAt(Math.round(root.clientWidth / 2), Math.round(root.clientHeight / 2));
+    }
   });
 
   document.addEventListener("click", (event) => {

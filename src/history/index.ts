@@ -162,7 +162,8 @@ export function mountHistory(root: HTMLElement): () => void {
           </div>
         </div>
         <div class="history-list" data-list></div>
-        <p class="history-empty" data-empty hidden>暂无历史记录。截图完成后会自动出现在这里。</p>
+        <p class="history-loading" data-loading role="status"><span class="progress" aria-hidden="true"></span><span data-i18n="history.loading">正在加载历史记录…</span></p>
+        <p class="history-empty" data-empty data-i18n="history.empty" hidden>暂无历史记录。截图完成后会自动出现在这里。</p>
       </main>
     </div>
   `;
@@ -181,6 +182,7 @@ export function mountHistory(root: HTMLElement): () => void {
   const listEl = root.querySelector("[data-list]");
   const countEl = root.querySelector("[data-count]");
   const emptyEl = root.querySelector("[data-empty]");
+  const loadingEl = root.querySelector("[data-loading]");
   const clearEl = root.querySelector("[data-action=clear]");
   const closeEl = root.querySelector("[data-action=close]");
   if (
@@ -198,13 +200,12 @@ export function mountHistory(root: HTMLElement): () => void {
     !(listEl instanceof HTMLElement) ||
     !(countEl instanceof HTMLElement) ||
     !(emptyEl instanceof HTMLElement) ||
+    !(loadingEl instanceof HTMLElement) ||
     !(clearEl instanceof HTMLButtonElement) ||
     !(closeEl instanceof HTMLButtonElement)
   ) {
     return () => undefined;
   }
-
-  emptyEl.textContent = t("history.empty");
 
   let busy = false;
   let applyingDom = false;
@@ -222,6 +223,8 @@ export function mountHistory(root: HTMLElement): () => void {
   // 确认一律走窗口内确认条,三平台行为一致,也不新增插件与权限依赖。
   type PendingConfirm = { kind: "delete"; id: string } | { kind: "clear" };
   let pendingConfirm: PendingConfirm | null = null;
+  // 打开确认条的触发按钮:确认条关闭后焦点还原到它(键盘用户不丢上下文)。
+  let confirmTrigger: HTMLElement | null = null;
 
   const confirmMessage = (pending: PendingConfirm): string =>
     pending.kind === "delete" ? t("history.confirm_delete") : t("history.confirm_clear");
@@ -231,15 +234,40 @@ export function mountHistory(root: HTMLElement): () => void {
   const filtersActive = (): boolean =>
     timeRange !== "all" || modeFilter !== "all" || noteQuery.trim().length > 0;
 
+  // busy 期间操作按钮给禁用可视态;因图像缺失而常驻禁用的按钮保持禁用。
+  const syncBusy = (): void => {
+    clearEl.disabled = busy;
+    confirmAcceptEl.disabled = busy;
+    listEl
+      .querySelectorAll<HTMLButtonElement>("[data-entry-action]")
+      .forEach((button) => {
+        button.disabled = busy || button.dataset.missingDisabled === "true";
+      });
+  };
+
+  const setBusy = (value: boolean): void => {
+    busy = value;
+    syncBusy();
+  };
+
   const hideConfirm = (): void => {
     pendingConfirm = null;
     confirmEl.hidden = true;
     confirmTextEl.textContent = "";
     confirmAcceptEl.textContent = t("history.accept");
+    const trigger = confirmTrigger;
+    confirmTrigger = null;
+    // 仅当焦点还在确认条内时才还原,不打断用户已移走的焦点。
+    if (trigger && trigger.isConnected && confirmEl.contains(document.activeElement)) {
+      trigger.focus();
+    }
   };
 
-  const showConfirm = (pending: PendingConfirm): void => {
+  const showConfirm = (pending: PendingConfirm, trigger?: HTMLElement): void => {
     pendingConfirm = pending;
+    confirmTrigger =
+      trigger ??
+      (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     confirmTextEl.textContent = confirmMessage(pending);
     confirmAcceptEl.textContent = confirmAcceptLabel(pending);
     confirmEl.hidden = false;
@@ -435,6 +463,7 @@ export function mountHistory(root: HTMLElement): () => void {
         : "history-btn history-fav";
       favorite.dataset.entryAction = "favorite";
       favorite.setAttribute("aria-pressed", entry.favorite ? "true" : "false");
+      favorite.disabled = busy;
       const favoriteLabel = t(entry.favorite ? "history.unfavorite" : "history.favorite");
       favorite.setAttribute("aria-label", favoriteLabel);
       favorite.dataset.tooltip = favoriteLabel;
@@ -455,8 +484,11 @@ export function mountHistory(root: HTMLElement): () => void {
       button.textContent = t(labelKey);
       if (entry.imageMissing && action !== "delete") {
         button.disabled = true;
+        button.dataset.missingDisabled = "true";
         // 禁用控件不响应自绘提示的悬停;原因提示保留原生 title(R2 允许例外)。
         button.title = t("history.image_missing_title");
+      } else if (busy) {
+        button.disabled = true;
       }
       if (action === "delete") {
         const separator = document.createElement("span");
@@ -525,11 +557,14 @@ export function mountHistory(root: HTMLElement): () => void {
       render(await invoke<HistoryListPayload>("get_history"));
     } catch (error) {
       setStatusText(errorMessage(error), true);
+    } finally {
+      // 初始加载态只出现一次;后续静默刷新(聚焦/刷新信号)不再闪现。
+      loadingEl.hidden = true;
     }
   };
 
   const performDelete = async (id: string): Promise<void> => {
-    busy = true;
+    setBusy(true);
     try {
       render(await invoke<HistoryListPayload>("delete_history_entry", { id }));
       noteDrafts.delete(id);
@@ -537,12 +572,12 @@ export function mountHistory(root: HTMLElement): () => void {
     } catch (error) {
       setStatusText(errorMessage(error), true);
     } finally {
-      busy = false;
+      setBusy(false);
     }
   };
 
   const performClear = async (): Promise<void> => {
-    busy = true;
+    setBusy(true);
     statusState = { key: null, text: "", isError: false };
     renderStatus();
     try {
@@ -552,21 +587,21 @@ export function mountHistory(root: HTMLElement): () => void {
     } catch (error) {
       setStatusText(errorMessage(error), true);
     } finally {
-      busy = false;
+      setBusy(false);
     }
   };
 
-  const runAction = async (action: string, id: string): Promise<void> => {
+  const runAction = async (action: string, id: string, trigger?: HTMLElement): Promise<void> => {
     if (busy) {
       return;
     }
     if (action === "delete") {
       // 删除需二次确认:显示窗口内确认条,确认后再执行,不依赖 WebView 对话框。
-      showConfirm({ kind: "delete", id });
+      showConfirm({ kind: "delete", id }, trigger);
       return;
     }
     hideConfirm();
-    busy = true;
+    setBusy(true);
     try {
       if (action === "copy") {
         await invoke("copy_history_entry", { id });
@@ -585,7 +620,7 @@ export function mountHistory(root: HTMLElement): () => void {
     } catch (error) {
       setStatusText(errorMessage(error), true);
     } finally {
-      busy = false;
+      setBusy(false);
     }
   };
 
@@ -604,7 +639,7 @@ export function mountHistory(root: HTMLElement): () => void {
     if (!id || !action) {
       return;
     }
-    void runAction(action, id);
+    void runAction(action, id, button);
   });
 
   const resetFilters = (): void => {
@@ -648,7 +683,7 @@ export function mountHistory(root: HTMLElement): () => void {
     if (busy) {
       return;
     }
-    showConfirm({ kind: "clear" });
+    showConfirm({ kind: "clear" }, clearEl);
   });
 
   confirmAcceptEl.addEventListener("click", () => {

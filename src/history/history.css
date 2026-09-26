@@ -379,6 +379,17 @@
   cursor: default;
 }
 
+/* 初始加载指示:复用 app.css 的行内进度圈,只在首次载入出现。 */
+.history-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 8px 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .history-empty {
   margin: auto 0;
   text-align: center;

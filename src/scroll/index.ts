@@ -33,7 +33,7 @@ export function mountScroll(root: HTMLElement): () => void {
         <span class="scroll-title" data-i18n="scroll.title"></span>
         <span class="scroll-size"></span>
       </div>
-      <p class="scroll-status"></p>
+      <p class="scroll-status" role="status"></p>
       <p class="scroll-hint" data-i18n="scroll.hint"></p>
       <div class="scroll-actions">
         <button type="button" class="scroll-finish" data-i18n="scroll.finish"></button>
@@ -54,16 +54,28 @@ export function mountScroll(root: HTMLElement): () => void {
   }
 
   let last: ScrollStatus | null = null;
+  // 取消/完成请求进行中:期间两按钮禁用,进行中文案持续显示直到结果替换(ADR-2)。
+  let actionBusy = false;
 
   const render = (): void => {
     if (!last) {
+      status.classList.remove("is-error");
       status.textContent = t("scroll.status.running");
       size.textContent = "";
       return;
     }
+    status.classList.toggle("is-error", last.state === "failed");
     status.textContent = t(STATUS_KEYS[last.state] ?? "scroll.status.running");
-    size.textContent = last.height > 0 ? t("scroll.height", { height: last.height }) : "";
-    const busy = last.state === "finishing";
+    // 已拼接条数与高度一起展示,滚动中能看到进展。
+    const parts: string[] = [];
+    if (last.appended > 0) {
+      parts.push(t("scroll.appended", { count: last.appended }));
+    }
+    if (last.height > 0) {
+      parts.push(t("scroll.height", { height: last.height }));
+    }
+    size.textContent = parts.join(" · ");
+    const busy = actionBusy || last.state === "finishing";
     finish.disabled = busy;
     cancel.disabled = busy;
   };
@@ -74,24 +86,52 @@ export function mountScroll(root: HTMLElement): () => void {
   };
 
   const reset = (): void => {
+    actionBusy = false;
+    finish.disabled = false;
+    cancel.disabled = false;
     apply(null);
     void invoke<ScrollStatus | null>("get_scroll_status").then(apply);
   };
 
+  const showActionError = (key: CatalogKey): void => {
+    actionBusy = false;
+    finish.disabled = false;
+    cancel.disabled = false;
+    status.textContent = t(key);
+    status.classList.add("is-error");
+  };
+
   finish.addEventListener("click", () => {
+    if (actionBusy) {
+      return;
+    }
+    actionBusy = true;
     finish.disabled = true;
     cancel.disabled = true;
+    status.classList.remove("is-error");
+    status.textContent = t("scroll.status.finishing");
     void invoke("finish_scroll_capture").catch(() => {
-      finish.disabled = false;
-      cancel.disabled = false;
+      showActionError("scroll.action.finish_failed");
     });
   });
-  cancel.addEventListener("click", () => {
-    void invoke("cancel_scroll_capture");
-  });
+
+  const cancelCapture = (): void => {
+    if (actionBusy) {
+      return;
+    }
+    actionBusy = true;
+    finish.disabled = true;
+    cancel.disabled = true;
+    status.classList.remove("is-error");
+    status.textContent = t("scroll.action.canceling");
+    void invoke("cancel_scroll_capture").catch(() => {
+      showActionError("scroll.action.cancel_failed");
+    });
+  };
+  cancel.addEventListener("click", cancelCapture);
   window.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
-      void invoke("cancel_scroll_capture");
+      cancelCapture();
     }
   });
 

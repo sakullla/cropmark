@@ -483,6 +483,17 @@ export function mountSettings(root: HTMLElement): () => void {
 
   let recording: HotkeySlot | null = null;
   let applying = false;
+  // 切换写回进行中:开关给共享 busy 可视态(app.css button[aria-busy])并阻止点击。
+  const setApplying = (value: boolean): void => {
+    applying = value;
+    root.querySelectorAll("button.switch").forEach((button) => {
+      if (value) {
+        button.setAttribute("aria-busy", "true");
+      } else {
+        button.removeAttribute("aria-busy");
+      }
+    });
+  };
   let lastSettings: UiSettings | null = null;
   let captureSettings: CaptureSettings = {
     delaySeconds: 0,
@@ -544,6 +555,8 @@ export function mountSettings(root: HTMLElement): () => void {
       const selected = button.dataset.languageValue === language;
       button.setAttribute("aria-checked", selected ? "true" : "false");
       button.classList.toggle("selected", selected);
+      // 漫游 tabindex:整组一个 Tab 停靠点,方向键在组内移动并选中。
+      button.tabIndex = selected ? 0 : -1;
     });
   };
 
@@ -772,6 +785,12 @@ export function mountSettings(root: HTMLElement): () => void {
     shadowEl.disabled = !beautifyOn;
     shadowEl.setAttribute("aria-checked", exportAppearance.beautify.shadow ? "true" : "false");
     shadowEl.classList.toggle("on", exportAppearance.beautify.shadow);
+    // 预设按钮每次重建:方向键漫游后焦点落在被替换节点上,这里记住并还原。
+    const activePreset =
+      document.activeElement instanceof HTMLButtonElement &&
+      presetRoot.contains(document.activeElement)
+        ? (document.activeElement.dataset.beautifyPreset ?? null)
+        : null;
     presetRoot.replaceChildren();
     for (const item of BEAUTIFY_PRESETS) {
       const button = document.createElement("button");
@@ -784,6 +803,8 @@ export function mountSettings(root: HTMLElement): () => void {
       const selected = item.id === exportAppearance.beautify.preset;
       button.setAttribute("aria-checked", selected ? "true" : "false");
       button.classList.toggle("selected", selected);
+      // 漫游 tabindex:与语言组一致的 radio 组键盘行为。
+      button.tabIndex = selected ? 0 : -1;
       const chip = document.createElement("span");
       chip.setAttribute("aria-hidden", "true");
       chip.style.display = "inline-block";
@@ -797,23 +818,30 @@ export function mountSettings(root: HTMLElement): () => void {
       button.prepend(chip);
       presetRoot.append(button);
     }
+    if (activePreset) {
+      presetRoot
+        .querySelector<HTMLButtonElement>(`[data-beautify-preset="${activePreset}"]`)
+        ?.focus();
+    }
   };
 
   const applyAppearance = async (next: ExportAppearance): Promise<void> => {
-    applying = true;
+    setApplying(true);
     try {
       const settings = await invoke<UiSettings>("set_export_appearance", { appearance: next });
       render(settings);
     } catch (error) {
       showInvokeError(error);
     } finally {
-      applying = false;
+      setApplying(false);
     }
   };
 
+  // invoke 失败给本地化提示,后接后端细节(ADR-5);不直出英文原文。
   const showInvokeError = (error: unknown): void => {
+    const detail = error instanceof Error ? error.message : String(error);
     noticeEl.hidden = false;
-    noticeEl.textContent = error instanceof Error ? error.message : String(error);
+    noticeEl.textContent = t("settings.error.invoke_failed", { detail });
   };
 
   const refresh = async (): Promise<void> => {
@@ -826,7 +854,7 @@ export function mountSettings(root: HTMLElement): () => void {
   };
 
   const applyHotkey = async (slot: HotkeySlot, accelerator: string): Promise<void> => {
-    applying = true;
+    setApplying(true);
     try {
       // R8:剪贴板贴图热键走独立字段与命令,空串表示清除绑定。
       const settings =
@@ -838,12 +866,12 @@ export function mountSettings(root: HTMLElement): () => void {
     } catch (error) {
       showInvokeError(error);
     } finally {
-      applying = false;
+      setApplying(false);
     }
   };
 
   const applyCapture = async (next: CaptureSettings): Promise<void> => {
-    applying = true;
+    setApplying(true);
     try {
       const settings = await invoke<UiSettings>("set_capture_settings", {
         settings: next,
@@ -852,12 +880,12 @@ export function mountSettings(root: HTMLElement): () => void {
     } catch (error) {
       showInvokeError(error);
     } finally {
-      applying = false;
+      setApplying(false);
     }
   };
 
   const applyHistory = async (next: HistorySettings): Promise<void> => {
-    applying = true;
+    setApplying(true);
     try {
       const settings = await invoke<UiSettings>("set_history_settings", {
         settings: next,
@@ -866,19 +894,19 @@ export function mountSettings(root: HTMLElement): () => void {
     } catch (error) {
       showInvokeError(error);
     } finally {
-      applying = false;
+      setApplying(false);
     }
   };
 
   const applyLanguageSetting = async (language: LanguageSetting): Promise<void> => {
-    applying = true;
+    setApplying(true);
     try {
       const settings = await invoke<UiSettings>("set_language", { language });
       render(settings);
     } catch (error) {
       showInvokeError(error);
     } finally {
-      applying = false;
+      setApplying(false);
     }
   };
 
@@ -978,7 +1006,8 @@ export function mountSettings(root: HTMLElement): () => void {
   loadLogDirectory();
   openLogsEl.addEventListener("click", () => {
     void invoke("open_log_directory").catch(() => {
-      showInvokeError(new Error(t("settings.logs.open_failed")));
+      noticeEl.hidden = false;
+      noticeEl.textContent = t("settings.logs.open_failed");
     });
   });
 
@@ -1103,17 +1132,62 @@ export function mountSettings(root: HTMLElement): () => void {
     void applyLanguageSetting(value);
   });
 
+  // radio 组方向键漫游(R6):方向键/Home/End 移动焦点并选中目标项,
+  // 选中走既有点击委托,行为与指针完全一致。
+  const handleRadioGroupKeydown = (
+    event: KeyboardEvent,
+    container: HTMLElement,
+    selector: string,
+  ): void => {
+    const keys = ["ArrowLeft", "ArrowUp", "ArrowRight", "ArrowDown", "Home", "End"];
+    if (!keys.includes(event.key)) {
+      return;
+    }
+    const buttons = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(selector),
+    ).filter((button) => !button.disabled);
+    if (buttons.length === 0) {
+      return;
+    }
+    event.preventDefault();
+    const currentIndex = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    let nextIndex: number;
+    if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = buttons.length - 1;
+    } else {
+      const delta = event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1;
+      nextIndex =
+        currentIndex < 0
+          ? delta > 0
+            ? 0
+            : buttons.length - 1
+          : (currentIndex + delta + buttons.length) % buttons.length;
+    }
+    const target = buttons[nextIndex];
+    target.focus();
+    target.click();
+  };
+
+  languageRoot.addEventListener("keydown", (event) => {
+    handleRadioGroupKeydown(event, languageRoot, "[data-language-value]");
+  });
+  presetRoot.addEventListener("keydown", (event) => {
+    handleRadioGroupKeydown(event, presetRoot, "[data-beautify-preset]");
+  });
+
   switchEl.addEventListener("click", () => {
     if (applying) {
       return;
     }
     const next = switchEl.getAttribute("aria-checked") !== "true";
-    applying = true;
+    setApplying(true);
     void invoke<UiSettings>("set_autostart_enabled", { enabled: next })
       .then(render)
       .catch(showInvokeError)
       .finally(() => {
-        applying = false;
+        setApplying(false);
       });
   });
 
@@ -1128,12 +1202,12 @@ export function mountSettings(root: HTMLElement): () => void {
     if (featureButton instanceof HTMLButtonElement && featureButton.dataset.toggleFeature) {
       const key = featureButton.dataset.toggleFeature as ToggleKey;
       const next = featureButton.getAttribute("aria-checked") !== "true";
-      applying = true;
+      setApplying(true);
       void invoke<UiSettings>("set_feature", { key, enabled: next })
         .then(render)
         .catch(showInvokeError)
         .finally(() => {
-          applying = false;
+          setApplying(false);
         });
       return;
     }
@@ -1141,12 +1215,12 @@ export function mountSettings(root: HTMLElement): () => void {
     if (toolButton instanceof HTMLButtonElement && toolButton.dataset.toggleTool) {
       const tool = toolButton.dataset.toggleTool;
       const next = toolButton.getAttribute("aria-checked") !== "true";
-      applying = true;
+      setApplying(true);
       void invoke<UiSettings>("set_annotation_tool", { tool, enabled: next })
         .then(render)
         .catch(showInvokeError)
         .finally(() => {
-          applying = false;
+          setApplying(false);
         });
     }
   });

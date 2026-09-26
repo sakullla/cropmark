@@ -46,7 +46,9 @@
     border-color 120ms ease,
     color 120ms ease,
     filter 120ms ease;
-  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  /* 全局界面字体栈的唯一取值来源:各视图(含贴图)一律消费此变量。 */
+  --font-ui: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  font-family: var(--font-ui);
 }
 
 @media (prefers-color-scheme: dark) {
