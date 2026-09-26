@@ -22,6 +22,7 @@ pub const DELAY: &str = "capture-delay";
 pub const ERROR: &str = "capture-error";
 pub const SETTINGS: &str = "settings";
 pub const HISTORY: &str = "history";
+pub const GUIDE: &str = "guide";
 pub const TOAST: &str = "toast";
 
 const TOAST_WIDTH: f64 = 300.0;
@@ -162,8 +163,8 @@ pub struct DelayPayload {
     pub mode: CaptureMode,
 }
 
-pub fn product_window_labels() -> [&'static str; 3] {
-    [PREVIEW, SETTINGS, HISTORY]
+pub fn product_window_labels() -> [&'static str; 4] {
+    [PREVIEW, SETTINGS, HISTORY, GUIDE]
 }
 
 pub fn session_window_labels() -> [&'static str; 3] {
@@ -186,7 +187,7 @@ pub fn show_window(app: &AppHandle, label: &str) {
     if let Some(window) = app.get_webview_window(label) {
         if label == PREVIEW {
             present_preview_window(&window, app);
-        } else if label == SETTINGS || label == HISTORY || label == ERROR {
+        } else if label == SETTINGS || label == HISTORY || label == ERROR || label == GUIDE {
             crate::front::reveal(app, &window);
         } else {
             let _ = window.set_ignore_cursor_events(false);

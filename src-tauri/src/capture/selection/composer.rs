@@ -1752,6 +1752,7 @@ fn draw_long_capture_icon(
 }
 
 /// 混合模式的粗线(图标字形不透明落笔会把底色打穿,这里全部 blend)。
+#[allow(clippy::too_many_arguments)]
 fn blend_line(
     rgba: &mut [u8],
     w: u32,

@@ -955,7 +955,10 @@ export function mountPreview(root: HTMLElement): () => void {
         return;
       }
       if (key === "c") {
-        if (document.activeElement instanceof HTMLTextAreaElement) {
+        if (
+          document.activeElement instanceof HTMLTextAreaElement ||
+          document.activeElement instanceof HTMLInputElement
+        ) {
           return;
         }
         const selection = window.getSelection();

@@ -10,7 +10,7 @@ use tauri::{AppHandle, Manager, WebviewWindow};
 use crate::capture::ui::{ERROR, HISTORY, PREVIEW, SETTINGS};
 
 /// 首次引导 / 快捷键帮助。按需创建,关闭即销毁,不在启动路径预建。
-pub const GUIDE: &str = "guide";
+pub use crate::capture::ui::GUIDE;
 
 /// 显示并前置窗口。macOS 会先把进程从 Accessory 提升为 Regular。
 pub fn reveal(app: &AppHandle, window: &WebviewWindow) {

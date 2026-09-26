@@ -3,7 +3,9 @@ use std::time::{Duration, Instant};
 use super::error::CaptureError;
 
 #[allow(dead_code)]
-pub const PRODUCT_SURFACES: [&str; 4] = ["preview", "settings", "history", "tray-popup"];
+pub const PRODUCT_SURFACES: [&str; 5] = [
+    "preview", "settings", "history", "guide", "tray-popup",
+];
 #[allow(dead_code)]
 pub const SESSION_SURFACES: [&str; 3] = ["overlay", "capture-delay", "capture-error"];
 
@@ -12,6 +14,7 @@ pub enum SurfaceKind {
     Preview,
     Settings,
     History,
+    Guide,
     TrayPopup,
     Overlay,
     Delay,
@@ -25,6 +28,7 @@ impl SurfaceKind {
             Self::Preview => "preview",
             Self::Settings => "settings",
             Self::History => "history",
+            Self::Guide => "guide",
             Self::TrayPopup => "tray-popup",
             Self::Overlay => "overlay",
             Self::Delay => "capture-delay",
@@ -37,6 +41,7 @@ impl SurfaceKind {
             "preview" => Some(Self::Preview),
             "settings" => Some(Self::Settings),
             "history" => Some(Self::History),
+            "guide" => Some(Self::Guide),
             "tray-popup" => Some(Self::TrayPopup),
             "overlay" => Some(Self::Overlay),
             "capture-delay" => Some(Self::Delay),
@@ -48,7 +53,7 @@ impl SurfaceKind {
     pub fn restore_on_cancel(self) -> bool {
         matches!(
             self,
-            Self::Preview | Self::Settings | Self::History | Self::TrayPopup
+            Self::Preview | Self::Settings | Self::History | Self::Guide | Self::TrayPopup
         )
     }
 }
@@ -255,6 +260,16 @@ mod tests {
         wait.mark_presented();
         wait.set_still_visible(true);
         assert!(!wait.can_capture());
+    }
+
+    #[test]
+    fn guide_restores_with_other_product_surfaces() {
+        let mut wait = HideWait::record(vec![visible("guide")]);
+        wait.request_hide();
+        let restored = wait.restore_on_cancel();
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].label, "guide");
+        assert!(restored[0].kind.restore_on_cancel());
     }
 
     #[test]

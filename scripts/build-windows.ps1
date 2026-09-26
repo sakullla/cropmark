@@ -70,9 +70,12 @@ function Export-CropmarkReleasePathRemap {
     }
 
     if ($LinkPdbAltPath) {
-        # RUSTFLAGS replaces .cargo/config.toml rustflags, so this is the full set.
+        # CARGO_ENCODED_RUSTFLAGS replaces .cargo/config.toml rustflags, so this
+        # is the full set. Unit-separator encoding keeps paths that contain spaces.
         $flags += "-Clink-arg=/PDBALTPATH:%_PDB%"
-        Set-CropmarkRemapVar "RUSTFLAGS" ($flags -join " ")
+        $encoded = $flags -join [char]0x1f
+        Set-CropmarkRemapVar "CARGO_ENCODED_RUSTFLAGS" $encoded
+        Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue
     }
 }
 

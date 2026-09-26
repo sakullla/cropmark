@@ -7,8 +7,9 @@ MACOSX_DEPLOYMENT_TARGET = "14.0"
 # CROPMARK_REMAP_* before cargo/tauri build. Unset variables stay on the
 # sentinel and match nothing, so dev/test builds are unchanged.
 # More specific prefixes are last: rustc keeps the last matching prefix.
-# On Windows release, scripts set RUSTFLAGS (these flags plus the MSVC PDB
-# alt path). RUSTFLAGS replaces this list, so keep the two copies in sync.
+# On Windows release, scripts set CARGO_ENCODED_RUSTFLAGS (these flags plus
+# the MSVC PDB alt path). That variable replaces this list, so keep the two
+# copies in sync. Paths are separated by U+001F so spaces stay inside one flag.
 [build]
 rustflags = [
   "--remap-path-scope=all",
