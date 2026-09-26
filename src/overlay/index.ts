@@ -106,6 +106,7 @@ export function mountOverlay(root: HTMLElement): () => void {
     <canvas></canvas>
     <div class="overlay-chrome">
       <div class="overlay-hint"></div>
+      <button type="button" class="overlay-retry" data-i18n="overlay.retry" hidden>重试</button>
       <div class="overlay-actions" hidden>
         <button type="button" data-workspace="ocr" data-i18n="overlay.action.ocr">取字</button>
         <button type="button" data-workspace="pin" data-i18n="overlay.action.pin">贴图</button>
@@ -124,6 +125,7 @@ export function mountOverlay(root: HTMLElement): () => void {
   `;
   const canvas = root.querySelector("canvas");
   const hint = root.querySelector(".overlay-hint");
+  const retryBtn = root.querySelector(".overlay-retry");
   const badge = root.querySelector(".size-badge");
   const list = root.querySelector(".window-list");
   const cancelBtn = root.querySelector(".overlay-cancel");
@@ -135,6 +137,7 @@ export function mountOverlay(root: HTMLElement): () => void {
   if (
     !(canvas instanceof HTMLCanvasElement) ||
     !(hint instanceof HTMLElement) ||
+    !(retryBtn instanceof HTMLButtonElement) ||
     !(badge instanceof HTMLElement) ||
     !(list instanceof HTMLElement) ||
     !(cancelBtn instanceof HTMLButtonElement) ||
@@ -239,16 +242,49 @@ export function mountOverlay(root: HTMLElement): () => void {
     return annotationBase;
   };
 
-  const showNotice = (message: string): void => {
+  // ADR-2:进行中提示(persistent)不自动消失,直到完成/失败文案替换;
+  // 瞬态结果提示仍可 3.6s 自动隐藏。
+  const showNotice = (message: string, persistent = false): void => {
     notice.textContent = message;
     notice.hidden = false;
     if (noticeTimer) {
       window.clearTimeout(noticeTimer);
-    }
-    noticeTimer = window.setTimeout(() => {
       noticeTimer = 0;
-      notice.hidden = true;
-    }, 3600);
+    }
+    if (!persistent) {
+      noticeTimer = window.setTimeout(() => {
+        noticeTimer = 0;
+        notice.hidden = true;
+      }, 3600);
+    }
+  };
+
+  // 隐藏提示必须同时清掉自动隐藏计时器,否则旧计时器会提前藏掉新提示。
+  const hideNotice = (): void => {
+    if (noticeTimer) {
+      window.clearTimeout(noticeTimer);
+      noticeTimer = 0;
+    }
+    notice.hidden = true;
+  };
+
+  // finishing 期间动作按钮给共享 disabled 可视态(app.css button:disabled),
+  // 不再只是静默忽略重复点击。
+  const setFinishing = (value: boolean): void => {
+    finishing = value;
+    actionsEl.querySelectorAll("button").forEach((el) => {
+      if (el instanceof HTMLButtonElement) {
+        el.disabled = value;
+      }
+    });
+  };
+
+  // 加载/确认失败除改写 hint 外提供重试入口;成功路径经 renderHint/load 收起。
+  let retryAction: (() => void) | null = null;
+  const showFailure = (message: string, retry: () => void): void => {
+    hint.textContent = message;
+    retryAction = retry;
+    retryBtn.hidden = false;
   };
 
   const setCapabilityPanel = (open: boolean): void => {
@@ -285,6 +321,9 @@ export function mountOverlay(root: HTMLElement): () => void {
     if (!frame) {
       return;
     }
+    // 恢复正常提示即收起失败重试入口。
+    retryBtn.hidden = true;
+    retryAction = null;
     const reduced = frame.reducedCapabilities === true;
     if (frame.fixed) {
       hint.textContent = t(
@@ -447,12 +486,13 @@ export function mountOverlay(root: HTMLElement): () => void {
       selectionHalo,
     );
     badge.hidden = false;
-    badge.textContent = `${crop.width} × ${crop.height}`;
+    badge.textContent = t("overlay.size_format", { width: crop.width, height: crop.height });
     const rect = canvas.getBoundingClientRect();
     const cssX = (crop.x / frame.width) * rect.width;
     const cssY = (crop.y / frame.height) * rect.height;
-    badge.style.left = `${Math.min(cssX + 8, rect.width - 88)}px`;
-    badge.style.top = `${Math.max(cssY - 28, 12)}px`;
+    // 四边钳制:选区贴近屏幕任意边缘时徽标完整可见(常数沿用原右/上值)。
+    badge.style.left = `${clamp(cssX + 8, 4, Math.max(4, rect.width - 88))}px`;
+    badge.style.top = `${clamp(cssY - 28, 12, Math.max(12, rect.height - 36))}px`;
   };
 
   const scheduleDraw = (): void => {
@@ -479,14 +519,14 @@ export function mountOverlay(root: HTMLElement): () => void {
         : null;
       hoverId = null;
       dragging = false;
-      finishing = false;
+      setFinishing(false);
       // 旧帧位图先摘除,避免重置标注会话触发的重绘读到未加载的新图。
       image = null;
       annotationBase = null;
       resetAnnotationSession();
       const reduced = frame.reducedCapabilities === true;
       capabilityToggle.hidden = !reduced;
-      notice.hidden = true;
+      hideNotice();
       setCapabilityPanel(false);
       if (reduced) {
         renderCapabilityPanel();
@@ -534,7 +574,9 @@ export function mountOverlay(root: HTMLElement): () => void {
       if (isCancelledError(error)) {
         return;
       }
-      hint.textContent = invokeError(error, t("overlay.error.capture_failed"));
+      showFailure(invokeError(error, t("overlay.error.capture_failed")), () => {
+        void load();
+      });
     }
   };
 
@@ -544,17 +586,14 @@ export function mountOverlay(root: HTMLElement): () => void {
     }
     const crop = roundedRect();
     if (!crop || crop.width < 2 || crop.height < 2) {
-      // 不静默吞掉确认:给出下次能成功的具体做法(R13)。
-      if (!selection) {
-        showNotice(t("overlay.notice.select_first"));
-      } else if (selection.width >= 1 || selection.height >= 1) {
-        showNotice(t("overlay.notice.too_small"));
-      }
+      // 不静默吞掉确认:给出下次能成功的具体做法(R13)。单击未拖动得到的
+      // 0×0 选区同样按"太小"提示,而不是无反馈。
+      showNotice(t(selection ? "overlay.notice.too_small" : "overlay.notice.select_first"));
       return;
     }
     editor?.commitText();
     const annotations = editor?.exportList() ?? [];
-    finishing = true;
+    setFinishing(true);
     try {
       await invoke("confirm_region", {
         x: crop.x,
@@ -564,8 +603,10 @@ export function mountOverlay(root: HTMLElement): () => void {
         annotations,
       });
     } catch (error) {
-      finishing = false;
-      hint.textContent = invokeError(error, t("overlay.error.capture_failed"));
+      setFinishing(false);
+      showFailure(invokeError(error, t("overlay.error.capture_failed")), () => {
+        void finishRegion();
+      });
     }
   };
 
@@ -573,12 +614,14 @@ export function mountOverlay(root: HTMLElement): () => void {
     if (finishing) {
       return;
     }
-    finishing = true;
+    setFinishing(true);
     try {
       await invoke("confirm_window", { windowId });
     } catch (error) {
-      finishing = false;
-      hint.textContent = invokeError(error, t("overlay.error.capture_failed"));
+      setFinishing(false);
+      showFailure(invokeError(error, t("overlay.error.capture_failed")), () => {
+        void finishWindow(windowId);
+      });
     }
   };
 
@@ -613,8 +656,9 @@ export function mountOverlay(root: HTMLElement): () => void {
     if (finishing) {
       return;
     }
-    finishing = true;
-    showNotice(t("toast.ocr_progress"));
+    setFinishing(true);
+    // 长任务进行中提示持续可见,直到完成/失败文案替换(ADR-2)。
+    showNotice(t("toast.ocr_progress"), true);
     try {
       await invoke("recognize_preview");
       const text = await invoke<string>("copy_ocr_all");
@@ -623,7 +667,7 @@ export function mountOverlay(root: HTMLElement): () => void {
     } catch (error) {
       showNotice(invokeError(error, t("preview.error.ocr_fallback")));
     } finally {
-      finishing = false;
+      setFinishing(false);
     }
   };
 
@@ -636,12 +680,12 @@ export function mountOverlay(root: HTMLElement): () => void {
       return;
     }
     editor?.commitText();
-    finishing = true;
+    setFinishing(true);
     try {
       await invoke("copy_preview_png", { annotations: currentAnnotations() });
       await afterExport("copy");
     } catch (error) {
-      finishing = false;
+      setFinishing(false);
       showNotice(invokeError(error, t("preview.error.copy_fallback")));
     }
   };
@@ -651,7 +695,7 @@ export function mountOverlay(root: HTMLElement): () => void {
       return;
     }
     editor?.commitText();
-    finishing = true;
+    setFinishing(true);
     let yielded = false;
     try {
       // 对话框挂在隐藏的预览窗上。先摘掉浮层置顶并让预览窗取得焦点,
@@ -664,7 +708,7 @@ export function mountOverlay(root: HTMLElement): () => void {
       if (!result.saved) {
         await invoke("restore_workspace_after_save_dialog");
         yielded = false;
-        finishing = false;
+        setFinishing(false);
         showNotice(t("overlay.notice.save_cancelled"));
         return;
       }
@@ -672,9 +716,16 @@ export function mountOverlay(root: HTMLElement): () => void {
       await afterExport("save", name);
     } catch (error) {
       if (yielded) {
-        await invoke("restore_workspace_after_save_dialog").catch(() => undefined);
+        try {
+          await invoke("restore_workspace_after_save_dialog");
+        } catch {
+          // 工作区恢复失败不能再静默:用户需要知道浮层状态可能异常。
+          setFinishing(false);
+          showNotice(t("overlay.notice.restore_failed"));
+          return;
+        }
       }
-      finishing = false;
+      setFinishing(false);
       showNotice(invokeError(error, t("overlay.error.save_fallback")));
     }
   };
@@ -684,12 +735,12 @@ export function mountOverlay(root: HTMLElement): () => void {
       return;
     }
     editor?.commitText();
-    finishing = true;
+    setFinishing(true);
     try {
       await invoke("pin_current", { annotations: currentAnnotations() });
       await afterExport("pin");
     } catch (error) {
-      finishing = false;
+      setFinishing(false);
       showNotice(invokeError(error, t("preview.error.pin_fallback")));
     }
   };
@@ -699,11 +750,11 @@ export function mountOverlay(root: HTMLElement): () => void {
       return;
     }
     editor?.commitText();
-    finishing = true;
+    setFinishing(true);
     try {
       await invoke("edit_workspace_further", { annotations: currentAnnotations() });
     } catch (error) {
-      finishing = false;
+      setFinishing(false);
       showNotice(invokeError(error, t("overlay.error.capture_failed")));
     }
   };
@@ -733,7 +784,7 @@ export function mountOverlay(root: HTMLElement): () => void {
     startX = point.x;
     startY = point.y;
     selection = { x: point.x, y: point.y, width: 0, height: 0 };
-    notice.hidden = true;
+    hideNotice();
     scheduleDraw();
   });
 
@@ -820,6 +871,15 @@ export function mountOverlay(root: HTMLElement): () => void {
     cancel();
   });
 
+  retryBtn.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const action = retryAction;
+    retryBtn.hidden = true;
+    retryAction = null;
+    action?.();
+  });
+
   actionsEl.addEventListener("click", (event) => {
     const target = event.target;
     if (!(target instanceof Element)) {
@@ -888,6 +948,19 @@ export function mountOverlay(root: HTMLElement): () => void {
     }
     if (event.key === "Enter") {
       event.preventDefault();
+      // Enter 等同鼠标确认路径:区域模式确认当前选区(与松开确认同一
+      // finishRegion,无选区/选区太小会得到提示),窗口模式确认悬停窗口;
+      // fixed 工作区由动作按钮完成导出,Enter 无动作。
+      if (!frame || frame.fixed) {
+        return;
+      }
+      if (frame.mode === "window") {
+        if (hoverId) {
+          void finishWindow(hoverId);
+        }
+        return;
+      }
+      void finishRegion();
       return;
     }
     if (!frame || !frame.reducedCapabilities || frame.mode !== "region") {
@@ -918,6 +991,12 @@ export function mountOverlay(root: HTMLElement): () => void {
     if (!capabilityPanel.hidden) {
       renderCapabilityPanel();
     }
+    // 窗口列表空态与尺寸文案随语言重渲染。
+    if (frame?.mode === "window") {
+      renderWindowList(list, frame.windows, hoverId, (id) => {
+        void finishWindow(id);
+      });
+    }
   };
 }
 
@@ -935,6 +1014,14 @@ function renderWindowList(
   onPick: (id: string) => void,
 ): void {
   root.replaceChildren();
+  // 无可列窗口时给出空态,而不是留下一块空白列表。
+  if (windows.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "window-empty";
+    empty.textContent = t("overlay.window_list.empty");
+    root.append(empty);
+    return;
+  }
   for (const item of windows) {
     const button = document.createElement("button");
     button.type = "button";
@@ -950,7 +1037,7 @@ function renderWindowList(
       title.textContent = item.title;
     }
     if (meta) {
-      meta.textContent = `${item.width} × ${item.height}`;
+      meta.textContent = t("overlay.size_format", { width: item.width, height: item.height });
     }
     button.addEventListener("click", (event) => {
       event.stopPropagation();

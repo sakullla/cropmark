@@ -23,38 +23,53 @@ export function mountDelay(root: HTMLElement): () => void {
     return () => undefined;
   }
 
-  let remaining = 3;
+  // 等真实 delayMs 到达(get_delay_state 或 capture-delay 事件)再启动倒计时,
+  // 不用硬编码首帧;到达前保持"准备截取"。
+  let remaining = 0;
+  let tick = 0;
   const render = (): void => {
     count.textContent = t("delay.countdown", { seconds: remaining });
   };
-
-  const tick = window.setInterval(() => {
-    remaining = Math.max(0, remaining - 1);
-    render();
-    if (remaining === 0) {
+  const stopTick = (): void => {
+    if (tick) {
       window.clearInterval(tick);
+      tick = 0;
     }
-  }, 1000);
+  };
 
   cancel.addEventListener("click", () => {
-    window.clearInterval(tick);
+    stopTick();
     void invoke("cancel_capture");
   });
   window.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
-      window.clearInterval(tick);
+      stopTick();
       void invoke("cancel_capture");
     }
   });
 
   const apply = (payload: DelayPayload): void => {
     remaining = Math.max(1, Math.round(payload.delayMs / 1000));
+    if (!tick) {
+      tick = window.setInterval(() => {
+        remaining = Math.max(0, remaining - 1);
+        render();
+        if (remaining === 0) {
+          stopTick();
+        }
+      }, 1000);
+    }
     render();
   };
 
   void invoke<DelayPayload>("get_delay_state").then(apply);
   void listen<DelayPayload>("capture-delay", (event) => apply(event.payload));
-  render();
 
-  return render;
+  // 语言切换:倒计时进行中重渲染秒数文案;未启动时"准备截取"由
+  // applyTranslations 的 data-i18n 处理。
+  return () => {
+    if (tick) {
+      render();
+    }
+  };
 }

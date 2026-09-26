@@ -1931,6 +1931,10 @@
     "zh-CN": "取消 Esc",
     "en": "Cancel Esc"
   },
+  "overlay.retry": {
+    "zh-CN": "重试",
+    "en": "Retry"
+  },
   "overlay.confirm": {
     "zh-CN": "确认 Enter",
     "en": "Confirm Enter"
@@ -1940,12 +1944,12 @@
     "en": "Click the window to capture"
   },
   "overlay.hint.reduced": {
-    "zh-CN": "拖出矩形截取区域 · Esc 取消",
-    "en": "Drag to select a region · Esc to cancel"
+    "zh-CN": "拖出矩形截取区域 · Enter 确认 · Esc 取消",
+    "en": "Drag to select a region · Enter to confirm · Esc to cancel"
   },
   "overlay.hint.region": {
-    "zh-CN": "拖出矩形截取区域",
-    "en": "Drag to select a region"
+    "zh-CN": "拖出矩形截取区域 · Enter 确认",
+    "en": "Drag to select a region · Enter to confirm"
   },
   "overlay.hint.workspace": {
     "zh-CN": "可以标注、复制、保存、贴图或取字 · Esc 取消",
@@ -1978,6 +1982,18 @@
   "overlay.notice.save_cancelled": {
     "zh-CN": "已取消保存。截图仍在，可继续复制、贴图或再试。",
     "en": "Save cancelled. The screenshot is still here; copy, pin, or try again."
+  },
+  "overlay.notice.restore_failed": {
+    "zh-CN": "保存失败，且浮层状态未能恢复。请按 Esc 取消后重新截取。",
+    "en": "Save failed and the overlay state could not be restored. Press Esc to cancel and capture again."
+  },
+  "overlay.window_list.empty": {
+    "zh-CN": "没有可截取的窗口。按 Esc 取消，或改用区域截取。",
+    "en": "No windows available to capture. Press Esc to cancel, or use region capture instead."
+  },
+  "overlay.size_format": {
+    "zh-CN": "{width} × {height}",
+    "en": "{width} × {height}"
   },
   "overlay.action.copy": {
     "zh-CN": "复制",
@@ -2012,8 +2028,8 @@
     "en": "Selection capabilities (Wayland web overlay)"
   },
   "overlay.panel.available": {
-    "zh-CN": "可用：拖出矩形选区、Esc 取消（取消不写剪贴板）；松开后在浮层复制、保存、贴图或取字。Enter 不关闭浮层，也不写剪贴板。",
-    "en": "Available: drag a rectangular selection, Esc to cancel (cancel does not write the clipboard); after release, copy, save, pin, or extract text on the overlay. Enter does not close the overlay or write the clipboard."
+    "zh-CN": "可用：拖出矩形选区、Enter 确认、Esc 取消（取消不写剪贴板）；松开后在浮层复制、保存、贴图或取字。",
+    "en": "Available: drag a rectangular selection, Enter to confirm, Esc to cancel (cancel does not write the clipboard); after release, copy, save, pin, or extract text on the overlay."
   },
   "overlay.panel.annotate_available": {
     "zh-CN": "另可用：在画面上直接标注（矩形/椭圆/直线/箭头/序号/文字/画笔/荧光笔/马赛克/模糊，可撤销/重做/删除）。",

@@ -59,7 +59,8 @@
   font-size: 13px;
 }
 
-.overlay-cancel {
+.overlay-cancel,
+.overlay-retry {
   pointer-events: auto;
   cursor: pointer;
   border: 1px solid var(--line);
@@ -76,12 +77,14 @@
   transition: var(--control-transition);
 }
 
-.overlay-cancel:hover {
+.overlay-cancel:hover,
+.overlay-retry:hover {
   border-color: var(--control-hover-border);
   background: var(--control-hover-bg);
 }
 
-.overlay-cancel:active {
+.overlay-cancel:active,
+.overlay-retry:active {
   filter: var(--control-pressed-filter);
 }
 
@@ -106,11 +109,13 @@
   transition: var(--control-transition);
 }
 
-.overlay-actions button:hover {
+/* finishing 期间按钮禁用:可视态走 app.css 共享 button:disabled,
+   这里只把 hover/active 反馈限定在非禁用态。 */
+.overlay-actions button:hover:not(:disabled) {
   filter: var(--control-hover-filter);
 }
 
-.overlay-actions button:active {
+.overlay-actions button:active:not(:disabled) {
   filter: var(--control-pressed-filter);
 }
 
@@ -125,12 +130,12 @@
   border-color: var(--line);
 }
 
-.overlay-actions [data-workspace="edit"]:hover {
+.overlay-actions [data-workspace="edit"]:hover:not(:disabled) {
   border-color: var(--control-hover-border);
   background: var(--control-hover-bg);
 }
 
-.overlay-actions [data-workspace="edit"]:active {
+.overlay-actions [data-workspace="edit"]:active:not(:disabled) {
   filter: var(--control-pressed-filter);
 }
 
@@ -343,6 +348,17 @@
   margin-top: 4px;
   font-size: 11px;
   color: var(--muted);
+}
+
+/* 窗口模式无可列窗口时的空态:不可点击,仅说明。 */
+.window-empty {
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-menu);
+  padding: 12px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .delay-root {
