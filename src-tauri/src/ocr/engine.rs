@@ -227,8 +227,27 @@ fn rotate_rgb<'a>(rgb: &'a RgbImage, orientation: Orientation) -> Cow<'a, RgbIma
     }
 }
 
+/// 从可执行文件向上查找仓库内的模型目录。
+/// 发布产物不能嵌入 `CARGO_MANIFEST_DIR`，否则会带上构建机绝对路径。
 pub fn crate_model_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("models")
+    let Ok(mut dir) = std::env::current_exe() else {
+        return PathBuf::new();
+    };
+    dir.pop();
+    for _ in 0..8 {
+        let nested = dir.join("src-tauri").join("models");
+        if models_present(&nested) {
+            return nested;
+        }
+        let adjacent = dir.join("models");
+        if models_present(&adjacent) {
+            return adjacent;
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+    PathBuf::new()
 }
 
 pub fn models_present(dir: &Path) -> bool {

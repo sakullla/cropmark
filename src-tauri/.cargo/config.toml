@@ -1,6 +1,27 @@
-# 钉 macOS 部署目标(ADR-008 接线任务):objc2/AppKit 壳与 ScreenCaptureKit
-# 构建按 macOS 14 API 面编译,交叉与本机构建一致,避免宿主 SDK 版本漂移。
-# 注意:cargo 只从工作目录向上发现本文件;`tauri` CLI 在 src-tauri 内启动
-# cargo 时生效,仓库根用 `--manifest-path` 调 cargo 时需在该目录下运行。
+# 钉 macOS 部署目标:objc2/AppKit 壳与 ScreenCaptureKit 按 macOS 14 API 编译。
+# cargo 从本目录向上发现此文件；tauri 在 src-tauri 内启动 cargo 时生效。
 [env]
 MACOSX_DEPLOYMENT_TARGET = "14.0"
+
+# Release path sanitization. Build scripts and the release workflow export
+# CROPMARK_REMAP_* before cargo/tauri build. Unset variables stay on the
+# sentinel and match nothing, so dev/test builds are unchanged.
+# More specific prefixes are last: rustc keeps the last matching prefix.
+# On Windows release, scripts set RUSTFLAGS (these flags plus the MSVC PDB
+# alt path). RUSTFLAGS replaces this list, so keep the two copies in sync.
+[build]
+rustflags = [
+  "--remap-path-scope=all",
+  "--remap-path-prefix=${CROPMARK_REMAP_HOME_VERBATIM:CROPMARK_REMAP_UNSET}=/home",
+  "--remap-path-prefix=${CROPMARK_REMAP_HOME_ALT:CROPMARK_REMAP_UNSET}=/home",
+  "--remap-path-prefix=${CROPMARK_REMAP_HOME:CROPMARK_REMAP_UNSET}=/home",
+  "--remap-path-prefix=${CROPMARK_REMAP_RUSTUP_HOME_VERBATIM:CROPMARK_REMAP_UNSET}=/rustup",
+  "--remap-path-prefix=${CROPMARK_REMAP_RUSTUP_HOME_ALT:CROPMARK_REMAP_UNSET}=/rustup",
+  "--remap-path-prefix=${CROPMARK_REMAP_RUSTUP_HOME:CROPMARK_REMAP_UNSET}=/rustup",
+  "--remap-path-prefix=${CROPMARK_REMAP_CARGO_HOME_VERBATIM:CROPMARK_REMAP_UNSET}=/cargo",
+  "--remap-path-prefix=${CROPMARK_REMAP_CARGO_HOME_ALT:CROPMARK_REMAP_UNSET}=/cargo",
+  "--remap-path-prefix=${CROPMARK_REMAP_CARGO_HOME:CROPMARK_REMAP_UNSET}=/cargo",
+  "--remap-path-prefix=${CROPMARK_REMAP_REPO_VERBATIM:CROPMARK_REMAP_UNSET}=/cropmark",
+  "--remap-path-prefix=${CROPMARK_REMAP_REPO_ALT:CROPMARK_REMAP_UNSET}=/cropmark",
+  "--remap-path-prefix=${CROPMARK_REMAP_REPO:CROPMARK_REMAP_UNSET}=/cropmark",
+]

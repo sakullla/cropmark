@@ -130,3 +130,13 @@ opt-level = 3
 
 [profile.dev.package.adler2]
 opt-level = 3
+
+# Tauri size guide: one codegen unit, fat LTO, strip symbols.
+# opt-level stays at the default 3 so image encode/decode does not slow down.
+# panic stays unwind: tray, OCR, and the macOS selection shell recover with
+# catch_unwind. abort would skip that recovery. The panic hook still writes
+# crash.log on both caught and uncaught panics.
+[profile.release]
+lto = true
+codegen-units = 1
+strip = "symbols"
