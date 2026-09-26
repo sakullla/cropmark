@@ -126,7 +126,9 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: nowrap;
+  /* 窄窗口允许换行(预览窗最小尺寸保证两行可用),不再横向裁切工具。 */
+  flex-wrap: wrap;
+  row-gap: 6px;
   padding: 6px 10px;
   border-bottom: 1px solid var(--line);
   flex: 0 0 auto;
@@ -140,6 +142,13 @@
   display: flex;
   align-items: center;
   gap: 4px;
+}
+
+/* 最小宽度下工具行本身也可能超宽:允许逐个换行,保证不裁切。 */
+.preview-tools {
+  flex-wrap: wrap;
+  row-gap: 4px;
+  min-width: 0;
 }
 
 .preview-actions {
@@ -314,9 +323,10 @@
 }
 
 .ocr-panel {
-  flex: 0 0 260px;
-  width: 260px;
-  min-width: 220px;
+  flex: 0 0 auto;
+  /* 窄窗口随舞台宽度弹性收缩,宽窗口仍取 260px。 */
+  width: clamp(180px, 30%, 260px);
+  min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;

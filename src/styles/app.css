@@ -168,6 +168,43 @@ button:disabled {
   cursor: default;
 }
 
+/* 共享进行中/进度状态:各视图消费同一组令牌,不各自重建(ADR-2)。
+   进行中提示不自动消失,由完成/失败文案替换;结果提示才可自动隐藏。 */
+[aria-busy="true"] {
+  cursor: progress;
+}
+
+button.is-busy,
+button[aria-busy="true"] {
+  opacity: var(--control-disabled-opacity);
+  cursor: progress;
+  pointer-events: none;
+}
+
+/* 行内进度圈:配合进行中提示使用,颜色随当前文本色。 */
+.progress {
+  display: inline-block;
+  width: 0.9em;
+  height: 0.9em;
+  border: 2px solid color-mix(in srgb, currentColor 30%, transparent);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: app-progress-spin 800ms linear infinite;
+  vertical-align: -0.1em;
+}
+
+@keyframes app-progress-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progress {
+    animation: none;
+  }
+}
+
 html,
 body,
 #app {

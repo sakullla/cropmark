@@ -172,6 +172,7 @@ export interface AnnotationEditor {
   undo: () => void;
   redo: () => void;
   canUndo: () => boolean;
+  canRedo: () => boolean;
   deleteSelected: () => void;
   selectedIndex: () => number | null;
   clearSelection: () => void;
@@ -1328,6 +1329,8 @@ function toolbarMarkup(): string {
     </div>
     <span class="toolbar-sep" aria-hidden="true"></span>
     <button type="button" data-action="undo" data-i18n-title="preview.tool.undo_title" data-i18n-aria-label="preview.tool.undo" data-tooltip="${t("preview.tool.undo_title")}" aria-label="${t("preview.tool.undo")}">${icons.undo}</button>
+    <button type="button" data-action="redo" data-i18n-title="preview.tool.redo_title" data-i18n-aria-label="preview.tool.redo" data-tooltip="${t("preview.tool.redo_title")}" aria-label="${t("preview.tool.redo")}">${icons.redo}</button>
+    <button type="button" data-action="delete" data-i18n-title="preview.tool.delete_title" data-i18n-aria-label="preview.tool.delete" data-tooltip="${t("preview.tool.delete_title")}" aria-label="${t("preview.tool.delete")}">${icons.trash}</button>
     <div class="annotation-style" data-style-root>
       <button type="button" data-action="style" data-i18n-title="preview.tool.style_title" data-i18n-aria-label="preview.tool.style_title" data-tooltip="${t("preview.tool.style_title")}" aria-label="${t("preview.tool.style_title")}" aria-haspopup="true">${icons.style}</button>
       <div class="annotation-style-panel" data-style-panel hidden>
@@ -1430,6 +1433,40 @@ function snapDevicePx(value: number): number {
   return Math.round(value * dpr) / dpr;
 }
 
+interface FloatingBounds {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+const FLOATING_PANEL_MARGIN = 4;
+
+/**
+ * 浮动面板视口钳制:右键菜单与更多/样式/质量下拉共用同一套边界语义。
+ * 面板先按调用方/CSS 锚点布局并量取位置,溢出 bounds(默认窗口视口)时
+ * 按像素差平移 style.left/top 收回界内;bounds 比面板还小时贴最小边。
+ * 重开面板前调用方应清掉上次写入的 style.left/right/top,从锚点重新量取。
+ */
+export function clampFloatingPanel(panel: HTMLElement, bounds?: FloatingBounds): void {
+  const rect = panel.getBoundingClientRect();
+  const b = bounds ?? { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+  const minLeft = b.left + FLOATING_PANEL_MARGIN;
+  const minTop = b.top + FLOATING_PANEL_MARGIN;
+  const maxLeft = Math.max(minLeft, b.left + b.width - FLOATING_PANEL_MARGIN - rect.width);
+  const maxTop = Math.max(minTop, b.top + b.height - FLOATING_PANEL_MARGIN - rect.height);
+  const dx = clamp(rect.left, minLeft, maxLeft) - rect.left;
+  const dy = clamp(rect.top, minTop, maxTop) - rect.top;
+  if (dx !== 0) {
+    // 右锚定的面板(保存质量)改左锚定,避免 left/right 同时生效拉伸宽度。
+    panel.style.right = "auto";
+    panel.style.left = `${snapDevicePx(panel.offsetLeft + dx)}px`;
+  }
+  if (dy !== 0) {
+    panel.style.top = `${snapDevicePx(panel.offsetTop + dy)}px`;
+  }
+}
+
 export function mountAnnotationEditor(options: AnnotationEditorOptions): AnnotationEditor {
   const { root, canvas, ctx, toolbar, textHost } = options;
 
@@ -1453,6 +1490,8 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
   root.appendChild(contextMenu);
 
   const undoBtn = toolbar.querySelector("[data-action=undo]");
+  const redoBtn = toolbar.querySelector("[data-action=redo]");
+  const deleteBtn = toolbar.querySelector("[data-action=delete]");
   const stylePanel = toolbar.querySelector("[data-style-panel]");
   const styleBtn = toolbar.querySelector("[data-action=style]");
   const styleRoot = toolbar.querySelector("[data-style-root]");
@@ -1469,6 +1508,8 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
   const stickerOptions = toolbar.querySelector("[data-sticker-options]");
   if (
     !(undoBtn instanceof HTMLButtonElement) ||
+    !(redoBtn instanceof HTMLButtonElement) ||
+    !(deleteBtn instanceof HTMLButtonElement) ||
     !(stylePanel instanceof HTMLElement) ||
     !(styleBtn instanceof HTMLButtonElement) ||
     !(styleRoot instanceof HTMLElement) ||
@@ -1603,10 +1644,15 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
 
   const redraw = (): void => {
     options.redraw();
+    // 选中态变化都伴随重绘:在此同步重做/删除按钮启用态,调用点无需逐一补。
+    syncUndo();
   };
 
   const syncUndo = (): void => {
     undoBtn.disabled = undoStack.length === 0 && !editorOpen();
+    // 文字编辑中 redo/delete 本身是空操作,禁用与快捷键语义保持一致。
+    redoBtn.disabled = redoStack.length === 0 || editorOpen();
+    deleteBtn.disabled = selected === null || editorOpen();
   };
 
   const syncToolVisibility = (): void => {
@@ -1667,11 +1713,9 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
   const showContextMenu = (clientX: number, clientY: number): void => {
     const rootRect = root.getBoundingClientRect();
     contextMenu.hidden = false;
-    const menuRect = contextMenu.getBoundingClientRect();
-    const left = clamp(clientX - rootRect.left, 4, Math.max(4, rootRect.width - menuRect.width - 4));
-    const top = clamp(clientY - rootRect.top, 4, Math.max(4, rootRect.height - menuRect.height - 4));
-    contextMenu.style.left = `${snapDevicePx(left)}px`;
-    contextMenu.style.top = `${snapDevicePx(top)}px`;
+    contextMenu.style.left = `${snapDevicePx(clientX - rootRect.left)}px`;
+    contextMenu.style.top = `${snapDevicePx(clientY - rootRect.top)}px`;
+    clampFloatingPanel(contextMenu, rootRect);
   };
 
   const editorOpen = (): boolean => editor.classList.contains("is-open");
@@ -2051,10 +2095,15 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
 
   const toggleMorePanel = (open?: boolean): void => {
     const next = open ?? morePanel.hidden;
+    if (next) {
+      // 重开先回 CSS 锚点再钳制,避免上次平移量累积漂移。
+      morePanel.style.left = "";
+      toggleStylePanel(false);
+    }
     morePanel.hidden = !next;
     moreBtn.setAttribute("aria-expanded", next ? "true" : "false");
     if (next) {
-      toggleStylePanel(false);
+      clampFloatingPanel(morePanel);
     }
   };
 
@@ -2068,11 +2117,13 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
       moveState = null;
       redraw();
       toggleMorePanel(false);
+      stylePanel.style.left = "";
     }
     stylePanel.hidden = !next;
     styleBtn.classList.toggle("active", next);
     if (next) {
       syncStylePanel();
+      clampFloatingPanel(stylePanel);
     }
   };
 
@@ -2477,6 +2528,11 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
         return;
       }
       undo();
+    } else if (button.dataset.action === "redo") {
+      redo();
+    } else if (button.dataset.action === "delete") {
+      // 与 Delete/Backspace、右键菜单删除同一入口与语义。
+      deleteSelected();
     } else if (button.dataset.action === "style") {
       toggleStylePanel();
     } else if (button.dataset.action === "delete-annotation") {
@@ -2716,6 +2772,7 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     undo,
     redo,
     canUndo: () => undoStack.length > 0,
+    canRedo: () => redoStack.length > 0,
     deleteSelected,
     selectedIndex: () => selected,
     clearSelection: (): void => {
@@ -2770,6 +2827,7 @@ function noopEditor(): AnnotationEditor {
     undo: () => undefined,
     redo: () => undefined,
     canUndo: () => false,
+    canRedo: () => false,
     deleteSelected: () => undefined,
     selectedIndex: () => null,
     clearSelection: () => undefined,

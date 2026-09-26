@@ -1467,6 +1467,22 @@
     "zh-CN": "撤销",
     "en": "Undo"
   },
+  "preview.tool.redo_title": {
+    "zh-CN": "重做 (Ctrl+Shift+Z)",
+    "en": "Redo (Ctrl+Shift+Z)"
+  },
+  "preview.tool.redo": {
+    "zh-CN": "重做",
+    "en": "Redo"
+  },
+  "preview.tool.delete_title": {
+    "zh-CN": "删除选中标注 (Delete)",
+    "en": "Delete selected annotation (Delete)"
+  },
+  "preview.tool.delete": {
+    "zh-CN": "删除",
+    "en": "Delete"
+  },
   "preview.tool.style_title": {
     "zh-CN": "标注样式",
     "en": "Annotation style"
@@ -1815,9 +1831,17 @@
     "zh-CN": "识别文本",
     "en": "Recognized text"
   },
+  "preview.note.saving": {
+    "zh-CN": "正在保存…",
+    "en": "Saving…"
+  },
   "preview.note.saved": {
     "zh-CN": "已保存 {name}。",
     "en": "Saved {name}."
+  },
+  "preview.note.save_canceled": {
+    "zh-CN": "已取消保存。",
+    "en": "Save canceled."
   },
   "preview.note.busy": {
     "zh-CN": "正在处理，请稍候。",

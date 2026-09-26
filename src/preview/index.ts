@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   annotationToolForKey,
+  clampFloatingPanel,
   mountAnnotationEditor,
   readAnnotationDefaults,
   readAnnotationToolToggles,
@@ -356,9 +357,17 @@ export function mountPreview(root: HTMLElement): () => void {
 
   const toggleQualityPanel = (open?: boolean): void => {
     const next = open ?? saveQualityPanel.hidden;
+    if (next) {
+      // 重开先回 CSS 锚点(右锚)再钳制,与更多/样式面板同一套边界语义。
+      saveQualityPanel.style.left = "";
+      saveQualityPanel.style.right = "";
+    }
     saveQualityPanel.hidden = !next;
     saveQualityToggle.classList.toggle("active", next);
     saveQualityToggle.setAttribute("aria-expanded", next ? "true" : "false");
+    if (next) {
+      clampFloatingPanel(saveQualityPanel);
+    }
   };
 
   editor = mountAnnotationEditor({
@@ -606,7 +615,11 @@ export function mountPreview(root: HTMLElement): () => void {
   };
 
   const copyOcrSelection = async (startPoint: Point, endPoint: Point): Promise<void> => {
-    if (busy || !ocrDoc) {
+    if (busy) {
+      setNoteKey("preview.note.busy");
+      return;
+    }
+    if (!ocrDoc) {
       return;
     }
     busy = true;
@@ -627,6 +640,7 @@ export function mountPreview(root: HTMLElement): () => void {
 
   const copyOcrAll = async (): Promise<void> => {
     if (busy) {
+      setNoteKey("preview.note.busy");
       return;
     }
     busy = true;
@@ -654,7 +668,11 @@ export function mountPreview(root: HTMLElement): () => void {
   };
 
   const copyOcrFragment = async (): Promise<void> => {
-    if (busy || !ocrDoc) {
+    if (busy) {
+      setNoteKey("preview.note.busy");
+      return;
+    }
+    if (!ocrDoc) {
       return;
     }
     const selected = selectedPanelFragment();
@@ -728,10 +746,13 @@ export function mountPreview(root: HTMLElement): () => void {
 
   const save = async (): Promise<void> => {
     if (busy) {
+      setNoteKey("preview.note.busy");
       return;
     }
     editor?.commitText();
     busy = true;
+    // 进行中提示不自动消失:由成功/取消/失败文案替换(ADR-2)。
+    setNoteKey("preview.note.saving");
     try {
       const result = await invoke<{
         saved: boolean;
@@ -745,6 +766,9 @@ export function mountPreview(root: HTMLElement): () => void {
         const format = result.format ?? "png";
         const name = fileNameFromPath(result.path) ?? `cropmark.${format === "jpeg" ? "jpg" : format}`;
         setNoteKey("preview.note.saved", { name }, "success");
+      } else {
+        // 保存对话框取消(saved=false)不是错误,也要给可见反馈。
+        setNoteKey("preview.note.save_canceled");
       }
     } catch (error) {
       setNote(invokeError(error, t("preview.error.save_fallback")), "error");
@@ -943,7 +967,8 @@ export function mountPreview(root: HTMLElement): () => void {
       return;
     }
     if (event.key === "Escape") {
-      void invoke("close_preview");
+      // 走 closePreview 统一入口:invoke 失败有错误提示而不是静默。
+      closePreview();
       return;
     }
     const mod = event.ctrlKey || event.metaKey;
