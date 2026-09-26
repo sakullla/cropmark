@@ -1730,6 +1730,18 @@ pub(crate) fn scroll_session_alive(app: &AppHandle, generation: u64) -> bool {
     session_matches_generation(app, generation)
 }
 
+/// 区域选区里启动的滚动完成仍挂在 `Region` 上。进入 `deliver_fixed_frame`
+/// 之前把这一代改为 `LongCapture`，`record_capture` 才写成 `long`。
+/// 代际不符或已取消不改；托盘直达的 `LongCapture` 重复设置无变化，
+/// 普通区域完成不经过这里。
+fn mark_scroll_capture_mode(session: &mut Option<ActiveSession>, generation: u64) {
+    if let Some(current) = session.as_mut() {
+        if current.generation == generation && !current.cancelled {
+            current.mode = CaptureMode::LongCapture;
+        }
+    }
+}
+
 /// R1:滚动结果走现有预览完成路径(预览、历史与「上次区域」规则);选区
 /// 标注先平移到拼接结果坐标系。代际不符时返回取消错误且不产生输出。
 pub(crate) fn finish_scroll_frame(
@@ -1744,6 +1756,7 @@ pub(crate) fn finish_scroll_frame(
     }
     let translated =
         crate::annotate::translated_all(&annotations, -(selection.x as f64), -(selection.y as f64));
+    with_session_mut(app, |session| mark_scroll_capture_mode(session, expected));
     deliver_fixed_frame(app, frame, translated, None, Some(expected))?;
     remember_selection_region(app, selection);
     Ok(())
@@ -3054,5 +3067,52 @@ mod tests {
             crop_selection_with_annotations(&freeze, &selection, &[]).unwrap();
         assert!(translated.is_empty());
         assert_eq!(cropped.rgba, vec![7; 10 * 10 * 4]);
+    }
+
+    #[test]
+    fn region_started_scroll_history_mode_is_long() {
+        let mut region = Some(ActiveSession::new(CaptureMode::Region, 0, Instant::now()));
+        let generation = region.as_ref().unwrap().generation;
+        mark_scroll_capture_mode(&mut region, generation);
+        let mode = region.as_ref().unwrap().mode;
+        assert_eq!(mode, CaptureMode::LongCapture);
+        assert_eq!(crate::export::capture_mode_token(mode), "long");
+
+        // 托盘直接以 LongCapture 开始：再标一次仍是 long。
+        let mut direct = Some(ActiveSession::new(
+            CaptureMode::LongCapture,
+            0,
+            Instant::now(),
+        ));
+        let direct_generation = direct.as_ref().unwrap().generation;
+        mark_scroll_capture_mode(&mut direct, direct_generation);
+        assert_eq!(direct.as_ref().unwrap().mode, CaptureMode::LongCapture);
+        assert_eq!(
+            crate::export::capture_mode_token(direct.as_ref().unwrap().mode),
+            "long"
+        );
+
+        // 另一代的区域/窗口会话不被这次滚动完成改写。
+        let mut untouched = Some(ActiveSession::new(CaptureMode::Window, 0, Instant::now()));
+        mark_scroll_capture_mode(&mut untouched, generation);
+        assert_eq!(untouched.as_ref().unwrap().mode, CaptureMode::Window);
+        assert_eq!(
+            crate::export::capture_mode_token(untouched.as_ref().unwrap().mode),
+            "window"
+        );
+        let ordinary = ActiveSession::new(CaptureMode::Region, 0, Instant::now());
+        assert_eq!(ordinary.mode, CaptureMode::Region);
+        assert_eq!(crate::export::capture_mode_token(ordinary.mode), "region");
+
+        // 已取消的同一代不进入完成路径，模式保持原样。
+        let mut cancelled = Some(ActiveSession::new(CaptureMode::Region, 0, Instant::now()));
+        cancelled.as_mut().unwrap().cancelled = true;
+        let cancelled_generation = cancelled.as_ref().unwrap().generation;
+        mark_scroll_capture_mode(&mut cancelled, cancelled_generation);
+        assert_eq!(cancelled.as_ref().unwrap().mode, CaptureMode::Region);
+
+        let mut absent = None;
+        mark_scroll_capture_mode(&mut absent, generation);
+        assert!(absent.is_none());
     }
 }
