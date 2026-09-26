@@ -1995,7 +1995,8 @@ pub fn complete_workspace(
     // 保存对话框会临时露出预览窗;成功离开时把它和浮层一起收起。
     ui::hide_window(app, ui::PREVIEW);
     ui::hide_window(app, ui::OVERLAY);
-    crate::history::record_capture(app, frame);
+    let mode = current_capture_mode(app);
+    crate::history::record_capture(app, frame, mode);
     crate::pin::restore_after_capture(app);
     with_session_mut(app, |session| {
         *session = None;
@@ -2163,8 +2164,9 @@ fn finish_with_ttl(
         let _ = ui::open_error(app, error);
     }
     // R2:history.enabled 时把最终帧写入本地历史;编码、缩略图与索引写入
-    // 全部在 spawn_blocking 内,不阻塞完成路径。
-    crate::history::record_capture(app, frame);
+    // 全部在 spawn_blocking 内,不阻塞完成路径。模式随这条记录写入索引(R7)。
+    let mode = current_capture_mode(app);
+    crate::history::record_capture(app, frame, mode);
     crate::pin::restore_after_capture(app);
     if take_cursor_unavailable(app) {
         ui::show_toast_key(app, "toast.cursor_unavailable");

@@ -2338,5 +2338,117 @@
   "history.confirm_clear_accept": {
     "zh-CN": "确认清空",
     "en": "Clear all"
+  },
+  "history.filter.group": {
+    "zh-CN": "筛选历史",
+    "en": "Filter history"
+  },
+  "history.filter.time_label": {
+    "zh-CN": "时间范围",
+    "en": "Time range"
+  },
+  "history.filter.time_all": {
+    "zh-CN": "全部时间",
+    "en": "Any time"
+  },
+  "history.filter.time_today": {
+    "zh-CN": "今天",
+    "en": "Today"
+  },
+  "history.filter.time_7d": {
+    "zh-CN": "最近 7 天",
+    "en": "Last 7 days"
+  },
+  "history.filter.time_30d": {
+    "zh-CN": "最近 30 天",
+    "en": "Last 30 days"
+  },
+  "history.filter.mode_label": {
+    "zh-CN": "采集模式",
+    "en": "Capture mode"
+  },
+  "history.filter.mode_all": {
+    "zh-CN": "全部模式",
+    "en": "All modes"
+  },
+  "history.filter.mode_region": {
+    "zh-CN": "区域",
+    "en": "Region"
+  },
+  "history.filter.mode_window": {
+    "zh-CN": "窗口",
+    "en": "Window"
+  },
+  "history.filter.mode_fullscreen": {
+    "zh-CN": "全屏",
+    "en": "Fullscreen"
+  },
+  "history.filter.mode_long": {
+    "zh-CN": "长截图",
+    "en": "Scrolling capture"
+  },
+  "history.filter.note_label": {
+    "zh-CN": "搜索备注",
+    "en": "Search notes"
+  },
+  "history.filter.note_placeholder": {
+    "zh-CN": "搜索备注",
+    "en": "Search notes"
+  },
+  "history.filter.clear": {
+    "zh-CN": "清除筛选",
+    "en": "Clear filters"
+  },
+  "history.filter.empty": {
+    "zh-CN": "没有符合筛选条件的记录。清除筛选可查看全部。",
+    "en": "No records match these filters. Clear filters to see everything."
+  },
+  "history.count_filtered": {
+    "zh-CN": "{count} / {total} 条",
+    "en": "{count} / {total}"
+  },
+  "history.favorite": {
+    "zh-CN": "收藏",
+    "en": "Favorite"
+  },
+  "history.unfavorite": {
+    "zh-CN": "取消收藏",
+    "en": "Remove favorite"
+  },
+  "history.favorited": {
+    "zh-CN": "已收藏。",
+    "en": "Added to favorites."
+  },
+  "history.unfavorited": {
+    "zh-CN": "已取消收藏。",
+    "en": "Removed from favorites."
+  },
+  "history.note_label": {
+    "zh-CN": "备注",
+    "en": "Note"
+  },
+  "history.note_placeholder": {
+    "zh-CN": "添加备注",
+    "en": "Add a note"
+  },
+  "history.note_saved": {
+    "zh-CN": "备注已保存。",
+    "en": "Note saved."
+  },
+  "history.mode.region": {
+    "zh-CN": "区域",
+    "en": "Region"
+  },
+  "history.mode.window": {
+    "zh-CN": "窗口",
+    "en": "Window"
+  },
+  "history.mode.fullscreen": {
+    "zh-CN": "全屏",
+    "en": "Fullscreen"
+  },
+  "history.mode.long": {
+    "zh-CN": "长截图",
+    "en": "Scrolling capture"
   }
 }

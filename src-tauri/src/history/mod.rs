@@ -1,9 +1,14 @@
-//! 本地截图历史(R2,ADR-2)。
+//! 本地截图历史(R2,ADR-2;R7,ADR-8)。
 //!
 //! 截图完成后在 `app_data_dir/history/` 保留最近记录:
 //! - `index.json`:schemaVersion + 条目列表(新→旧),原子写(临时文件+rename);
 //! - `<id>.png`:原始帧 PNG;
 //! - `<id>.thumb.png`:最长边约 320px 的缩略图。
+//!
+//! 索引 v2 为每条增加 `mode`(region/window/fullscreen/long)、`favorite`、`note`。
+//! 读取更低版本时按默认值在内存中升级(无模式、未收藏、空备注),下次写入才落成 v2;
+//! 高于当前版本仍走不支持提示,不猜测结构。筛选、收藏置顶与备注检索只改变展示,
+//! 不改变删除、清空与按时间淘汰的语义。
 //!
 //! 写入与缩略图生成在 `spawn_blocking` 中执行,不阻塞完成路径;按设置上限
 //! 淘汰最旧记录。索引损坏或缩略图缺失时列表降级可用并给出可理解状态,
@@ -23,10 +28,14 @@ use crate::i18n;
 
 /// 历史窗口标签:与 capabilities 的 windows 清单和隐藏清单保持同源。
 pub const HISTORY_WINDOW: &str = crate::capture::ui::HISTORY;
-/// 索引 schema 版本:不匹配时按降级状态展示,不猜测旧结构。
-pub const SCHEMA_VERSION: u32 = 1;
+/// 索引 schema 版本。低于此版本可读并在下次写入时升级;高于此版本不支持。
+pub const SCHEMA_VERSION: u32 = 2;
 /// 缩略图最长边(px)。
 pub const THUMB_MAX_EDGE: u32 = 320;
+/// 备注最大字符数(按 Unicode 标量值,不是字节)。
+pub const NOTE_MAX_CHARS: usize = 500;
+/// 可筛选的采集模式 token,与文件名模板 `{mode}` 保持同一套稳定英文值。
+const MODE_TOKENS: [&str; 4] = ["region", "window", "fullscreen", "long"];
 
 const INDEX_FILE: &str = "index.json";
 const INDEX_TMP_FILE: &str = "index.json.tmp";
@@ -47,6 +56,13 @@ pub struct HistoryEntry {
     pub scale: f64,
     pub file_name: String,
     pub thumb_name: String,
+    /// 采集模式 token。旧索引没有该字段,仅在「全部模式」下展示。
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub favorite: bool,
+    #[serde(default)]
+    pub note: String,
 }
 
 /// 索引加载状态:`Missing` 属正常空状态,其余情况在列表顶部给出说明。
@@ -68,6 +84,10 @@ pub struct HistoryEntryView {
     pub height: u32,
     pub thumb_missing: bool,
     pub image_missing: bool,
+    /// 未知或缺失模式为 `None`,前端仅在「全部模式」中显示。
+    pub mode: Option<String>,
+    pub favorite: bool,
+    pub note: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -75,6 +95,8 @@ pub struct HistoryEntryView {
 pub struct HistoryListPayload {
     pub entries: Vec<HistoryEntryView>,
     pub notice: Option<String>,
+    /// `history_tools` 开关。关闭时前端恢复纯时间列表,索引里的收藏与备注仍保留。
+    pub tools_enabled: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -104,17 +126,55 @@ fn now_millis() -> u64 {
         .unwrap_or_default()
 }
 
-/// 新条目排前:时间倒序,同毫秒保持插入顺序。
+/// 新条目排前:时间倒序,同毫秒保持插入顺序。收藏置顶只在展示层处理。
 fn sort_entries(entries: &mut [HistoryEntry]) {
     entries.sort_by_key(|entry| std::cmp::Reverse(entry.created_at));
+}
+
+/// 只接受稳定模式 token;空白、未知值与缺失都视为无模式。
+fn normalize_mode(mode: Option<&str>) -> Option<String> {
+    let token = mode?.trim();
+    MODE_TOKENS
+        .iter()
+        .copied()
+        .find(|known| *known == token)
+        .map(str::to_string)
+}
+
+/// 备注按单行保存:换行与制表符折成空格,去掉其他控制字符,并截断到上限。
+fn sanitize_note(note: &str) -> String {
+    let mut cleaned = String::new();
+    let mut count = 0usize;
+    for ch in note.chars() {
+        if count >= NOTE_MAX_CHARS {
+            break;
+        }
+        let mapped = match ch {
+            '\n' | '\r' | '\t' => ' ',
+            ch if ch.is_control() => continue,
+            ch => ch,
+        };
+        cleaned.push(mapped);
+        count += 1;
+    }
+    cleaned.trim().to_string()
+}
+
+fn normalize_entry(mut entry: HistoryEntry) -> HistoryEntry {
+    entry.mode = normalize_mode(entry.mode.as_deref());
+    entry.note = sanitize_note(&entry.note);
+    entry
 }
 
 fn load_index(dir: &Path) -> (Vec<HistoryEntry>, IndexState) {
     match fs::read_to_string(dir.join(INDEX_FILE)) {
         Err(_) => (Vec::new(), IndexState::Missing),
         Ok(text) => match serde_json::from_str::<StoredIndex>(&text) {
-            Ok(index) if index.schema_version == SCHEMA_VERSION => {
-                let mut entries = index.entries;
+            // 当前版本与更低版本都能读。低版本缺的字段由 serde 默认值补上,
+            // 本次读取不回写;下一次 record/delete/prune/收藏/备注写入才落成 v2。
+            Ok(index) if index.schema_version <= SCHEMA_VERSION => {
+                let mut entries: Vec<HistoryEntry> =
+                    index.entries.into_iter().map(normalize_entry).collect();
                 sort_entries(&mut entries);
                 (entries, IndexState::Ready)
             }
@@ -192,6 +252,7 @@ pub fn record_frame(
     frame: &Frame,
     limit: u32,
     created_at: u64,
+    mode: Option<&str>,
 ) -> Result<HistoryEntry, String> {
     let png = encode_png(frame).map_err(|error| error.user_message())?;
     let thumb = thumbnail_png(frame)?;
@@ -208,6 +269,9 @@ pub fn record_frame(
         scale: frame.scale,
         file_name: format!("{id}.png"),
         thumb_name: format!("{id}{THUMB_SUFFIX}"),
+        mode: normalize_mode(mode),
+        favorite: false,
+        note: String::new(),
     };
     fs::write(dir.join(&entry.file_name), &png).map_err(|error| {
         i18n::tp(
@@ -262,6 +326,9 @@ pub fn list_views(dir: &Path) -> (Vec<HistoryEntryView>, Option<String>) {
             height: entry.height,
             thumb_missing: !dir.join(&entry.thumb_name).is_file(),
             image_missing: !dir.join(&entry.file_name).is_file(),
+            mode: entry.mode.clone(),
+            favorite: entry.favorite,
+            note: entry.note.clone(),
         })
         .collect();
     (views, index_notice(state))
@@ -311,7 +378,36 @@ pub fn delete_entry(dir: &Path, id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 清空全部:删除索引与目录内全部文件(含索引损坏后遗留的孤儿文件)。
+/// 改一条的收藏或备注。不支持/损坏的索引不覆盖;成功写入即把低版本落成 v2。
+fn update_entry(
+    dir: &Path,
+    id: &str,
+    mutate: impl FnOnce(&mut HistoryEntry),
+) -> Result<(), String> {
+    let _guard = lock_store();
+    let (mut entries, state) = load_index(dir);
+    match state {
+        IndexState::Corrupted => return Err(i18n::t("error.history.corrupted")),
+        IndexState::Unsupported => return Err(i18n::t("error.history.unsupported")),
+        IndexState::Ready | IndexState::Missing => {}
+    }
+    let Some(entry) = entries.iter_mut().find(|entry| entry.id == id) else {
+        return Err(i18n::t("error.history.missing"));
+    };
+    mutate(entry);
+    write_index(dir, &entries)
+}
+
+fn set_favorite(dir: &Path, id: &str, favorite: bool) -> Result<(), String> {
+    update_entry(dir, id, |entry| entry.favorite = favorite)
+}
+
+fn set_note(dir: &Path, id: &str, note: &str) -> Result<(), String> {
+    let note = sanitize_note(note);
+    update_entry(dir, id, move |entry| entry.note = note)
+}
+
+/// 清空全部:删除索引与目录内全部文件(含索引损坏后遗留的孤儿文件与收藏)。
 pub fn clear_entries(dir: &Path) -> Result<(), String> {
     let _guard = lock_store();
     match fs::read_dir(dir) {
@@ -336,14 +432,20 @@ pub fn clear_entries(dir: &Path) -> Result<(), String> {
 
 /// 完成路径调用:仅当 history.enabled 时把最终帧交给后台线程落盘,
 /// 编码与缩略图生成都在 spawn_blocking 内,不阻塞完成路径。
-pub fn record_capture(app: &AppHandle, frame: Frame) {
+/// `mode` 由调用方在会话仍在时取好,避免后台线程读到已清空的会话。
+pub fn record_capture(app: &AppHandle, frame: Frame, mode: Option<crate::hotkeys::CaptureMode>) {
     let settings = crate::settings::current_history(app);
     if !settings.enabled {
         return;
     }
+    let mode = mode
+        .map(crate::export::capture_mode_token)
+        .map(str::to_string);
     let dir = history_dir(app);
     tauri::async_runtime::spawn_blocking(move || {
-        if let Err(error) = record_frame(&dir, &frame, settings.limit, now_millis()) {
+        if let Err(error) =
+            record_frame(&dir, &frame, settings.limit, now_millis(), mode.as_deref())
+        {
             eprintln!("Cropmark: 无法写入截图历史：{error}");
         }
     });
@@ -361,7 +463,11 @@ pub fn prune_async(app: &AppHandle, limit: u32) {
 
 fn list_payload(app: &AppHandle) -> HistoryListPayload {
     let (entries, notice) = list_views(&history_dir(app));
-    HistoryListPayload { entries, notice }
+    HistoryListPayload {
+        entries,
+        notice,
+        tools_enabled: crate::settings::current_toggles(app).history_tools,
+    }
 }
 
 fn friendly(error: crate::capture::error::CaptureError) -> String {
@@ -418,6 +524,26 @@ pub async fn pin_history_entry(app: AppHandle, id: String) -> Result<(), String>
 }
 
 #[tauri::command]
+pub fn set_history_favorite(
+    app: AppHandle,
+    id: String,
+    favorite: bool,
+) -> Result<HistoryListPayload, String> {
+    set_favorite(&history_dir(&app), &id, favorite)?;
+    Ok(list_payload(&app))
+}
+
+#[tauri::command]
+pub fn set_history_note(
+    app: AppHandle,
+    id: String,
+    note: String,
+) -> Result<HistoryListPayload, String> {
+    set_note(&history_dir(&app), &id, &note)?;
+    Ok(list_payload(&app))
+}
+
+#[tauri::command]
 pub fn delete_history_entry(app: AppHandle, id: String) -> Result<HistoryListPayload, String> {
     delete_entry(&history_dir(&app), &id)?;
     Ok(list_payload(&app))
@@ -444,7 +570,7 @@ pub fn open_window(app: &AppHandle) -> Result<(), String> {
         WebviewUrl::App("index.html?view=history".into()),
     )
     .title("Cropmark")
-    .inner_size(640.0, 680.0)
+    .inner_size(640.0, 760.0)
     .resizable(false)
     .maximizable(false)
     .minimizable(false)
@@ -479,6 +605,15 @@ mod tests {
         dir
     }
 
+    fn record(
+        dir: &Path,
+        frame: &Frame,
+        limit: u32,
+        created_at: u64,
+    ) -> Result<HistoryEntry, String> {
+        record_frame(dir, frame, limit, created_at, None)
+    }
+
     fn solid(width: u32, height: u32, color: [u8; 4]) -> Frame {
         let mut rgba = Vec::with_capacity((width * height * 4) as usize);
         for _ in 0..width * height {
@@ -495,8 +630,8 @@ mod tests {
     #[test]
     fn record_writes_png_thumbnail_and_index_newest_first() {
         let dir = temp_dir("record");
-        let first = record_frame(&dir, &solid(800, 200, [255, 0, 0, 255]), 20, 1_000).unwrap();
-        let second = record_frame(&dir, &solid(40, 30, [0, 255, 0, 255]), 20, 2_000).unwrap();
+        let first = record(&dir, &solid(800, 200, [255, 0, 0, 255]), 20, 1_000).unwrap();
+        let second = record(&dir, &solid(40, 30, [0, 255, 0, 255]), 20, 2_000).unwrap();
 
         assert!(dir.join(&first.file_name).is_file());
         assert!(dir.join(&first.thumb_name).is_file());
@@ -525,7 +660,7 @@ mod tests {
         let dir = temp_dir("scale");
         let mut frame = solid(16, 8, [1, 2, 3, 255]);
         frame.scale = 2.0;
-        let entry = record_frame(&dir, &frame, 20, 10).unwrap();
+        let entry = record(&dir, &frame, 20, 10).unwrap();
         assert_eq!(entry.scale, 2.0);
         let (entries, _) = load_index(&dir);
         assert_eq!(entries[0].scale, 2.0);
@@ -538,7 +673,7 @@ mod tests {
         let mut recorded = Vec::new();
         for index in 0..5_u64 {
             recorded.push(
-                record_frame(
+                record(
                     &dir,
                     &solid(8, 8, [index as u8, 0, 0, 255]),
                     3,
@@ -560,8 +695,8 @@ mod tests {
     #[test]
     fn same_millisecond_records_get_unique_ids_and_files() {
         let dir = temp_dir("ids");
-        let first = record_frame(&dir, &solid(4, 4, [1, 2, 3, 255]), 20, 777).unwrap();
-        let second = record_frame(&dir, &solid(4, 4, [3, 2, 1, 255]), 20, 777).unwrap();
+        let first = record(&dir, &solid(4, 4, [1, 2, 3, 255]), 20, 777).unwrap();
+        let second = record(&dir, &solid(4, 4, [3, 2, 1, 255]), 20, 777).unwrap();
         assert_ne!(first.id, second.id);
         assert!(dir.join(&first.file_name).is_file());
         assert!(dir.join(&second.file_name).is_file());
@@ -591,7 +726,7 @@ mod tests {
         assert!(views.is_empty());
         assert!(notice.as_deref().unwrap_or_default().contains("损坏"));
 
-        record_frame(&dir, &solid(6, 6, [9, 9, 9, 255]), 20, 42).unwrap();
+        record(&dir, &solid(6, 6, [9, 9, 9, 255]), 20, 42).unwrap();
         let (views, notice) = list_views(&dir);
         assert_eq!(views.len(), 1);
         assert!(notice.is_none());
@@ -612,7 +747,7 @@ mod tests {
     #[test]
     fn missing_thumbnail_and_image_are_flagged_while_entry_stays_listed() {
         let dir = temp_dir("degrade");
-        let entry = record_frame(&dir, &solid(8, 8, [0, 0, 255, 255]), 20, 5).unwrap();
+        let entry = record(&dir, &solid(8, 8, [0, 0, 255, 255]), 20, 5).unwrap();
         fs::remove_file(dir.join(&entry.thumb_name)).unwrap();
         let (views, _) = list_views(&dir);
         assert_eq!(views.len(), 1);
@@ -630,8 +765,8 @@ mod tests {
     #[test]
     fn delete_removes_entry_files_and_is_idempotent() {
         let dir = temp_dir("delete");
-        let entry = record_frame(&dir, &solid(8, 8, [1, 1, 1, 255]), 20, 1).unwrap();
-        let keeper = record_frame(&dir, &solid(8, 8, [2, 2, 2, 255]), 20, 2).unwrap();
+        let entry = record(&dir, &solid(8, 8, [1, 1, 1, 255]), 20, 1).unwrap();
+        let keeper = record(&dir, &solid(8, 8, [2, 2, 2, 255]), 20, 2).unwrap();
 
         delete_entry(&dir, &entry.id).unwrap();
         assert!(!dir.join(&entry.file_name).exists());
@@ -647,8 +782,8 @@ mod tests {
     #[test]
     fn clear_removes_index_and_every_file() {
         let dir = temp_dir("clear");
-        record_frame(&dir, &solid(8, 8, [1, 1, 1, 255]), 20, 1).unwrap();
-        record_frame(&dir, &solid(8, 8, [2, 2, 2, 255]), 20, 2).unwrap();
+        record(&dir, &solid(8, 8, [1, 1, 1, 255]), 20, 1).unwrap();
+        record(&dir, &solid(8, 8, [2, 2, 2, 255]), 20, 2).unwrap();
         clear_entries(&dir).unwrap();
         assert!(load_index(&dir).0.is_empty());
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
@@ -661,7 +796,7 @@ mod tests {
         let mut recorded = Vec::new();
         for index in 0..4_u64 {
             recorded.push(
-                record_frame(
+                record(
                     &dir,
                     &solid(8, 8, [index as u8, 0, 0, 255]),
                     20,
@@ -699,7 +834,7 @@ mod tests {
         let dir = temp_dir("reedit");
         let mut frame = solid(10, 6, [7, 8, 9, 255]);
         frame.scale = 1.5;
-        let entry = record_frame(&dir, &frame, 20, 9).unwrap();
+        let entry = record(&dir, &frame, 20, 9).unwrap();
         let index_before = fs::read(dir.join(INDEX_FILE)).unwrap();
         let image_before = fs::read(dir.join(&entry.file_name)).unwrap();
         let thumb_before = fs::read(dir.join(&entry.thumb_name)).unwrap();
@@ -726,13 +861,187 @@ mod tests {
     fn read_entry_returns_stored_png_bytes() {
         let dir = temp_dir("read");
         let frame = solid(12, 6, [4, 5, 6, 255]);
-        let entry = record_frame(&dir, &frame, 20, 1).unwrap();
+        let entry = record(&dir, &frame, 20, 1).unwrap();
         let (stored, png) = read_entry(&dir, &entry.id).unwrap();
         assert_eq!(stored.id, entry.id);
         let decoded = decode_png(&png).unwrap();
         assert_eq!((decoded.width, decoded.height), (12, 6));
         assert_eq!(decoded.rgba, frame.rgba);
         assert!(read_entry(&dir, "missing-id").is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn index_json(dir: &Path) -> serde_json::Value {
+        serde_json::from_str(&fs::read_to_string(dir.join(INDEX_FILE)).unwrap()).unwrap()
+    }
+
+    fn write_v1_index(dir: &Path, id: &str) -> String {
+        fs::create_dir_all(dir).unwrap();
+        let text = format!(
+            r#"{{"schemaVersion":1,"entries":[{{"id":"{id}","createdAt":10,"width":4,"height":2,"scale":1.0,"fileName":"{id}.png","thumbName":"{id}.thumb.png"}}]}}"#
+        );
+        fs::write(dir.join(INDEX_FILE), &text).unwrap();
+        text
+    }
+
+    #[test]
+    fn v1_index_reads_with_defaults_and_upgrades_on_next_write() {
+        let dir = temp_dir("upgrade-v1");
+        let original = write_v1_index(&dir, "old");
+        let (entries, state) = load_index(&dir);
+        assert_eq!(state, IndexState::Ready);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, "old");
+        assert_eq!(entries[0].mode, None);
+        assert!(!entries[0].favorite);
+        assert_eq!(entries[0].note, "");
+        assert_eq!(fs::read_to_string(dir.join(INDEX_FILE)).unwrap(), original);
+
+        set_favorite(&dir, "old", true).unwrap();
+        let stored = index_json(&dir);
+        assert_eq!(stored["schemaVersion"], 2);
+        assert_eq!(stored["entries"][0]["favorite"], true);
+        assert_eq!(stored["entries"][0]["note"], "");
+        assert!(stored["entries"][0]["mode"].is_null());
+
+        let (reloaded, state) = load_index(&dir);
+        assert_eq!(state, IndexState::Ready);
+        assert!(reloaded[0].favorite);
+        assert_eq!(reloaded[0].mode, None);
+
+        let added =
+            record_frame(&dir, &solid(4, 4, [1, 2, 3, 255]), 20, 50, Some("window")).unwrap();
+        let (entries, _) = load_index(&dir);
+        assert_eq!(entries[0].id, added.id);
+        assert_eq!(entries[0].mode.as_deref(), Some("window"));
+        assert!(!entries[0].favorite);
+        assert_eq!(entries[1].id, "old");
+        assert!(entries[1].favorite);
+        assert_eq!(index_json(&dir)["schemaVersion"], 2);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mode_favorite_and_note_roundtrip_and_unknown_mode_is_dropped() {
+        let dir = temp_dir("meta");
+        let long = record_frame(&dir, &solid(4, 4, [9, 9, 9, 255]), 20, 3, Some(" long ")).unwrap();
+        assert_eq!(long.mode.as_deref(), Some("long"));
+        let unknown = record_frame(
+            &dir,
+            &solid(4, 4, [8, 8, 8, 255]),
+            20,
+            4,
+            Some("FULLSCREEN"),
+        )
+        .unwrap();
+        assert_eq!(unknown.mode, None);
+
+        set_favorite(&dir, &long.id, true).unwrap();
+        set_note(&dir, &long.id, "  hello\nworld\t备注  ").unwrap();
+        let (entries, _) = load_index(&dir);
+        let stored = entries.iter().find(|entry| entry.id == long.id).unwrap();
+        assert!(stored.favorite);
+        assert_eq!(stored.note, "hello world 备注");
+        assert_eq!(stored.mode.as_deref(), Some("long"));
+
+        let (views, notice) = list_views(&dir);
+        assert!(notice.is_none());
+        let view = views.iter().find(|entry| entry.id == long.id).unwrap();
+        assert!(view.favorite);
+        assert_eq!(view.note, "hello world 备注");
+        assert_eq!(view.mode.as_deref(), Some("long"));
+
+        set_note(&dir, &long.id, "   \n\t  ").unwrap();
+        assert_eq!(
+            load_index(&dir)
+                .0
+                .iter()
+                .find(|entry| entry.id == long.id)
+                .unwrap()
+                .note,
+            ""
+        );
+        let too_long = format!("测{}", "画".repeat(NOTE_MAX_CHARS));
+        set_note(&dir, &long.id, &too_long).unwrap();
+        let note = load_index(&dir)
+            .0
+            .into_iter()
+            .find(|entry| entry.id == long.id)
+            .unwrap()
+            .note;
+        assert_eq!(note.chars().count(), NOTE_MAX_CHARS);
+        assert!(note.starts_with('测'));
+        assert!(!note.contains('\n'));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn favorite_does_not_reorder_storage_or_survive_eviction_and_clear() {
+        let dir = temp_dir("fav-policy");
+        let oldest = record(&dir, &solid(4, 4, [1, 0, 0, 255]), 20, 1).unwrap();
+        let middle = record(&dir, &solid(4, 4, [0, 1, 0, 255]), 20, 2).unwrap();
+        let newest = record(&dir, &solid(4, 4, [0, 0, 1, 255]), 20, 3).unwrap();
+        set_favorite(&dir, &oldest.id, true).unwrap();
+        set_note(&dir, &middle.id, "kept").unwrap();
+        let (entries, _) = load_index(&dir);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![newest.id.as_str(), middle.id.as_str(), oldest.id.as_str()]
+        );
+        assert!(entries[2].favorite);
+
+        delete_entry(&dir, &oldest.id).unwrap();
+        let (entries, _) = load_index(&dir);
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().all(|entry| !entry.favorite));
+        assert_eq!(
+            entries
+                .iter()
+                .find(|entry| entry.id == middle.id)
+                .unwrap()
+                .note,
+            "kept"
+        );
+
+        set_favorite(&dir, &middle.id, true).unwrap();
+        prune_to_limit(&dir, 1).unwrap();
+        let (entries, _) = load_index(&dir);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, newest.id);
+        assert!(!dir.join(&middle.file_name).exists());
+
+        set_favorite(&dir, &newest.id, true).unwrap();
+        set_note(&dir, &newest.id, "gone").unwrap();
+        clear_entries(&dir).unwrap();
+        let (entries, state) = load_index(&dir);
+        assert!(entries.is_empty());
+        assert_eq!(state, IndexState::Missing);
+        assert!(!dir.join(INDEX_FILE).exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn note_and_favorite_do_not_overwrite_unsupported_or_corrupt_indexes() {
+        let dir = temp_dir("protect-index");
+        fs::create_dir_all(&dir).unwrap();
+        let unsupported = r#"{"schemaVersion":99,"entries":[{"id":"x","createdAt":1,"width":1,"height":1,"scale":1.0,"fileName":"x.png","thumbName":"x.thumb.png","favorite":true}]}"#;
+        fs::write(dir.join(INDEX_FILE), unsupported).unwrap();
+        assert!(set_favorite(&dir, "x", false).unwrap_err().contains("版本"));
+        assert!(set_note(&dir, "x", "nope").unwrap_err().contains("版本"));
+        assert_eq!(
+            fs::read_to_string(dir.join(INDEX_FILE)).unwrap(),
+            unsupported
+        );
+
+        fs::write(dir.join(INDEX_FILE), b"{not json").unwrap();
+        assert!(set_note(&dir, "x", "nope").unwrap_err().contains("损坏"));
+        assert_eq!(
+            fs::read_to_string(dir.join(INDEX_FILE)).unwrap(),
+            "{not json"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }

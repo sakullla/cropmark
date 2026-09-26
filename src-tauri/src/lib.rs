@@ -250,6 +250,8 @@ pub fn run() {
             history::pin_history_entry,
             history::reedit_history_entry,
             history::delete_history_entry,
+            history::set_history_favorite,
+            history::set_history_note,
             history::clear_history,
             history::open_history,
             quit_app,

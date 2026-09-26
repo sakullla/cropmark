@@ -24,6 +24,63 @@
   overflow: hidden;
 }
 
+.history-filters {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.history-select,
+.history-search,
+.history-note-input {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control-sm);
+  background: var(--control-fill);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+}
+
+.history-select,
+.history-search {
+  height: 32px;
+}
+
+.history-select {
+  padding: 0 8px;
+}
+
+.history-search {
+  flex: 1 1 140px;
+  min-width: 120px;
+  padding: 0 10px;
+}
+
+.history-filter-clear {
+  border: 0;
+  min-height: 32px;
+  padding: 0 8px;
+  border-radius: var(--radius-control-sm);
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.history-filter-clear:hover:not(:disabled),
+.history-filter-clear:active:not(:disabled) {
+  background: var(--accent-soft);
+}
+
+.history-filter-clear:disabled {
+  opacity: var(--control-disabled-opacity);
+  cursor: default;
+}
+
 .history-status {
   margin: 0;
   font-size: 12px;
@@ -125,6 +182,14 @@
   background: var(--row-hover);
 }
 
+.history-item.is-favorite {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.history-item.is-favorite:hover {
+  background: var(--row-hover);
+}
+
 .history-thumb {
   width: 96px;
   height: 60px;
@@ -158,11 +223,46 @@
   font-variant-numeric: tabular-nums;
 }
 
-.history-size {
+.history-size,
+.history-mode {
   margin-top: 4px;
   font-size: 12px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
+}
+
+.history-note {
+  display: block;
+  margin-top: 6px;
+}
+
+.history-note-input {
+  width: 100%;
+  height: 28px;
+  padding: 0 8px;
+}
+
+.history-fav {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  padding: 0;
+  color: var(--muted);
+}
+
+.history-fav svg {
+  display: block;
+  width: 16px;
+  height: 16px;
+}
+
+.history-fav.is-on {
+  color: var(--accent);
+}
+
+.history-fav.is-on svg path {
+  fill: currentColor;
 }
 
 .history-missing-note {

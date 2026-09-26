@@ -12,16 +12,113 @@ interface HistoryEntryView {
   height: number;
   thumbMissing: boolean;
   imageMissing: boolean;
+  mode: string | null;
+  favorite: boolean;
+  note: string;
 }
 
 interface HistoryListPayload {
   entries: HistoryEntryView[];
   notice: string | null;
+  toolsEnabled: boolean;
+}
+
+type TimeRange = "all" | "today" | "7d" | "30d";
+type ModeFilter = "all" | "region" | "window" | "fullscreen" | "long";
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+const STAR_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.6 14.7 9.1 20.7 9.9 16.3 14.1 17.4 20.1 12 17.2 6.6 20.1 7.7 14.1 3.3 9.9 9.3 9.1Z"/></svg>`;
+
+function startOfLocalDay(ms: number): number {
+  const date = new Date(ms);
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+}
+
+/** 今天按本地日历日;最近 7/30 天按滚动窗口,含当前时刻。 */
+function matchesTime(createdAt: number, range: TimeRange, now: number): boolean {
+  if (range === "all") {
+    return true;
+  }
+  if (!Number.isFinite(createdAt)) {
+    return false;
+  }
+  if (range === "today") {
+    return startOfLocalDay(createdAt) === startOfLocalDay(now);
+  }
+  const days = range === "7d" ? 7 : 30;
+  return createdAt >= now - days * DAY_MS;
+}
+
+/** 无模式的旧记录只在「全部模式」下出现。 */
+function matchesMode(mode: string | null, filter: ModeFilter): boolean {
+  return filter === "all" || mode === filter;
+}
+
+/** 关键词只匹配备注,大小写不敏感;空白关键词不筛选。 */
+function matchesNote(note: string, query: string): boolean {
+  const needle = query.trim().toLocaleLowerCase();
+  return needle.length === 0 || note.toLocaleLowerCase().includes(needle);
+}
+
+function visibleEntries(
+  entries: HistoryEntryView[],
+  toolsEnabled: boolean,
+  timeRange: TimeRange,
+  modeFilter: ModeFilter,
+  noteQuery: string,
+  now = Date.now(),
+): HistoryEntryView[] {
+  if (!toolsEnabled) {
+    return entries.slice();
+  }
+  const matched = entries.filter(
+    (entry) =>
+      matchesTime(entry.createdAt, timeRange, now) &&
+      matchesMode(entry.mode, modeFilter) &&
+      matchesNote(entry.note, noteQuery),
+  );
+  matched.sort((left, right) => {
+    if (left.favorite !== right.favorite) {
+      return left.favorite ? -1 : 1;
+    }
+    return right.createdAt - left.createdAt;
+  });
+  return matched;
+}
+
+function modeLabelKey(mode: string): CatalogKey | null {
+  switch (mode) {
+    case "region":
+      return "history.mode.region";
+    case "window":
+      return "history.mode.window";
+    case "fullscreen":
+      return "history.mode.fullscreen";
+    case "long":
+      return "history.mode.long";
+    default:
+      return null;
+  }
+}
+
+function asTimeRange(value: string): TimeRange {
+  if (value === "today" || value === "7d" || value === "30d") {
+    return value;
+  }
+  return "all";
+}
+
+function asModeFilter(value: string): ModeFilter {
+  if (value === "region" || value === "window" || value === "fullscreen" || value === "long") {
+    return value;
+  }
+  return "all";
 }
 
 // 历史视图:按时间展示本机保存的截图缩略图,每条可再编辑、复制、贴图或
-// 删除,也可清空全部。再编辑打开该条图像的预览。缩略图经 Rust 命令拉取为二进制,转 blob URL 显示;
-// 索引损坏或缩略图/原图缺失时给出可理解状态,列表仍可用。
+// 删除,也可清空全部。开启「历史检索与收藏」后可按时间/模式筛选、收藏置顶
+// 并检索备注;关闭开关只恢复原来的时间列表,索引中的模式、收藏和备注仍保留。
 export function mountHistory(root: HTMLElement): () => void {
   root.className = "history-root";
   root.innerHTML = `
@@ -38,6 +135,23 @@ export function mountHistory(root: HTMLElement): () => void {
         </div>
       </header>
       <main class="content history-content">
+        <div class="history-filters" data-filters role="group" data-i18n-aria-label="history.filter.group" aria-label="筛选历史" hidden>
+          <select class="history-select" data-filter="time" data-i18n-aria-label="history.filter.time_label" aria-label="时间范围">
+            <option value="all" data-i18n="history.filter.time_all">全部时间</option>
+            <option value="today" data-i18n="history.filter.time_today">今天</option>
+            <option value="7d" data-i18n="history.filter.time_7d">最近 7 天</option>
+            <option value="30d" data-i18n="history.filter.time_30d">最近 30 天</option>
+          </select>
+          <select class="history-select" data-filter="mode" data-i18n-aria-label="history.filter.mode_label" aria-label="采集模式">
+            <option value="all" data-i18n="history.filter.mode_all">全部模式</option>
+            <option value="region" data-i18n="history.filter.mode_region">区域</option>
+            <option value="window" data-i18n="history.filter.mode_window">窗口</option>
+            <option value="fullscreen" data-i18n="history.filter.mode_fullscreen">全屏</option>
+            <option value="long" data-i18n="history.filter.mode_long">长截图</option>
+          </select>
+          <input class="history-search" data-filter="note" type="search" autocomplete="off" data-i18n-aria-label="history.filter.note_label" data-i18n-placeholder="history.filter.note_placeholder" aria-label="搜索备注" placeholder="搜索备注" />
+          <button type="button" class="history-filter-clear" data-action="clear-filters" data-i18n="history.filter.clear" disabled>清除筛选</button>
+        </div>
         <p class="notice" data-notice role="alert" hidden></p>
         <p class="history-status" data-status role="status" hidden></p>
         <div class="history-confirm" data-confirm role="alertdialog" data-i18n-aria-label="history.confirm_group" aria-label="确认操作" hidden>
@@ -48,11 +162,16 @@ export function mountHistory(root: HTMLElement): () => void {
           </div>
         </div>
         <div class="history-list" data-list></div>
-        <p class="history-empty" data-empty hidden data-i18n="history.empty">暂无历史记录。截图完成后会自动出现在这里。</p>
+        <p class="history-empty" data-empty hidden>暂无历史记录。截图完成后会自动出现在这里。</p>
       </main>
     </div>
   `;
 
+  const filtersEl = root.querySelector("[data-filters]");
+  const timeEl = root.querySelector("[data-filter=time]");
+  const modeEl = root.querySelector("[data-filter=mode]");
+  const searchEl = root.querySelector("[data-filter=note]");
+  const clearFiltersEl = root.querySelector("[data-action=clear-filters]");
   const noticeEl = root.querySelector("[data-notice]");
   const statusEl = root.querySelector("[data-status]");
   const confirmEl = root.querySelector("[data-confirm]");
@@ -65,6 +184,11 @@ export function mountHistory(root: HTMLElement): () => void {
   const clearEl = root.querySelector("[data-action=clear]");
   const closeEl = root.querySelector("[data-action=close]");
   if (
+    !(filtersEl instanceof HTMLElement) ||
+    !(timeEl instanceof HTMLSelectElement) ||
+    !(modeEl instanceof HTMLSelectElement) ||
+    !(searchEl instanceof HTMLInputElement) ||
+    !(clearFiltersEl instanceof HTMLButtonElement) ||
     !(noticeEl instanceof HTMLElement) ||
     !(statusEl instanceof HTMLElement) ||
     !(confirmEl instanceof HTMLElement) ||
@@ -80,8 +204,15 @@ export function mountHistory(root: HTMLElement): () => void {
     return () => undefined;
   }
 
+  emptyEl.textContent = t("history.empty");
+
   let busy = false;
+  let applyingDom = false;
   let lastPayload: HistoryListPayload | null = null;
+  let timeRange: TimeRange = "all";
+  let modeFilter: ModeFilter = "all";
+  let noteQuery = "";
+  const noteDrafts = new Map<string, string>();
   let statusState: { key: CatalogKey | null; text: string; isError: boolean } = {
     key: null,
     text: "",
@@ -96,6 +227,9 @@ export function mountHistory(root: HTMLElement): () => void {
     pending.kind === "delete" ? t("history.confirm_delete") : t("history.confirm_clear");
   const confirmAcceptLabel = (pending: PendingConfirm): string =>
     pending.kind === "delete" ? t("history.confirm_delete_accept") : t("history.confirm_clear_accept");
+
+  const filtersActive = (): boolean =>
+    timeRange !== "all" || modeFilter !== "all" || noteQuery.trim().length > 0;
 
   const hideConfirm = (): void => {
     pendingConfirm = null;
@@ -188,9 +322,36 @@ export function mountHistory(root: HTMLElement): () => void {
       });
   };
 
-  const entryRow = (entry: HistoryEntryView): HTMLElement => {
+  const savedNote = (id: string): string =>
+    lastPayload?.entries.find((entry) => entry.id === id)?.note ?? "";
+
+  const persistNote = async (id: string, draft: string): Promise<void> => {
+    try {
+      const payload = await invoke<HistoryListPayload>("set_history_note", { id, note: draft });
+      const serverNote = payload.entries.find((entry) => entry.id === id)?.note ?? "";
+      const pending = noteDrafts.get(id);
+      if (pending === undefined || pending === serverNote) {
+        noteDrafts.delete(id);
+        render(payload);
+        setStatusKey("history.note_saved");
+        return;
+      }
+      render(payload);
+    } catch (error) {
+      noteDrafts.set(id, draft);
+      setStatusText(errorMessage(error), true);
+      if (lastPayload) {
+        render(lastPayload);
+      }
+    }
+  };
+
+  const entryRow = (entry: HistoryEntryView, toolsEnabled: boolean): HTMLElement => {
     const row = document.createElement("article");
     row.className = "history-item";
+    if (entry.favorite && toolsEnabled) {
+      row.classList.add("is-favorite");
+    }
     row.dataset.entryId = entry.id;
 
     const holder = document.createElement("div");
@@ -213,15 +374,73 @@ export function mountHistory(root: HTMLElement): () => void {
     size.className = "history-size";
     size.textContent = `${entry.width} × ${entry.height}`;
     meta.append(time, size);
+    if (toolsEnabled && entry.mode) {
+      const labelKey = modeLabelKey(entry.mode);
+      if (labelKey) {
+        const mode = document.createElement("div");
+        mode.className = "history-mode";
+        mode.textContent = t(labelKey);
+        meta.append(mode);
+      }
+    }
     if (entry.imageMissing) {
       const missing = document.createElement("div");
       missing.className = "history-missing-note";
       missing.textContent = t("history.image_missing");
       meta.append(missing);
     }
+    if (toolsEnabled) {
+      const note = document.createElement("label");
+      note.className = "history-note";
+      const input = document.createElement("input");
+      input.type = "text";
+      input.className = "history-note-input";
+      input.autocomplete = "off";
+      input.maxLength = 500;
+      input.dataset.noteId = entry.id;
+      input.placeholder = t("history.note_placeholder");
+      input.setAttribute("aria-label", t("history.note_label"));
+      input.value = noteDrafts.get(entry.id) ?? entry.note;
+      input.addEventListener("input", () => {
+        noteDrafts.set(entry.id, input.value);
+      });
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && !event.isComposing) {
+          event.preventDefault();
+          input.blur();
+        }
+      });
+      input.addEventListener("blur", () => {
+        if (applyingDom) {
+          return;
+        }
+        const draft = input.value;
+        noteDrafts.delete(entry.id);
+        if (draft === savedNote(entry.id)) {
+          return;
+        }
+        void persistNote(entry.id, draft);
+      });
+      note.append(input);
+      meta.append(note);
+    }
 
     const actions = document.createElement("div");
     actions.className = "history-actions";
+    if (toolsEnabled) {
+      const favorite = document.createElement("button");
+      favorite.type = "button";
+      favorite.className = entry.favorite
+        ? "history-btn history-fav is-on"
+        : "history-btn history-fav";
+      favorite.dataset.entryAction = "favorite";
+      favorite.setAttribute("aria-pressed", entry.favorite ? "true" : "false");
+      const favoriteLabel = t(entry.favorite ? "history.unfavorite" : "history.favorite");
+      favorite.setAttribute("aria-label", favoriteLabel);
+      favorite.dataset.tooltip = favoriteLabel;
+      favorite.innerHTML = STAR_ICON;
+      actions.append(favorite);
+    }
     const actionLabels: Array<[string, CatalogKey, string]> = [
       ["reedit", "history.reedit", "history-btn history-btn-edit"],
       ["copy", "history.copy", "history-btn history-btn-quiet"],
@@ -254,15 +473,51 @@ export function mountHistory(root: HTMLElement): () => void {
 
   const render = (payload: HistoryListPayload): void => {
     lastPayload = payload;
+    const toolsEnabled = payload.toolsEnabled;
+    filtersEl.hidden = !toolsEnabled;
+    clearFiltersEl.disabled = !filtersActive();
     noticeEl.hidden = !payload.notice;
     noticeEl.textContent = payload.notice ?? "";
-    listEl.replaceChildren();
-    for (const entry of payload.entries) {
-      listEl.append(entryRow(entry));
+    const visible = visibleEntries(
+      payload.entries,
+      toolsEnabled,
+      timeRange,
+      modeFilter,
+      noteQuery,
+    );
+    const activeNote =
+      document.activeElement instanceof HTMLInputElement && document.activeElement.dataset.noteId
+        ? document.activeElement
+        : null;
+    const editingId = activeNote?.dataset.noteId ?? null;
+    const selectionStart = activeNote?.selectionStart ?? null;
+    applyingDom = true;
+    try {
+      listEl.replaceChildren();
+      for (const entry of visible) {
+        listEl.append(entryRow(entry, toolsEnabled));
+      }
+    } finally {
+      applyingDom = false;
     }
-    emptyEl.hidden = payload.entries.length > 0;
+    if (editingId) {
+      const next = listEl.querySelector<HTMLInputElement>(`[data-note-id="${editingId}"]`);
+      if (next) {
+        next.focus();
+        if (selectionStart !== null) {
+          next.setSelectionRange(selectionStart, selectionStart);
+        }
+      }
+    }
+    const noHistory = payload.entries.length === 0;
+    const noMatch = !noHistory && visible.length === 0;
+    emptyEl.hidden = !(noHistory || noMatch);
+    emptyEl.textContent = noMatch ? t("history.filter.empty") : t("history.empty");
     countEl.hidden = payload.entries.length === 0;
-    countEl.textContent = t("history.count", { count: payload.entries.length });
+    countEl.textContent =
+      toolsEnabled && filtersActive()
+        ? t("history.count_filtered", { count: visible.length, total: payload.entries.length })
+        : t("history.count", { count: payload.entries.length });
   };
 
   const refresh = async (): Promise<void> => {
@@ -277,6 +532,7 @@ export function mountHistory(root: HTMLElement): () => void {
     busy = true;
     try {
       render(await invoke<HistoryListPayload>("delete_history_entry", { id }));
+      noteDrafts.delete(id);
       setStatusKey("history.deleted");
     } catch (error) {
       setStatusText(errorMessage(error), true);
@@ -291,6 +547,7 @@ export function mountHistory(root: HTMLElement): () => void {
     renderStatus();
     try {
       render(await invoke<HistoryListPayload>("clear_history"));
+      noteDrafts.clear();
       setStatusKey("history.cleared");
     } catch (error) {
       setStatusText(errorMessage(error), true);
@@ -319,6 +576,11 @@ export function mountHistory(root: HTMLElement): () => void {
         setStatusKey("history.pinned");
       } else if (action === "reedit") {
         await invoke("reedit_history_entry", { id });
+      } else if (action === "favorite") {
+        const entry = lastPayload?.entries.find((item) => item.id === id);
+        const favorite = !(entry?.favorite ?? false);
+        render(await invoke<HistoryListPayload>("set_history_favorite", { id, favorite }));
+        setStatusKey(favorite ? "history.favorited" : "history.unfavorited");
       }
     } catch (error) {
       setStatusText(errorMessage(error), true);
@@ -343,6 +605,43 @@ export function mountHistory(root: HTMLElement): () => void {
       return;
     }
     void runAction(action, id);
+  });
+
+  const resetFilters = (): void => {
+    timeRange = "all";
+    modeFilter = "all";
+    noteQuery = "";
+    timeEl.value = "all";
+    modeEl.value = "all";
+    searchEl.value = "";
+    if (lastPayload) {
+      render(lastPayload);
+    }
+  };
+
+  timeEl.addEventListener("change", () => {
+    timeRange = asTimeRange(timeEl.value);
+    if (lastPayload) {
+      render(lastPayload);
+    }
+  });
+
+  modeEl.addEventListener("change", () => {
+    modeFilter = asModeFilter(modeEl.value);
+    if (lastPayload) {
+      render(lastPayload);
+    }
+  });
+
+  searchEl.addEventListener("input", () => {
+    noteQuery = searchEl.value;
+    if (lastPayload) {
+      render(lastPayload);
+    }
+  });
+
+  clearFiltersEl.addEventListener("click", () => {
+    resetFilters();
   });
 
   clearEl.addEventListener("click", () => {
@@ -383,6 +682,12 @@ export function mountHistory(root: HTMLElement): () => void {
   // 窗口被截取流程隐藏后再次打开时,Rust 发来刷新信号,列表不会停留在旧数据。
   void listen("history-refresh", () => {
     void refresh();
+  });
+  // 设置里开关历史检索后,回到本窗口即按最新开关重绘,不必重启。
+  void getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+    if (focused) {
+      void refresh();
+    }
   });
 
   void refresh();
