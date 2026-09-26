@@ -73,3 +73,30 @@ jobs:
       # Existing platform-specific dead code and style warnings are not errors.
       - name: Clippy
         run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets
+
+  dependency-check:
+    name: Dependency and license checks
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install frontend dependencies
+        run: npm ci --prefer-offline --no-audit --no-fund
+      - name: Audit frontend dependencies
+        run: npm audit --audit-level=high
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-deny
+        run: |
+          set -euo pipefail
+          curl -fsSL -o cargo-deny.tar.gz \
+            https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz
+          echo "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f  cargo-deny.tar.gz" | sha256sum -c -
+          tar -xzf cargo-deny.tar.gz
+          install -m 0755 cargo-deny-0.20.2-x86_64-unknown-linux-musl/cargo-deny /usr/local/bin/cargo-deny
+          cargo deny --version
+      - name: Check Rust advisories, licenses, and bans
+        run: cargo deny --manifest-path src-tauri/Cargo.toml --locked check --hide-inclusion-graph advisories licenses bans sources

@@ -1,0 +1,74 @@
+# cargo-deny 0.20. Cropmark is GPL-3.0-only. The allow list is the
+# license set present in the locked graph on 2026-09-26; each entry is
+# permissive or GPL-3.0-compatible. A new license fails the check.
+
+[graph]
+targets = [
+  "x86_64-pc-windows-msvc",
+  "aarch64-apple-darwin",
+  "x86_64-unknown-linux-gnu",
+]
+all-features = false
+
+[advisories]
+# Transitive unsoundness is a vulnerability. The tool default only
+# errors for workspace crates, which would hide it.
+unsound = "all"
+unmaintained = "all"
+yanked = "deny"
+ignore = [
+  # Unsound, not low severity, but not upgradeable inside this lockfile:
+  # gtk 0.18 (Tauri 2.11 Linux) requires glib 0.18, and the fix is glib >= 0.20.
+  { id = "RUSTSEC-2024-0429", reason = "glib 0.18.5 is pinned by Tauri 2.11 Linux gtk/webkit2gtk. UB is in VariantStrIter; Cropmark does not call it. glib >= 0.20 needs a gtk-rs bump Tauri has not shipped." },
+  # Unmaintained, no patched release, no vulnerability. All transitive.
+  { id = "RUSTSEC-2024-0436", reason = "paste 1.0.15 is an unmaintained proc-macro via image/rav1e/nalgebra. No patched release and no vulnerability." },
+  { id = "RUSTSEC-2024-0370", reason = "proc-macro-error 1.0.4 is an unmaintained build dep of Tauri's Linux gtk 0.18 macros. No patched release and no vulnerability." },
+  { id = "RUSTSEC-2026-0192", reason = "ttf-parser 0.25.1 is unmaintained via ab_glyph (annotation text). No patched release and no vulnerability. skrifa would be a separate font-stack change." },
+  { id = "RUSTSEC-2025-0081", reason = "unic-char-property is an unmaintained transitive of tauri-utils/urlpattern. No patched release and no vulnerability." },
+  { id = "RUSTSEC-2025-0075", reason = "unic-char-range is an unmaintained transitive of tauri-utils/urlpattern. No patched release and no vulnerability." },
+  { id = "RUSTSEC-2025-0080", reason = "unic-common is an unmaintained transitive of tauri-utils/urlpattern. No patched release and no vulnerability." },
+  { id = "RUSTSEC-2025-0100", reason = "unic-ucd-ident is an unmaintained transitive of tauri-utils/urlpattern. No patched release and no vulnerability." },
+  { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version is an unmaintained transitive of tauri-utils/urlpattern. No patched release and no vulnerability." },
+]
+
+[licenses]
+confidence-threshold = 0.8
+allow = [
+  "0BSD",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BSL-1.0",
+  "CC0-1.0",
+  "CDLA-Permissive-2.0",
+  "GPL-3.0-only",
+  "ISC",
+  "MIT",
+  "MIT-0",
+  "MPL-2.0",
+  "Unicode-3.0",
+  "Unlicense",
+  "Zlib",
+]
+exceptions = []
+
+[bans]
+# Duplicate versions are transitive (tauri, ort, image) and cannot be
+# collapsed without unrelated upgrades. warn keeps the lint on and names
+# each crate; allow would silence it.
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+allow = []
+deny = []
+skip = []
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
