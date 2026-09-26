@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use x11rb::connection::Connection;
+use x11rb::connection::{Connection, RequestConnection};
 use x11rb::protocol::randr::ConnectionExt as RandrExt;
 use x11rb::protocol::xproto::{self, ConnectionExt as XprotoExt, ImageFormat};
 
@@ -328,9 +328,94 @@ impl x11rb::x11_utils::TryParse for XFixesCursorReply {
     }
 }
 
-fn read_xfixes_cursor() -> Result<Option<crate::capture::geometry::XFixesCursorImage>, ()> {
+/// XFixes QueryVersion 回复(连接字节序即主机序)。
+struct XFixesVersionReply {
+    major: u32,
+}
+
+impl XFixesVersionReply {
+    /// GetCursorImage 从主版本 1 起才在服务端放行。
+    const fn allows_get_cursor_image(&self) -> bool {
+        self.major >= 1
+    }
+}
+
+impl x11rb::x11_utils::TryParse for XFixesVersionReply {
+    fn try_parse(value: &[u8]) -> Result<(Self, &[u8]), x11rb::errors::ParseError> {
+        if value.len() < 32 || value[0] != 1 {
+            return Err(x11rb::errors::ParseError::InsufficientData);
+        }
+        let length = u32::from_ne_bytes([value[4], value[5], value[6], value[7]]);
+        let major = u32::from_ne_bytes([value[8], value[9], value[10], value[11]]);
+        let extra = usize::try_from(length)
+            .ok()
+            .and_then(|words| words.checked_mul(4))
+            .ok_or(x11rb::errors::ParseError::InsufficientData)?;
+        let total = 32usize
+            .checked_add(extra)
+            .ok_or(x11rb::errors::ParseError::InsufficientData)?;
+        let rest = value
+            .get(total..)
+            .ok_or(x11rb::errors::ParseError::InsufficientData)?;
+        Ok((Self { major }, rest))
+    }
+}
+
+const XFIXES_QUERY_VERSION: u8 = 0;
+const XFIXES_GET_CURSOR_IMAGE: u8 = 4;
+
+const fn xfixes_query_version_request(major_opcode: u8) -> [u8; 12] {
+    let length = 3u16.to_ne_bytes();
+    let client_major = 1u32.to_ne_bytes();
+    let client_minor = 0u32.to_ne_bytes();
+    [
+        major_opcode,
+        XFIXES_QUERY_VERSION,
+        length[0],
+        length[1],
+        client_major[0],
+        client_major[1],
+        client_major[2],
+        client_major[3],
+        client_minor[0],
+        client_minor[1],
+        client_minor[2],
+        client_minor[3],
+    ]
+}
+
+const fn xfixes_get_cursor_image_request(major_opcode: u8) -> [u8; 4] {
+    let length = 1u16.to_ne_bytes();
+    [major_opcode, XFIXES_GET_CURSOR_IMAGE, length[0], length[1]]
+}
+
+struct XFixesCursorRequests {
+    query_version: [u8; 12],
+    get_cursor_image: [u8; 4],
+}
+
+const fn xfixes_cursor_requests(major_opcode: u8) -> XFixesCursorRequests {
+    XFixesCursorRequests {
+        query_version: xfixes_query_version_request(major_opcode),
+        get_cursor_image: xfixes_get_cursor_image_request(major_opcode),
+    }
+}
+
+fn xfixes_roundtrip<R>(conn: &impl RequestConnection, request: &[u8]) -> Result<R, ()>
+where
+    R: x11rb::x11_utils::TryParse,
+{
     use std::io::IoSlice;
-    use x11rb::connection::RequestConnection;
+    conn.send_request_with_reply(
+        &[IoSlice::new(request)],
+        Vec::<x11rb::utils::RawFdContainer>::new(),
+    )
+    .map_err(|_| ())?
+    .reply()
+    .map_err(|_| ())
+}
+
+fn read_xfixes_cursor() -> Result<Option<crate::capture::geometry::XFixesCursorImage>, ()> {
     let (conn, _screen) = x11rb::connect(None).map_err(|_| ())?;
     let ext = conn
         .query_extension(b"XFIXES")
@@ -340,15 +425,14 @@ fn read_xfixes_cursor() -> Result<Option<crate::capture::geometry::XFixesCursorI
     if !ext.present {
         return Err(());
     }
-    let mut request = [ext.major_opcode, 4, 0, 0];
-    request[2..4].copy_from_slice(&1u16.to_ne_bytes());
-    let cookie = conn
-        .send_request_with_reply::<XFixesCursorReply>(
-            &[IoSlice::new(&request)],
-            Vec::<x11rb::utils::RawFdContainer>::new(),
-        )
-        .map_err(|_| ())?;
-    let reply = cookie.reply().map_err(|_| ())?;
+    // 新连接的 major_version 为 0,只接受 QueryVersion。必须在同一条连接上
+    // 先协商至少 1.0 并读完回复,服务端才放行 GetCursorImage。
+    let requests = xfixes_cursor_requests(ext.major_opcode);
+    let version = xfixes_roundtrip::<XFixesVersionReply>(&conn, &requests.query_version)?;
+    if !version.allows_get_cursor_image() {
+        return Err(());
+    }
+    let reply = xfixes_roundtrip::<XFixesCursorReply>(&conn, &requests.get_cursor_image)?;
     if reply.0.width == 0 || reply.0.height == 0 {
         Ok(None)
     } else {
@@ -589,5 +673,53 @@ mod tests {
         let list = CaptureError::unavailable(PORTAL_WINDOW_LIST_KEY);
         assert_eq!(list.kind, CaptureErrorKind::Unavailable);
         assert_eq!(x11_unavailable().message, i18n::t(PORTAL_UNAVAILABLE_KEY));
+    }
+
+    #[test]
+    fn xfixes_cursor_negotiates_version_before_get_cursor_image() {
+        let opcode = 0x92;
+        let requests = xfixes_cursor_requests(opcode);
+        let query = requests.query_version;
+        let image = requests.get_cursor_image;
+        assert_eq!(query[0], opcode);
+        assert_eq!(query[1], XFIXES_QUERY_VERSION);
+        assert_eq!(u16::from_ne_bytes([query[2], query[3]]), 3);
+        assert_eq!(query.len(), 12);
+        let client_major = u32::from_ne_bytes(query[4..8].try_into().unwrap());
+        let client_minor = u32::from_ne_bytes(query[8..12].try_into().unwrap());
+        assert!(client_major >= 1);
+        assert_eq!((client_major, client_minor), (1, 0));
+        assert_eq!(image[0], opcode);
+        assert_eq!(image[1], XFIXES_GET_CURSOR_IMAGE);
+        assert_eq!(u16::from_ne_bytes([image[2], image[3]]), 1);
+        assert_eq!(image.len(), 4);
+        // 未协商时服务端最高 opcode 是 QueryVersion(0),GetCursorImage 必须排在其后。
+        assert!(image[1] > query[1]);
+    }
+
+    #[test]
+    fn xfixes_version_below_one_blocks_cursor_image() {
+        use x11rb::x11_utils::TryParse;
+        let mut bytes = [0u8; 32];
+        bytes[0] = 1;
+        bytes[8..12].copy_from_slice(&0u32.to_ne_bytes());
+        let (reply, rest) = XFixesVersionReply::try_parse(&bytes).unwrap();
+        assert!(rest.is_empty());
+        assert!(!reply.allows_get_cursor_image());
+
+        bytes[8..12].copy_from_slice(&1u32.to_ne_bytes());
+        let (reply, _) = XFixesVersionReply::try_parse(&bytes).unwrap();
+        assert!(reply.allows_get_cursor_image());
+        bytes[8..12].copy_from_slice(&4u32.to_ne_bytes());
+        let (reply, _) = XFixesVersionReply::try_parse(&bytes).unwrap();
+        assert!(reply.allows_get_cursor_image());
+
+        assert!(XFixesVersionReply::try_parse(&[1u8; 16]).is_err());
+        bytes[0] = 0;
+        assert!(XFixesVersionReply::try_parse(&bytes).is_err());
+        let mut truncated = [0u8; 32];
+        truncated[0] = 1;
+        truncated[4..8].copy_from_slice(&1u32.to_ne_bytes());
+        assert!(XFixesVersionReply::try_parse(&truncated).is_err());
     }
 }
