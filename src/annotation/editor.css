@@ -58,7 +58,7 @@
   gap: 1px;
   padding: 3px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius-control-sm);
   background: var(--panel);
   box-shadow: var(--shadow);
 }
@@ -104,12 +104,12 @@
   min-width: 292px;
   padding: 14px;
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: var(--radius-menu);
   /* 实底。半透明会把截图像素透进来，选项和色块都发虚。 */
   background-color: var(--card);
   color: var(--ink);
   box-shadow:
-    0 16px 40px rgba(15, 23, 42, 0.18),
+    var(--shadow),
     0 0 0 1px color-mix(in srgb, var(--ink) 6%, transparent);
 }
 

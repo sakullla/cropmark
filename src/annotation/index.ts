@@ -1324,7 +1324,7 @@ function toolbarMarkup(): string {
   return `
     ${primary}
     <div class="annotation-more" data-more-root>
-      <button type="button" data-action="more" data-i18n-title="preview.tool.more_title" data-i18n-aria-label="preview.tool.more" data-tooltip="${t("preview.tool.more_title")}" aria-label="${t("preview.tool.more")}" aria-haspopup="true">${icons.more}</button>
+      <button type="button" data-action="more" data-i18n-title="preview.tool.more_title" data-i18n-aria-label="preview.tool.more" data-tooltip="${t("preview.tool.more_title")}" aria-label="${t("preview.tool.more")}" aria-haspopup="true" aria-expanded="false">${icons.more}</button>
       <div class="annotation-more-panel" data-more-panel hidden>${extra}</div>
     </div>
     <span class="toolbar-sep" aria-hidden="true"></span>
@@ -1332,7 +1332,7 @@ function toolbarMarkup(): string {
     <button type="button" data-action="redo" data-i18n-title="preview.tool.redo_title" data-i18n-aria-label="preview.tool.redo" data-tooltip="${t("preview.tool.redo_title")}" aria-label="${t("preview.tool.redo")}">${icons.redo}</button>
     <button type="button" data-action="delete" data-i18n-title="preview.tool.delete_title" data-i18n-aria-label="preview.tool.delete" data-tooltip="${t("preview.tool.delete_title")}" aria-label="${t("preview.tool.delete")}">${icons.trash}</button>
     <div class="annotation-style" data-style-root>
-      <button type="button" data-action="style" data-i18n-title="preview.tool.style_title" data-i18n-aria-label="preview.tool.style_title" data-tooltip="${t("preview.tool.style_title")}" aria-label="${t("preview.tool.style_title")}" aria-haspopup="true">${icons.style}</button>
+      <button type="button" data-action="style" data-i18n-title="preview.tool.style_title" data-i18n-aria-label="preview.tool.style_title" data-tooltip="${t("preview.tool.style_title")}" aria-label="${t("preview.tool.style_title")}" aria-haspopup="true" aria-expanded="false">${icons.style}</button>
       <div class="annotation-style-panel" data-style-panel hidden>
         <div class="style-group" data-style-group="mode" hidden>
           <span class="style-label" data-i18n="preview.style.mode">模式</span>
@@ -1467,6 +1467,21 @@ export function clampFloatingPanel(panel: HTMLElement, bounds?: FloatingBounds):
   }
 }
 
+function firstFocusable(panel: HTMLElement): HTMLElement | null {
+  const candidates = panel.querySelectorAll<HTMLElement>(
+    'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])',
+  );
+  return (
+    Array.from(candidates).find(
+      (candidate) => !candidate.hidden && candidate.closest("[hidden]") === null,
+    ) ?? null
+  );
+}
+
+function focusFirstInPanel(panel: HTMLElement): void {
+  firstFocusable(panel)?.focus();
+}
+
 export function mountAnnotationEditor(options: AnnotationEditorOptions): AnnotationEditor {
   const { root, canvas, ctx, toolbar, textHost } = options;
 
@@ -1486,7 +1501,8 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
   const contextMenu = document.createElement("div");
   contextMenu.className = "annotation-context";
   contextMenu.hidden = true;
-  contextMenu.innerHTML = `<button type="button" data-action="delete-annotation" data-i18n="preview.action.delete_annotation">${t("preview.action.delete_annotation")}</button>`;
+  contextMenu.setAttribute("role", "menu");
+  contextMenu.innerHTML = `<button type="button" role="menuitem" data-action="delete-annotation" data-i18n="preview.action.delete_annotation">${t("preview.action.delete_annotation")}</button>`;
   root.appendChild(contextMenu);
 
   const undoBtn = toolbar.querySelector("[data-action=undo]");
@@ -1706,8 +1722,21 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     return -1;
   };
 
-  const hideContextMenu = (): void => {
+  const toolbarFocusTarget = (): HTMLButtonElement => {
+    const candidates = toolbar.querySelectorAll<HTMLButtonElement>(
+      `[data-tool="${tool}"]:not([hidden]):not(:disabled)`,
+    );
+    return (
+      Array.from(candidates).find((button) => button.closest("[hidden]") === null) ?? moreBtn
+    );
+  };
+
+  const hideContextMenu = (restoreFocus = false): void => {
+    const menuHadFocus = contextMenu.contains(document.activeElement);
     contextMenu.hidden = true;
+    if (restoreFocus || menuHadFocus) {
+      toolbarFocusTarget().focus();
+    }
   };
 
   const showContextMenu = (clientX: number, clientY: number): void => {
@@ -1716,6 +1745,7 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     contextMenu.style.left = `${snapDevicePx(clientX - rootRect.left)}px`;
     contextMenu.style.top = `${snapDevicePx(clientY - rootRect.top)}px`;
     clampFloatingPanel(contextMenu, rootRect);
+    focusFirstInPanel(contextMenu);
   };
 
   const editorOpen = (): boolean => editor.classList.contains("is-open");
@@ -1974,6 +2004,19 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     start = null;
     current = null;
     freehand = [];
+    const popoverWasOpen = !contextMenu.hidden || !stylePanel.hidden || !morePanel.hidden;
+    if (!contextMenu.hidden) {
+      hideContextMenu();
+    }
+    if (!stylePanel.hidden) {
+      toggleStylePanel(false);
+    }
+    if (!morePanel.hidden) {
+      toggleMorePanel(false);
+    }
+    if (popoverWasOpen) {
+      toolbarFocusTarget().focus();
+    }
     options.onToolChange?.(next);
     emitToolHint();
     redraw();
@@ -2103,8 +2146,9 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     }
   };
 
-  const toggleMorePanel = (open?: boolean): void => {
+  const toggleMorePanel = (open?: boolean, restoreFocus = false): void => {
     const next = open ?? morePanel.hidden;
+    const panelHadFocus = morePanel.contains(document.activeElement);
     if (next) {
       // 重开先回 CSS 锚点再钳制,避免上次平移量累积漂移。
       morePanel.style.left = "";
@@ -2114,11 +2158,15 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     moreBtn.setAttribute("aria-expanded", next ? "true" : "false");
     if (next) {
       clampFloatingPanel(morePanel);
+      focusFirstInPanel(morePanel);
+    } else if (restoreFocus || panelHadFocus) {
+      moreBtn.focus();
     }
   };
 
-  const toggleStylePanel = (open?: boolean): void => {
+  const toggleStylePanel = (open?: boolean, restoreFocus = false): void => {
     const next = open ?? stylePanel.hidden;
+    const panelHadFocus = stylePanel.contains(document.activeElement);
     if (next) {
       // 开样式面板前先提交编辑器并取消编辑选中,避免两套编辑态互相干扰。
       commitEditor();
@@ -2131,9 +2179,13 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     }
     stylePanel.hidden = !next;
     styleBtn.classList.toggle("active", next);
+    styleBtn.setAttribute("aria-expanded", next ? "true" : "false");
     if (next) {
       syncStylePanel();
       clampFloatingPanel(stylePanel);
+      focusFirstInPanel(stylePanel);
+    } else if (restoreFocus || panelHadFocus) {
+      styleBtn.focus();
     }
   };
 
@@ -2602,17 +2654,17 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     if (event.key === "Escape") {
       if (!contextMenu.hidden) {
         event.preventDefault();
-        hideContextMenu();
+        hideContextMenu(true);
         return;
       }
       if (!stylePanel.hidden) {
         event.preventDefault();
-        toggleStylePanel(false);
+        toggleStylePanel(false, true);
         return;
       }
       if (!morePanel.hidden) {
         event.preventDefault();
-        toggleMorePanel(false);
+        toggleMorePanel(false, true);
         return;
       }
       if (editorOpen()) {

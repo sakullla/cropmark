@@ -69,14 +69,14 @@ export function mountPreview(root: HTMLElement): () => void {
     <div class="preview-toolbar">
       <div class="preview-tools" role="toolbar" data-annotation-toolbar data-i18n-aria-label="preview.toolbar_group" aria-label="标注" data-tauri-drag-region="false"></div>
       <div class="preview-actions" data-tauri-drag-region="false">
-        <button type="button" class="icon-action" data-tool="ocr" data-i18n-title="preview.action.ocr_title" data-i18n-aria-label="preview.action.ocr" title="取字 (O)" aria-label="取字" data-tauri-drag-region="false">${icons.ocr}</button>
-        <button type="button" class="icon-action" data-action="copy-ocr-all" hidden data-i18n-title="preview.action.copy_all" data-i18n-aria-label="preview.action.copy_all" title="复制全部" aria-label="复制全部" data-tauri-drag-region="false">${icons.copy}</button>
-        <button type="button" class="icon-action" data-action="pin" data-i18n-title="preview.action.pin_title" data-i18n-aria-label="preview.action.pin" title="贴图" aria-label="贴图" data-tauri-drag-region="false">${icons.pin}</button>
-        <button type="button" class="icon-action" data-action="update-pin" data-i18n-title="preview.action.update_pin_title" data-i18n-aria-label="preview.action.update_pin" title="更新贴图：确认后写回来源贴图" aria-label="更新贴图" hidden data-tauri-drag-region="false">${icons.annotate}</button>
+        <button type="button" class="icon-action" data-tool="ocr" data-i18n-title="preview.action.ocr_title" data-i18n-aria-label="preview.action.ocr" aria-label="取字" data-tauri-drag-region="false">${icons.ocr}</button>
+        <button type="button" class="icon-action" data-action="copy-ocr-all" hidden data-i18n-title="preview.action.copy_all" data-i18n-aria-label="preview.action.copy_all" aria-label="复制全部" data-tauri-drag-region="false">${icons.copy}</button>
+        <button type="button" class="icon-action" data-action="pin" data-i18n-title="preview.action.pin_title" data-i18n-aria-label="preview.action.pin" aria-label="贴图" data-tauri-drag-region="false">${icons.pin}</button>
+        <button type="button" class="icon-action" data-action="update-pin" data-i18n-title="preview.action.update_pin_title" data-i18n-aria-label="preview.action.update_pin" aria-label="更新贴图" hidden data-tauri-drag-region="false">${icons.annotate}</button>
         <div class="preview-save" data-save-quality-root>
           <div class="preview-save-split">
-            <button type="button" data-action="save" data-i18n-title="preview.action.save_title" title="保存 (Ctrl+S)：扩展名决定格式 PNG/JPEG/WebP" data-tauri-drag-region="false">${icons.save}<span data-i18n="preview.action.save">保存</span></button>
-            <button type="button" class="preview-save-caret" data-action="toggle-quality" data-i18n-title="preview.quality.group" data-i18n-aria-label="preview.quality.group" title="保存质量" aria-label="保存质量" aria-haspopup="true" aria-expanded="false" data-tauri-drag-region="false">${icons.chevronDown}</button>
+            <button type="button" data-action="save" data-i18n-title="preview.action.save_title" data-tauri-drag-region="false">${icons.save}<span data-i18n="preview.action.save">保存</span></button>
+            <button type="button" class="preview-save-caret" data-action="toggle-quality" data-i18n-title="preview.quality.group" data-i18n-aria-label="preview.quality.group" aria-label="保存质量" aria-haspopup="true" aria-expanded="false" data-tauri-drag-region="false">${icons.chevronDown}</button>
           </div>
           <div class="preview-quality-panel" data-save-quality-panel hidden>
             <span class="style-label" data-i18n="preview.quality.label">质量</span>
@@ -88,7 +88,7 @@ export function mountPreview(root: HTMLElement): () => void {
             </div>
           </div>
         </div>
-        <button type="button" class="primary" data-action="copy" data-i18n-title="preview.action.copy_title" title="复制 (Ctrl+C)" data-tauri-drag-region="false">${icons.copy}<span data-i18n="preview.action.copy">复制</span></button>
+        <button type="button" class="primary" data-action="copy" data-i18n-title="preview.action.copy_title" data-tauri-drag-region="false">${icons.copy}<span data-i18n="preview.action.copy">复制</span></button>
       </div>
     </div>
     <div class="preview-stage">
@@ -355,8 +355,9 @@ export function mountPreview(root: HTMLElement): () => void {
     });
   };
 
-  const toggleQualityPanel = (open?: boolean): void => {
+  const toggleQualityPanel = (open?: boolean, restoreFocus = false): void => {
     const next = open ?? saveQualityPanel.hidden;
+    const panelHadFocus = saveQualityPanel.contains(document.activeElement);
     if (next) {
       // 重开先回 CSS 锚点(右锚)再钳制,与更多/样式面板同一套边界语义。
       saveQualityPanel.style.left = "";
@@ -367,6 +368,12 @@ export function mountPreview(root: HTMLElement): () => void {
     saveQualityToggle.setAttribute("aria-expanded", next ? "true" : "false");
     if (next) {
       clampFloatingPanel(saveQualityPanel);
+      const current = saveQualityPanel.querySelector<HTMLButtonElement>(
+        `[data-save-quality="${saveQuality}"]`,
+      );
+      current?.focus();
+    } else if (restoreFocus || panelHadFocus) {
+      saveQualityToggle.focus();
     }
   };
 
@@ -967,6 +974,11 @@ export function mountPreview(root: HTMLElement): () => void {
       return;
     }
     if (event.key === "Escape") {
+      if (!saveQualityPanel.hidden) {
+        event.preventDefault();
+        toggleQualityPanel(false, true);
+        return;
+      }
       // 走 closePreview 统一入口:invoke 失败有错误提示而不是静默。
       closePreview();
       return;

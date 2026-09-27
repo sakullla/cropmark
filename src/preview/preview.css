@@ -411,6 +411,11 @@
   background: var(--control-hover-bg);
 }
 
+.ocr-panel-nav button:active:not(:disabled),
+.ocr-panel-actions button:active:not(:disabled) {
+  filter: var(--control-pressed-filter);
+}
+
 .ocr-panel-nav button:disabled,
 .ocr-panel-actions button:disabled {
   opacity: var(--control-disabled-opacity);
