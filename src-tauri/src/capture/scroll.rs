@@ -1185,15 +1185,16 @@ mod tests {
         let page = page(64, 200, 5);
         let initial = viewport(&page, 0, 100);
         let mut stitcher = Stitcher::new(initial.clone(), 1000);
+        for _ in 1..UNCHANGED_HINT_AFTER {
+            assert_eq!(
+                stitcher.tick(initial.clone()),
+                ScrollTick::Unchanged { hint: false }
+            );
+        }
         assert_eq!(
-            stitcher.tick(initial.clone()),
-            ScrollTick::Unchanged { hint: false }
+            stitcher.tick(initial),
+            ScrollTick::Unchanged { hint: true }
         );
-        assert_eq!(
-            stitcher.tick(initial.clone()),
-            ScrollTick::Unchanged { hint: false }
-        );
-        assert_eq!(stitcher.tick(initial), ScrollTick::Unchanged { hint: true });
         assert!(!stitcher.scrolled());
         assert_eq!(stitcher.appended(), 0);
     }

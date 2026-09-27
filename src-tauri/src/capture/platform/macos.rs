@@ -40,6 +40,7 @@ struct CropmarkSckWindow {
 }
 
 #[repr(C)]
+#[derive(Clone)]
 struct CropmarkSckDisplay {
     x: i32,
     y: i32,

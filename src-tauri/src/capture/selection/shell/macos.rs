@@ -386,7 +386,7 @@ unsafe extern "C-unwind" fn release_rgba_vec(
 }
 
 fn nsimage_from_rgba(pixels: Vec<u8>, size: usize, point_size: f64) -> Option<Retained<NSImage>> {
-    let mut boxed = Box::new(pixels);
+    let boxed = Box::new(pixels);
     let data_ptr = boxed.as_ptr();
     let data_len = boxed.len();
     let info = Box::into_raw(boxed).cast::<c_void>();
@@ -1343,6 +1343,7 @@ fn feed_event(state: &mut ShellState, event: InputEvent, view: &SelectionView) {
             }
             // 标注工具条动作由引擎内部消费,不会到达这里;防御性忽略。
             SelectionAction::Tool(_)
+            | SelectionAction::Mode(_)
             | SelectionAction::Undo
             | SelectionAction::Redo
             | SelectionAction::Delete
@@ -1381,6 +1382,7 @@ fn quiet_action_for(action: SelectionAction) -> Option<QuietAction> {
         | SelectionAction::Cancel
         | SelectionAction::CopyColor
         | SelectionAction::Tool(_)
+        | SelectionAction::Mode(_)
         | SelectionAction::Undo
         | SelectionAction::Redo
         | SelectionAction::Delete

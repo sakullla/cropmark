@@ -1832,6 +1832,7 @@ fn feed_event(state: &mut ShellState, surface: &Surface<'_>, event: InputEvent) 
             }
             // 标注工具条动作由引擎内部消费,不会到达这里;防御性忽略。
             SelectionAction::Tool(_)
+            | SelectionAction::Mode(_)
             | SelectionAction::Undo
             | SelectionAction::Redo
             | SelectionAction::Delete
@@ -1872,6 +1873,7 @@ fn quiet_action_for(action: SelectionAction) -> Option<QuietAction> {
         | SelectionAction::Cancel
         | SelectionAction::CopyColor
         | SelectionAction::Tool(_)
+        | SelectionAction::Mode(_)
         | SelectionAction::Undo
         | SelectionAction::Redo
         | SelectionAction::Delete

@@ -14,7 +14,6 @@ use crate::capture::geometry::{
     CursorBlit, MonitorGeom,
 };
 use crate::capture::windows_list::{selectable_windows, ListedWindow};
-use crate::i18n;
 
 use super::{linux_capture_backend, CursorMode, CursorOutcome, LinuxCaptureBackend};
 
@@ -648,6 +647,7 @@ fn x11_unavailable() -> CaptureError {
 mod tests {
     use super::*;
     use crate::capture::error::CaptureErrorKind;
+    use crate::i18n;
 
     #[test]
     fn wayland_pointer_failure_names_cause_and_alternative() {
