@@ -879,6 +879,24 @@ export function mountOverlay(root: HTMLElement): () => void {
     setCapabilityPanel(opening, { focusPanel: opening, restoreFocus: !opening });
   });
 
+  let capabilityPanelHadFocusOnPointerDown = false;
+
+  // 外部 click 到来前焦点可能已经由 mousedown 默认行为移出面板；在捕获阶段
+  // 记录来源，点击 canvas 等不可聚焦区域关闭时仍归还到能力说明开关。
+  document.addEventListener(
+    "pointerdown",
+    (event) => {
+      const target = event.target;
+      capabilityPanelHadFocusOnPointerDown =
+        !capabilityPanel.hidden &&
+        capabilityPanel.contains(document.activeElement) &&
+        target instanceof Node &&
+        !capabilityPanel.contains(target) &&
+        !capabilityToggle.contains(target);
+    },
+    { capture: true },
+  );
+
   document.addEventListener("click", (event) => {
     if (
       !capabilityPanel.hidden &&
@@ -886,8 +904,9 @@ export function mountOverlay(root: HTMLElement): () => void {
       !capabilityPanel.contains(event.target) &&
       !capabilityToggle.contains(event.target)
     ) {
-      setCapabilityPanel(false);
+      setCapabilityPanel(false, { restoreFocus: capabilityPanelHadFocusOnPointerDown });
     }
+    capabilityPanelHadFocusOnPointerDown = false;
   });
 
   capabilityPanel.addEventListener("keydown", (event) => {

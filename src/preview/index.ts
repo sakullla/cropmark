@@ -947,14 +947,29 @@ export function mountPreview(root: HTMLElement): () => void {
     return target instanceof Node ? target.parentElement : null;
   };
 
+  let qualityPanelHadFocusOnPointerDown = false;
+
+  // click 触发前 mousedown 的默认行为可能已把焦点移到 body。提前记住
+  // 焦点是否来自面板，外部点击关闭时才能稳定归还到质量开关。
+  document.addEventListener(
+    "pointerdown",
+    (event) => {
+      qualityPanelHadFocusOnPointerDown =
+        !saveQualityPanel.hidden &&
+        saveQualityPanel.contains(document.activeElement) &&
+        !(event.target instanceof Node && saveQualityRoot.contains(event.target));
+    },
+    { capture: true },
+  );
+
   document.addEventListener("click", (event) => {
-    if (saveQualityPanel.hidden) {
-      return;
+    if (
+      !saveQualityPanel.hidden &&
+      !(event.target instanceof Node && saveQualityRoot.contains(event.target))
+    ) {
+      toggleQualityPanel(false, qualityPanelHadFocusOnPointerDown);
     }
-    if (event.target instanceof Node && saveQualityRoot.contains(event.target)) {
-      return;
-    }
-    toggleQualityPanel(false);
+    qualityPanelHadFocusOnPointerDown = false;
   });
 
   pinBtn.addEventListener("pointerdown", (event) => event.stopPropagation());

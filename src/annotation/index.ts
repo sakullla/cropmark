@@ -2330,16 +2330,45 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     }
   });
 
+  let contextMenuHadFocusOnPointerDown = false;
+  let stylePanelHadFocusOnPointerDown = false;
+  let morePanelHadFocusOnPointerDown = false;
+
+  // click 前浏览器可能已把焦点从弹层移到 body/canvas。捕获 pointerdown 时的
+  // 焦点来源，确保点击不可聚焦的外部区域关闭后仍能归还到工具条上下文。
+  document.addEventListener(
+    "pointerdown",
+    (event) => {
+      const target = event.target;
+      contextMenuHadFocusOnPointerDown =
+        !contextMenu.hidden &&
+        contextMenu.contains(document.activeElement) &&
+        !(target instanceof Node && contextMenu.contains(target));
+      stylePanelHadFocusOnPointerDown =
+        !stylePanel.hidden &&
+        stylePanel.contains(document.activeElement) &&
+        !(target instanceof Node && styleRoot.contains(target));
+      morePanelHadFocusOnPointerDown =
+        !morePanel.hidden &&
+        morePanel.contains(document.activeElement) &&
+        !(target instanceof Node && moreRoot.contains(target));
+    },
+    { capture: true },
+  );
+
   document.addEventListener("click", (event) => {
     if (!contextMenu.hidden && !(event.target instanceof Node && contextMenu.contains(event.target))) {
-      hideContextMenu();
+      hideContextMenu(contextMenuHadFocusOnPointerDown);
     }
     if (!stylePanel.hidden && !(event.target instanceof Node && styleRoot.contains(event.target))) {
-      toggleStylePanel(false);
+      toggleStylePanel(false, stylePanelHadFocusOnPointerDown);
     }
     if (!morePanel.hidden && !(event.target instanceof Node && moreRoot.contains(event.target))) {
-      toggleMorePanel(false);
+      toggleMorePanel(false, morePanelHadFocusOnPointerDown);
     }
+    contextMenuHadFocusOnPointerDown = false;
+    stylePanelHadFocusOnPointerDown = false;
+    morePanelHadFocusOnPointerDown = false;
   });
 
   const placeSticker = (point: Point): void => {
