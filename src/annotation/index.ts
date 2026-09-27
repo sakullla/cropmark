@@ -1722,20 +1722,40 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     return -1;
   };
 
-  const toolbarFocusTarget = (): HTMLButtonElement => {
-    const candidates = toolbar.querySelectorAll<HTMLButtonElement>(
-      `[data-tool="${tool}"]:not([hidden]):not(:disabled)`,
-    );
+  const isVisibleToolbarButton = (button: HTMLButtonElement): boolean =>
+    !button.hidden && !button.disabled && button.closest("[hidden]") === null;
+
+  const toolbarFocusTarget = (): HTMLButtonElement | null => {
+    const currentTool = Array.from(
+      toolbar.querySelectorAll<HTMLButtonElement>(`[data-tool="${tool}"]`),
+    ).find(isVisibleToolbarButton);
+    if (currentTool) {
+      return currentTool;
+    }
+    // 非常驻工具收在已关闭的更多面板中时归还到其触发钮；若设置关闭了
+    // 全部更多工具，moreRoot 会隐藏，此时落到稳定可见的样式钮/工具条按钮。
+    if (MORE_TOOLS.includes(tool) && isVisibleToolbarButton(moreBtn)) {
+      return moreBtn;
+    }
+    if (isVisibleToolbarButton(styleBtn)) {
+      return styleBtn;
+    }
     return (
-      Array.from(candidates).find((button) => button.closest("[hidden]") === null) ?? moreBtn
+      Array.from(toolbar.querySelectorAll<HTMLButtonElement>("button")).find(
+        isVisibleToolbarButton,
+      ) ?? null
     );
+  };
+
+  const restoreToolbarFocus = (): void => {
+    toolbarFocusTarget()?.focus();
   };
 
   const hideContextMenu = (restoreFocus = false): void => {
     const menuHadFocus = contextMenu.contains(document.activeElement);
     contextMenu.hidden = true;
     if (restoreFocus || menuHadFocus) {
-      toolbarFocusTarget().focus();
+      restoreToolbarFocus();
     }
   };
 
@@ -2015,7 +2035,7 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
       toggleMorePanel(false);
     }
     if (popoverWasOpen) {
-      toolbarFocusTarget().focus();
+      restoreToolbarFocus();
     }
     options.onToolChange?.(next);
     emitToolHint();

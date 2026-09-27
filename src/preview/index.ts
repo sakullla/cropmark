@@ -377,6 +377,26 @@ export function mountPreview(root: HTMLElement): () => void {
     }
   };
 
+  // 质量面板属于 preview 宿主且位于标注层之上。捕获阶段优先消费 Esc，
+  // 避免标注编辑器先清选中/取消文字编辑后阻止宿主关闭当前顶层面板。
+  window.addEventListener(
+    "keydown",
+    (event) => {
+      if (
+        event.key !== "Escape" ||
+        event.isComposing ||
+        event.keyCode === 229 ||
+        saveQualityPanel.hidden
+      ) {
+        return;
+      }
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      toggleQualityPanel(false, true);
+    },
+    { capture: true },
+  );
+
   editor = mountAnnotationEditor({
     root,
     canvas,
