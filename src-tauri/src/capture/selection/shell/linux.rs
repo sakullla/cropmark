@@ -2597,7 +2597,8 @@ mod tests {
 
     #[test]
     fn toolbar_action_fires_on_left_up_not_press() {
-        let frame = test_frame(320, 200, 1.5);
+        // 1.5 倍主行约 660px 宽。320 宽帧会把复制中心钳到屏缘,命中撤销。
+        let frame = test_frame(960, 200, 1.5);
         let mut engine = engine_from_frame(&frame);
         engine.handle_event(InputEvent::LeftDown { x: 40, y: 30 });
         engine.handle_event(InputEvent::PointerMove { x: 200, y: 120 });
@@ -2612,6 +2613,10 @@ mod tests {
             .find(|(action, _)| *action == SelectionAction::Copy)
             .expect("copy button");
         let (cx, cy) = rect.center();
+        assert!(
+            cx >= 0 && cy >= 0 && cx < frame.width as i32 && cy < frame.height as i32,
+            "copy center ({cx},{cy}) must stay inside the frame"
+        );
         assert_eq!(
             engine.handle_event(InputEvent::LeftDown { x: cx, y: cy }),
             EngineOutcome::Redraw
