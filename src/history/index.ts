@@ -398,19 +398,17 @@ export function mountHistory(root: HTMLElement): () => void {
     const formatted = formatTime(entry.createdAt);
     time.textContent = formatted.label;
     time.dataset.tooltip = formatted.title;
-    const size = document.createElement("div");
-    size.className = "history-size";
-    size.textContent = `${entry.width} × ${entry.height}`;
-    meta.append(time, size);
+    const detail = document.createElement("div");
+    detail.className = "history-size";
+    const detailParts = [`${entry.width} × ${entry.height}`];
     if (toolsEnabled && entry.mode) {
       const labelKey = modeLabelKey(entry.mode);
       if (labelKey) {
-        const mode = document.createElement("div");
-        mode.className = "history-mode";
-        mode.textContent = t(labelKey);
-        meta.append(mode);
+        detailParts.push(t(labelKey));
       }
     }
+    detail.textContent = detailParts.join(" · ");
+    meta.append(time, detail);
     if (entry.imageMissing) {
       const missing = document.createElement("div");
       missing.className = "history-missing-note";
@@ -450,7 +448,7 @@ export function mountHistory(root: HTMLElement): () => void {
         void persistNote(entry.id, draft);
       });
       note.append(input);
-      meta.append(note);
+      row.append(note);
     }
 
     const actions = document.createElement("div");
@@ -499,7 +497,10 @@ export function mountHistory(root: HTMLElement): () => void {
       actions.append(button);
     }
 
-    row.append(holder, meta, actions);
+    const main = document.createElement("div");
+    main.className = "history-main";
+    main.append(meta, actions);
+    row.append(holder, main);
     return row;
   };
 

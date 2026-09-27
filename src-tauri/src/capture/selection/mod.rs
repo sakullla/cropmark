@@ -1538,9 +1538,28 @@ impl SelectionEngine {
     /// 松开左键提交草稿:退化图元(与预览 MIN_DRAW_SIZE 同规则)不入栈。
     /// 气泡提交后立即进入文本编辑,输入的文本写回该气泡图元。
     fn commit_draft(&mut self) {
-        let Some(op) = self.draft.take() else {
+        let Some(mut op) = self.draft.take() else {
             return;
         };
+        // 对话气泡单击就放下一块默认大小,不必拖出矩形。拖得够大则沿用拖出的框。
+        if let Annotation::Bubble { x, y, width, height, .. } = &mut op {
+            if width.abs() < f64::from(MIN_DRAW_SIZE) || height.abs() < f64::from(MIN_DRAW_SIZE) {
+                let scale = f64::from(self.scale.max(1.0));
+                let w = (168.0 * scale).round();
+                let h = (76.0 * scale).round();
+                let (mut left, mut top) = (*x, *y);
+                if let Some(sel) = self.selection {
+                    let max_x = sel.x as f64 + sel.width as f64 - w;
+                    let max_y = sel.y as f64 + sel.height as f64 - h;
+                    left = left.clamp(sel.x as f64, max_x.max(sel.x as f64));
+                    top = top.clamp(sel.y as f64, max_y.max(sel.y as f64));
+                }
+                *x = left;
+                *y = top;
+                *width = w;
+                *height = h;
+            }
+        }
         if !is_meaningful_draft(&op) {
             return;
         }
@@ -1697,11 +1716,20 @@ impl SelectionEngine {
         if self.text_edit.is_some() {
             self.commit_text_edit();
         }
-        self.tool = if self.tool == Some(tool) {
-            None
+        // 横条图标就是该工具的默认模式。已在默认模式时再点一次才取消;
+        // 从直线/画笔/模糊点回来时切回默认模式,而不是把工具关掉。
+        let on_default = tool
+            .default_mode()
+            .map(|mode| self.modes.mode_for(tool) == Some(mode))
+            .unwrap_or(true);
+        if self.tool == Some(tool) && on_default {
+            self.tool = None;
         } else {
-            Some(tool)
-        };
+            if let Some(mode) = tool.default_mode() {
+                self.modes = self.modes.set(mode);
+            }
+            self.tool = Some(tool);
+        }
         self.more_open = false;
         self.draft = None;
     }
@@ -2951,7 +2979,7 @@ mod tests {
             "横条必须位于选区外: {:?}",
             toolbar.panel
         );
-        // 主行:注册表主行工具 + 撤销 + 复制 + 保存 + 取消 + 更多。
+        // 主行:注册表主行工具 + 撤销/重做 + 复制 + 保存 + 取消 + 更多。
         let buttons: Vec<SelectionAction> = toolbar.buttons.iter().map(|(a, _)| *a).collect();
         assert_eq!(
             buttons,
@@ -2963,14 +2991,14 @@ mod tests {
                 SelectionAction::Tool(AnnotationTool::Mosaic),
                 SelectionAction::Tool(AnnotationTool::Text),
                 SelectionAction::Undo,
+                SelectionAction::Redo,
                 SelectionAction::Copy,
                 SelectionAction::Save,
                 SelectionAction::Cancel,
                 SelectionAction::More,
             ]
         );
-        // 展开「更多」:面板在选区上方弹出,含默认开启的收进工具(序号)+
-        // 合并工具的全部模式 + 重做 + 删除 + 贴图 + 取字。
+        // 展开「更多」:不含横条已有的箭头/荧光笔/马赛克和撤销/重做。
         open_more_panel(&mut engine);
         let (panel, items) = engine.more_panel().expect("more panel");
         let actions: Vec<SelectionAction> = items.iter().map(|(a, _)| *a).collect();
@@ -2978,13 +3006,9 @@ mod tests {
             actions,
             vec![
                 SelectionAction::Tool(AnnotationTool::Number),
-                SelectionAction::Mode(ToolMode::Arrow),
                 SelectionAction::Mode(ToolMode::Line),
-                SelectionAction::Mode(ToolMode::Highlighter),
                 SelectionAction::Mode(ToolMode::Pen),
-                SelectionAction::Mode(ToolMode::Mosaic),
                 SelectionAction::Mode(ToolMode::Blur),
-                SelectionAction::Redo,
                 SelectionAction::Delete,
                 SelectionAction::Pin,
                 SelectionAction::Ocr,
@@ -3031,6 +3055,7 @@ mod tests {
                 SelectionAction::Tool(AnnotationTool::Mosaic),
                 SelectionAction::Tool(AnnotationTool::Text),
                 SelectionAction::Undo,
+                SelectionAction::Redo,
                 SelectionAction::Cancel,
                 SelectionAction::More,
             ]
@@ -3047,13 +3072,9 @@ mod tests {
             actions,
             vec![
                 SelectionAction::Tool(AnnotationTool::Number),
-                SelectionAction::Mode(ToolMode::Arrow),
                 SelectionAction::Mode(ToolMode::Line),
-                SelectionAction::Mode(ToolMode::Highlighter),
                 SelectionAction::Mode(ToolMode::Pen),
-                SelectionAction::Mode(ToolMode::Mosaic),
                 SelectionAction::Mode(ToolMode::Blur),
-                SelectionAction::Redo,
                 SelectionAction::Delete,
             ]
         );
@@ -3332,7 +3353,7 @@ mod tests {
             key: LogicalKey::Escape,
             shift: false,
         });
-        click_action(&mut engine, SelectionAction::Mode(ToolMode::Highlighter));
+        click_action(&mut engine, SelectionAction::Tool(AnnotationTool::Highlighter));
         assert_eq!(engine.tool(), Some(AnnotationTool::Highlighter));
         engine.handle_event(InputEvent::LeftDown { x: 200, y: 400 });
         engine.handle_event(InputEvent::PointerMove { x: 320, y: 430 });
@@ -3441,8 +3462,8 @@ mod tests {
         engine.handle_event(InputEvent::PointerMove { x: 300, y: 360 });
         engine.handle_event(InputEvent::LeftUp { x: 300, y: 360 });
         assert!(matches!(engine.annotations()[1], Annotation::Blur { .. }));
-        // 「更多」面板的模式入口切换回默认模式(箭头)。
-        click_action(&mut engine, SelectionAction::Mode(ToolMode::Mosaic));
+        // 横条上的马赛克按钮切回默认模式(模糊只留在「更多」)。
+        click_action(&mut engine, SelectionAction::Tool(AnnotationTool::Mosaic));
         assert_eq!(engine.tool(), Some(AnnotationTool::Mosaic));
         engine.handle_event(InputEvent::LeftDown { x: 380, y: 300 });
         engine.handle_event(InputEvent::PointerMove { x: 460, y: 360 });
@@ -3550,6 +3571,41 @@ mod tests {
             shift: false,
         });
         assert!(engine.annotations().is_empty());
+    }
+
+    /// 单击对话气泡就放下默认大小并进入输入,不必先拖出矩形。
+    #[test]
+    fn bubble_click_places_a_default_bubble() {
+        let tools = ToolToggles {
+            bubble: true,
+            ..ToolToggles::default()
+        };
+        let mut engine = SelectionEngine::new(
+            800,
+            600,
+            FeatureFlags {
+                tools,
+                ..FeatureFlags::default()
+            },
+        )
+        .with_annotation_options(AnnotationOptions {
+            text_input: true,
+            ..AnnotationOptions::default()
+        });
+        drag_selection(&mut engine, (40, 30), (760, 560));
+        click_action(&mut engine, SelectionAction::Tool(AnnotationTool::Bubble));
+        assert_eq!(engine.tool(), Some(AnnotationTool::Bubble));
+        engine.handle_event(InputEvent::LeftDown { x: 220, y: 180 });
+        engine.handle_event(InputEvent::LeftUp { x: 220, y: 180 });
+        match &engine.annotations()[0] {
+            Annotation::Bubble { width, height, text, .. } => {
+                assert!(*width >= 100.0, "width {width}");
+                assert!(*height >= 40.0, "height {height}");
+                assert!(text.is_empty());
+            }
+            other => panic!("expected bubble, got {other:?}"),
+        }
+        assert!(engine.text_edit().is_some());
     }
 
     /// R5:气泡编辑中按 Esc 放弃会话后,残留回写目标不得把后续文字编辑
@@ -3930,12 +3986,10 @@ mod tests {
     /// (面板绘制在横条之上,命中顺序与绘制顺序一致),而不是底下的横条按钮。
     #[test]
     fn more_panel_wins_hit_test_overlapping_toolbar_button() {
-        let mut engine = inline_engine(1920, 330);
-        // 选区几乎占满屏幕:下缘放不下(候选被钳回屏内仍压选区),
-        // 横条按最小重叠翻上缘并被钳到 y=0;屏高不足以把「更多」面板
-        // (默认 11 行 = 408px)下移到横条之下,重叠保留,命中顺序必须让
-        // 可见的面板项获胜。
-        drag_selection(&mut engine, (0, 39), (1910, 320));
+        let mut engine = inline_engine(1920, 220);
+        // 选区几乎占满屏幕:下缘放不下,横条按最小重叠翻上缘并被钳到 y=0。
+        // 屏高不足以把「更多」面板下移到横条之下,重叠保留,命中必须让面板获胜。
+        drag_selection(&mut engine, (0, 20), (1910, 210));
         let toolbar = engine.unified_toolbar().expect("toolbar");
         assert_eq!(toolbar.panel.y, 0, "横条应被钳到屏幕顶缘");
         open_more_panel(&mut engine);

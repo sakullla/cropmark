@@ -21,3 +21,6 @@ mod imp;
 mod imp;
 
 pub use imp::{pick_region, request_shell_close, shell_is_active, RegionOutcome, ShellHooks};
+
+#[cfg(windows)]
+pub use imp::show_scroll_control_unfocused;

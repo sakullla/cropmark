@@ -67,34 +67,33 @@ const BADGE_MARGIN: i32 = 6;
 
 // ---- 统一横条、「更多」面板与右键菜单几何:与引擎 hitbox 共用;以下为
 // 1.0 基准(逻辑)尺寸,实际物理尺寸统一经 `ChromeMetrics::for_scale` 派生。----
-/// 统一横条按钮边长(触达标准 40px)。
+/// 统一横条按钮边长。40px 让图标有呼吸,又不会占满选区旁的空间。
 const BAR_BUTTON: i32 = 40;
 /// 统一横条与选区间的间距。
 const BAR_MARGIN: i32 = 8;
 /// 统一横条按钮图标外接盒。24 是原稿像素网格,缩小到 20 会把描边平均成灰边。
 const BAR_ICON: i32 = 24;
 
-const MENU_ITEM_W: i32 = 168;
-const MENU_ITEM_H: i32 = 36;
+const MENU_ITEM_W: i32 = 148;
+const MENU_ITEM_H: i32 = 34;
 /// 菜单容器内边距。
-const MENU_PAD: i32 = 6;
-/// 菜单项图标中心相对项左缘的偏移(24px 图标,左侧留 8px)。
-const MENU_ICON_CX: i32 = 20;
-/// 菜单项文字起点。24px 图标中心在 20,右缘在 32,再留 12px(Fluent 菜单图标与标签间距)。
-const MENU_TEXT_X: i32 = 44;
+const MENU_PAD: i32 = 4;
+/// 菜单项图标中心相对项左缘的偏移(24px 图标,左侧留 6px)。
+const MENU_ICON_CX: i32 = 18;
+/// 菜单项文字起点。图标右缘在 30,再留 8px。
+const MENU_TEXT_X: i32 = 38;
 /// 「取消」前的 1px 分隔线高度。
 const MENU_SEPARATOR_H: i32 = 1;
-const MENU_FONT: f32 = 16.0;
+const MENU_FONT: f32 = 14.0;
 /// 菜单项 hover 软底圆角(1.0 基准)。
-const MENU_HOVER_RADIUS: i32 = 8;
+const MENU_HOVER_RADIUS: i32 = 6;
 /// 菜单项图标外接盒。与横条相同,走 24px 原稿,避免缩成细灰线。
 const MENU_ICON: i32 = 24;
 /// 浮层圆角逻辑半径(× scale,钳制 8..=32)。
-const PANEL_RADIUS: f32 = 10.0;
+const PANEL_RADIUS: f32 = 8.0;
 
-// 触达几何契约(1.0 基准):统一横条 40px 按钮;菜单项高 36、min-width 168
-// (编译期断言)。实际 chrome 尺寸永不低于该基准(`ChromeMetrics` 钉死下限)。
-const _: () = assert!(BAR_BUTTON >= 40 && MENU_ITEM_H >= 36 && MENU_ITEM_W >= 168);
+// 1.0 基准下限:横条 40px、菜单行 34px。实际尺寸只随 DPI 放大,不缩到这以下。
+const _: () = assert!(BAR_BUTTON >= 40 && MENU_ITEM_H >= 34 && MENU_ITEM_W >= 148);
 
 /// chrome(菜单/操作条/徽标/手柄)的统一尺寸派生(ADR-15)。
 ///
@@ -358,12 +357,12 @@ fn capture_actions(flags: FeatureFlags) -> Vec<SelectionAction> {
 
 /// 统一横条主行动作集(R5 注册表驱动,与预览编辑器工具条同源):
 /// 即时标注开启时为注册表主行工具(开关允许 + 平台有文本输入通道时的文字)+
-/// 撤销 + LongCapture←`long_capture`(R1) + Copy←`toolbar_copy` +
-/// Save←`toolbar_save` + 取消 + 更多;关闭时为 标注 + LongCapture←
-/// `long_capture` + Copy←`toolbar_copy` + Save←`toolbar_save` + 取消 + 更多。
-/// 关闭复制/保存后主行不再含该项,其余顺序不变。
+/// 撤销/重做(成对,只出现在横条) + LongCapture←`long_capture`(R1) +
+/// Copy←`toolbar_copy` + Save←`toolbar_save` + 取消 + 更多;关闭时为 标注 +
+/// LongCapture←`long_capture` + Copy←`toolbar_copy` + Save←`toolbar_save` +
+/// 取消 + 更多。关闭复制/保存后主行不再含该项,其余顺序不变。
 pub fn toolbar_buttons(flags: FeatureFlags, text_input: bool) -> Vec<SelectionAction> {
-    let mut buttons = Vec::with_capacity(12);
+    let mut buttons = Vec::with_capacity(13);
     if flags.inline_annotation {
         for tool in AnnotationTool::PRIMARY {
             if !flags.tools.enabled(tool) {
@@ -374,6 +373,7 @@ pub fn toolbar_buttons(flags: FeatureFlags, text_input: bool) -> Vec<SelectionAc
             }
         }
         buttons.push(SelectionAction::Undo);
+        buttons.push(SelectionAction::Redo);
     } else {
         buttons.push(SelectionAction::Annotate);
     }
@@ -391,12 +391,10 @@ pub fn toolbar_buttons(flags: FeatureFlags, text_input: bool) -> Vec<SelectionAc
     buttons
 }
 
-/// 「更多」面板动作集(R5 注册表驱动):即时标注开启时收进注册表更多工具
-/// (开关允许时)+ 合并工具的全部模式入口(直线/画笔/模糊与各自默认模式,
-/// 所属工具开启时)+ 重做 + 删除,以及开关允许的贴图/取字;关闭时只含
-/// 贴图/取字。
+/// 「更多」只放横条上没有的命令。主行工具的默认模式(箭头/荧光笔/马赛克)
+/// 与撤销/重做不再列进来;直线/画笔/模糊这些主行没有的模式仍留在这里。
 pub fn more_panel_buttons(flags: FeatureFlags) -> Vec<SelectionAction> {
-    let mut buttons = Vec::with_capacity(14);
+    let mut buttons = Vec::with_capacity(12);
     if flags.inline_annotation {
         for tool in AnnotationTool::MORE {
             if flags.tools.enabled(tool) {
@@ -404,11 +402,16 @@ pub fn more_panel_buttons(flags: FeatureFlags) -> Vec<SelectionAction> {
             }
         }
         for mode in ToolMode::ALL {
-            if flags.tools.enabled(mode.tool()) {
-                buttons.push(SelectionAction::Mode(mode));
+            let tool = mode.tool();
+            if !flags.tools.enabled(tool) {
+                continue;
             }
+            // 默认模式就是横条上那个按钮,再列一次就是重复入口。
+            if AnnotationTool::PRIMARY.contains(&tool) && tool.default_mode() == Some(mode) {
+                continue;
+            }
+            buttons.push(SelectionAction::Mode(mode));
         }
-        buttons.push(SelectionAction::Redo);
         buttons.push(SelectionAction::Delete);
     }
     if flags.toolbar_pin && flags.pin_entry {
@@ -1375,7 +1378,7 @@ impl Composer {
             .iter()
             .position(|(action, _)| !matches!(action, SelectionAction::Tool(_)))
             .filter(|index| *index > 0);
-        let radius = (metrics.bar_button / 2 - 6).max(6);
+        let radius = (metrics.bar_button / 5).clamp(4, 8);
         for (index, (action, rect)) in toolbar.buttons.iter().enumerate() {
             let (cx, cy) = rect.center();
             let hover = rect.contains(scene.cursor.0, scene.cursor.1);
@@ -1385,12 +1388,16 @@ impl Composer {
                 (SelectionAction::Mode(mode), Some(overlay)) => {
                     overlay.tool == Some(mode.tool()) && overlay.mode == Some(*mode)
                 }
+                // 「更多」里的工具没有主行按钮,选中后点亮「更多」本身,否则像没点上。
+                (SelectionAction::More, Some(overlay)) => overlay
+                    .tool
+                    .is_some_and(|tool| AnnotationTool::MORE.contains(&tool)),
                 (_, _) => false,
             };
             // 复制与其他按钮同一墨色。实心圆和短杠在像素网格上都会显得突兀。
             let ink = if selected_tool { ACCENT } else { CHROME_TEXT };
             if selected_tool || hover {
-                fill_round_blend(rgba, w, h, inset(*rect, 6), radius, ACTIVE_BG);
+                fill_round_blend(rgba, w, h, inset(*rect, 2), radius, ACTIVE_BG);
             }
             self.draw_action_icon(rgba, w, h, *action, cx, cy, metrics.bar_icon, ink);
             if sep_index == Some(index) {
@@ -1695,8 +1702,8 @@ impl Composer {
     }
 }
 
-/// 浮层画法:向下 2px 的阴影 → 1px 边 → 浅蓝灰底。
-/// 长截图字形:竖向圆角框内一支向下箭头(表示向下滚动并拼接)。
+/// 长截图字形:方框里两行正文,箭头从底边穿出去。
+/// 窄框加粗箭头会糊成下载按钮,和旁边的保存分不清。
 fn draw_long_capture_icon(
     rgba: &mut [u8],
     w: u32,
@@ -1706,49 +1713,35 @@ fn draw_long_capture_icon(
     size: i32,
     ink: [u8; 4],
 ) {
-    let size = size.max(12);
-    let half = size / 2;
-    let left = cx - half / 2;
-    let right = cx + half / 2;
-    let top = cy - half;
-    let bottom = cy + half;
-    let stroke = (size / 12).max(2);
-    for offset in 0..stroke {
-        for x in left..=right {
-            blend(rgba, w, h, x, top + offset, ink);
-            blend(rgba, w, h, x, bottom - offset, ink);
-        }
-        for y in top..=bottom {
-            blend(rgba, w, h, left + offset, y, ink);
-            blend(rgba, w, h, right - offset, y, ink);
+    let size = size.max(16);
+    let origin_x = cx - size / 2;
+    let origin_y = cy - size / 2;
+    let scale = size as f32 / 24.0;
+    // 24×24 稿。用浮点铺满,避免整除把描边拆成断点。底边留口,箭头滚出窗口。
+    const CELLS: &[(i32, i32, i32, i32)] = &[
+        (4, 2, 20, 4),
+        (4, 4, 6, 15),
+        (18, 4, 20, 15),
+        (4, 13, 8, 15),
+        (16, 13, 20, 15),
+        (7, 6, 17, 8),
+        (7, 9, 17, 11),
+        (11, 11, 13, 18),
+        (8, 16, 16, 18),
+        (9, 18, 15, 20),
+        (10, 20, 14, 22),
+    ];
+    for &(x0, y0, x1, y1) in CELLS {
+        let left = origin_x + (x0 as f32 * scale).floor() as i32;
+        let top = origin_y + (y0 as f32 * scale).floor() as i32;
+        let right = origin_x + (x1 as f32 * scale).ceil() as i32;
+        let bottom = origin_y + (y1 as f32 * scale).ceil() as i32;
+        for y in top..bottom.max(top + 1) {
+            for x in left..right.max(left + 1) {
+                blend(rgba, w, h, x, y, ink);
+            }
         }
     }
-    let arrow_top = top + stroke * 2 + size / 10;
-    let arrow_bottom = bottom - stroke * 2 - size / 10;
-    let radius = stroke / 2 + 1;
-    blend_line(rgba, w, h, cx, arrow_top, cx, arrow_bottom, radius, ink);
-    blend_line(
-        rgba,
-        w,
-        h,
-        cx,
-        arrow_bottom,
-        cx - size / 6,
-        arrow_bottom - size / 6,
-        radius,
-        ink,
-    );
-    blend_line(
-        rgba,
-        w,
-        h,
-        cx,
-        arrow_bottom,
-        cx + size / 6,
-        arrow_bottom - size / 6,
-        radius,
-        ink,
-    );
 }
 
 /// 混合模式的粗线(图标字形不透明落笔会把底色打穿,这里全部 blend)。
@@ -2639,6 +2632,7 @@ mod tests {
                 SelectionAction::Tool(AnnotationTool::Mosaic),
                 SelectionAction::Tool(AnnotationTool::Text),
                 SelectionAction::Undo,
+                SelectionAction::Redo,
                 SelectionAction::Copy,
                 SelectionAction::Save,
                 SelectionAction::Cancel,
@@ -2655,6 +2649,7 @@ mod tests {
                 SelectionAction::Tool(AnnotationTool::Highlighter),
                 SelectionAction::Tool(AnnotationTool::Mosaic),
                 SelectionAction::Undo,
+                SelectionAction::Redo,
                 SelectionAction::Copy,
                 SelectionAction::Save,
                 SelectionAction::Cancel,
@@ -2679,40 +2674,33 @@ mod tests {
                 SelectionAction::Tool(AnnotationTool::Mosaic),
                 SelectionAction::Tool(AnnotationTool::Text),
                 SelectionAction::Undo,
+                SelectionAction::Redo,
                 SelectionAction::Cancel,
                 SelectionAction::More,
             ]
         );
-        // 「更多」(R19 精选默认):默认开启的收进工具(序号)+ 合并工具的
-        // 全部模式入口(所属工具开启)+ 重做 + 删除 + 贴图/取字(开关允许时)。
+        // 「更多」不含横条已有的默认模式和撤销/重做,只留直线/画笔/模糊、
+        // 收进的工具、删除,以及开关允许的贴图/取字。
         assert_eq!(
             more_panel_buttons(on),
             vec![
                 SelectionAction::Tool(AnnotationTool::Number),
-                SelectionAction::Mode(ToolMode::Arrow),
                 SelectionAction::Mode(ToolMode::Line),
-                SelectionAction::Mode(ToolMode::Highlighter),
                 SelectionAction::Mode(ToolMode::Pen),
-                SelectionAction::Mode(ToolMode::Mosaic),
                 SelectionAction::Mode(ToolMode::Blur),
-                SelectionAction::Redo,
                 SelectionAction::Delete,
                 SelectionAction::Pin,
                 SelectionAction::Ocr,
             ]
         );
-        // 「更多」仍含收进的工具/模式/重做/删除(仅贴图/取字被开关关闭)。
+        // 关闭贴图/取字后,「更多」仍含收进的工具、非默认模式和删除。
         assert_eq!(
             more_panel_buttons(off),
             vec![
                 SelectionAction::Tool(AnnotationTool::Number),
-                SelectionAction::Mode(ToolMode::Arrow),
                 SelectionAction::Mode(ToolMode::Line),
-                SelectionAction::Mode(ToolMode::Highlighter),
                 SelectionAction::Mode(ToolMode::Pen),
-                SelectionAction::Mode(ToolMode::Mosaic),
                 SelectionAction::Mode(ToolMode::Blur),
-                SelectionAction::Redo,
                 SelectionAction::Delete,
             ]
         );
@@ -2747,20 +2735,16 @@ mod tests {
                 SelectionAction::Tool(AnnotationTool::Bubble),
                 SelectionAction::Tool(AnnotationTool::Sticker),
                 SelectionAction::Tool(AnnotationTool::Erase),
-                SelectionAction::Mode(ToolMode::Arrow),
                 SelectionAction::Mode(ToolMode::Line),
-                SelectionAction::Mode(ToolMode::Highlighter),
                 SelectionAction::Mode(ToolMode::Pen),
-                SelectionAction::Mode(ToolMode::Mosaic),
                 SelectionAction::Mode(ToolMode::Blur),
-                SelectionAction::Redo,
                 SelectionAction::Delete,
                 SelectionAction::Pin,
                 SelectionAction::Ocr,
             ]
         );
         // R5/R19:逐项开关关闭工具后主行不再含该入口;关闭全部绘图工具后
-        // 主行只剩 撤销/复制/保存/取消/更多(撤销/重做/删除仍可用)。
+        // 主行只剩 撤销/重做/复制/保存/取消/更多(删除仍在「更多」)。
         let rect_off = FeatureFlags {
             tools: ToolToggles {
                 rect: false,
@@ -2794,6 +2778,7 @@ mod tests {
             toolbar_buttons(no_draw, true),
             vec![
                 SelectionAction::Undo,
+                SelectionAction::Redo,
                 SelectionAction::Copy,
                 SelectionAction::Save,
                 SelectionAction::Cancel,
@@ -2803,7 +2788,6 @@ mod tests {
         assert_eq!(
             more_panel_buttons(no_draw),
             vec![
-                SelectionAction::Redo,
                 SelectionAction::Delete,
                 SelectionAction::Pin,
                 SelectionAction::Ocr,
@@ -3686,8 +3670,8 @@ mod tests {
         assert_eq!(rects[4].1.bottom(), sep_y);
         assert_eq!(rects[5].1.y, sep_y + MENU_SEPARATOR_H);
         // 图标/文字内边距。
-        assert_eq!(MENU_ICON_CX, 20);
-        assert_eq!(MENU_TEXT_X, 44);
+        assert_eq!(MENU_ICON_CX, 18);
+        assert_eq!(MENU_TEXT_X, 38);
     }
 
     /// 「更多」面板几何:与右键菜单同构,向上展开且钳制在屏幕内。
@@ -3765,9 +3749,10 @@ mod tests {
         );
         assert!(panel.bottom() <= 1080, "面板必须在屏内: {panel:?}");
         // 屏高不足以避开时:保持屏内,命中顺序(面板优先)保证可点。
-        // (默认「更多」11 行 = 408px;横条之下需 448px,420 高的屏放不下。)
-        let short_screen = more_panel(metrics, anchor, Some(toolbar), (1920, 420), &items);
-        assert!(short_screen.y >= 0 && short_screen.bottom() <= 420);
+        let panel_h = items.len() as i32 * metrics.menu_item_h + metrics.menu_pad * 2;
+        let too_short = (toolbar.height + panel_h - 1).max(1) as u32;
+        let short_screen = more_panel(metrics, anchor, Some(toolbar), (1920, too_short), &items);
+        assert!(short_screen.y >= 0 && short_screen.bottom() <= too_short as i32);
         assert!(intersects(short_screen, toolbar));
     }
 
@@ -3824,7 +3809,7 @@ mod tests {
         );
         // 横条面板内部是浮层底(取左缘内 2px,避开图标与分隔线)。
         let probe = read(
-            toolbar.panel.x + 2,
+            toolbar.panel.x + 1,
             toolbar.panel.y + toolbar.panel.height / 2,
         );
         assert!(

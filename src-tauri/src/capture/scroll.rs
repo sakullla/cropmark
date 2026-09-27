@@ -1,7 +1,8 @@
 //! R1 手动滚动长截图(ADR-5)。
 //!
-//! 选区壳确认固定物理区域后进入独立滚动会话:后端按约 300ms 周期抓取该
-//! 区域,以「上一帧底部条带在当前帧中的垂直位置」估算滚动位移并垂直拼接;
+//! 选区壳确认固定物理区域后进入独立滚动会话:后端按约 100ms 周期抓取该
+//! 区域,用整段模板的亮度差找唯一垂直位移再拼接。对不上或有两个差不多
+//! 的候选时不追加,避免相似文本行被拼错行。
 //! Web 控制窗(`index.html?view=scroll`,置顶非模态、位于选区旁)承载状态
 //! 提示与「完成/取消」。只支持垂直滚动:内容未变化连续若干次、匹配失败、
 //! 滚动过快都给出可理解的状态提示并允许继续或取消;拼接高度设上限,达到
@@ -32,23 +33,34 @@ use super::platform;
 use super::session::{self, RegionSelection};
 use crate::annotate::Annotation;
 
+#[cfg(windows)]
+#[path = "scroll_highlight.rs"]
+mod highlight;
+
 /// 控制窗标签:滚动会话期间唯一,结束后隐藏复用(toast/error 同模式)。
 pub const WINDOW: &str = "scroll";
 
-/// 周期抓取间隔(ADR-5:约 300ms)。
-pub(crate) const CAPTURE_INTERVAL: Duration = Duration::from_millis(300);
+/// 周期抓取间隔。约 100ms,正常滚动时相邻帧仍有大段重叠。
+pub(crate) const CAPTURE_INTERVAL: Duration = Duration::from_millis(100);
 
-/// 底部匹配条带的最大高度(区域更矮时取 1/3,保证候选位移搜索范围)。
-pub(crate) const STRIP_HEIGHT: u32 = 64;
+/// 对齐模板的最大高度。取区域高度的 1/3,保证单帧还能识别超过半屏的位移。
+pub(crate) const STRIP_HEIGHT: u32 = 48;
 /// 条带最多占区域高度的比例分母。
 const STRIP_DIVISOR: u32 = 3;
-/// 匹配采样步长(横向/纵向):屏幕内容的逐像素精确匹配过慢,采样足够稳定。
-const SAMPLE_STEP_X: u32 = 3;
-const SAMPLE_STEP_Y: u32 = 2;
-/// 平均亮度差容忍上限(0–255);超过视为匹配失败。
-const MATCH_MAX_MEAN_DIFF: u64 = 12;
+/// 横向采样步长。调试构建里逐像素对齐会拖过抓取周期。
+const SAMPLE_STEP_X: u32 = 4;
+/// 右侧滚动条不参与对齐:它不随内容移动,会把位移判成 0 或判歪。
+const SCROLLBAR_GUTTER: u32 = 16;
+/// 平均绝对亮度差上限(0–255)。超过则该候选不可信。
+const MATCH_MAX_MEAN_DIFF: u64 = 18;
+/// 最优比次优至少好这么多(平均亮度)才采纳。差一点的候选当成周期纹理,不拼接。
+const MATCH_AMBIGUITY_GAP: u64 = 4;
+/// 连续对不齐达到该次数后,才改用当前帧做基准(不追加)。一次失手不丢掉锚点。
+const RESYNC_AFTER: u32 = 3;
+/// 小于这个位移不当作滚动。光标闪一下也会让相邻帧差几个像素。
+const MIN_APPEND_DELTA: u32 = 4;
 /// 内容未变化连续达到该次数后给出提示(提示不终止会话)。
-pub(crate) const UNCHANGED_HINT_AFTER: u32 = 3;
+pub(crate) const UNCHANGED_HINT_AFTER: u32 = 12;
 /// 拼接高度上限(物理像素):达到后自动完成并提示。
 pub(crate) const MAX_STITCH_HEIGHT: u32 = 12_000;
 /// 拼接像素总量上限:限制超宽区域的内存占用(高度上限随之收紧)。
@@ -125,97 +137,111 @@ fn luma(px: &[u8]) -> u32 {
     (u32::from(px[0]) * 299 + u32::from(px[1]) * 587 + u32::from(px[2]) * 114) / 1000
 }
 
-/// `prev` 底部条带与 `next` 中 `candidate` 处同高条带的亮度差总和与采样数;
-/// `step_y` 为纵向采样步长(粗扫 2、并列复核 1)。
-fn strip_diff_sum(
-    prev: &Frame,
-    next: &Frame,
-    strip_y: u32,
-    candidate: u32,
-    step_y: u32,
-) -> (u64, u64) {
-    let stride = prev.width as usize * 4;
-    let strip_h = strip_height(prev.height);
-    let step_y = step_y.max(1);
-    let mut sum = 0u64;
-    let mut count = 0u64;
-    let mut sy = 0u32;
-    while sy < strip_h {
-        let prow = (strip_y + sy) as usize * stride;
-        let nrow = (candidate + sy) as usize * stride;
-        let mut sx = 0u32;
-        while sx < prev.width {
-            let p = prow + sx as usize * 4;
-            let n = nrow + sx as usize * 4;
-            let diff = luma(&prev.rgba[p..p + 4]).abs_diff(luma(&next.rgba[n..n + 4]));
-            sum += u64::from(diff);
-            count += 1;
-            sx += SAMPLE_STEP_X;
+/// 每行按步长采样的亮度。对齐只比较这些样本,避免逐像素拖慢调试构建。
+struct RowSamples {
+    n: usize,
+    rows: Vec<u8>,
+}
+
+fn row_samples(frame: &Frame) -> RowSamples {
+    let gutter = if frame.width > SCROLLBAR_GUTTER + 8 {
+        SCROLLBAR_GUTTER
+    } else {
+        0
+    };
+    let usable = frame.width - gutter;
+    let step = SAMPLE_STEP_X.max(1);
+    let n = ((usable + step - 1) / step).max(1) as usize;
+    let mut rows = vec![0u8; frame.height as usize * n];
+    let stride = frame.width as usize * 4;
+    for y in 0..frame.height as usize {
+        let src = y * stride;
+        let dest = y * n;
+        let mut i = 0usize;
+        let mut x = 0u32;
+        while x < usable && i < n {
+            let p = src + x as usize * 4;
+            rows[dest + i] = luma(&frame.rgba[p..p + 4]) as u8;
+            i += 1;
+            x += step;
         }
-        sy += step_y;
     }
-    (sum, count.max(1))
+    RowSamples { n, rows }
 }
 
-/// 平均亮度差(整数)。
-fn strip_mean_diff(prev: &Frame, next: &Frame, strip_y: u32, candidate: u32, step_y: u32) -> u64 {
-    let (sum, count) = strip_diff_sum(prev, next, strip_y, candidate, step_y);
-    sum / count
+fn band_mean(prev: &RowSamples, next: &RowSamples, prev_y: u32, next_y: u32, rows: u32) -> u64 {
+    let n = prev.n;
+    let mut sum = 0u64;
+    for dy in 0..rows as usize {
+        let a = (prev_y as usize + dy) * n;
+        let b = (next_y as usize + dy) * n;
+        for i in 0..n {
+            sum += u64::from(prev.rows[a + i].abs_diff(next.rows[b + i]));
+        }
+    }
+    let count = (rows as u64) * (n as u64);
+    sum / count.max(1)
 }
 
-/// 并列候选复核上限:超过该数量说明是同色/无纹理的大面积歧义,直接取最小
-/// 位移,不再逐行复核(限制最坏耗时)。
-const TIE_VERIFY_LIMIT: usize = 64;
+/// 次优是否和最优拉开了差距。紧挨着的 ±2px 算同一处谷底,不拿来比。
+fn match_is_distinct(costs: &[u64], best_at: usize) -> bool {
+    let best = costs[best_at];
+    let mut second = u64::MAX;
+    for (index, cost) in costs.iter().enumerate() {
+        if index.abs_diff(best_at) <= 2 {
+            continue;
+        }
+        second = second.min(*cost);
+    }
+    if second == u64::MAX {
+        return true;
+    }
+    let gap = second.saturating_sub(best);
+    gap >= MATCH_AMBIGUITY_GAP || (second > best && gap.saturating_mul(4) >= best.max(1))
+}
 
-/// 在 `next` 中寻找 `prev` 底部条带的垂直位置(只允许向上/不动,即只支持
-/// 向下滚动内容):返回条带顶边 y(0..=prev.height-strip);平均亮度差超过
-/// 容忍上限时返回 None。
+/// 在 `next` 中寻找 `prev` 底部模板的垂直位置(只允许向上/不动,即只支持
+/// 向下滚动):返回模板顶边 y。没有足够好、且唯一的候选时返回 None,
+/// 调用方不得按猜测的位移拼接。
 ///
-/// 判定顺序保证静态纯色画面不会被误判为滚动:先看「无变化基线」(条带原位
-/// `y=strip_y`,即位移 0)是否仍在容忍范围内,是则直接返回原位;否则粗扫
-/// 全量候选,并列(相同最小均值,纯色/周期纹理下常见)的小集合改用逐行采样
-/// 复核,消除小于纵向采样步长的伪并列,复核后仍并列时取最小位移(最大的
-/// `y`),避免把首个精确匹配当成大幅滚动并合成出伪内容。
+/// 纯色或静止画面的零位移已经够好、又没有明显更优的别的位移时,直接判为
+/// 没滚动。相似文本行会在多个位移上得到接近的分数,这种情况拒绝拼接。
 pub(crate) fn match_strip_offset(prev: &Frame, next: &Frame) -> Option<u32> {
     if prev.width == 0 || prev.height < 2 || next.width != prev.width || next.height != prev.height
     {
         return None;
     }
-    let strip_y = prev.height - strip_height(prev.height);
-    if strip_mean_diff(prev, next, strip_y, strip_y, SAMPLE_STEP_Y) <= MATCH_MAX_MEAN_DIFF {
+    let template = strip_height(prev.height);
+    let strip_y = prev.height - template;
+    let prev_samples = row_samples(prev);
+    let next_samples = row_samples(next);
+    let mut costs = Vec::with_capacity(strip_y as usize + 1);
+    for candidate in 0..=strip_y {
+        costs.push(band_mean(
+            &prev_samples,
+            &next_samples,
+            strip_y,
+            candidate,
+            template,
+        ));
+    }
+    let zero_at = strip_y as usize;
+    let zero = costs[zero_at];
+    let mut best_at = 0usize;
+    let mut best = u64::MAX;
+    for (index, cost) in costs.iter().enumerate() {
+        if *cost < best {
+            best = *cost;
+            best_at = index;
+        }
+    }
+    if zero <= MATCH_MAX_MEAN_DIFF && best + MATCH_AMBIGUITY_GAP >= zero {
         return Some(strip_y);
     }
-    let mut best_mean = u64::MAX;
-    let mut tied: Vec<u32> = Vec::new();
-    for candidate in 0..=strip_y {
-        let mean = strip_mean_diff(prev, next, strip_y, candidate, SAMPLE_STEP_Y);
-        if mean < best_mean {
-            best_mean = mean;
-            tied.clear();
-            tied.push(candidate);
-        } else if mean == best_mean {
-            tied.push(candidate);
-        }
-    }
-    if best_mean > MATCH_MAX_MEAN_DIFF {
+    if best > MATCH_MAX_MEAN_DIFF || !match_is_distinct(&costs, best_at) {
         return None;
     }
-    if tied.len() > 1 && tied.len() <= TIE_VERIFY_LIMIT {
-        // 逐行复核用未取整的差值总和比较:单个错位像素的均值会被整数除法
-        // 抹成 0,只有总和比较才能把 ±1px 的伪并列剔除。
-        let mut best_y = *tied.last().expect("tied is never empty");
-        let (mut best_sum, mut best_count) = strip_diff_sum(prev, next, strip_y, best_y, 1);
-        for candidate in tied.iter().rev().skip(1) {
-            let (sum, count) = strip_diff_sum(prev, next, strip_y, *candidate, 1);
-            if sum * best_count < best_sum * count {
-                best_sum = sum;
-                best_count = count;
-                best_y = *candidate;
-            }
-        }
-        return (best_sum <= MATCH_MAX_MEAN_DIFF * best_count).then_some(best_y);
-    }
-    Some(*tied.last().expect("tied is never empty"))
+    Some(best_at as u32)
 }
 
 /// 垂直拼接器:持有初始区域与最近一帧,按位移追加新内容。
@@ -228,6 +254,7 @@ pub(crate) struct Stitcher {
     cap_height: u32,
     appended: u32,
     unchanged_ticks: u32,
+    no_match_ticks: u32,
     scrolled: bool,
     limit_reached: bool,
 }
@@ -247,6 +274,7 @@ impl Stitcher {
             cap_height: cap_height.max(1),
             appended: 0,
             unchanged_ticks: 0,
+            no_match_ticks: 0,
             scrolled: false,
             limit_reached: false,
         }
@@ -282,14 +310,22 @@ impl Stitcher {
         let prev_height = self.prev.height;
         let strip_y = prev_height - strip_height(prev_height);
         let Some(y) = match_strip_offset(&self.prev, &next) else {
-            // 匹配失败时用最新帧作为下一次的基准,避免持续对比已经消失的条带。
-            self.prev = next;
+            // 对不齐时先留着上一帧。用户放慢后仍能接上;连续失败才改锚点,不把错行写进去。
+            self.no_match_ticks += 1;
+            if self.no_match_ticks >= RESYNC_AFTER {
+                self.prev = next;
+                self.no_match_ticks = 0;
+            }
             return ScrollTick::NoMatch;
         };
+        self.no_match_ticks = 0;
         let delta = strip_y.saturating_sub(y);
-        if delta == 0 {
+        // 1–3px 多半是光标闪烁或抓屏抖动。记成一段会把「段数」打到几百，图也会错行。
+        if delta < MIN_APPEND_DELTA {
             self.unchanged_ticks += 1;
-            self.prev = next;
+            if delta == 0 {
+                self.prev = next;
+            }
             return ScrollTick::Unchanged {
                 hint: self.unchanged_ticks >= UNCHANGED_HINT_AFTER,
             };
@@ -636,7 +672,7 @@ fn open_control_window(
         let _ = window.set_position(physical);
         let _ = window.set_always_on_top(true);
         let _ = window.set_ignore_cursor_events(false);
-        let _ = window.show();
+        reveal_scroll_control(&window);
         let _ = window.emit("scroll-reload", ());
         return Ok(window);
     }
@@ -664,7 +700,17 @@ fn open_control_window(
     // 物理坐标为准:混合 DPI 下逻辑位置换算可能有零点几像素漂移。
     let _ = window.set_position(physical);
     let _ = window.set_ignore_cursor_events(false);
+    reveal_scroll_control(&window);
     Ok(window)
+}
+
+/// 控制窗只做提示,不能变成前台。前台必须回到被截的那个窗口,滚轮才能滚动它。
+fn reveal_scroll_control(window: &WebviewWindow) {
+    let _ = window.show();
+    #[cfg(windows)]
+    if let Ok(hwnd) = window.hwnd() {
+        crate::capture::native_overlay::show_scroll_control_unfocused(hwnd);
+    }
 }
 
 /// 收起控制窗:仅隐藏,保留预创建 webview 供下一次会话复用。
@@ -728,6 +774,11 @@ fn run_session(
     generation: u64,
 ) {
     let mut stitcher = Stitcher::new(initial, cap_height);
+    // 选区壳已经关掉。留一层点击穿透的范围框，让人看见正在截哪一块。
+    #[cfg(windows)]
+    let highlight = highlight::Guard::open(&monitor, &region);
+    #[cfg(windows)]
+    let mut painted_height = region.height;
     loop {
         match SCROLL_STATE.load(Ordering::SeqCst) {
             STATE_FINISH => break,
@@ -819,6 +870,14 @@ fn run_session(
                 break;
             }
         }
+        #[cfg(windows)]
+        if let Some(frame) = highlight.as_ref() {
+            let stitched = stitcher.height();
+            if stitched != painted_height {
+                frame.update(stitched);
+                painted_height = stitched;
+            }
+        }
     }
     SCROLL_STATE.store(STATE_FINISHING, Ordering::SeqCst);
     emit_status(
@@ -845,12 +904,18 @@ fn finish_session(
 ) {
     let scrolled = stitcher.scrolled();
     let limit = stitcher.limit_reached();
+    let watched_width = stitcher.width().to_string();
+    let watched_height = stitcher.height().to_string();
     let frame = stitcher.into_frame();
     release_state(generation);
     dismiss_control_window(app, generation);
     if !scrolled {
         session::cancel_scroll_session(app, generation);
-        super::ui::show_toast_key(app, "toast.scroll_no_change");
+        super::ui::show_toast_key_params(
+            app,
+            "toast.scroll_no_change",
+            &[("width", &watched_width), ("height", &watched_height)],
+        );
         return;
     }
     match session::finish_scroll_frame(app, frame, annotations.to_vec(), region, generation) {
@@ -1146,13 +1211,72 @@ mod tests {
     }
 
     #[test]
-    fn match_failure_updates_the_reference_frame_without_appending() {
+    fn match_failure_keeps_the_anchor_so_the_next_good_frame_still_joins() {
         let page_frame = page(64, 260, 0);
         let mut stitcher = Stitcher::new(viewport(&page_frame, 0, 120), 5000);
         let other = flat(64, 120, 200);
-        assert_eq!(stitcher.tick(other), ScrollTick::NoMatch);
+        assert_eq!(stitcher.tick(other.clone()), ScrollTick::NoMatch);
         assert_eq!(stitcher.appended(), 0);
         assert_eq!(stitcher.height(), 120);
+        // 一次对不齐不换基准:接下来的真实滚动仍按最初那一帧拼接。
+        assert_eq!(
+            stitcher.tick(viewport(&page_frame, 20, 120)),
+            ScrollTick::Appended { fast: false }
+        );
+        assert_eq!(stitcher.height(), 140);
+        // 连续对不齐才改锚点,并且仍然不追加。
+        let mut stuck = Stitcher::new(viewport(&page_frame, 0, 120), 5000);
+        for _ in 0..RESYNC_AFTER {
+            assert_eq!(stuck.tick(other.clone()), ScrollTick::NoMatch);
+        }
+        assert_eq!(stuck.appended(), 0);
+        assert_eq!(stuck.height(), 120);
+    }
+
+    /// 每一行都像文本:共享竖向节奏,但行与行的内容不同。错一行时亮度差必须
+    /// 明显大于真正对齐,结果要和原页面逐像素一致。
+    #[test]
+    fn similar_text_rows_stitch_on_the_true_line_not_a_neighbor() {
+        let line = 16u32;
+        let width = 96u32;
+        let height = 320u32;
+        let mut rgba = vec![0u8; width as usize * height as usize * 4];
+        for y in 0..height {
+            let line_i = y / line;
+            let local = y % line;
+            for x in 0..width {
+                let stem = x % 8 < 2;
+                let unique = ((line_i.wrapping_mul(31).wrapping_add(x.wrapping_mul(3))) % 160) as u8;
+                let value = if local < 3 {
+                    if stem { 36 } else { 214 }
+                } else if local + 3 >= line {
+                    228
+                } else {
+                    unique
+                };
+                let i = (y as usize * width as usize + x as usize) * 4;
+                rgba[i] = value;
+                rgba[i + 1] = value;
+                rgba[i + 2] = value;
+                rgba[i + 3] = 255;
+            }
+        }
+        let document = Frame {
+            width,
+            height,
+            rgba,
+            scale: 1.0,
+        };
+        let mut stitcher = Stitcher::new(viewport(&document, 0, 96), 4000);
+        let mut top = 0u32;
+        for step in [line, line * 2, line, line * 3] {
+            top += step;
+            let tick = stitcher.tick(viewport(&document, top, 96));
+            assert_eq!(tick, ScrollTick::Appended { fast: false }, "top {top}");
+        }
+        let stitched = stitcher.into_frame();
+        let expected = crop_rgba(&document, 0, 0, width, 96 + top).unwrap();
+        assert_eq!(stitched.rgba, expected.rgba);
     }
 
     #[test]

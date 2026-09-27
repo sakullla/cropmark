@@ -25,9 +25,9 @@ pub const HISTORY: &str = "history";
 pub const GUIDE: &str = "guide";
 pub const TOAST: &str = "toast";
 
-const TOAST_WIDTH: f64 = 300.0;
-const TOAST_HEIGHT: f64 = 48.0;
-const TOAST_MARGIN: f64 = 24.0;
+const TOAST_WIDTH: f64 = 320.0;
+const TOAST_HEIGHT: f64 = 44.0;
+const TOAST_MARGIN: f64 = 32.0;
 const TOAST_DURATION: Duration = Duration::from_millis(1800);
 
 /// 预览窗最小尺寸:保证工具条与画布基本可用(ADR-6)。
@@ -285,7 +285,7 @@ pub fn precreate(app: &AppHandle) {
     }
     // toast/error 预创建复用:这两个窗每次 close+create 重建时,新 webview
     // 偶发导航失败显示"无法访问此页面"(协议宿主竞态);预创建后仅 show/hide。
-    let _ = ensure_window(app, TOAST, "toast", TOAST_WIDTH, TOAST_HEIGHT, true, true);
+    let _ = ensure_window(app, TOAST, "toast", TOAST_WIDTH, TOAST_HEIGHT, false, true);
     let _ = ensure_window(app, ERROR, "error", 420.0, 268.0, true, true);
 }
 
@@ -430,7 +430,7 @@ fn show_toast_source(app: &AppHandle, source: ToastSource, auto_hide: Option<Dur
     // Only the newest toast may hide the window; older timers become no-ops.
     let generation = TOAST_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     // 复用预创建的 toast 窗:仅重定位+显示+发消息,不重建 webview。
-    let window = ensure_window(app, TOAST, "toast", TOAST_WIDTH, TOAST_HEIGHT, true, true);
+    let window = ensure_window(app, TOAST, "toast", TOAST_WIDTH, TOAST_HEIGHT, false, true);
     if let Ok(window) = window {
         let (x, y) = toast_origin(target_work_area(app), TOAST_WIDTH, TOAST_HEIGHT);
         let _ = window.set_position(Position::Logical(LogicalPosition { x, y }));
@@ -886,16 +886,16 @@ mod tests {
             TOAST_WIDTH,
             TOAST_HEIGHT,
         );
-        assert_eq!(x, 100.0 + 1920.0 - TOAST_WIDTH - 24.0);
-        assert_eq!(y, 50.0 + 1080.0 - TOAST_HEIGHT - 24.0);
+        assert_eq!(x, 100.0 + 1920.0 - TOAST_WIDTH - TOAST_MARGIN);
+        assert_eq!(y, 50.0 + 1080.0 - TOAST_HEIGHT - TOAST_MARGIN);
     }
 
     #[test]
     fn toast_never_leaves_work_area_or_goes_negative() {
         let (x, y) = toast_origin(Some((0.0, 0.0, 200.0, 40.0)), TOAST_WIDTH, TOAST_HEIGHT);
-        assert_eq!((x, y), (24.0, 24.0));
+        assert_eq!((x, y), (TOAST_MARGIN, TOAST_MARGIN));
         let (x, y) = toast_origin(None, TOAST_WIDTH, TOAST_HEIGHT);
-        assert_eq!((x, y), (24.0, 24.0));
+        assert_eq!((x, y), (TOAST_MARGIN, TOAST_MARGIN));
     }
 
     #[test]

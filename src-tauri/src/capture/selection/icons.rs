@@ -218,14 +218,20 @@ impl IconName {
                 return out.into_boxed_slice();
             }
             if size < tier {
-                // 非整数倍才做面积平均。调用方应先把尺寸钉到 24/48,避免走到这里。
+                // 取覆盖度的最大值而不是面积平均。平均会把 2px 描边冲成灰边,
+                // 高 DPI 下图标就会发糊。
                 for y in 0..size {
-                    let sy0 = (y * tier) as f32 / size as f32;
-                    let sy1 = ((y + 1) * tier) as f32 / size as f32;
+                    let sy0 = y * tier / size;
+                    let sy1 = ((y + 1) * tier / size).max(sy0 + 1).min(tier);
                     for x in 0..size {
-                        let sx0 = (x * tier) as f32 / size as f32;
-                        let sx1 = ((x + 1) * tier) as f32 / size as f32;
-                        let cover = area_average(src, tier, sx0, sy0, sx1, sy1);
+                        let sx0 = x * tier / size;
+                        let sx1 = ((x + 1) * tier / size).max(sx0 + 1).min(tier);
+                        let mut cover = 0u8;
+                        for sy in sy0..sy1 {
+                            for sx in sx0..sx1 {
+                                cover = cover.max(src[(sy * tier + sx) as usize]);
+                            }
+                        }
                         let i = (y * size + x) as usize * 4;
                         out[i] = ink[0];
                         out[i + 1] = ink[1];
@@ -308,13 +314,16 @@ impl IconName {
     }
 }
 
-/// 钉到原稿像素网格。24 与 48 是 1:1 资产;中间尺寸就近取原稿,
-/// 不再把 16/20px 请求面积平均成细灰线。更大尺寸用 48 的整数倍。
+/// 24 与 48 是 1:1 资产。24–47 按请求尺寸从 48 稿缩小,跟着 DPI 变,
+/// 不再把 150% 的 36px 请求钉死成 24(显得小)或抬到 48(显得胖)。
+/// 不够 24 的请求仍升到 24,避免把笔画缩成灰边。
 pub(crate) fn crisp_icon_px(requested: u32) -> u32 {
-    if requested >= 72 {
-        48 * (requested / 48).max(2)
-    } else if requested >= 36 {
+    if requested >= 96 {
+        48 * (requested / 48)
+    } else if requested >= 48 {
         48
+    } else if requested >= 24 {
+        requested
     } else if requested >= 18 {
         24
     } else {
@@ -333,6 +342,7 @@ fn tint_into(src: &[u8], out: &mut [u8], ink: [u8; 4]) {
 }
 
 /// 覆盖度位图上矩形区域 [x0,x1)×[y0,y1)(允许跨像素边界)的面积平均。
+#[allow(dead_code)]
 fn area_average(src: &[u8], tier: u32, x0: f32, y0: f32, x1: f32, y1: f32) -> u8 {
     let mut sum = 0.0f32;
     let mut weight = 0.0f32;
@@ -444,8 +454,11 @@ mod tests {
     #[test]
     fn crisp_icon_px_stays_on_authored_grid() {
         assert_eq!(crisp_icon_px(20), 24);
-        assert_eq!(crisp_icon_px(30), 24);
-        assert_eq!(crisp_icon_px(40), 48);
+        assert_eq!(crisp_icon_px(24), 24);
+        assert_eq!(crisp_icon_px(30), 30);
+        assert_eq!(crisp_icon_px(36), 36);
+        assert_eq!(crisp_icon_px(40), 40);
+        assert_eq!(crisp_icon_px(47), 47);
         assert_eq!(crisp_icon_px(48), 48);
         assert_eq!(crisp_icon_px(96), 96);
     }

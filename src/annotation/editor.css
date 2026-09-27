@@ -11,9 +11,9 @@
   border-radius: var(--radius-control);
   -webkit-app-region: no-drag;
   app-region: no-drag;
-  width: 34px;
-  min-width: 34px;
-  height: 34px;
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
   min-height: 24px;
   display: inline-flex;
   align-items: center;
@@ -55,10 +55,10 @@
   z-index: 20;
   display: flex;
   align-items: center;
-  gap: 2px;
-  padding: 4px;
+  gap: 1px;
+  padding: 3px;
   border: 1px solid var(--line);
-  border-radius: var(--radius-panel);
+  border-radius: 8px;
   background: var(--panel);
   box-shadow: var(--shadow);
 }
@@ -95,18 +95,22 @@
 
 .annotation-style-panel {
   position: absolute;
-  top: calc(100% + 6px);
+  top: calc(100% + 8px);
   left: 0;
-  z-index: 20;
+  z-index: 30;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  min-width: 232px;
-  padding: var(--panel-padding);
+  gap: 10px;
+  min-width: 292px;
+  padding: 14px;
   border: 1px solid var(--line);
-  border-radius: var(--radius-panel);
-  background: var(--panel);
-  box-shadow: var(--shadow);
+  border-radius: 12px;
+  /* 实底。半透明会把截图像素透进来，选项和色块都发虚。 */
+  background-color: var(--card);
+  color: var(--ink);
+  box-shadow:
+    0 16px 40px rgba(15, 23, 42, 0.18),
+    0 0 0 1px color-mix(in srgb, var(--ink) 6%, transparent);
 }
 
 .annotation-style-panel[hidden] {
@@ -114,9 +118,11 @@
 }
 
 .style-group {
-  display: flex;
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
   align-items: center;
-  gap: 8px;
+  column-gap: 10px;
+  row-gap: 6px;
 }
 
 .style-group[hidden] {
@@ -124,32 +130,38 @@
 }
 
 .style-label {
-  flex: 0 0 30px;
   color: var(--muted);
   font-size: 12px;
+  line-height: 1.2;
+  white-space: nowrap;
 }
 
 .style-options {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
+  min-width: 0;
 }
 
 .style-options button {
   border: 1px solid var(--line);
-  background: color-mix(in srgb, var(--panel) 80%, transparent);
+  background-color: var(--control-fill);
   color: var(--ink);
   font: inherit;
-  font-size: 12px;
-  height: 28px;
-  min-width: 40px;
-  min-height: 24px;
-  padding: 0 10px;
+  font-size: 13px;
+  line-height: 1;
+  height: 32px;
+  min-width: 56px;
+  min-height: 32px;
+  padding: 0 12px;
   border-radius: var(--radius-pill);
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex: 0 0 auto;
+  white-space: nowrap;
   transition: var(--control-transition);
 }
 
@@ -164,34 +176,43 @@
 
 .style-options button.active {
   border-color: var(--accent);
-  color: var(--accent);
-  background: var(--accent-soft);
+  background-color: var(--accent);
+  color: var(--on-accent);
 }
 
 .style-options button[data-style-color] {
   position: relative;
-  width: 30px;
-  min-width: 30px;
-  height: 30px;
-  min-height: 24px;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
   padding: 0;
   border: 1px solid transparent;
   border-radius: 50%;
-  background: transparent;
+  background-color: transparent;
+  color: transparent;
+}
+
+.style-options button[data-style-color].active,
+.style-options button[data-erase-fill]:not([data-erase-fill="auto"]).active,
+.style-options button[data-sticker-id].active {
+  background-color: transparent;
+  color: var(--ink);
+  border-color: transparent;
 }
 
 .style-options input[data-style-number-start] {
-  width: 68px;
-  min-width: 24px;
-  height: 28px;
-  min-height: 24px;
+  width: 72px;
+  min-width: 72px;
+  height: 32px;
+  min-height: 32px;
   padding: 0 8px;
   border: 1px solid var(--line);
   border-radius: var(--radius-pill);
-  background: color-mix(in srgb, var(--panel) 80%, transparent);
+  background-color: var(--control-fill);
   color: var(--ink);
   font: inherit;
-  font-size: 12px;
+  font-size: 13px;
   text-align: center;
   transition: var(--control-transition);
 }
@@ -213,7 +234,8 @@
 
 .style-options button[data-style-color].active::before {
   box-shadow:
-    0 0 0 2px var(--accent),
+    0 0 0 2px var(--card),
+    0 0 0 4px var(--accent),
     inset 0 0 0 1px color-mix(in srgb, var(--ink) 14%, transparent);
 }
 
@@ -268,7 +290,8 @@
 
 .style-options button[data-erase-fill]:not([data-erase-fill="auto"]).active::before {
   box-shadow:
-    0 0 0 2px var(--accent),
+    0 0 0 2px var(--card),
+    0 0 0 4px var(--accent),
     inset 0 0 0 1px color-mix(in srgb, var(--ink) 14%, transparent);
 }
 

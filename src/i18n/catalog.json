@@ -532,8 +532,8 @@
     "en": "The screenshot has expired. Capture again."
   },
   "toast.scroll_no_change": {
-    "zh-CN": "内容未变化，未生成长截图。请滚动目标内容后重试。",
-    "en": "Content did not change, so no scrolling capture was produced. Scroll the target content and try again."
+    "zh-CN": "蓝色框内的 {width}×{height} 没有滚动，未生成长截图。请在框内向下滚动后再点完成。",
+    "en": "Nothing inside the blue frame ({width}×{height}) scrolled, so no long screenshot was saved. Scroll down inside the frame, then finish."
   },
   "toast.scroll_limit": {
     "zh-CN": "已达到长截图高度上限，自动完成。",
@@ -1768,8 +1768,8 @@
     "en": "Drag the area to magnify; the content scales around its center."
   },
   "preview.note.bubble_hint": {
-    "zh-CN": "拖出气泡后输入文字；Enter 确认，双击已放气泡可再编辑。",
-    "en": "Drag a bubble and type; Enter confirms, double-click a placed bubble to edit again."
+    "zh-CN": "点一下放下气泡并输入；拖动可改大小。Enter 确认，双击可再编辑。",
+    "en": "Click to place a bubble and type; drag to resize. Enter confirms, double-click to edit again."
   },
   "preview.note.sticker_hint": {
     "zh-CN": "点击放置贴纸，拖动可移动；样式面板切换素材与大小。",
@@ -2104,8 +2104,8 @@
     "en": "Scrolling capture"
   },
   "scroll.hint": {
-    "zh-CN": "请在框选区域内向下滚动目标内容，完成后点「完成」。",
-    "en": "Scroll the target content down inside the selected area, then click Finish."
+    "zh-CN": "蓝色框会自己向下滚，也可以自己用滚轮滚。数字是加长的像素，不是段数。框外不会进图。",
+    "en": "The blue frame scrolls down on its own; you can also use the wheel. The number is added pixels, not strips. Outside the frame is not captured."
   },
   "scroll.finish": {
     "zh-CN": "完成",
@@ -2115,17 +2115,21 @@
     "zh-CN": "取消",
     "en": "Cancel"
   },
+  "scroll.watching": {
+    "zh-CN": "捕获范围 {width}×{height}",
+    "en": "Capturing {width}×{height}"
+  },
   "scroll.height": {
     "zh-CN": "已拼接 {height} px",
     "en": "Stitched {height} px"
   },
   "scroll.status.running": {
-    "zh-CN": "正在抓取…请滚动目标内容。",
-    "en": "Capturing… scroll the target content."
+    "zh-CN": "正在让蓝色框里的内容向下滚。",
+    "en": "Scrolling the content inside the blue frame."
   },
   "scroll.status.unchanged": {
-    "zh-CN": "未检测到内容变化，请继续向下滚动。",
-    "en": "No content change detected. Keep scrolling down."
+    "zh-CN": "蓝色框里的画面还没动。把鼠标放进框内再向下滚动。",
+    "en": "The picture inside the blue frame has not moved. Put the pointer inside the frame and scroll down."
   },
   "scroll.status.fast": {
     "zh-CN": "滚动过快，可能有内容缺失；请放慢速度。",
@@ -2148,8 +2152,8 @@
     "en": "Capture failed. Make sure the window is visible and retry."
   },
   "scroll.appended": {
-    "zh-CN": "已拼接 {count} 段",
-    "en": "{count} strips stitched"
+    "zh-CN": "已加长 {count} px",
+    "en": "{count} px added"
   },
   "scroll.action.canceling": {
     "zh-CN": "正在取消…",

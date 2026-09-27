@@ -1,3 +1,13 @@
+/* 保存等结果提示会盖在任意壁纸上。不用半透明面板色:
+   #app 的透明底优先级更高,浅色文字会直接铺在亮背景上。
+   固定深色实底 + 浅色字,对比不随壁纸和系统主题变。 */
+html[data-view="toast"],
+html[data-view="toast"] body,
+html[data-view="toast"] #app {
+  background: #1b1f26;
+  color: #f7f8fa;
+}
+
 .toast-root {
   height: 100%;
   width: 100%;
@@ -5,21 +15,22 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 0 16px;
+  padding: 0 14px;
   user-select: none;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-window);
-  box-shadow: var(--shadow);
+  background: #1b1f26;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
 }
 
 .toast-message {
   margin: 0;
   max-width: 100%;
-  color: var(--ink);
+  color: #f7f8fa;
   font: inherit;
   font-size: 13px;
-  line-height: 1.4;
+  font-weight: 650;
+  line-height: 1.35;
   white-space: normal;
   overflow-wrap: anywhere;
 }

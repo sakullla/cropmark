@@ -27,6 +27,9 @@ use windows::Win32::UI::Input::Ime::{
     ImmGetCompositionStringW, ImmGetContext, ImmReleaseContext, ImmSetCompositionWindow, CFS_POINT,
     COMPOSITIONFORM, GCS_COMPSTR, GCS_RESULTSTR, HIMC, IME_COMPOSITION_STRING,
 };
+use windows::Win32::System::Threading::{
+    AttachThreadInput, GetCurrentProcessId, GetCurrentThreadId,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateCursor, CreateIconIndirect, CreateWindowExW, DefWindowProcW, DestroyWindow,
@@ -35,7 +38,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     PostQuitMessage, RegisterClassExW, SetCursor, SetForegroundWindow, SetWindowPos, ShowWindow,
     TranslateMessage, CS_HREDRAW, CS_VREDRAW, HCURSOR, HWND_TOPMOST, ICONINFO, IDC_ARROW, IDC_HAND,
     IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, MSG, PM_NOREMOVE, PM_REMOVE,
-    SM_CXCURSOR, SM_CYCURSOR, SWP_SHOWWINDOW, SW_SHOW, WM_CHAR, WM_CLOSE, WM_DESTROY,
+    SM_CXCURSOR, SM_CYCURSOR, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+    SW_SHOW, SW_SHOWNOACTIVATE, WM_CHAR, WM_CLOSE, WM_DESTROY,
     WM_ERASEBKGND, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN,
     WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_QUIT,
     WM_RBUTTONDOWN, WM_SETCURSOR, WM_SETFOCUS, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
@@ -183,6 +187,65 @@ pub fn request_shell_close() {
 
 pub fn shell_is_active() -> bool {
     ACTIVE_SHELL_HWND.load(Ordering::SeqCst) != 0
+}
+
+/// 选区壳抢走前台之前的窗口。长截图要把焦点还回去,否则滚轮打在本进程上,页面不动。
+static PRE_CAPTURE_FOREGROUND: AtomicIsize = AtomicIsize::new(0);
+
+fn remember_foreground(except: HWND) {
+    unsafe {
+        let previous = GetForegroundWindow();
+        if previous.0.is_null() || previous == except {
+            return;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(previous, Some(&mut pid));
+        if pid == 0 || pid == GetCurrentProcessId() {
+            return;
+        }
+        PRE_CAPTURE_FOREGROUND.store(previous.0 as isize, Ordering::SeqCst);
+    }
+}
+
+/// 长截图控制窗显示后调用:不激活控制窗,并把焦点还给截图前的窗口。
+pub fn restore_pre_capture_foreground() {
+    let raw = PRE_CAPTURE_FOREGROUND.swap(0, Ordering::SeqCst);
+    if raw == 0 {
+        return;
+    }
+    let hwnd = HWND(raw as *mut c_void);
+    unsafe {
+        if SetForegroundWindow(hwnd).as_bool() {
+            return;
+        }
+        let fg = GetForegroundWindow();
+        let fg_thread = GetWindowThreadProcessId(fg, None);
+        let this_thread = GetCurrentThreadId();
+        if fg_thread != 0 && fg_thread != this_thread {
+            let _ = AttachThreadInput(fg_thread, this_thread, true);
+            let _ = SetForegroundWindow(hwnd);
+            let _ = AttachThreadInput(fg_thread, this_thread, false);
+        } else {
+            let _ = SetForegroundWindow(hwnd);
+        }
+    }
+}
+
+/// 控制窗置顶但不抢走键盘焦点,避免滚轮落到这块小窗上。
+pub fn show_scroll_control_unfocused(hwnd: HWND) {
+    unsafe {
+        let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        let _ = SetWindowPos(
+            hwnd,
+            Some(HWND_TOPMOST),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        );
+    }
+    restore_pre_capture_foreground();
 }
 
 fn run_shell(
@@ -1002,6 +1065,7 @@ unsafe fn create_overlay_window(
         None,
     )
     .map_err(|_| CaptureError::api("error.capture.window_open"))?;
+    remember_foreground(hwnd);
     let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), x, y, w, h, SWP_SHOWWINDOW);
     let _ = ShowWindow(hwnd, SW_SHOW);
     let _ = SetForegroundWindow(hwnd);

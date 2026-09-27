@@ -66,13 +66,10 @@ export function mountScroll(root: HTMLElement): () => void {
     }
     status.classList.toggle("is-error", last.state === "failed");
     status.textContent = t(STATUS_KEYS[last.state] ?? "scroll.status.running");
-    // 已拼接条数与高度一起展示,滚动中能看到进展。
-    const parts: string[] = [];
+    // 尺寸一直显示：这就是正在截的那一块，滚起来之后高度会变长。
+    const parts = [t("scroll.watching", { width: last.width, height: last.height })];
     if (last.appended > 0) {
       parts.push(t("scroll.appended", { count: last.appended }));
-    }
-    if (last.height > 0) {
-      parts.push(t("scroll.height", { height: last.height }));
     }
     size.textContent = parts.join(" · ");
     const busy = actionBusy || last.state === "finishing";

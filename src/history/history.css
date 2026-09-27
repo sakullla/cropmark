@@ -165,13 +165,21 @@
 
 .history-item {
   display: grid;
-  grid-template-columns: 96px minmax(0, 1fr) auto;
-  gap: 12px;
+  grid-template-columns: 96px minmax(0, 1fr);
+  grid-template-areas:
+    "thumb main"
+    "thumb note";
+  column-gap: 12px;
+  row-gap: 8px;
   align-items: center;
-  min-height: 76px;
-  padding: 8px 12px;
+  padding: 12px;
   border-bottom: 1px solid var(--line);
   background: transparent;
+}
+
+.history-item:not(:has(.history-note)) {
+  grid-template-areas: "thumb main";
+  row-gap: 0;
 }
 
 .history-item:last-child {
@@ -191,8 +199,9 @@
 }
 
 .history-thumb {
+  grid-area: thumb;
   width: 96px;
-  height: 60px;
+  height: 72px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -213,6 +222,15 @@
   object-fit: contain;
 }
 
+.history-main {
+  grid-area: main;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
 .history-meta {
   min-width: 0;
 }
@@ -225,15 +243,17 @@
 
 .history-size,
 .history-mode {
-  margin-top: 4px;
+  margin-top: 2px;
   font-size: 12px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
 
 .history-note {
+  grid-area: note;
   display: block;
-  margin-top: 6px;
+  margin: 0;
+  min-width: 0;
 }
 
 .history-note-input {
@@ -273,6 +293,7 @@
 
 .history-actions {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 2px;
 }

@@ -1764,7 +1764,17 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     const target = editTarget;
     hideEditor();
     const targetOp = target !== null ? annotations[target] : undefined;
-    if (targetOp && (targetOp.type === "text" || targetOp.type === "bubble")) {
+    if (targetOp && targetOp.type === "bubble") {
+      // 空白也保留气泡。点一下只是放下形状，还没打字就失焦时不能把刚放下的删掉。
+      if (text !== targetOp.text) {
+        pushAction({
+          kind: "replace",
+          index: target as number,
+          before: targetOp,
+          after: { ...targetOp, text },
+        });
+      }
+    } else if (targetOp && targetOp.type === "text") {
       if (text.trim().length === 0) {
         pushAction({ kind: "remove", index: target as number, op: targetOp });
       } else if (text !== targetOp.text) {
@@ -2278,6 +2288,32 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     syncUndo();
   };
 
+  // 单击放在落点中央。尾巴伸到框外，底边要给它留空。
+  const bubbleAtClick = (point: Point): Annotation | null => {
+    const frame = options.frame();
+    if (!frame) {
+      return null;
+    }
+    const width = Math.min(168, frame.width);
+    const height = Math.min(76, frame.height);
+    if (width < MIN_BUBBLE_WIDTH || height < MIN_BUBBLE_HEIGHT) {
+      return null;
+    }
+    const tail = clamp(height * 0.45, 10, 40);
+    const x = clamp(point.x - width / 2, 0, Math.max(0, frame.width - width));
+    const y = clamp(point.y - height / 2, 0, Math.max(0, frame.height - height - tail));
+    return {
+      type: "bubble",
+      x,
+      y,
+      width,
+      height,
+      text: "",
+      size: textSize(),
+      color: styleColor,
+    };
+  };
+
   canvas.addEventListener("mousedown", (event) => {
     if (event.button !== 0 || !options.frame() || !editable()) {
       return;
@@ -2320,6 +2356,14 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     }
     if (tool === "sticker") {
       placeSticker(point);
+      return;
+    }
+    if (tool === "bubble") {
+      // 单击即放下。拖动仍可改大小，松手时若拉得够大就用拖出的框。
+      dragging = true;
+      start = point;
+      current = point;
+      freehand = [];
       return;
     }
     dragging = true;
@@ -2446,7 +2490,9 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
         pushAction({ kind: "add", index: annotations.length, op });
       }
     } else if (isDragTool(tool) && start && current) {
-      const op = draft(tool, modeFor(tool), start, current, toolSettings());
+      const op =
+        draft(tool, modeFor(tool), start, current, toolSettings()) ??
+        (tool === "bubble" ? bubbleAtClick(start) : null);
       if (op) {
         pushAction({ kind: "add", index: annotations.length, op });
         // 气泡创建后直接进入文本编辑:拖出形状即输入内容。
