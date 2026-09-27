@@ -372,6 +372,7 @@ h1 {
   color: var(--muted);
   font-size: 13px;
   line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .notice,
@@ -380,6 +381,7 @@ h1 {
   color: var(--danger);
   font-size: 13px;
   line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .notice {
@@ -407,9 +409,11 @@ h1 {
 
 .label {
   grid-area: label;
+  min-width: 0;
   font-size: 15px;
   font-weight: 650;
   line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .hotkey-btn {
@@ -607,6 +611,10 @@ h1 {
 
 .switch:hover:not(:disabled) {
   filter: var(--control-hover-filter);
+}
+
+.switch:active:not(:disabled) {
+  filter: var(--control-pressed-filter);
 }
 
 .switch .knob {

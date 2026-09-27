@@ -115,6 +115,7 @@
   border-color: color-mix(in srgb, var(--danger) 45%, transparent);
   color: var(--danger);
   white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .preview-toolbar {
@@ -183,7 +184,7 @@
   background: var(--control-hover-bg);
 }
 
-.preview-actions button:active:not(.primary) {
+.preview-actions button:active:not(.primary):not(:disabled) {
   filter: var(--control-pressed-filter);
 }
 
@@ -213,11 +214,11 @@
   padding: 0 16px;
 }
 
-.preview-actions .primary:hover {
+.preview-actions .primary:hover:not(:disabled) {
   filter: var(--control-hover-filter);
 }
 
-.preview-actions .primary:active {
+.preview-actions .primary:active:not(:disabled) {
   filter: var(--control-pressed-filter);
 }
 
@@ -372,8 +373,14 @@
   color: var(--ink);
   font: inherit;
   font-size: 13px;
+  transition: var(--control-transition);
   -webkit-user-select: text;
   user-select: text;
+}
+
+.ocr-panel-query:hover:not(:disabled) {
+  border-color: var(--control-hover-border);
+  background: var(--control-hover-bg);
 }
 
 .ocr-panel-nav {

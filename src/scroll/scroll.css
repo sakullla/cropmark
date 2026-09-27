@@ -51,6 +51,7 @@ html[data-view="scroll"] #app {
   min-height: 32px;
   font-size: 12px;
   line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .scroll-status.is-error {
@@ -82,12 +83,12 @@ html[data-view="scroll"] #app {
   transition: var(--control-transition);
 }
 
-.scroll-actions button:hover {
+.scroll-actions button:hover:not(:disabled) {
   background: var(--control-hover-bg);
   border-color: var(--control-hover-border);
 }
 
-.scroll-actions button:active {
+.scroll-actions button:active:not(:disabled) {
   filter: var(--control-pressed-filter);
 }
 
@@ -97,7 +98,7 @@ html[data-view="scroll"] #app {
   border-color: var(--accent);
 }
 
-.scroll-actions .scroll-finish:hover {
+.scroll-actions .scroll-finish:hover:not(:disabled) {
   color: var(--on-accent);
   background: var(--accent);
   filter: var(--control-hover-filter);

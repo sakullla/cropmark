@@ -32,16 +32,24 @@
   font-weight: 650;
 }
 
+.guide-hotkey > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .guide-hotkey kbd {
-  font-family: inherit;
-  font-size: 13px;
-  font-weight: 650;
-  font-variant-numeric: tabular-nums;
+  max-width: 60%;
   padding: 4px 10px;
   border: 1px solid var(--line);
   border-radius: var(--radius-pill);
   background: var(--control-fill);
   color: var(--ink);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+  text-align: right;
 }
 
 .guide-done {

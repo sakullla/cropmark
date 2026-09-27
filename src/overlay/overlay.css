@@ -226,7 +226,9 @@
   margin-inline: auto;
   z-index: 4;
   width: min(520px, 86vw);
+  max-height: calc(100% - 80px);
   padding: var(--panel-padding);
+  overflow: auto;
   border: 1px solid var(--line);
   border-radius: var(--radius-panel);
   background: var(--panel);
@@ -264,6 +266,8 @@
 
 .capability-panel dd {
   margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .overlay-notice {
@@ -342,6 +346,7 @@
 .window-item .title {
   font-size: 13px;
   font-weight: 650;
+  overflow-wrap: anywhere;
 }
 
 .window-item .meta {
@@ -438,4 +443,5 @@
   margin: 0;
   font-size: 13px;
   line-height: 1.45;
+  overflow-wrap: anywhere;
 }

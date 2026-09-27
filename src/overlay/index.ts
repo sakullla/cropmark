@@ -114,11 +114,11 @@ export function mountOverlay(root: HTMLElement): () => void {
         <button type="button" data-workspace="copy" data-i18n="overlay.action.copy">复制</button>
         <button type="button" data-workspace="edit" data-i18n="overlay.action.edit">进一步编辑</button>
       </div>
-      <button type="button" class="overlay-capabilities" aria-expanded="false" data-i18n="overlay.capabilities" hidden>能力说明</button>
+      <button type="button" class="overlay-capabilities" aria-haspopup="dialog" aria-controls="overlay-capability-panel" aria-expanded="false" data-i18n="overlay.capabilities" hidden>能力说明</button>
       <button type="button" class="overlay-cancel" data-i18n="overlay.cancel">取消 Esc</button>
     </div>
     <div class="overlay-tools annotation-tools" role="toolbar" data-i18n-aria-label="preview.toolbar_group" aria-label="标注" hidden></div>
-    <aside class="capability-panel" hidden></aside>
+    <aside id="overlay-capability-panel" class="capability-panel" role="dialog" tabindex="-1" data-i18n-aria-label="overlay.panel.title" aria-label="能力说明" hidden></aside>
     <div class="overlay-notice" role="status" hidden></div>
     <div class="size-badge" hidden></div>
     <div class="window-list" hidden></div>
@@ -287,12 +287,25 @@ export function mountOverlay(root: HTMLElement): () => void {
     retryBtn.hidden = false;
   };
 
-  const setCapabilityPanel = (open: boolean): void => {
+  const setCapabilityPanel = (
+    open: boolean,
+    options: { focusPanel?: boolean; restoreFocus?: boolean } = {},
+  ): void => {
+    const focusWasInside = capabilityPanel.contains(document.activeElement);
     capabilityPanel.hidden = !open;
     capabilityToggle.setAttribute("aria-expanded", open ? "true" : "false");
     capabilityToggle.textContent = t(
       open ? "overlay.capabilities_collapse" : "overlay.capabilities",
     );
+    if (open && options.focusPanel) {
+      capabilityPanel.focus();
+    } else if (
+      !open &&
+      (options.restoreFocus || focusWasInside) &&
+      !capabilityToggle.hidden
+    ) {
+      capabilityToggle.focus();
+    }
   };
 
   const renderCapabilityPanel = (): void => {
@@ -862,7 +875,28 @@ export function mountOverlay(root: HTMLElement): () => void {
   capabilityToggle.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
-    setCapabilityPanel(capabilityPanel.hidden);
+    const opening = capabilityPanel.hidden;
+    setCapabilityPanel(opening, { focusPanel: opening, restoreFocus: !opening });
+  });
+
+  document.addEventListener("click", (event) => {
+    if (
+      !capabilityPanel.hidden &&
+      event.target instanceof Node &&
+      !capabilityPanel.contains(event.target) &&
+      !capabilityToggle.contains(event.target)
+    ) {
+      setCapabilityPanel(false);
+    }
+  });
+
+  capabilityPanel.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    setCapabilityPanel(false, { restoreFocus: true });
   });
 
   cancelBtn.addEventListener("click", (event) => {
@@ -943,6 +977,10 @@ export function mountOverlay(root: HTMLElement): () => void {
     if (event.key === "Escape") {
       event.preventDefault();
       event.stopPropagation();
+      if (!capabilityPanel.hidden) {
+        setCapabilityPanel(false, { restoreFocus: true });
+        return;
+      }
       cancel();
       return;
     }
