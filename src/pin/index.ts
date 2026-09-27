@@ -58,12 +58,12 @@ export function mountPin(root: HTMLElement): () => void {
       <canvas class="pin-canvas"></canvas>
     </div>
     <div class="pin-toolbar">
-      <button type="button" data-action="copy" data-i18n-title="pin.toolbar.copy_title" data-i18n-aria-label="pin.toolbar.copy" title="复制图片（无损 PNG）" aria-label="复制">${ICONS.copy}</button>
-      <button type="button" data-action="save" data-i18n-title="pin.toolbar.save_title" data-i18n-aria-label="pin.toolbar.save" title="保存 PNG" aria-label="保存">${ICONS.save}</button>
-      <button type="button" data-action="rotate" data-i18n-title="pin.toolbar.rotate_title" data-i18n-aria-label="pin.toolbar.rotate" title="顺时针旋转 90°" aria-label="旋转 90°">${ICONS.rotate}</button>
-      <button type="button" data-action="opacity" class="pin-opacity" data-i18n-title="pin.toolbar.opacity_title" data-i18n-aria-label="pin.toolbar.opacity" title="调整透明度" aria-label="透明度">100%</button>
-      <button type="button" data-action="annotate" data-i18n-title="pin.toolbar.annotate_title" data-i18n-aria-label="pin.toolbar.annotate" title="再标注（确认后更新贴图）" aria-label="再标注">${ICONS.annotate}</button>
-      <button type="button" data-action="close" class="pin-close" data-i18n-title="pin.toolbar.close_title" data-i18n-aria-label="pin.toolbar.close" title="关闭贴图" aria-label="关闭贴图">${ICONS.close}</button>
+      <button type="button" data-action="copy" data-i18n-title="pin.toolbar.copy_title" data-i18n-aria-label="pin.toolbar.copy" aria-label="复制">${ICONS.copy}</button>
+      <button type="button" data-action="save" data-i18n-title="pin.toolbar.save_title" data-i18n-aria-label="pin.toolbar.save" aria-label="保存">${ICONS.save}</button>
+      <button type="button" data-action="rotate" data-i18n-title="pin.toolbar.rotate_title" data-i18n-aria-label="pin.toolbar.rotate" aria-label="旋转 90°">${ICONS.rotate}</button>
+      <button type="button" data-action="opacity" class="pin-opacity" data-i18n-title="pin.toolbar.opacity_title" data-i18n-aria-label="pin.toolbar.opacity" aria-label="透明度">100%</button>
+      <button type="button" data-action="annotate" data-i18n-title="pin.toolbar.annotate_title" data-i18n-aria-label="pin.toolbar.annotate" aria-label="再标注">${ICONS.annotate}</button>
+      <button type="button" data-action="close" class="pin-close" data-i18n-title="pin.toolbar.close_title" data-i18n-aria-label="pin.toolbar.close" aria-label="关闭贴图">${ICONS.close}</button>
     </div>
     <div class="pin-menu" data-menu data-i18n-aria-label="pin.menu_label" aria-label="贴图菜单" hidden>
       <button type="button" data-menu-action="copy" data-i18n="pin.menu.copy">复制图片</button>
@@ -76,7 +76,7 @@ export function mountPin(root: HTMLElement): () => void {
         <div class="pin-menu-opacity">
           ${OPACITY_STEPS.map(
             (value) =>
-              `<button type="button" data-menu-opacity="${value}" data-i18n-title="pin.menu.opacity_option_title" data-i18n-title-params='{"percent":${Math.round(value * 100)}}' title="透明度 ${Math.round(value * 100)}%">${Math.round(value * 100)}%</button>`,
+              `<button type="button" data-menu-opacity="${value}" data-i18n-title="pin.menu.opacity_option_title" data-i18n-title-params='{"percent":${Math.round(value * 100)}}'>${Math.round(value * 100)}%</button>`,
           ).join("")}
         </div>
       </div>

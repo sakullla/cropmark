@@ -82,9 +82,10 @@
   }
 }
 
-/* 设置是无系统边框的透明窗。页面和外壳用同一暖中性色，
+/* 设置与引导是无系统边框的透明窗。页面和外壳用同一暖中性色，
    分组用白卡片和发丝线，避免冷灰底再套一圈中灰框。 */
-html[data-view="settings"] {
+html[data-view="settings"],
+html[data-view="guide"] {
   --bg: #f4f3f0;
   --panel: #f4f3f0;
   --card: #ffffff;
@@ -114,7 +115,8 @@ html[data-view="history"] {
 }
 
 @media (prefers-color-scheme: dark) {
-  html[data-view="settings"] {
+  html[data-view="settings"],
+  html[data-view="guide"] {
     --bg: #161615;
     --panel: #161615;
     --card: #232321;
@@ -144,6 +146,7 @@ html[data-view="history"] {
 }
 
 html[data-view="settings"] .shell,
+html[data-view="guide"] .shell,
 html[data-view="history"] .shell {
   background: var(--bg);
   border-color: color-mix(in srgb, var(--ink) 8%, transparent);
@@ -221,6 +224,9 @@ html[data-view="preview"] #app,
 html[data-view="settings"],
 html[data-view="settings"] body,
 html[data-view="settings"] #app,
+html[data-view="guide"],
+html[data-view="guide"] body,
+html[data-view="guide"] #app,
 html[data-view="history"],
 html[data-view="history"] body,
 html[data-view="history"] #app {
@@ -524,6 +530,11 @@ h1 {
   transition: var(--control-transition);
 }
 
+.number-input:hover:not(:disabled) {
+  border-color: var(--control-hover-border);
+  background: var(--control-hover-bg);
+}
+
 .number-input[aria-invalid="true"] {
   border-color: var(--danger);
 }
@@ -592,6 +603,10 @@ h1 {
   position: relative;
   cursor: pointer;
   flex: 0 0 auto;
+}
+
+.switch:hover:not(:disabled) {
+  filter: var(--control-hover-filter);
 }
 
 .switch .knob {
