@@ -6,7 +6,8 @@
   overflow: hidden;
   user-select: none;
   background: var(--panel);
-  border: 1px solid var(--line);
+  /* 窗框让位给铺满的主图，不和浮出的工具抢同一条实线。 */
+  border: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
 }
 
 .pin-stage {
@@ -32,6 +33,9 @@
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 4px;
+  /* 不铺实底条；默认让开主图，悬停或焦点才浮出。 */
+  background: transparent;
+  box-shadow: none;
   opacity: 0;
   transition: opacity 120ms ease;
 }
@@ -49,9 +53,9 @@
   align-items: center;
   justify-content: center;
   width: 26px;
-  min-width: 24px;
+  min-width: 26px;
   height: 26px;
-  min-height: 24px;
+  min-height: 26px;
   padding: 0;
   border: none;
   border-radius: var(--radius-control-sm);
@@ -125,6 +129,11 @@
   border: 1px solid var(--line);
   border-radius: var(--radius-menu);
   box-shadow: var(--shadow);
+}
+
+/* 关闭贴图与其余菜单项一样保留可见文字，不在这里移除。 */
+.pin-menu button[data-menu-action="close"] {
+  display: block;
 }
 
 .pin-menu button {

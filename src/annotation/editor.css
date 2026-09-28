@@ -5,16 +5,18 @@
 .annotation-tools button {
   border: 1px solid transparent;
   background: transparent;
-  color: var(--ink);
+  color: var(--muted);
   font: inherit;
   cursor: pointer;
   border-radius: var(--radius-control);
   -webkit-app-region: no-drag;
   app-region: no-drag;
+  /* 短边锁定 36px：窄工具条换行，不把点击区压到更小。 */
   width: 36px;
   min-width: 36px;
   height: 36px;
-  min-height: 24px;
+  min-height: 36px;
+  flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -70,6 +72,13 @@
 .annotation-tools button:hover:not(:disabled) {
   background: var(--control-hover-bg);
   border-color: var(--control-hover-border);
+}
+
+.annotation-tools > button:hover:not(:disabled):not(.active),
+.annotation-more > button:hover:not(:disabled):not(.active),
+.annotation-style > button:hover:not(:disabled):not(.active),
+.annotation-more-panel > button:hover:not(:disabled):not(.active) {
+  color: var(--ink);
 }
 
 .annotation-tools button:active:not(:disabled) {
