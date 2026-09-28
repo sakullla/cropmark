@@ -631,6 +631,34 @@
     "zh-CN": "无法把二维码内容放入剪贴板。截图仍保留。",
     "en": "Could not put the QR content on the clipboard. The screenshot is still available."
   },
+  "error.record.encode": {
+    "zh-CN": "录制编码失败，本次录制已停止（{detail}）。",
+    "en": "Recording encoding failed and the recording stopped ({detail})."
+  },
+  "error.record.temp_io": {
+    "zh-CN": "无法写入录制临时文件：{detail}",
+    "en": "Could not write the recording temporary file: {detail}"
+  },
+  "error.record.empty": {
+    "zh-CN": "没有录制到任何内容。",
+    "en": "No content was recorded."
+  },
+  "error.record.not_running": {
+    "zh-CN": "当前没有可操作的录制会话。",
+    "en": "There is no active recording session."
+  },
+  "error.record.region": {
+    "zh-CN": "录制区域无效，或超出所选格式的尺寸上限。",
+    "en": "The recording region is invalid or exceeds the size limit of the selected format."
+  },
+  "error.record.thread": {
+    "zh-CN": "录制线程无法启动或异常退出。",
+    "en": "The recording thread could not start or exited unexpectedly."
+  },
+  "error.record.save_to_path": {
+    "zh-CN": "无法保存录制文件到 {path}：{error}",
+    "en": "Could not save the recording to {path}: {error}"
+  },
   "error.hotkey.invalid": {
     "zh-CN": "无法识别该热键。",
     "en": "Unrecognized hotkey."
@@ -694,6 +722,14 @@
   "dialog.save_capture_title": {
     "zh-CN": "保存截图",
     "en": "Save Screenshot"
+  },
+  "dialog.recordings_filter": {
+    "zh-CN": "录制文件",
+    "en": "Recordings"
+  },
+  "dialog.save_recording_title": {
+    "zh-CN": "保存录制",
+    "en": "Save Recording"
   },
   "dialog.png_filter": {
     "zh-CN": "PNG 图片",
@@ -820,8 +856,12 @@
     "en": "History settings applied"
   },
   "notice.pin_applied": {
-    "zh-CN": "贴图设置已应用",
-    "en": "Pin settings applied"
+    "zh-CN": "贴图设置已更新。",
+    "en": "Pin preference updated."
+  },
+  "notice.recording_applied": {
+    "zh-CN": "录屏开关已更新。",
+    "en": "Recording preference updated."
   },
   "notice.export_remembered": {
     "zh-CN": "导出设置已记住",

@@ -104,7 +104,8 @@ fn save_error(path: &Path, error: &std::io::Error) -> String {
     )
 }
 
-fn partial_path(path: &Path) -> PathBuf {
+/// 同目录临时文件名(R3):单帧导出与录制保存共用同一原子写盘约定。
+pub(crate) fn partial_path(path: &Path) -> PathBuf {
     let name = path
         .file_name()
         .and_then(|name| name.to_str())

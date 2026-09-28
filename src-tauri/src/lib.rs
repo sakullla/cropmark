@@ -14,6 +14,8 @@ mod ocr;
 mod pin;
 mod pin_store;
 mod qr;
+// R3:录屏引擎在录制入口/HUD 任务接入前先作为库面提供,由后续任务消费。
+pub mod record;
 mod settings;
 mod single_instance;
 mod tray;
@@ -324,6 +326,7 @@ pub fn run() {
             settings::set_history_settings,
             settings::set_export_appearance,
             settings::set_pin_settings,
+            settings::set_recording_settings,
             capture::get_overlay_frame,
             capture::get_preview_frame,
             capture::confirm_region,

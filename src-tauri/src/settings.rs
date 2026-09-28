@@ -261,6 +261,14 @@ pub struct PinSettings {
     pub restore: bool,
 }
 
+/// 录屏开关(R3/R9):配置精简后唯一保留的功能开关,默认关闭。
+/// 关闭时托盘与选区不出现录屏入口;录制引擎本身由入口按该值门控。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct RecordingSettings {
+    pub enabled: bool,
+}
+
 /// 上次区域(R6):成功完成区域截图后记住的全局物理像素矩形(多显示器桌面允许负坐标),
 /// 托盘的"上次区域"用它直取,不再进入交互选区。分辨率/缩放/显示器变化后使用时
 /// 按当前显示器并集钳制,保证裁剪始终落在实际抓取的显示器帧内。
@@ -346,6 +354,8 @@ pub struct StoredSettings {
     #[serde(default)]
     pub pin: PinSettings,
     #[serde(default)]
+    pub recording: RecordingSettings,
+    #[serde(default)]
     pub last_region: Option<LastRegion>,
     /// 界面语言(R12):`system | zh-CN | en`;未知值按 system 处理。
     #[serde(default = "default_language_setting")]
@@ -408,6 +418,7 @@ pub struct UiSettings {
     pub history: HistorySettings,
     pub export: ExportSettings,
     pub pin: PinSettings,
+    pub recording: RecordingSettings,
     pub tray: TrayState,
     pub language: String,
     pub resolved_language: Language,
@@ -423,6 +434,7 @@ pub struct SessionState {
     pub history: Mutex<HistorySettings>,
     pub export: Mutex<ExportSettings>,
     pub pin: Mutex<PinSettings>,
+    pub recording: Mutex<RecordingSettings>,
     pub last_region: Mutex<Option<LastRegion>>,
     pub tray: Mutex<TrayState>,
     pub language: Mutex<String>,
@@ -441,6 +453,7 @@ impl SessionState {
             history: Mutex::new(stored.history.sanitized()),
             export: Mutex::new(stored.export.sanitized()),
             pin: Mutex::new(stored.pin),
+            recording: Mutex::new(stored.recording),
             last_region: Mutex::new(stored.last_region.and_then(LastRegion::sanitized)),
             tray: Mutex::new(TrayState::available()),
             language: Mutex::new(sanitize_language(&stored.language)),
@@ -475,6 +488,13 @@ pub fn current_pin(app: &AppHandle) -> PinSettings {
     *lock(&app.state::<SessionState>().pin)
 }
 
+/// 供录屏入口读取录屏开关(R3):默认关闭,关闭时不出现入口。
+/// 入口任务(recording-entry)接入前没有生产调用点。
+#[allow(dead_code)]
+pub fn current_recording(app: &AppHandle) -> RecordingSettings {
+    *lock(&app.state::<SessionState>().recording)
+}
+
 /// 保存成功后更新导出记忆:扩展名推导出的实际格式、目标目录与本次档位,
 /// 写盘失败只影响 notice,不影响已完成的文件写入。
 pub fn remember_export(
@@ -487,6 +507,16 @@ pub fn remember_export(
     next.last_format = format;
     next.last_dir = directory.map(|dir| dir.to_string_lossy().into_owned());
     next.quality = quality;
+    let next = next.sanitized();
+    *lock(&app.state::<SessionState>().export) = next;
+    let applied = i18n::t("notice.export_remembered");
+    persist_settings(app, &applied);
+}
+
+/// 保存成功后只更新目录记忆(录制格式不在单帧导出格式表里,不写 last_format)。
+pub fn remember_export_directory(app: &AppHandle, directory: Option<&std::path::Path>) {
+    let mut next = current_export(app);
+    next.last_dir = directory.map(|dir| dir.to_string_lossy().into_owned());
     let next = next.sanitized();
     *lock(&app.state::<SessionState>().export) = next;
     let applied = i18n::t("notice.export_remembered");
@@ -709,6 +739,7 @@ pub fn snapshot(app: &AppHandle) -> UiSettings {
     let history = *lock(&state.history);
     let export = lock(&state.export).clone();
     let pin = *lock(&state.pin);
+    let recording = *lock(&state.recording);
     let tray = lock(&state.tray).clone();
     let language = lock(&state.language).clone();
     let resolved_language = i18n::resolve_setting(&language);
@@ -722,6 +753,7 @@ pub fn snapshot(app: &AppHandle) -> UiSettings {
         history,
         export,
         pin,
+        recording,
         tray,
         language,
         resolved_language,
@@ -817,6 +849,17 @@ pub fn set_pin_settings(app: AppHandle, settings: PinSettings) -> UiSettings {
     snapshot(&app)
 }
 
+/// 设置录屏开关(R3):默认关闭;入口(托盘/选区)按当前值门控,无需重启。
+/// 托盘菜单按新开关立即重建(与采集设置同语义),选区入口在打开时读取当前值。
+#[tauri::command]
+pub fn set_recording_settings(app: AppHandle, settings: RecordingSettings) -> UiSettings {
+    *lock(&app.state::<SessionState>().recording) = settings;
+    let applied = i18n::t("notice.recording_applied");
+    persist_settings(&app, &applied);
+    crate::tray::refresh_menu(&app);
+    snapshot(&app)
+}
+
 /// 设置延时与采集普通选项;内存值立即生效(下一次截取起),随 persist_settings
 /// 写盘,并按新设置重建托盘菜单(多屏全屏行为决定菜单结构)。不写回已删除的
 /// 完成动作与自动复制。
@@ -848,6 +891,7 @@ fn stored_from_state(state: &SessionState) -> StoredSettings {
         history: *lock(&state.history),
         export: lock(&state.export).clone(),
         pin: *lock(&state.pin),
+        recording: *lock(&state.recording),
         last_region: *lock(&state.last_region),
         language: lock(&state.language).clone(),
         onboarding_done: *lock(&state.onboarding_done),
@@ -941,6 +985,7 @@ mod tests {
                 use_filename_template: true,
             },
             pin: PinSettings { restore: true },
+            recording: RecordingSettings { enabled: true },
             last_region: Some(LastRegion {
                 x: -640,
                 y: 120,
@@ -987,6 +1032,8 @@ mod tests {
         assert!(loaded.export.apply_beautify);
         assert!(loaded.export.use_filename_template);
         assert!(loaded.pin.restore);
+        assert!(loaded.recording.enabled);
+        assert!(text.contains("\"recording\""));
         assert_eq!(loaded.language, "en");
         assert!(loaded.onboarding_done);
         assert!(text.contains("\"onboardingDone\""));
@@ -1108,6 +1155,23 @@ mod tests {
         assert!(!export.apply_beautify);
         assert!(!export.use_filename_template);
         assert!(!PinSettings::default().restore);
+        // R3/R9:录屏开关默认关闭,是配置精简后唯一保留的功能开关。
+        assert!(!RecordingSettings::default().enabled);
+    }
+
+    #[test]
+    fn recording_setting_roundtrips_and_defaults_to_disabled() {
+        let missing: StoredSettings = serde_json::from_str("{}").unwrap();
+        assert!(!missing.recording.enabled);
+        let parsed: StoredSettings =
+            serde_json::from_str(r#"{"recording":{"enabled":true}}"#).unwrap();
+        assert!(parsed.recording.enabled);
+        let serialized = serde_json::to_value(parsed.recording).unwrap();
+        assert_eq!(serialized["enabled"], true);
+        let rewritten = stored_from_state(&SessionState::from_stored(parsed));
+        assert!(rewritten.recording.enabled);
+        let text = serde_json::to_string(&rewritten).unwrap();
+        assert!(text.contains("\"recording\":{\"enabled\":true}"), "{text}");
     }
 
     #[test]
@@ -1173,6 +1237,7 @@ mod tests {
             history: HistorySettings::default(),
             export: ExportSettings::default(),
             pin: PinSettings::default(),
+            recording: RecordingSettings::default(),
             tray: TrayState::available(),
             language: i18n::SYSTEM_LANGUAGE.to_string(),
             resolved_language: Language::ZhCn,
