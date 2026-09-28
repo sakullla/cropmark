@@ -57,6 +57,8 @@
 }
 
 .history-select {
+  flex: 0 0 auto;
+  max-width: 100%;
   padding: 0 8px;
 }
 
@@ -67,6 +69,7 @@
 }
 
 .history-filter-clear {
+  flex: 0 0 auto;
   border: 0;
   min-height: 32px;
   padding: 0 8px;
@@ -76,6 +79,7 @@
   font: inherit;
   font-size: 13px;
   font-weight: 650;
+  white-space: nowrap;
   cursor: pointer;
 }
 
@@ -229,6 +233,16 @@
   text-align: center;
 }
 
+/* 英文整句宽于单行内容区。折进 96×72，避免居中后被 overflow 裁掉两端。 */
+.history-thumb.missing {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  padding: 6px;
+  overflow-wrap: anywhere;
+  line-height: 1.25;
+}
+
 .history-thumb img {
   display: block;
   width: 100%;
@@ -239,20 +253,23 @@
 .history-main {
   grid-area: main;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px 12px;
   min-width: 0;
 }
 
 .history-meta {
-  min-width: 0;
+  flex: 1 1 8.5rem;
+  min-width: min(100%, 8.5rem);
 }
 
 .history-time {
   font-size: 14px;
   font-weight: 650;
   font-variant-numeric: tabular-nums;
+  overflow-wrap: break-word;
 }
 
 .history-size,
@@ -261,6 +278,7 @@
   font-size: 12px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
+  overflow-wrap: break-word;
 }
 
 .history-note {
@@ -308,7 +326,10 @@
 .history-actions {
   display: flex;
   flex: 0 0 auto;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
+  max-width: 100%;
   gap: 2px;
 }
 
@@ -359,6 +380,7 @@
   border-radius: var(--radius-control-sm);
   background: transparent;
   font-size: 13px;
+  white-space: nowrap;
 }
 
 .history-btn-edit {
