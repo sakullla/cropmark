@@ -2685,6 +2685,11 @@ mod tests {
             more_panel_buttons(on),
             vec![
                 SelectionAction::Tool(AnnotationTool::Number),
+                SelectionAction::Tool(AnnotationTool::Spotlight),
+                SelectionAction::Tool(AnnotationTool::Magnifier),
+                SelectionAction::Tool(AnnotationTool::Bubble),
+                SelectionAction::Tool(AnnotationTool::Sticker),
+                SelectionAction::Tool(AnnotationTool::Erase),
                 SelectionAction::Mode(ToolMode::Line),
                 SelectionAction::Mode(ToolMode::Pen),
                 SelectionAction::Mode(ToolMode::Blur),
@@ -2698,6 +2703,11 @@ mod tests {
             more_panel_buttons(off),
             vec![
                 SelectionAction::Tool(AnnotationTool::Number),
+                SelectionAction::Tool(AnnotationTool::Spotlight),
+                SelectionAction::Tool(AnnotationTool::Magnifier),
+                SelectionAction::Tool(AnnotationTool::Bubble),
+                SelectionAction::Tool(AnnotationTool::Sticker),
+                SelectionAction::Tool(AnnotationTool::Erase),
                 SelectionAction::Mode(ToolMode::Line),
                 SelectionAction::Mode(ToolMode::Pen),
                 SelectionAction::Mode(ToolMode::Blur),
