@@ -837,7 +837,11 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
     if (!active || !doc) {
       return;
     }
-    const lineWidth = Math.max(1, ctx.canvas.width / 900);
+    // 宿主可能把帧缩放后绘制(工作区覆盖层画布是帧的等比显示框):按当前
+    // 变换还原帧空间宽度,线宽与虚线随帧比例变化,预览与覆盖层视觉一致。
+    const transform = typeof ctx.getTransform === "function" ? ctx.getTransform() : null;
+    const unit = transform ? Math.max(Math.hypot(transform.a, transform.b), Number.EPSILON) : 1;
+    const lineWidth = Math.max(1, ctx.canvas.width / unit / 900);
     const selectedSet = new Set(selected);
     const plain: number[] = [];
     const searchHits: number[] = [];

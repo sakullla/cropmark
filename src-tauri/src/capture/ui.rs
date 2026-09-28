@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::{
-    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition, Position, Size,
-    WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize,
+    Position, Size, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 
 use super::buffer::{fit_display, Frame};
@@ -33,6 +33,9 @@ const TOAST_DURATION: Duration = Duration::from_millis(1800);
 /// 预览窗最小尺寸:保证工具条与画布基本可用(ADR-6)。
 const PREVIEW_MIN_WIDTH: f64 = 480.0;
 const PREVIEW_MIN_HEIGHT: f64 = 360.0;
+
+/// 覆盖层载荷 JPEG 的长边上限(等比缩放,只决定传输分辨率)。
+const OVERLAY_PAYLOAD_MAX_EDGE: u32 = 1280;
 
 /// 最近一次 toast 的来源:词条键+参数可按当前语言重新解析(语言切换后
 /// 前端重拉仍显示正确文案);不透明系统文案按原样保留。
@@ -233,7 +236,10 @@ pub fn overlay_payload(
             window
         })
         .collect();
-    let (width, height) = fit_display(monitor.logical_width, monitor.logical_height, 1280);
+    // 载荷按帧自身长边等比缩放:不再取显示器尺寸当目标做 resize_rgba,
+    // 否则非显示器尺寸定帧(裁剪/窗口/上次区域/长截图)会先被压成显示器比例。
+    // 前端按"帧→画布"映射呈现,图像与取字层共用同一几何。
+    let (width, height) = fit_display(frame.width, frame.height, OVERLAY_PAYLOAD_MAX_EDGE);
     let overlay = super::buffer::resize_rgba(frame, width, height)?;
     Ok(OverlayPayload {
         mode,
@@ -291,13 +297,17 @@ pub fn precreate(app: &AppHandle) {
 
 pub fn open_overlay(app: &AppHandle, monitor: &MonitorGeom) -> Result<WebviewWindow, CaptureError> {
     let window = ensure_window(app, OVERLAY, "overlay", 320.0, 240.0, false, true)?;
+    // 浮层精确覆盖显示器物理像素:尺寸按物理值下发,不再依赖"逻辑尺寸×
+    // dpr 恰好等于物理尺寸"的换算(多屏拼接的虚拟显示器 scale=1.0 在缩放
+    // 显示器上曾让画布与帧相差 dpr 倍)。前端按实际窗口几何计算显示框,
+    // 任何平台换算差异都只影响窗口大小,不再影响帧→画布坐标映射。
     let _ = window.set_position(Position::Physical(PhysicalPosition {
         x: monitor.physical_x,
         y: monitor.physical_y,
     }));
-    let _ = window.set_size(Size::Logical(LogicalSize {
-        width: monitor.logical_width.max(1) as f64,
-        height: monitor.logical_height.max(1) as f64,
+    let _ = window.set_size(Size::Physical(PhysicalSize {
+        width: monitor.physical_width.max(1),
+        height: monitor.physical_height.max(1),
     }));
     let _ = window.set_ignore_cursor_events(false);
     let _ = window.set_always_on_top(true);
@@ -907,6 +917,88 @@ mod tests {
         assert!(pos.y <= -10000.0);
         assert_eq!(size.width, 1.0);
         assert_eq!(size.height, 1.0);
+    }
+
+    fn solid_frame(width: u32, height: u32) -> Frame {
+        Frame {
+            width,
+            height,
+            rgba: vec![9; (width as usize) * (height as usize) * 4],
+            scale: 1.0,
+        }
+    }
+
+    fn decoded_jpeg(payload: &OverlayPayload) -> (u32, u32) {
+        let bytes = STANDARD
+            .decode(&payload.png_base64)
+            .expect("payload is base64");
+        let image = image::load_from_memory(&bytes).expect("payload decodes");
+        (image.width(), image.height())
+    }
+
+    #[test]
+    fn overlay_payload_keeps_a_region_frame_aspect() {
+        // 选区裁剪帧 400×200 落在 1920×1080 屏上:载荷保持 400×200,不再被
+        // 压成显示器比例;前端按帧的等比显示框呈现,取字层与图像共用该映射。
+        let frame = solid_frame(400, 200);
+        let monitor = MonitorGeom::from_physical("m", 0, 0, 1920, 1080, 1.0);
+        let payload = overlay_payload(
+            CaptureMode::Region,
+            &frame,
+            &monitor,
+            Vec::new(),
+            false,
+            OverlayCapabilities::hosted(),
+        )
+        .expect("payload builds");
+        assert_eq!(decoded_jpeg(&payload), (400, 200));
+        assert_eq!((payload.width, payload.height), (400, 200));
+        assert_eq!(
+            (payload.logical_width, payload.logical_height),
+            (1920, 1080)
+        );
+    }
+
+    #[test]
+    fn overlay_payload_fits_a_long_frame_by_its_own_long_edge() {
+        // 长截图 320×2000:按帧自身长边等比缩到 205×1280,而不是显示器 1280×720。
+        let frame = solid_frame(320, 2000);
+        let monitor = MonitorGeom::from_physical("m", 0, 0, 1280, 720, 1.0);
+        let payload = overlay_payload(
+            CaptureMode::LongCapture,
+            &frame,
+            &monitor,
+            Vec::new(),
+            false,
+            OverlayCapabilities::hosted(),
+        )
+        .expect("payload builds");
+        let (width, height) = decoded_jpeg(&payload);
+        assert_eq!(
+            (width, height),
+            fit_display(320, 2000, OVERLAY_PAYLOAD_MAX_EDGE)
+        );
+        assert_eq!((width, height), (205, 1280));
+        // 等比:载荷宽高比与帧一致(容一个像素的取整误差)。
+        let frame_ratio = 320.0 / 2000.0;
+        assert!((width as f64 / height as f64 - frame_ratio).abs() < 0.001);
+    }
+
+    #[test]
+    fn overlay_payload_caps_a_fullscreen_frame_transport_size() {
+        // 整屏帧仍按长边 1280 等比传输(与旧行为一致),不因显示几何修复变糊。
+        let frame = solid_frame(2560, 1440);
+        let monitor = MonitorGeom::from_physical("m", 0, 0, 2560, 1440, 1.0);
+        let payload = overlay_payload(
+            CaptureMode::Fullscreen,
+            &frame,
+            &monitor,
+            Vec::new(),
+            false,
+            OverlayCapabilities::hosted(),
+        )
+        .expect("payload builds");
+        assert_eq!(decoded_jpeg(&payload), (1280, 720));
     }
 
     #[test]

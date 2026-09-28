@@ -10,6 +10,7 @@ import {
 } from "../annotation";
 import { t, type CatalogKey } from "../i18n";
 import { mountOcrModel, type OcrModel } from "../ocr";
+import { canvasGeometry } from "./geometry";
 import "./overlay.css";
 
 type CaptureMode = "region" | "window" | "fullscreen";
@@ -364,15 +365,24 @@ export function mountOverlay(root: HTMLElement): () => void {
           : t("overlay.hint.region");
   };
 
+  // 画布几何由 `canvasGeometry` 唯一决定:fixed 工作区是帧的等比显示框,
+  // 其余模式铺满窗口。图像、标注层与取字三态共用这一张画布,帧→画布比例
+  // 恒为 canvas.width/frame.width,不再假定帧等于窗口或显示器物理尺寸。
   const fitCanvas = (): void => {
-    const rect = canvas.getBoundingClientRect();
-    const dpr = window.devicePixelRatio || 1;
-    const width = Math.max(1, Math.round(rect.width * dpr));
-    const height = Math.max(1, Math.round(rect.height * dpr));
-    if (canvas.width !== width || canvas.height !== height) {
-      canvas.width = width;
-      canvas.height = height;
+    const host = root.getBoundingClientRect();
+    const geometry = canvasGeometry(
+      { width: frame?.width ?? 0, height: frame?.height ?? 0, fixed: frame?.fixed === true },
+      { width: host.width, height: host.height },
+      window.devicePixelRatio || 1,
+    );
+    if (canvas.width !== geometry.width || canvas.height !== geometry.height) {
+      canvas.width = geometry.width;
+      canvas.height = geometry.height;
     }
+    canvas.style.width = `${geometry.cssWidth}px`;
+    canvas.style.height = `${geometry.cssHeight}px`;
+    canvas.style.left = `${geometry.left}px`;
+    canvas.style.top = `${geometry.top}px`;
   };
 
   const physicalPoint = (event: MouseEvent): { x: number; y: number } => {
@@ -398,18 +408,41 @@ export function mountOverlay(root: HTMLElement): () => void {
     };
   };
 
+  // R2:取字三态由共享模型按帧物理坐标绘制。工作区画布是帧的等比显示框
+  // (长图会小于帧),绘制前把画布变换到帧坐标空间,与图像、标注层共用同一
+  // frame→画布映射;共享模型按当前变换还原帧空间线宽,视觉比例与预览一致。
+  const paintOcr = (): void => {
+    if (ocrModel?.active !== true || !frame) {
+      return;
+    }
+    ctx.save();
+    ctx.setTransform(
+      canvas.width / Math.max(frame.width, 1),
+      0,
+      0,
+      canvas.height / Math.max(frame.height, 1),
+      0,
+      0,
+    );
+    ocrModel.paint(ctx);
+    ctx.restore();
+  };
+
   const draw = (): void => {
     if (!image || !frame || image.naturalWidth === 0) {
       return;
     }
     fitCanvas();
     ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = "rgba(12, 10, 9, 0.48)";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    if (frame.fixed !== true) {
+      // 选择阶段整帧压暗;工作区帧已定,压暗只会让工作区图像发灰。
+      ctx.fillStyle = "rgba(12, 10, 9, 0.48)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
     const selectionStroke = canvasToken(root, "--selection-stroke", FALLBACK_SELECTION);
     const selectionHalo = canvasToken(root, "--selection-halo", FALLBACK_SELECTION_HALO);
     const idleStroke = canvasToken(root, "--ink", FALLBACK_IDLE_STROKE);
-    if (frame.mode === "window") {
+    if (frame.mode === "window" && frame.fixed !== true) {
       // 窗口模式不挖洞(Snipaste 惯例):整帧均匀压暗,冻结帧中缺失的
       // 后开窗口不再呈现黑洞;悬停窗口画令牌描边、紧贴晕边和轻微填充,
       // 其余候选窗口用正文色描边加同一条晕边。
@@ -448,10 +481,6 @@ export function mountOverlay(root: HTMLElement): () => void {
             selectionHalo,
           );
         }
-      }
-      // R2:窗口模式冻结帧工作区同样绘制取字三态。
-      if (ocrModel?.active === true) {
-        ocrModel.paint(ctx);
       }
       return;
     }
@@ -512,16 +541,16 @@ export function mountOverlay(root: HTMLElement): () => void {
     );
     badge.hidden = false;
     badge.textContent = t("overlay.size_format", { width: crop.width, height: crop.height });
+    // 徽标挂在宿主上,画布在工作区是居中的显示框:位置要加画布左上角偏移。
+    const host = root.getBoundingClientRect();
     const rect = canvas.getBoundingClientRect();
-    const cssX = (crop.x / frame.width) * rect.width;
-    const cssY = (crop.y / frame.height) * rect.height;
+    const cssX = rect.left - host.left + (crop.x / frame.width) * rect.width;
+    const cssY = rect.top - host.top + (crop.y / frame.height) * rect.height;
     // 四边钳制:选区贴近屏幕任意边缘时徽标完整可见(常数沿用原右/上值)。
-    badge.style.left = `${clamp(cssX + 8, 4, Math.max(4, rect.width - 88))}px`;
-    badge.style.top = `${clamp(cssY - 28, 12, Math.max(12, rect.height - 36))}px`;
+    badge.style.left = `${clamp(cssX + 8, 4, Math.max(4, host.width - 88))}px`;
+    badge.style.top = `${clamp(cssY - 28, 12, Math.max(12, host.height - 36))}px`;
     // R2:取字三态画在最上层(已选 > 当前命中 > 搜索命中)。
-    if (ocrModel?.active === true) {
-      ocrModel.paint(ctx);
-    }
+    paintOcr();
   };
 
   const scheduleDraw = (): void => {
@@ -1124,6 +1153,11 @@ export function mountOverlay(root: HTMLElement): () => void {
       event.preventDefault();
       showNotice(t(NUDGE_NOTICE_KEY));
     }
+  });
+
+  // 预创建浮层先被停放,窗口尺寸在会话开始后才落定:尺寸变化后按新几何重排。
+  window.addEventListener("resize", () => {
+    scheduleDraw();
   });
 
   void listen("overlay-reload", () => {

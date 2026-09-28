@@ -21,11 +21,10 @@
   cursor: pointer;
 }
 
+/* 尺寸与位置由脚本按帧几何写入(canvasGeometry):选择阶段画布铺满窗口,
+   工作区画布是帧的等比显示框(居中,不超过 1:1 物理像素)。 */
 .overlay-root canvas {
   position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
   display: block;
 }
 

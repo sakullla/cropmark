@@ -1709,7 +1709,35 @@ pub fn confirm_window(app: &AppHandle, window_id: String) -> Result<(), CaptureE
     let cursor = cursor_mode(app);
     let (frame, outcome) = platform::capture_window_with_cursor(&window_id, cursor)?;
     note_cursor(app, outcome);
-    deliver_fixed_frame(app, frame, Vec::new(), None, None)
+    // 窗口截图的工作区覆盖层放在窗口所在显示器:落到指针屏会与用户刚选的
+    // 窗口分屏错位。列表里找不到该窗口(理论外数据)时退回会话显示器。
+    let monitor = window_monitor(app, &window_id);
+    deliver_fixed_frame(app, frame, Vec::new(), monitor, None)
+}
+
+/// 当前会话已列举窗口 `window_id` 所在显示器(窗口模式冻结时记录过窗口矩形)。
+fn window_monitor(app: &AppHandle, window_id: &str) -> Option<MonitorGeom> {
+    let listed = with_session(app, |session| {
+        session.as_ref().and_then(|current| {
+            current
+                .windows
+                .iter()
+                .find(|window| window.id == window_id)
+                .cloned()
+        })
+    })?;
+    monitor_for_window(&listed, &tauri_monitors(app))
+}
+
+/// 窗口矩形中心命中的显示器;不在任何屏上时不猜。
+fn monitor_for_window(window: &ListedWindow, monitors: &[MonitorGeom]) -> Option<MonitorGeom> {
+    let center_x = window
+        .x
+        .saturating_add(i32::try_from(window.width / 2).unwrap_or(0));
+    let center_y = window
+        .y
+        .saturating_add(i32::try_from(window.height / 2).unwrap_or(0));
+    monitor_at_physical(monitors, center_x, center_y).cloned()
 }
 
 /// 完成路径的结果摘要(供动作反馈区分剪贴板成败)。
@@ -2482,6 +2510,38 @@ mod tests {
             effective_fullscreen_target(true, FullscreenTarget::All),
             FullscreenTarget::All
         );
+    }
+
+    #[test]
+    fn window_capture_workspace_follows_the_window_monitor() {
+        // 窗口截图的工作区覆盖层放在窗口所在显示器,而不是指针落点屏。
+        let monitors = vec![
+            MonitorGeom::from_physical("left", 0, 0, 1920, 1080, 1.0),
+            MonitorGeom::from_physical("right", 1920, 0, 1280, 1024, 1.0),
+        ];
+        let window = |x: i32, y: i32| ListedWindow {
+            id: "w1".into(),
+            title: "Notes".into(),
+            pid: 7,
+            x,
+            y,
+            width: 400,
+            height: 300,
+            visible: true,
+            owner_is_self: false,
+        };
+        assert_eq!(
+            monitor_for_window(&window(2100, 400), &monitors)
+                .unwrap()
+                .id,
+            "right"
+        );
+        assert_eq!(
+            monitor_for_window(&window(100, 100), &monitors).unwrap().id,
+            "left"
+        );
+        // 窗口跨屏时按中心归类;不在任何屏上时不猜。
+        assert!(monitor_for_window(&window(-5000, -5000), &monitors).is_none());
     }
 
     #[test]
