@@ -29,27 +29,12 @@ export interface AutostartState {
   message: string | null;
 }
 
-/// R19:功能开关(与 Rust `FeatureToggles` 字段一一对应);默认值由后端给出,
+/// R9:采集普通选项(延时 + 包含鼠标指针 + 多屏全屏采集);默认值由后端给出,
 /// 前端只渲染并回写,不自行决定默认。
-export interface FeatureToggles {
-  longCapture: boolean;
-  pinEnhance: boolean;
-  pinRestore: boolean;
-  exportBeautify: boolean;
-  captureCursor: boolean;
-  historyTools: boolean;
-  clipboardPin: boolean;
-  multiMonitor: boolean;
-  ocrPanel: boolean;
-  onboarding: boolean;
-  filenameTemplate: boolean;
-}
-
-/// R19:标注工具逐项开关(工具 id → 是否启用);被合并工具不在表中。
-export type AnnotationToolToggles = Record<string, boolean>;
-
 export interface CaptureSettings {
   delaySeconds: number;
+  captureCursor: boolean;
+  multiMonitor: boolean;
 }
 
 export interface HistorySettings {
@@ -65,12 +50,21 @@ export interface BeautifyOptions {
   shadow: boolean;
 }
 
+/// R9:导出记忆与普通选项;`applyBeautify` / `useFilenameTemplate` 默认关闭,
+/// 与精简前同名开关一致。
 export interface ExportSettings {
   lastFormat: "png" | "jpeg" | "webp";
   lastDir: string | null;
   quality: "high" | "medium" | "low";
   beautify: BeautifyOptions;
   filenameTemplate: string;
+  applyBeautify: boolean;
+  useFilenameTemplate: boolean;
+}
+
+/// R9:贴图普通选项;默认关闭,与精简前同名开关一致。
+export interface PinSettings {
+  restore: boolean;
 }
 
 export interface TrayState {
@@ -80,102 +74,32 @@ export interface TrayState {
 
 export type LanguageSetting = "system" | "zh-CN" | "en";
 
+/// R9:设置页载荷不再包含功能开关与标注工具表;普通选项随所属结构返回。
 export interface UiSettings {
   hotkeys: Hotkeys;
   hotkeyErrors: HotkeyErrors;
   autostart: AutostartState;
   notice: string | null;
-  toggles: FeatureToggles;
-  annotationTools: AnnotationToolToggles;
   capture: CaptureSettings;
   history: HistorySettings;
   export: ExportSettings;
+  pin: PinSettings;
   tray: TrayState;
   language: string;
   resolvedLanguage: string;
 }
 
-type ToggleKey = keyof FeatureToggles;
+/// R8:左侧导航的四分类;每个分类对应右侧一个独立面板。
+type SettingsSection = "capture" | "output" | "general" | "about";
 
-const TOGGLE_ITEMS: Record<ToggleKey, { labelKey: CatalogKey; hintKey: CatalogKey }> = {
-  longCapture: {
-    labelKey: "settings.toggle.long_capture_label",
-    hintKey: "settings.toggle.long_capture_hint",
-  },
-  pinEnhance: {
-    labelKey: "settings.toggle.pin_enhance_label",
-    hintKey: "settings.toggle.pin_enhance_hint",
-  },
-  pinRestore: {
-    labelKey: "settings.toggle.pin_restore_label",
-    hintKey: "settings.toggle.pin_restore_hint",
-  },
-  exportBeautify: {
-    labelKey: "settings.toggle.export_beautify_label",
-    hintKey: "settings.toggle.export_beautify_hint",
-  },
-  captureCursor: {
-    labelKey: "settings.toggle.capture_cursor_label",
-    hintKey: "settings.toggle.capture_cursor_hint",
-  },
-  historyTools: {
-    labelKey: "settings.toggle.history_tools_label",
-    hintKey: "settings.toggle.history_tools_hint",
-  },
-  clipboardPin: {
-    labelKey: "settings.toggle.clipboard_pin_label",
-    hintKey: "settings.toggle.clipboard_pin_hint",
-  },
-  multiMonitor: {
-    labelKey: "settings.toggle.multi_monitor_label",
-    hintKey: "settings.toggle.multi_monitor_hint",
-  },
-  ocrPanel: {
-    labelKey: "settings.toggle.ocr_panel_label",
-    hintKey: "settings.toggle.ocr_panel_hint",
-  },
-  onboarding: {
-    labelKey: "settings.toggle.onboarding_label",
-    hintKey: "settings.toggle.onboarding_hint",
-  },
-  filenameTemplate: {
-    labelKey: "settings.toggle.filename_template_label",
-    hintKey: "settings.toggle.filename_template_hint",
-  },
+const SECTIONS: SettingsSection[] = ["capture", "output", "general", "about"];
+
+const SECTION_LABEL_KEY: Record<SettingsSection, CatalogKey> = {
+  capture: "settings.group.capture",
+  output: "settings.group.output",
+  general: "settings.group.general",
+  about: "settings.about.title",
 };
-
-// R19:新增功能开关集中在「通用 → 功能开关 → 功能」;采集组只放包含鼠标指针,
-// 记录与输出组只放保存文件名模板(与 R19 的归属一致)。
-const GENERAL_TOGGLES: ToggleKey[] = [
-  "longCapture",
-  "pinEnhance",
-  "pinRestore",
-  "exportBeautify",
-  "historyTools",
-  "clipboardPin",
-  "multiMonitor",
-  "ocrPanel",
-  "onboarding",
-];
-
-const CAPTURE_TOGGLES: ToggleKey[] = ["captureCursor"];
-const OUTPUT_TOGGLES: ToggleKey[] = ["filenameTemplate"];
-
-// R19:标注工具展示顺序;后端只回传开关表,顺序在这里固定。
-const TOOL_ITEMS: Array<{ id: string; labelKey: CatalogKey }> = [
-  { id: "rect", labelKey: "settings.tool.rect" },
-  { id: "ellipse", labelKey: "settings.tool.ellipse" },
-  { id: "arrow", labelKey: "settings.tool.arrow" },
-  { id: "text", labelKey: "settings.tool.text" },
-  { id: "number", labelKey: "settings.tool.number" },
-  { id: "highlighter", labelKey: "settings.tool.highlighter" },
-  { id: "mosaic", labelKey: "settings.tool.mosaic" },
-  { id: "spotlight", labelKey: "settings.tool.spotlight" },
-  { id: "magnifier", labelKey: "settings.tool.magnifier" },
-  { id: "bubble", labelKey: "settings.tool.bubble" },
-  { id: "sticker", labelKey: "settings.tool.sticker" },
-  { id: "erase", labelKey: "settings.tool.erase" },
-];
 
 const HOTKEY_LABEL_KEY: Record<HotkeySlot, CatalogKey> = {
   region: "settings.mode.region",
@@ -212,6 +136,8 @@ const BEAUTIFY_PRESETS: Array<{ id: string; labelKey: CatalogKey; swatch: string
 interface ExportAppearance {
   beautify: BeautifyOptions;
   filenameTemplate: string;
+  applyBeautify: boolean;
+  useFilenameTemplate: boolean;
 }
 
 function clampInt(value: number, min: number, max: number, fallback: number): number {
@@ -229,7 +155,13 @@ function hotkeyError(errors: HotkeyErrors, slot: HotkeySlot): string | null {
   return slot === "clipboardpin" ? errors.pinClipboard : errors[slot];
 }
 
+function switchMarkup(dataset: string, value: string, labelId: string, enabled: boolean): string {
+  return `<button type="button" class="switch" data-${dataset}="${value}" role="switch" aria-checked="${enabled ? "true" : "false"}" aria-labelledby="${labelId}"><span class="knob"></span></button>`;
+}
+
 export function mountSettings(root: HTMLElement): () => void {
+  // R8:宽版两栏布局;导航固定,右侧面板独立滚动。所有设置项与默认值保留,
+  // R9 移除的功能/工具开关不再出现,五项普通选项以开关行呈现。
   root.innerHTML = `
     <div class="shell">
       <header class="titlebar" data-tauri-drag-region>
@@ -239,242 +171,288 @@ export function mountSettings(root: HTMLElement): () => void {
         </div>
         <button type="button" class="icon-btn" data-action="close" data-i18n-aria-label="settings.close" aria-label="关闭">${icons.close}</button>
       </header>
-      <main class="content">
-        <p class="notice" role="alert" hidden></p>
-        <p class="notice tray-notice" data-tray-notice role="status" hidden></p>
-        <section class="card group" aria-labelledby="group-capture-title">
-          <h1 id="group-capture-title" data-i18n="settings.group.capture">采集</h1>
-          <section class="block" aria-labelledby="hotkeys-title">
-            <h2 id="hotkeys-title" data-i18n="settings.hotkeys.title">热键</h2>
-            <p class="hint" data-i18n="settings.hotkeys.hint">点击热键按钮后按下新组合，Esc 取消；改动立即生效。</p>
-            <div class="rows" data-hotkeys></div>
-          </section>
-          <section class="block" aria-labelledby="capture-title">
-            <h2 id="capture-title" data-i18n="settings.capture.title">截图</h2>
-            <div class="setting-row">
-              <div>
-                <div class="label" id="delay-label" data-i18n="settings.capture.delay_label">延时秒数</div>
-                <p class="hint" data-i18n="settings.capture.delay_hint">0–60 秒，热键与托盘截取按此倒计时；0 为立即截取。</p>
-              </div>
-              <input type="number" class="number-input" data-capture="delay" min="0" max="60" step="1" inputmode="numeric" aria-labelledby="delay-label" />
-            </div>
-            <p class="error" data-capture-error role="alert" hidden></p>
-            <div class="rows feature-rows" data-toggles="capture"></div>
-          </section>
-        </section>
-        <section class="card group" aria-labelledby="group-output-title">
-          <h1 id="group-output-title" data-i18n="settings.group.output">记录与输出</h1>
-          <section class="block" aria-labelledby="history-title">
-            <h2 id="history-title" data-i18n="settings.history.title">历史记录</h2>
-            <p class="hint" data-i18n="settings.history.hint">截图完成后在本机保留最近记录，可重新复制、贴图或删除；数据只保存在本机。</p>
-            <div class="setting-row">
-              <div>
-                <div class="label" id="history-enabled-label" data-i18n="settings.history.enabled_label">保留截图历史</div>
-                <p class="hint" data-i18n="settings.history.enabled_hint">关闭后不再新增记录；已有记录保留，可在历史窗口清空。</p>
-              </div>
-              <button type="button" class="switch" data-history="enabled" role="switch" aria-checked="true" aria-labelledby="history-enabled-label">
-                <span class="knob"></span>
-              </button>
-            </div>
-            <div class="setting-row">
-              <div>
-                <div class="label" id="history-limit-label" data-i18n="settings.history.limit_label">记录上限</div>
-                <p class="hint" data-i18n="settings.history.limit_hint">5–200 条，超出上限时自动淘汰最旧记录。</p>
-              </div>
-              <input type="number" class="number-input" data-history="limit" min="5" max="200" step="1" inputmode="numeric" aria-labelledby="history-limit-label" />
-            </div>
-            <p class="error" data-history-error role="alert" hidden></p>
-            <div class="setting-row">
-              <div>
-                <div class="label" id="history-open-label" data-i18n="settings.history.open_label">浏览历史</div>
-                <p class="hint" data-i18n="settings.history.open_hint">打开历史窗口，按时间查看缩略图并重新复制、贴图或删除。</p>
-              </div>
-              <button type="button" class="choice" data-action="open-history" aria-labelledby="history-open-label" data-i18n="settings.history.open_button">打开历史记录</button>
-            </div>
-          </section>
-          <section class="block" aria-labelledby="naming-title">
-            <h2 id="naming-title" data-i18n="settings.section.naming">保存与命名</h2>
-            <div class="rows feature-rows" data-toggles="output"></div>
-            <div class="setting-row">
-              <div>
-                <div class="label" id="template-label" data-i18n="settings.export.template_label">文件名模板</div>
-                <p class="hint" data-i18n="settings.export.template_hint">占位符：{date}、{time}、{datetime}、{mode}、{seq}。只影响本地保存的默认文件名。</p>
-              </div>
-            </div>
-            <input type="text" class="number-input" data-filename-template maxlength="180" spellcheck="false" aria-labelledby="template-label" data-i18n-placeholder="settings.export.template_placeholder" placeholder="例如 shot_{date}_{mode}_{seq}" />
-          </section>
-          <section class="block" aria-labelledby="beautify-title">
-            <h2 id="beautify-title" data-i18n="settings.export.beautify_title">导出美化</h2>
-            <p class="hint" data-i18n="settings.export.beautify_hint">开关在「通用 → 功能开关」。开启后预览、复制和保存使用背景、留白、圆角与阴影。</p>
-            <div class="setting-row">
-              <div>
-                <div class="label" id="preset-label" data-i18n="settings.export.preset_label">背景</div>
-              </div>
-            </div>
-            <div class="choices" data-beautify-presets role="radiogroup" aria-labelledby="preset-label"></div>
-            <div class="setting-row">
-              <div>
-                <div class="label" id="padding-label" data-i18n="settings.export.padding_label">留白</div>
-                <p class="hint" data-i18n="settings.export.padding_hint">0–240 像素，输出四周各加这么多留白。</p>
-              </div>
-              <input type="number" class="number-input" data-beautify-padding min="0" max="240" step="1" inputmode="numeric" aria-labelledby="padding-label" />
-            </div>
-            <div class="setting-row">
-              <div>
-                <div class="label" id="radius-label" data-i18n="settings.export.radius_label">圆角</div>
-                <p class="hint" data-i18n="settings.export.radius_hint">0–160 像素。阴影边距由圆角推导。</p>
-              </div>
-              <input type="number" class="number-input" data-beautify-radius min="0" max="160" step="1" inputmode="numeric" aria-labelledby="radius-label" />
-            </div>
-            <p class="error" data-export-error role="alert" hidden></p>
-            <div class="setting-row">
-              <div>
-                <div class="label" id="shadow-label" data-i18n="settings.export.shadow_label">阴影</div>
-                <p class="hint" data-i18n="settings.export.shadow_hint">在圆角外侧加一圈阴影。</p>
-              </div>
-              <button type="button" class="switch" data-beautify-shadow role="switch" aria-checked="true" aria-labelledby="shadow-label">
-                <span class="knob"></span>
-              </button>
-            </div>
-          </section>
-        </section>
-        <section class="card group" aria-labelledby="group-general-title">
-          <h1 id="group-general-title" data-i18n="settings.group.general">通用</h1>
-          <section class="block" aria-labelledby="language-title">
-            <h2 id="language-title" data-i18n="settings.language.title">语言</h2>
-            <p class="hint" data-i18n="settings.language.hint">切换后界面立即更新，无需重启；选择会跨会话保留。</p>
-            <div class="setting-row">
-              <div>
-                <div class="label" id="language-label" data-i18n="settings.language.label">界面语言</div>
-              </div>
-              <div class="choices" data-language role="radiogroup" aria-labelledby="language-label">
-                ${LANGUAGE_OPTIONS.map(
-                  ({ value, labelKey }) =>
-                    `<button type="button" class="choice" role="radio" data-language-value="${value}" aria-checked="false" data-i18n="${labelKey}">${t(labelKey)}</button>`,
-                ).join("")}
-              </div>
-            </div>
-          </section>
-          <section class="block" aria-labelledby="autostart-title">
-            <h2 id="autostart-title" data-i18n="settings.autostart.title">开机启动</h2>
-            <div class="autostart-row">
-              <div>
-                <div class="label" id="autostart-label" data-i18n="settings.autostart.label">登录时运行</div>
-                <p class="hint autostart-help"></p>
-              </div>
-              <button type="button" class="switch" data-action="autostart" role="switch" aria-checked="false" aria-labelledby="autostart-label">
-                <span class="knob"></span>
-              </button>
-            </div>
-          </section>
-          <section class="block" aria-labelledby="help-title">
-            <h2 id="help-title" data-i18n="settings.help.title">使用帮助</h2>
-            <div class="setting-row">
-              <div>
-                <div class="label" id="help-label" data-i18n="settings.help.label">快捷键与功能</div>
-                <p class="hint" data-i18n="settings.help.hint">查看与首次引导相同的说明，可随时再次打开。</p>
-              </div>
-              <button type="button" class="choice" data-action="open-guide" aria-labelledby="help-label" data-i18n="settings.help.button">打开</button>
-            </div>
-          </section>
-          <section class="block" aria-labelledby="logs-title">
-            <h2 id="logs-title" data-i18n="settings.logs.title">日志位置</h2>
-            <div class="setting-row">
-              <div>
-                <div class="label" id="logs-label" data-i18n="settings.logs.label">日志文件</div>
-                <p class="hint" data-i18n="settings.logs.hint">诊断记录写在本机该文件；同目录的 crash.log 只在发生 panic 时追加。日志不含图像、剪贴板内容或识别文字。</p>
-                <p class="hint" data-log-path>—</p>
-              </div>
-              <button type="button" class="choice" data-action="open-logs" aria-labelledby="logs-label" data-i18n="settings.logs.button">打开</button>
-            </div>
-          </section>
-          <section class="block" aria-labelledby="toggles-title">
-            <h2 id="toggles-title" data-i18n="settings.section.toggles">功能开关</h2>
-            <p class="hint" data-i18n="settings.section.toggles_hint">逐项控制功能入口；关闭只停用入口与新增行为，已有数据与已创建标注保留，关闭状态跨重启保持。</p>
-            <h3 class="subheading" data-i18n="settings.section.features">功能</h3>
-            <div class="rows feature-rows" data-toggles="general"></div>
-            <h3 class="subheading" data-i18n="settings.section.tools">标注工具</h3>
-            <p class="hint" data-i18n="settings.section.tools_hint">只控制工具栏与更多面板中的创建入口；撤销/重做、删除、复制/保存/贴图/取字与已创建标注始终可用。</p>
-            <div class="tool-grid" data-tools></div>
-          </section>
-        </section>
-        <section class="card about" aria-labelledby="about-title">
-          <h1 id="about-title" data-i18n="settings.about.title">关于</h1>
-          <span class="mark" aria-hidden="true"></span>
-          <p class="about-name">Cropmark</p>
-          <p class="hint" data-i18n="settings.about.hint">独立系统截图工具，界面与托盘只使用 Cropmark 名称与图标。</p>
-          <div class="setting-row">
-            <div>
-              <div class="label" id="about-version-label" data-i18n="settings.about.version_label">版本</div>
-            </div>
-            <span class="about-version" data-version>—</span>
+      <main class="settings-body">
+        <nav class="settings-nav" role="tablist" aria-orientation="vertical" data-settings-nav data-i18n-aria-label="settings.nav.aria_label" aria-label="设置分类">
+          ${SECTIONS.map(
+            (section, index) => `
+            <button type="button" class="settings-nav-item" role="tab" id="settings-tab-${section}" aria-controls="settings-panel-${section}" aria-selected="${index === 0 ? "true" : "false"}" tabindex="${index === 0 ? 0 : -1}" data-section="${section}" data-i18n="${SECTION_LABEL_KEY[section]}">${t(SECTION_LABEL_KEY[section])}</button>`,
+          ).join("")}
+        </nav>
+        <div class="settings-main">
+          <p class="notice" role="alert" hidden></p>
+          <p class="notice tray-notice" data-tray-notice role="status" hidden></p>
+          <div class="settings-panels" data-settings-panels>
+            <section class="settings-panel" role="tabpanel" id="settings-panel-capture" aria-labelledby="settings-tab-capture" data-panel="capture">
+              <section class="card" aria-labelledby="group-capture-title">
+                <h1 id="group-capture-title" data-i18n="settings.group.capture">采集</h1>
+                <section class="block" aria-labelledby="hotkeys-title">
+                  <h2 id="hotkeys-title" data-i18n="settings.hotkeys.title">热键</h2>
+                  <p class="hint" data-i18n="settings.hotkeys.hint">点击热键按钮后按下新组合，Esc 取消；改动立即生效。</p>
+                  <div class="rows" data-hotkeys></div>
+                </section>
+                <section class="block" aria-labelledby="capture-title">
+                  <h2 id="capture-title" data-i18n="settings.capture.title">截图</h2>
+                  <div class="setting-row">
+                    <div>
+                      <div class="label" id="delay-label" data-i18n="settings.capture.delay_label">延时秒数</div>
+                      <p class="hint" data-i18n="settings.capture.delay_hint">0–60 秒，热键与托盘截取按此倒计时；0 为立即截取。</p>
+                    </div>
+                    <input type="number" class="number-input" data-capture="delay" min="0" max="60" step="1" inputmode="numeric" aria-labelledby="delay-label" />
+                  </div>
+                  <p class="error" data-capture-error role="alert" hidden></p>
+                  <div class="setting-row">
+                    <div>
+                      <div class="label" id="capture-cursor-label" data-i18n="settings.capture.cursor_label">包含鼠标指针</div>
+                      <p class="hint" data-i18n="settings.capture.cursor_hint">采集瞬间把系统鼠标指针绘制进结果，仅当指针位于采集范围内；默认关闭。</p>
+                    </div>
+                    ${switchMarkup("capture-option", "captureCursor", "capture-cursor-label", false)}
+                  </div>
+                  <div class="setting-row">
+                    <div>
+                      <div class="label" id="multi-monitor-label" data-i18n="settings.capture.multi_monitor_label">多屏全屏采集</div>
+                      <p class="hint" data-i18n="settings.capture.multi_monitor_hint">全屏采集可选择指定显示器或全部显示器拼接；关闭后只抓指针所在屏。</p>
+                    </div>
+                    ${switchMarkup("capture-option", "multiMonitor", "multi-monitor-label", true)}
+                  </div>
+                </section>
+              </section>
+            </section>
+            <section class="settings-panel" role="tabpanel" id="settings-panel-output" aria-labelledby="settings-tab-output" data-panel="output" hidden>
+              <section class="card" aria-labelledby="group-output-title">
+                <h1 id="group-output-title" data-i18n="settings.group.output">记录与输出</h1>
+                <section class="block" aria-labelledby="history-title">
+                  <h2 id="history-title" data-i18n="settings.history.title">历史记录</h2>
+                  <p class="hint" data-i18n="settings.history.hint">截图完成后在本机保留最近记录，可重新复制、贴图或删除；数据只保存在本机。</p>
+                  <div class="setting-row">
+                    <div>
+                      <div class="label" id="history-enabled-label" data-i18n="settings.history.enabled_label">保留截图历史</div>
+                      <p class="hint" data-i18n="settings.history.enabled_hint">关闭后不再新增记录；已有记录保留，可在历史窗口清空。</p>
+                    </div>
+                    ${switchMarkup("history", "enabled", "history-enabled-label", true)}
+                  </div>
+                  <div class="setting-row">
+                    <div>
+                      <div class="label" id="history-limit-label" data-i18n="settings.history.limit_label">记录上限</div>
+                      <p class="hint" data-i18n="settings.history.limit_hint">5–200 条，超出上限时自动淘汰最旧记录。</p>
+                    </div>
+                    <input type="number" class="number-input" data-history="limit" min="5" max="200" step="1" inputmode="numeric" aria-labelledby="history-limit-label" />
+                  </div>
+                  <p class="error" data-history-error role="alert" hidden></p>
+                  <div class="setting-row">
+                    <div>
+                      <div class="label" id="history-open-label" data-i18n="settings.history.open_label">浏览历史</div>
+                      <p class="hint" data-i18n="settings.history.open_hint">打开历史窗口，按时间查看缩略图并重新复制、贴图或删除。</p>
+                    </div>
+                    <button type="button" class="choice" data-action="open-history" aria-labelledby="history-open-label" data-i18n="settings.history.open_button">打开历史记录</button>
+                  </div>
+                </section>
+                <section class="block" aria-labelledby="naming-title">
+                  <h2 id="naming-title" data-i18n="settings.section.naming">保存与命名</h2>
+                  <div class="setting-row">
+                    <div>
+                      <div class="label" id="apply-template-label" data-i18n="settings.export.apply_template_label">套用文件名模板</div>
+                      <p class="hint" data-i18n="settings.export.apply_template_hint">开启后保存对话框默认文件名按模板生成，非法字符自动替换，空模板回退 Cropmark 时间戳；关闭后使用现有默认命名。同名文件会另存为不覆盖的新路径。</p>
+                    </div>
+                    ${switchMarkup("export-option", "useFilenameTemplate", "apply-template-label", false)}
+                  </div>
+                  <div class="setting-row">
+                    <div>
+                      <div class="label" id="template-label" data-i18n="settings.export.template_label">文件名模板</div>
+                      <p class="hint" data-i18n="settings.export.template_hint">占位符：{date}、{time}、{datetime}、{mode}、{seq}。只影响本地保存的默认文件名。</p>
+                    </div>
+                  </div>
+                  <input type="text" class="number-input" data-filename-template maxlength="180" spellcheck="false" aria-labelledby="template-label" data-i18n-placeholder="settings.export.template_placeholder" placeholder="例如 shot_{date}_{mode}_{seq}" />
+                </section>
+                <section class="block" aria-labelledby="beautify-title">
+                  <h2 id="beautify-title" data-i18n="settings.export.beautify_title">导出美化</h2>
+                  <p class="hint" data-i18n="settings.export.beautify_hint">开启「套用美化」后，预览、复制和保存使用下面的背景、留白、圆角与阴影；标注仍画在原始画面上。</p>
+                  <div class="setting-row">
+                    <div>
+                      <div class="label" id="apply-beautify-label" data-i18n="settings.export.apply_label">套用美化</div>
+                    </div>
+                    ${switchMarkup("export-option", "applyBeautify", "apply-beautify-label", false)}
+                  </div>
+                  <div class="setting-row">
+                    <div>
+                      <div class="label" id="preset-label" data-i18n="settings.export.preset_label">背景</div>
+                    </div>
+                  </div>
+                  <div class="choices" data-beautify-presets role="radiogroup" aria-labelledby="preset-label"></div>
+                  <div class="setting-row">
+                    <div>
+                      <div class="label" id="padding-label" data-i18n="settings.export.padding_label">留白</div>
+                      <p class="hint" data-i18n="settings.export.padding_hint">0–240 像素，输出四周各加这么多留白。</p>
+                    </div>
+                    <input type="number" class="number-input" data-beautify-padding min="0" max="240" step="1" inputmode="numeric" aria-labelledby="padding-label" />
+                  </div>
+                  <div class="setting-row">
+                    <div>
+                      <div class="label" id="radius-label" data-i18n="settings.export.radius_label">圆角</div>
+                      <p class="hint" data-i18n="settings.export.radius_hint">0–160 像素。阴影边距由圆角推导。</p>
+                    </div>
+                    <input type="number" class="number-input" data-beautify-radius min="0" max="160" step="1" inputmode="numeric" aria-labelledby="radius-label" />
+                  </div>
+                  <p class="error" data-export-error role="alert" hidden></p>
+                  <div class="setting-row">
+                    <div>
+                      <div class="label" id="shadow-label" data-i18n="settings.export.shadow_label">阴影</div>
+                      <p class="hint" data-i18n="settings.export.shadow_hint">在圆角外侧加一圈阴影。</p>
+                    </div>
+                    ${switchMarkup("beautify-shadow", "shadow", "shadow-label", true)}
+                  </div>
+                </section>
+              </section>
+            </section>
+            <section class="settings-panel" role="tabpanel" id="settings-panel-general" aria-labelledby="settings-tab-general" data-panel="general" hidden>
+              <section class="card" aria-labelledby="group-general-title">
+                <h1 id="group-general-title" data-i18n="settings.group.general">通用</h1>
+                <section class="block" aria-labelledby="language-title">
+                  <h2 id="language-title" data-i18n="settings.language.title">语言</h2>
+                  <p class="hint" data-i18n="settings.language.hint">切换后界面立即更新，无需重启；选择会跨会话保留。</p>
+                  <div class="setting-row">
+                    <div>
+                      <div class="label" id="language-label" data-i18n="settings.language.label">界面语言</div>
+                    </div>
+                    <div class="choices" data-language role="radiogroup" aria-labelledby="language-label">
+                      ${LANGUAGE_OPTIONS.map(
+                        ({ value, labelKey }) =>
+                          `<button type="button" class="choice" role="radio" data-language-value="${value}" aria-checked="false" data-i18n="${labelKey}">${t(labelKey)}</button>`,
+                      ).join("")}
+                    </div>
+                  </div>
+                </section>
+                <section class="block" aria-labelledby="autostart-title">
+                  <h2 id="autostart-title" data-i18n="settings.autostart.title">开机启动</h2>
+                  <div class="autostart-row">
+                    <div>
+                      <div class="label" id="autostart-label" data-i18n="settings.autostart.label">登录时运行</div>
+                      <p class="hint autostart-help"></p>
+                    </div>
+                    <button type="button" class="switch" data-action="autostart" role="switch" aria-checked="false" aria-labelledby="autostart-label">
+                      <span class="knob"></span>
+                    </button>
+                  </div>
+                </section>
+                <section class="block" aria-labelledby="pin-title">
+                  <h2 id="pin-title" data-i18n="settings.pin.title">贴图</h2>
+                  <div class="setting-row">
+                    <div>
+                      <div class="label" id="pin-restore-label" data-i18n="settings.pin.restore_label">重启后恢复贴图</div>
+                      <p class="hint" data-i18n="settings.pin.restore_hint">重启后恢复仍存在的贴图及其位置、尺寸与变换；已关闭的贴图不会重现。</p>
+                    </div>
+                    ${switchMarkup("pin-option", "restore", "pin-restore-label", false)}
+                  </div>
+                </section>
+                <section class="block" aria-labelledby="help-title">
+                  <h2 id="help-title" data-i18n="settings.help.title">使用帮助</h2>
+                  <div class="setting-row">
+                    <div>
+                      <div class="label" id="help-label" data-i18n="settings.help.label">快捷键与功能</div>
+                      <p class="hint" data-i18n="settings.help.hint">查看与首次引导相同的说明，可随时再次打开。</p>
+                    </div>
+                    <button type="button" class="choice" data-action="open-guide" aria-labelledby="help-label" data-i18n="settings.help.button">打开</button>
+                  </div>
+                </section>
+                <section class="block" aria-labelledby="logs-title">
+                  <h2 id="logs-title" data-i18n="settings.logs.title">日志位置</h2>
+                  <div class="setting-row">
+                    <div>
+                      <div class="label" id="logs-label" data-i18n="settings.logs.label">日志文件</div>
+                      <p class="hint" data-i18n="settings.logs.hint">诊断记录写在本机该文件；同目录的 crash.log 只在发生 panic 时追加。日志不含图像、剪贴板内容或识别文字。</p>
+                      <p class="hint" data-log-path>—</p>
+                    </div>
+                    <button type="button" class="choice" data-action="open-logs" aria-labelledby="logs-label" data-i18n="settings.logs.button">打开</button>
+                  </div>
+                </section>
+              </section>
+            </section>
+            <section class="settings-panel" role="tabpanel" id="settings-panel-about" aria-labelledby="settings-tab-about" data-panel="about" hidden>
+              <section class="card about" aria-labelledby="about-title">
+                <h1 id="about-title" data-i18n="settings.about.title">关于</h1>
+                <span class="mark" aria-hidden="true"></span>
+                <p class="about-name">Cropmark</p>
+                <p class="hint" data-i18n="settings.about.hint">独立系统截图工具，界面与托盘只使用 Cropmark 名称与图标。</p>
+                <div class="setting-row">
+                  <div>
+                    <div class="label" id="about-version-label" data-i18n="settings.about.version_label">版本</div>
+                  </div>
+                  <span class="about-version" data-version>—</span>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <div class="label" id="quit-label" data-i18n="settings.about.quit_label">退出 Cropmark</div>
+                    <p class="hint" data-i18n="settings.about.quit_hint">结束应用并停止热键；有托盘时也可从托盘菜单退出。</p>
+                  </div>
+                  <button type="button" class="choice danger" data-action="quit" aria-labelledby="quit-label" data-i18n="settings.about.quit_button">退出</button>
+                </div>
+              </section>
+            </section>
           </div>
-          <div class="setting-row">
-            <div>
-              <div class="label" id="quit-label" data-i18n="settings.about.quit_label">退出 Cropmark</div>
-              <p class="hint" data-i18n="settings.about.quit_hint">结束应用并停止热键；有托盘时也可从托盘菜单退出。</p>
-            </div>
-            <button type="button" class="choice danger" data-action="quit" aria-labelledby="quit-label" data-i18n="settings.about.quit_button">退出</button>
-          </div>
-        </section>
+        </div>
       </main>
     </div>
   `;
 
   const noticeEl = root.querySelector(".notice");
+  const trayNoticeEl = root.querySelector("[data-tray-notice]");
+  const navRoot = root.querySelector("[data-settings-nav]");
+  const panelsRoot = root.querySelector("[data-settings-panels]");
   const hotkeyRoot = root.querySelector("[data-hotkeys]");
-  const captureToggleRoot = root.querySelector("[data-toggles=capture]");
-  const outputToggleRoot = root.querySelector("[data-toggles=output]");
-  const generalToggleRoot = root.querySelector("[data-toggles=general]");
-  const toolRoot = root.querySelector("[data-tools]");
   const helpEl = root.querySelector(".autostart-help");
   const switchEl = root.querySelector("[data-action=autostart]");
   const closeEl = root.querySelector("[data-action=close]");
   const delayEl = root.querySelector("[data-capture=delay]");
   const delayErrorEl = root.querySelector("[data-capture-error]");
+  const captureCursorEl = root.querySelector("[data-capture-option=captureCursor]");
+  const multiMonitorEl = root.querySelector("[data-capture-option=multiMonitor]");
   const historyEnabledEl = root.querySelector("[data-history=enabled]");
   const historyLimitEl = root.querySelector("[data-history=limit]");
   const historyErrorEl = root.querySelector("[data-history-error]");
   const historyOpenEl = root.querySelector("[data-action=open-history]");
-  const openGuideEl = root.querySelector("[data-action=open-guide]");
-  const logPathEl = root.querySelector("[data-log-path]");
-  const openLogsEl = root.querySelector("[data-action=open-logs]");
+  const useFilenameTemplateEl = root.querySelector("[data-export-option=useFilenameTemplate]");
   const templateEl = root.querySelector("[data-filename-template]");
+  const applyBeautifyEl = root.querySelector("[data-export-option=applyBeautify]");
   const presetRoot = root.querySelector("[data-beautify-presets]");
   const paddingEl = root.querySelector("[data-beautify-padding]");
   const radiusEl = root.querySelector("[data-beautify-radius]");
   const exportErrorEl = root.querySelector("[data-export-error]");
-  const shadowEl = root.querySelector("[data-beautify-shadow]");
-  const trayNoticeEl = root.querySelector("[data-tray-notice]");
+  const shadowEl = root.querySelector("[data-beautify-shadow=shadow]");
+  const pinRestoreEl = root.querySelector("[data-pin-option=restore]");
+  const openGuideEl = root.querySelector("[data-action=open-guide]");
+  const logPathEl = root.querySelector("[data-log-path]");
+  const openLogsEl = root.querySelector("[data-action=open-logs]");
   const quitEl = root.querySelector("[data-action=quit]");
   const languageRoot = root.querySelector("[data-language]");
   const versionEl = root.querySelector("[data-version]");
   if (
     !(noticeEl instanceof HTMLElement) ||
+    !(trayNoticeEl instanceof HTMLElement) ||
+    !(navRoot instanceof HTMLElement) ||
+    !(panelsRoot instanceof HTMLElement) ||
     !(hotkeyRoot instanceof HTMLElement) ||
-    !(captureToggleRoot instanceof HTMLElement) ||
-    !(outputToggleRoot instanceof HTMLElement) ||
-    !(generalToggleRoot instanceof HTMLElement) ||
-    !(toolRoot instanceof HTMLElement) ||
     !(helpEl instanceof HTMLElement) ||
     !(switchEl instanceof HTMLButtonElement) ||
     !(closeEl instanceof HTMLButtonElement) ||
     !(delayEl instanceof HTMLInputElement) ||
     !(delayErrorEl instanceof HTMLElement) ||
+    !(captureCursorEl instanceof HTMLButtonElement) ||
+    !(multiMonitorEl instanceof HTMLButtonElement) ||
     !(historyEnabledEl instanceof HTMLButtonElement) ||
     !(historyLimitEl instanceof HTMLInputElement) ||
     !(historyErrorEl instanceof HTMLElement) ||
     !(historyOpenEl instanceof HTMLButtonElement) ||
-    !(openGuideEl instanceof HTMLButtonElement) ||
-    !(logPathEl instanceof HTMLElement) ||
-    !(openLogsEl instanceof HTMLButtonElement) ||
+    !(useFilenameTemplateEl instanceof HTMLButtonElement) ||
     !(templateEl instanceof HTMLInputElement) ||
+    !(applyBeautifyEl instanceof HTMLButtonElement) ||
     !(presetRoot instanceof HTMLElement) ||
     !(paddingEl instanceof HTMLInputElement) ||
     !(radiusEl instanceof HTMLInputElement) ||
     !(exportErrorEl instanceof HTMLElement) ||
     !(shadowEl instanceof HTMLButtonElement) ||
-    !(trayNoticeEl instanceof HTMLElement) ||
+    !(pinRestoreEl instanceof HTMLButtonElement) ||
+    !(openGuideEl instanceof HTMLButtonElement) ||
+    !(logPathEl instanceof HTMLElement) ||
+    !(openLogsEl instanceof HTMLButtonElement) ||
     !(quitEl instanceof HTMLButtonElement) ||
     !(languageRoot instanceof HTMLElement)
   ) {
@@ -495,8 +473,11 @@ export function mountSettings(root: HTMLElement): () => void {
     });
   };
   let lastSettings: UiSettings | null = null;
+  let section: SettingsSection = "capture";
   let captureSettings: CaptureSettings = {
     delaySeconds: 0,
+    captureCursor: false,
+    multiMonitor: true,
   };
   let historySettings: HistorySettings = {
     enabled: true,
@@ -505,12 +486,65 @@ export function mountSettings(root: HTMLElement): () => void {
   let exportAppearance: ExportAppearance = {
     beautify: { ...DEFAULT_BEAUTIFY },
     filenameTemplate: "",
+    applyBeautify: false,
+    useFilenameTemplate: false,
   };
-  templateEl.style.width = "100%";
-  templateEl.style.marginTop = "8px";
-  templateEl.style.textAlign = "left";
-  presetRoot.style.flexWrap = "wrap";
-  presetRoot.style.marginTop = "8px";
+  let pinSettings: PinSettings = { restore: false };
+
+  const syncSwitch = (button: HTMLButtonElement, on: boolean): void => {
+    button.setAttribute("aria-checked", on ? "true" : "false");
+    button.classList.toggle("on", on);
+  };
+
+  // R8:导航与面板一一对应;切换只改选中态与 hidden,导航自身不随内容滚动。
+  const selectSection = (next: SettingsSection, moveFocus = false): void => {
+    section = next;
+    navRoot.querySelectorAll<HTMLButtonElement>("[data-section]").forEach((button) => {
+      const selected = button.dataset.section === next;
+      button.setAttribute("aria-selected", selected ? "true" : "false");
+      button.tabIndex = selected ? 0 : -1;
+      if (selected && moveFocus) {
+        button.focus();
+      }
+    });
+    panelsRoot.querySelectorAll<HTMLElement>("[data-panel]").forEach((panel) => {
+      panel.hidden = panel.dataset.panel !== next;
+    });
+    panelsRoot.scrollTop = 0;
+  };
+
+  navRoot.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) {
+      return;
+    }
+    const button = target.closest("[data-section]");
+    if (!(button instanceof HTMLButtonElement)) {
+      return;
+    }
+    const next = button.dataset.section as SettingsSection | undefined;
+    if (next && SECTIONS.includes(next) && next !== section) {
+      selectSection(next);
+    }
+  });
+  navRoot.addEventListener("keydown", (event) => {
+    const keys = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End"];
+    if (!keys.includes(event.key)) {
+      return;
+    }
+    event.preventDefault();
+    const currentIndex = SECTIONS.indexOf(section);
+    let nextIndex: number;
+    if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = SECTIONS.length - 1;
+    } else {
+      const delta = event.key === "ArrowUp" || event.key === "ArrowLeft" ? -1 : 1;
+      nextIndex = (currentIndex + delta + SECTIONS.length) % SECTIONS.length;
+    }
+    selectSection(SECTIONS[nextIndex], true);
+  });
 
   const showDelayError = (message: string): void => {
     delayErrorEl.hidden = false;
@@ -528,6 +562,8 @@ export function mountSettings(root: HTMLElement): () => void {
     captureSettings = capture;
     delayEl.value = String(capture.delaySeconds);
     clearDelayError();
+    syncSwitch(captureCursorEl, capture.captureCursor);
+    syncSwitch(multiMonitorEl, capture.multiMonitor);
   };
 
   const showHistoryError = (message: string): void => {
@@ -546,8 +582,12 @@ export function mountSettings(root: HTMLElement): () => void {
     historySettings = history;
     historyLimitEl.value = String(history.limit);
     clearHistoryError();
-    historyEnabledEl.setAttribute("aria-checked", history.enabled ? "true" : "false");
-    historyEnabledEl.classList.toggle("on", history.enabled);
+    syncSwitch(historyEnabledEl, history.enabled);
+  };
+
+  const renderPin = (pin: PinSettings): void => {
+    pinSettings = pin;
+    syncSwitch(pinRestoreEl, pin.restore);
   };
 
   const renderLanguage = (language: string): void => {
@@ -558,75 +598,6 @@ export function mountSettings(root: HTMLElement): () => void {
       // 漫游 tabindex:整组一个 Tab 停靠点,方向键在组内移动并选中。
       button.tabIndex = selected ? 0 : -1;
     });
-  };
-
-  const makeToggleButton = (
-    datasetKey: "toggleFeature" | "toggleTool",
-    value: string,
-    labelId: string,
-    enabled: boolean,
-  ): HTMLButtonElement => {
-    const toggle = document.createElement("button");
-    toggle.type = "button";
-    toggle.className = "switch";
-    toggle.dataset[datasetKey] = value;
-    toggle.setAttribute("role", "switch");
-    toggle.setAttribute("aria-checked", enabled ? "true" : "false");
-    toggle.setAttribute("aria-labelledby", labelId);
-    const knob = document.createElement("span");
-    knob.className = "knob";
-    toggle.appendChild(knob);
-    if (enabled) {
-      toggle.classList.add("on");
-    }
-    return toggle;
-  };
-
-  const renderFeatureToggles = (
-    container: HTMLElement,
-    keys: ToggleKey[],
-    toggles: FeatureToggles,
-  ): void => {
-    container.replaceChildren();
-    for (const key of keys) {
-      const meta = TOGGLE_ITEMS[key];
-      const enabled = toggles[key];
-      const row = document.createElement("div");
-      row.className = "feature-row";
-
-      const text = document.createElement("div");
-      const label = document.createElement("div");
-      label.className = "label";
-      label.id = `feature-label-${key}`;
-      label.textContent = t(meta.labelKey);
-      const hint = document.createElement("p");
-      hint.className = "hint";
-      hint.textContent = t(meta.hintKey);
-      text.append(label, hint);
-
-      row.append(text, makeToggleButton("toggleFeature", key, label.id, enabled));
-      container.append(row);
-    }
-  };
-
-  const renderToolToggles = (
-    container: HTMLElement,
-    tools: AnnotationToolToggles,
-  ): void => {
-    container.replaceChildren();
-    for (const item of TOOL_ITEMS) {
-      const enabled = tools[item.id] === true;
-      const row = document.createElement("div");
-      row.className = "tool-row";
-
-      const label = document.createElement("div");
-      label.className = "label";
-      label.id = `tool-label-${item.id}`;
-      label.textContent = t(item.labelKey);
-
-      row.append(label, makeToggleButton("toggleTool", item.id, label.id, enabled));
-      container.append(row);
-    }
   };
 
   const render = (settings: UiSettings): void => {
@@ -724,11 +695,6 @@ export function mountSettings(root: HTMLElement): () => void {
       hotkeyRoot.append(row);
     }
 
-    renderFeatureToggles(captureToggleRoot, CAPTURE_TOGGLES, settings.toggles);
-    renderFeatureToggles(outputToggleRoot, OUTPUT_TOGGLES, settings.toggles);
-    renderFeatureToggles(generalToggleRoot, GENERAL_TOGGLES, settings.toggles);
-    renderToolToggles(toolRoot, settings.annotationTools);
-
     switchEl.setAttribute("aria-checked", settings.autostart.enabled ? "true" : "false");
     switchEl.classList.toggle("on", settings.autostart.enabled);
     helpEl.textContent = autostartHelp(
@@ -740,6 +706,7 @@ export function mountSettings(root: HTMLElement): () => void {
     renderCapture(settings.capture);
     renderHistory(settings.history);
     renderExport(settings);
+    renderPin(settings.pin);
   };
 
   const showExportError = (message: string): void => {
@@ -767,24 +734,25 @@ export function mountSettings(root: HTMLElement): () => void {
         shadow: stored.shadow !== false,
       },
       filenameTemplate: settings.export?.filenameTemplate ?? "",
+      applyBeautify: settings.export?.applyBeautify === true,
+      useFilenameTemplate: settings.export?.useFilenameTemplate === true,
     };
-    const templateOn = settings.toggles.filenameTemplate;
-    const beautifyOn = settings.toggles.exportBeautify;
+    syncSwitch(applyBeautifyEl, exportAppearance.applyBeautify);
+    syncSwitch(useFilenameTemplateEl, exportAppearance.useFilenameTemplate);
     if (document.activeElement !== templateEl) {
       templateEl.value = exportAppearance.filenameTemplate;
     }
-    templateEl.disabled = !templateOn;
+    templateEl.disabled = !exportAppearance.useFilenameTemplate;
     if (document.activeElement !== paddingEl) {
       paddingEl.value = String(exportAppearance.beautify.padding);
     }
     if (document.activeElement !== radiusEl) {
       radiusEl.value = String(exportAppearance.beautify.radius);
     }
-    paddingEl.disabled = !beautifyOn;
-    radiusEl.disabled = !beautifyOn;
-    shadowEl.disabled = !beautifyOn;
-    shadowEl.setAttribute("aria-checked", exportAppearance.beautify.shadow ? "true" : "false");
-    shadowEl.classList.toggle("on", exportAppearance.beautify.shadow);
+    paddingEl.disabled = !exportAppearance.applyBeautify;
+    radiusEl.disabled = !exportAppearance.applyBeautify;
+    shadowEl.disabled = !exportAppearance.applyBeautify;
+    syncSwitch(shadowEl, exportAppearance.beautify.shadow);
     // 预设按钮每次重建:方向键漫游后焦点落在被替换节点上,这里记住并还原。
     const activePreset =
       document.activeElement instanceof HTMLButtonElement &&
@@ -799,7 +767,7 @@ export function mountSettings(root: HTMLElement): () => void {
       button.dataset.beautifyPreset = item.id;
       button.setAttribute("role", "radio");
       button.textContent = t(item.labelKey);
-      button.disabled = !beautifyOn;
+      button.disabled = !exportAppearance.applyBeautify;
       const selected = item.id === exportAppearance.beautify.preset;
       button.setAttribute("aria-checked", selected ? "true" : "false");
       button.classList.toggle("selected", selected);
@@ -898,6 +866,18 @@ export function mountSettings(root: HTMLElement): () => void {
     }
   };
 
+  const applyPin = async (next: PinSettings): Promise<void> => {
+    setApplying(true);
+    try {
+      const settings = await invoke<UiSettings>("set_pin_settings", { settings: next });
+      render(settings);
+    } catch (error) {
+      showInvokeError(error);
+    } finally {
+      setApplying(false);
+    }
+  };
+
   const applyLanguageSetting = async (language: LanguageSetting): Promise<void> => {
     setApplying(true);
     try {
@@ -938,6 +918,22 @@ export function mountSettings(root: HTMLElement): () => void {
       event.preventDefault();
       delayEl.blur();
     }
+  });
+
+  captureCursorEl.addEventListener("click", () => {
+    if (applying) {
+      return;
+    }
+    const next = captureCursorEl.getAttribute("aria-checked") !== "true";
+    void applyCapture({ ...captureSettings, captureCursor: next });
+  });
+
+  multiMonitorEl.addEventListener("click", () => {
+    if (applying) {
+      return;
+    }
+    const next = multiMonitorEl.getAttribute("aria-checked") !== "true";
+    void applyCapture({ ...captureSettings, multiMonitor: next });
   });
 
   const commitHistoryLimit = (): void => {
@@ -986,6 +982,14 @@ export function mountSettings(root: HTMLElement): () => void {
     void invoke("open_guide").catch(showInvokeError);
   });
 
+  pinRestoreEl.addEventListener("click", () => {
+    if (applying) {
+      return;
+    }
+    const next = pinRestoreEl.getAttribute("aria-checked") !== "true";
+    void applyPin({ ...pinSettings, restore: next });
+  });
+
   let logDirectory = "";
   logPathEl.style.overflowWrap = "anywhere";
   logPathEl.style.userSelect = "text";
@@ -1011,8 +1015,24 @@ export function mountSettings(root: HTMLElement): () => void {
     });
   });
 
+  applyBeautifyEl.addEventListener("click", () => {
+    if (applying) {
+      return;
+    }
+    const next = applyBeautifyEl.getAttribute("aria-checked") !== "true";
+    void applyAppearance({ ...exportAppearance, applyBeautify: next });
+  });
+
+  useFilenameTemplateEl.addEventListener("click", () => {
+    if (applying) {
+      return;
+    }
+    const next = useFilenameTemplateEl.getAttribute("aria-checked") !== "true";
+    void applyAppearance({ ...exportAppearance, useFilenameTemplate: next });
+  });
+
   const commitTemplate = (): void => {
-    if (!lastSettings?.toggles.filenameTemplate) {
+    if (!exportAppearance.useFilenameTemplate) {
       return;
     }
     const next = templateEl.value;
@@ -1034,7 +1054,7 @@ export function mountSettings(root: HTMLElement): () => void {
     max: number,
     errorKey: "settings.export.padding_error" | "settings.export.radius_error",
   ): void => {
-    if (!lastSettings?.toggles.exportBeautify) {
+    if (!exportAppearance.applyBeautify) {
       return;
     }
     const raw = input.value.trim();
@@ -1191,40 +1211,6 @@ export function mountSettings(root: HTMLElement): () => void {
       });
   });
 
-  // R19:功能开关与标注工具逐项开关共用一套点击委托;写回后按后端返回的
-  // 新设置整页重渲染,保证开关状态与实际持久化值一致。
-  root.addEventListener("click", (event) => {
-    const target = event.target;
-    if (!(target instanceof Element) || applying) {
-      return;
-    }
-    const featureButton = target.closest("[data-toggle-feature]");
-    if (featureButton instanceof HTMLButtonElement && featureButton.dataset.toggleFeature) {
-      const key = featureButton.dataset.toggleFeature as ToggleKey;
-      const next = featureButton.getAttribute("aria-checked") !== "true";
-      setApplying(true);
-      void invoke<UiSettings>("set_feature", { key, enabled: next })
-        .then(render)
-        .catch(showInvokeError)
-        .finally(() => {
-          setApplying(false);
-        });
-      return;
-    }
-    const toolButton = target.closest("[data-toggle-tool]");
-    if (toolButton instanceof HTMLButtonElement && toolButton.dataset.toggleTool) {
-      const tool = toolButton.dataset.toggleTool;
-      const next = toolButton.getAttribute("aria-checked") !== "true";
-      setApplying(true);
-      void invoke<UiSettings>("set_annotation_tool", { tool, enabled: next })
-        .then(render)
-        .catch(showInvokeError)
-        .finally(() => {
-          setApplying(false);
-        });
-    }
-  });
-
   hotkeyRoot.addEventListener("click", (event) => {
     const target = event.target;
     if (!(target instanceof Element) || applying) {
@@ -1278,7 +1264,7 @@ export function mountSettings(root: HTMLElement): () => void {
   void refresh();
 
   // 语言切换:静态标签由 main 的 applyTranslations 更新;这里先按当前状态
-  // 重渲染动态行(热键/开关/工具/历史/语言选项),再从后端重取一次
+  // 重渲染动态行(热键/开关/历史/语言选项/美化预设),再从后端重取一次
   // (热键错误/开机启动/无托盘提示由后端按新语言重新解析)。
   return () => {
     renderLogPath();

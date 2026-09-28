@@ -6,7 +6,6 @@ import {
   clampFloatingPanel,
   mountAnnotationEditor,
   readAnnotationDefaults,
-  readAnnotationToolToggles,
   resolveCanvasColor,
   type Annotation,
   type AnnotationEditor,
@@ -192,8 +191,7 @@ export function mountPreview(root: HTMLElement): () => void {
   let ocrStart: Point | null = null;
   let ocrCurrent: Point | null = null;
   let ocrGen = 0;
-  // R10:默认开启。关开关只藏面板,不改变按点/按框/全部复制。
-  let ocrPanelEnabled = true;
+  // R9:OCR 结果面板去门控常开;关闭面板只藏展示,不改变按点/按框/全部复制。
   // 用户关闭面板后清掉展示;下一次识别成功才再次出现,且只显示最新全文。
   let ocrPanelDismissed = true;
   let ocrPanelRendered = "";
@@ -214,8 +212,8 @@ export function mountPreview(root: HTMLElement): () => void {
   // 贴图再标注(R9):非空表示本会话由贴图进入,确认后写回该 label。
   let writebackLabel: string | null = null;
   let saveQuality: ExportQuality = "high";
-  // 美化只包在显示层外:画布位图保持冻帧尺寸,标注坐标不平移。
-  let exportBeautify = false;
+  // R9:美化只包在显示层外:画布位图保持冻帧尺寸,标注坐标不平移。
+  let applyBeautify = false;
   let beautifyOptions: BeautifyOptions = { ...DEFAULT_BEAUTIFY };
 
   const noteText = (source: {
@@ -315,7 +313,7 @@ export function mountPreview(root: HTMLElement): () => void {
   };
 
   const applyBeautifyChrome = (): void => {
-    if (!exportBeautify || !frame) {
+    if (!applyBeautify || !frame) {
       root.dataset.beautify = "off";
       outputEl.removeAttribute("style");
       canvas.style.width = "";
@@ -490,11 +488,10 @@ export function mountPreview(root: HTMLElement): () => void {
     ocrPanelText.querySelector("mark.is-current")?.scrollIntoView({ block: "nearest" });
   };
 
-  // 只替换全文,不把上一次结果拼到后面。关开关或未识别时面板不出现。
+  // 只替换全文,不把上一次结果拼到后面。未识别时面板不出现。
   const renderOcrPanel = (): void => {
     const text = ocrDoc?.fullText ?? "";
-    const visible =
-      ocrPanelEnabled && ocrActive && !ocrPanelDismissed && text.trim().length > 0;
+    const visible = ocrActive && !ocrPanelDismissed && text.trim().length > 0;
     if (!visible) {
       ocrPanel.hidden = true;
       return;
@@ -517,23 +514,14 @@ export function mountPreview(root: HTMLElement): () => void {
     window.getSelection()?.removeAllRanges();
   };
 
-  const refreshOcrPanelToggle = async (): Promise<void> => {
-    try {
-      const settings = await invoke<{ toggles?: { ocrPanel?: boolean } }>("get_ui_settings");
-      ocrPanelEnabled = settings?.toggles?.ocrPanel !== false;
-    } catch {
-      // 读取失败保持当前值;默认开启与精选设置一致。
-    }
-  };
-
   const applyOcrSearch = async (): Promise<void> => {
     const token = ++ocrSearchGen;
     const text = ocrDoc?.fullText ?? "";
     const query = ocrSearch.value;
-    if (!ocrPanelEnabled || ocrPanelDismissed || !text.trim() || !query.trim()) {
+    if (ocrPanelDismissed || !text.trim() || !query.trim()) {
       ocrMatches = [];
       ocrMatchIndex = 0;
-      if (text.trim() && !ocrPanelDismissed && ocrPanelEnabled) {
+      if (text.trim() && !ocrPanelDismissed) {
         paintPanelText(text, [], -1);
       }
       syncSearchStatus();
@@ -582,9 +570,7 @@ export function mountPreview(root: HTMLElement): () => void {
     if (!ocrDoc || ocrPanelDismissed) {
       void runOcr();
     } else {
-      void refreshOcrPanelToggle().then(() => {
-        renderOcrPanel();
-      });
+      renderOcrPanel();
       if (!note.classList.contains("is-error")) {
         setNoteKey("preview.note.ocr_hint");
       }
@@ -606,7 +592,6 @@ export function mountPreview(root: HTMLElement): () => void {
     setNoteKey("preview.note.ocr_running");
     redraw();
     try {
-      await refreshOcrPanelToggle();
       const doc = await invoke<OcrDocument>("recognize_preview");
       if (token !== ocrGen) {
         return;
@@ -1067,9 +1052,9 @@ export function mountPreview(root: HTMLElement): () => void {
     }
   });
 
-  // 跨会话记忆:加载时读后端保存的上次样式与质量档位(读写失败均静默回退
-  // 当前值)。R19:旧取字/贴图入口开关按常开语义移除,工具条按钮与 O 键
-  // 固定可用,不再随设置显隐。
+  // 跨会话记忆:加载时读后端保存的上次样式、质量档位与「套用美化」普通选项
+  // (读写失败均静默回退当前值)。R19:旧取字/贴图入口开关按常开语义移除,
+  // 工具条按钮与 O 键固定可用,不再随设置显隐。
   const loadStyleDefaults = (): void => {
     void invoke<{
       annotationDefaults?: {
@@ -1078,8 +1063,11 @@ export function mountPreview(root: HTMLElement): () => void {
         textSize?: number | null;
         numberStart?: number;
       };
-      export?: { quality?: ExportQuality; beautify?: Partial<BeautifyOptions> };
-      toggles?: { exportBeautify?: boolean; ocrPanel?: boolean };
+      export?: {
+        quality?: ExportQuality;
+        beautify?: Partial<BeautifyOptions>;
+        applyBeautify?: boolean;
+      };
     }>("get_ui_settings")
       .then((settings) => {
         const quality = settings?.export?.quality;
@@ -1088,10 +1076,7 @@ export function mountPreview(root: HTMLElement): () => void {
           syncSaveQuality();
         }
         readBeautify(settings);
-        ocrPanelEnabled = settings?.toggles?.ocrPanel !== false;
         editor?.setStyle(readAnnotationDefaults(settings));
-        // R5:逐项工具开关只控制创建入口;渲染/编辑/导出不随开关变化。
-        editor?.setToolToggles(readAnnotationToolToggles(settings));
         renderOcrPanel();
         redraw();
       })
@@ -1099,10 +1084,9 @@ export function mountPreview(root: HTMLElement): () => void {
   };
 
   const readBeautify = (settings: {
-    export?: { beautify?: Partial<BeautifyOptions> };
-    toggles?: { exportBeautify?: boolean };
+    export?: { beautify?: Partial<BeautifyOptions>; applyBeautify?: boolean };
   }): void => {
-    exportBeautify = settings.toggles?.exportBeautify === true;
+    applyBeautify = settings.export?.applyBeautify === true;
     const stored = settings.export?.beautify;
     beautifyOptions = {
       preset: typeof stored?.preset === "string" && stored.preset.length > 0 ? stored.preset : DEFAULT_BEAUTIFY.preset,
@@ -1114,8 +1098,7 @@ export function mountPreview(root: HTMLElement): () => void {
 
   const reloadAppearance = (): void => {
     void invoke<{
-      export?: { beautify?: Partial<BeautifyOptions> };
-      toggles?: { exportBeautify?: boolean };
+      export?: { beautify?: Partial<BeautifyOptions>; applyBeautify?: boolean };
     }>("get_ui_settings")
       .then((settings) => {
         readBeautify(settings);
@@ -1250,11 +1233,7 @@ export function mountPreview(root: HTMLElement): () => void {
     event.preventDefault();
     stepOcrMatch(event.shiftKey ? -1 : 1);
   });
-  window.addEventListener("focus", () => {
-    void refreshOcrPanelToggle().then(() => {
-      renderOcrPanel();
-    });
-  });
+  window.addEventListener("focus", renderOcrPanel);
 
   void listen("preview-reload", () => {
     // 新帧可能带入选区即时标注(R21):列表随帧在 loadPreview 中恢复,

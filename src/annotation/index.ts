@@ -8,7 +8,7 @@ import "./editor.css";
 // 与冻帧同尺寸,马赛克/高斯模糊/聚光灯/放大镜/擦除直接在该画布上取像素。
 // 宿主负责先画底图(预览为源画布,覆盖层为冻帧原图),覆盖层再按选区裁剪合成。
 //
-// R5:工具由 `TOOL_REGISTRY` 单一注册表驱动(创建方式/图标/i18n/快捷键/开关 id),
+// R5:工具由 `TOOL_REGISTRY` 单一注册表驱动(创建方式/图标/i18n/快捷键/登记 id),
 // 工具条、更多面板、样式面板模式与快捷键全部读取它;直线/画笔/模糊作为
 // 箭头/荧光笔/马赛克的模式提供,`Annotation` 仍保留全部既有变体用于渲染与
 // 历史再编辑。
@@ -126,11 +126,6 @@ export interface AnnotationHint {
 /** 样式持久化等错误:词条键或宿主错误串。 */
 export type AnnotationError = AnnotationHint | string;
 
-/** R5:逐项工具开关表(工具 id → 是否启用);缺失或非布尔值按启用处理。 */
-export interface AnnotationToolToggles {
-  [tool: string]: boolean;
-}
-
 export interface AnnotationEditorOptions {
   /** 定位基准(position:relative),文字编辑器与右键菜单挂在这里。 */
   root: HTMLElement;
@@ -147,8 +142,6 @@ export interface AnnotationEditorOptions {
   redraw: () => void;
   /** 是否接受标注输入;false 时画布事件/快捷键交给宿主(如取字工具)。 */
   isEditable?: () => boolean;
-  /** R5:逐项工具开关;null/undefined = 全部可用(设置读取失败时保守回退)。 */
-  toolToggles?: AnnotationToolToggles | null;
   /** 工具切换提示;null 表示恢复宿主默认提示。 */
   onToolHint?: (hint: AnnotationHint | null) => void;
   /** 宿主接管工具(如取字)时,手动清除工具条高亮。 */
@@ -183,8 +176,6 @@ export interface AnnotationEditor {
   cancelText: () => void;
   style: () => AnnotationStyle;
   setStyle: (next: Partial<AnnotationStyle>) => void;
-  /** R5:应用逐项工具开关;关闭的工具从工具条与更多面板移除,当前工具被关闭时切换。 */
-  setToolToggles: (toggles: AnnotationToolToggles | null) => void;
   refreshLabels: () => void;
 }
 
@@ -226,7 +217,7 @@ const MOSAIC_MODES: ToolModeDefinition[] = [
   { id: "blur", labelKey: "preview.tool.blur" },
 ];
 
-/** R5:标注工具单一注册表;工具条/更多面板/快捷键/模式与开关可见性都读这里。 */
+/** R5:标注工具单一注册表;工具条/更多面板/快捷键与模式都读这里。 */
 export const TOOL_REGISTRY: ToolDefinition[] = [
   {
     id: "arrow",
@@ -514,44 +505,12 @@ export function readAnnotationDefaults(settings: unknown): Partial<AnnotationSty
   return style;
 }
 
-/** R5:从设置对象读取逐项工具开关;缺失/非法结构返回 null(全部可用)。 */
-export function readAnnotationToolToggles(settings: unknown): AnnotationToolToggles | null {
-  const tools = (settings as { annotationTools?: Record<string, unknown> } | null)
-    ?.annotationTools;
-  if (!tools || typeof tools !== "object") {
-    return null;
-  }
-  const toggles: AnnotationToolToggles = {};
-  for (const [key, value] of Object.entries(tools)) {
-    if (typeof value === "boolean") {
-      toggles[key] = value;
-    }
-  }
-  return Object.keys(toggles).length > 0 ? toggles : null;
-}
-
 /** 读取跨会话标注样式(读取失败静默回退默认)。 */
 export async function loadAnnotationDefaults(): Promise<Partial<AnnotationStyle>> {
   try {
     return readAnnotationDefaults(await invoke<unknown>("get_ui_settings"));
   } catch {
     return {};
-  }
-}
-
-/** R5:一次读取样式默认与逐项工具开关(读取失败静默回退:默认样式 + 全部工具)。 */
-export async function loadAnnotationSettings(): Promise<{
-  style: Partial<AnnotationStyle>;
-  tools: AnnotationToolToggles | null;
-}> {
-  try {
-    const settings = await invoke<unknown>("get_ui_settings");
-    return {
-      style: readAnnotationDefaults(settings),
-      tools: readAnnotationToolToggles(settings),
-    };
-  } catch {
-    return { style: {}, tools: null };
   }
 }
 
@@ -1552,7 +1511,6 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
   const measureCtx = ctx;
 
   let tool: AnnotationTool = "arrow";
-  let toolToggles: AnnotationToolToggles | null = options.toolToggles ?? null;
   const activeModes: Partial<Record<AnnotationTool, ToolMode>> = {};
   let annotations: Annotation[] = [];
   const undoStack: EditAction[] = [];
@@ -1596,13 +1554,10 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
 
   const stickerSize = (): number => sizeBase(stickerSizeBase, 96, 24);
 
-  // R5:贴纸入口只在素材实际可用时出现;开关关闭的其它工具一律隐藏。
-  const isToolEnabled = (id: AnnotationTool): boolean => {
-    if (id === "sticker" && stickerImages.size === 0) {
-      return false;
-    }
-    return toolToggles === null || toolToggles[id] !== false;
-  };
+  // R9:标注工具去门控常开(与后端 ToolToggles::default 全开一致);
+  // 贴纸入口仍只在素材实际可用时出现。
+  const isToolEnabled = (id: AnnotationTool): boolean =>
+    id !== "sticker" || stickerImages.size > 0;
 
   const modeFor = (id: AnnotationTool): ToolMode | null => {
     const definition = TOOL_BY_ID.get(id);
@@ -2247,22 +2202,6 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     setAnnotations([]);
   };
 
-  const setToolToggles = (next: AnnotationToolToggles | null): void => {
-    toolToggles = next ?? null;
-    syncToolVisibility();
-    if (!isToolEnabled(tool)) {
-      // 当前工具被关闭:切到第一个可用工具;全部关闭时保留内部工具但不再创建。
-      const fallback = ANNOTATION_TOOLS.find((id) => isToolEnabled(id));
-      if (fallback) {
-        setTool(fallback);
-        return;
-      }
-    }
-    syncToolUi();
-    syncStylePanel();
-    redraw();
-  };
-
   stylePanel.addEventListener("click", (event) => {
     const button = event.target instanceof Element ? event.target.closest("button") : null;
     if (!(button instanceof HTMLButtonElement)) {
@@ -2428,7 +2367,7 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     }
     commitEditor();
     // 绘制工具下先做命中:命中已放标注则进入选中+拖移,否则清空选中并回到绘制起笔。
-    // 工具被逐项开关关闭时仍允许选中/移动/删除已有标注(编辑操作常驻)。
+    // 选中/移动/删除已有标注始终可用(编辑操作常驻)。
     const hit = hitAnnotation(point);
     if (hit !== -1) {
       event.preventDefault();
@@ -2937,7 +2876,6 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     cancelText: cancelEditor,
     style: () => ({ color: styleColor, width: styleWidth, textSize: styleTextBase, numberStart }),
     setStyle,
-    setToolToggles,
     refreshLabels,
   };
 }
@@ -2984,7 +2922,6 @@ function noopEditor(): AnnotationEditor {
     cancelText: () => undefined,
     style: () => ({ color: FALLBACK_STROKE, width: null, textSize: null, numberStart: MIN_NUMBER_START }),
     setStyle: () => undefined,
-    setToolToggles: () => undefined,
     refreshLabels: () => undefined,
   };
 }

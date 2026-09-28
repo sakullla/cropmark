@@ -839,6 +839,10 @@
     "zh-CN": "关闭",
     "en": "Close"
   },
+  "settings.nav.aria_label": {
+    "zh-CN": "设置分类",
+    "en": "Settings sections"
+  },
   "settings.hotkeys.title": {
     "zh-CN": "热键",
     "en": "Hotkeys"
@@ -903,33 +907,21 @@
     "zh-CN": "0–60 秒，热键与托盘截取按此倒计时；0 为立即截取。",
     "en": "0–60 seconds. Hotkey and tray captures count down by this delay; 0 captures immediately."
   },
-  "settings.capture.autocopy_label": {
-    "zh-CN": "完成后自动复制",
-    "en": "Copy automatically when done"
+  "settings.capture.cursor_label": {
+    "zh-CN": "包含鼠标指针",
+    "en": "Include mouse cursor"
   },
-  "settings.capture.autocopy_hint": {
-    "zh-CN": "关闭后截图完成不写入剪贴板；预览内手动复制不受影响。",
-    "en": "When off, finished captures are not written to the clipboard; manual copy in the preview is unaffected."
+  "settings.capture.cursor_hint": {
+    "zh-CN": "采集瞬间把系统鼠标指针绘制进结果，仅当指针位于采集范围内；默认关闭。",
+    "en": "Draws the system pointer into the capture, only when it is inside the captured area; off by default."
   },
-  "settings.capture.finish_label": {
-    "zh-CN": "完成后动作",
-    "en": "When finished"
+  "settings.capture.multi_monitor_label": {
+    "zh-CN": "多屏全屏采集",
+    "en": "Multi-monitor fullscreen"
   },
-  "settings.capture.finish_hint": {
-    "zh-CN": "静默完成会直接复制并给出提示，不打开预览；需自动复制开启。",
-    "en": "Quiet finish copies right away with a toast and does not open the preview; requires automatic copy."
-  },
-  "settings.capture.finish_preview": {
-    "zh-CN": "预览",
-    "en": "Preview"
-  },
-  "settings.capture.finish_quiet": {
-    "zh-CN": "静默完成",
-    "en": "Quiet"
-  },
-  "settings.capture.quiet_locked": {
-    "zh-CN": "需先开启完成后自动复制",
-    "en": "Enable automatic copy first"
+  "settings.capture.multi_monitor_hint": {
+    "zh-CN": "全屏采集可选择指定显示器或全部显示器拼接；关闭后只抓指针所在屏（现状）。",
+    "en": "Fullscreen capture can target a monitor or stitch all monitors; when off it keeps capturing the pointer's monitor only."
   },
   "settings.capture.delay_error": {
     "zh-CN": "延时需为 0–60 之间的整数秒。",
@@ -1035,117 +1027,29 @@
     "zh-CN": "通用",
     "en": "General"
   },
-  "settings.section.toggles": {
-    "zh-CN": "功能开关",
-    "en": "Feature switches"
-  },
-  "settings.section.toggles_hint": {
-    "zh-CN": "逐项控制功能入口；关闭只停用入口与新增行为，已有数据与已创建标注保留，关闭状态跨重启保持。",
-    "en": "Each entry can be turned off independently; disabling only hides the entry and stops new behavior, existing data and annotations are kept, and the state persists across restarts."
-  },
-  "settings.section.features": {
-    "zh-CN": "功能",
-    "en": "Features"
-  },
-  "settings.section.tools": {
-    "zh-CN": "标注工具",
-    "en": "Annotation tools"
-  },
-  "settings.section.tools_hint": {
-    "zh-CN": "只控制工具栏与更多面板中的创建入口；撤销/重做、删除、复制/保存/贴图/取字与已创建标注始终可用。",
-    "en": "Controls the creation entries in the toolbar and more panel only; undo/redo, delete, copy/save/pin/text and existing annotations always stay available."
-  },
   "settings.section.naming": {
     "zh-CN": "保存与命名",
     "en": "Saving & naming"
   },
-  "settings.toggle.long_capture_label": {
-    "zh-CN": "长截图",
-    "en": "Long capture"
+  "settings.pin.title": {
+    "zh-CN": "贴图",
+    "en": "Pins"
   },
-  "settings.toggle.long_capture_hint": {
-    "zh-CN": "采集入口出现「长截图」：框选后手动滚动并拼接为完整长图；关闭后入口不出现。",
-    "en": "Adds Long capture to the capture entries: select a region, scroll manually, and get one stitched image. When off the entry is hidden."
-  },
-  "settings.toggle.pin_enhance_label": {
-    "zh-CN": "贴图增强",
-    "en": "Pin enhancements"
-  },
-  "settings.toggle.pin_enhance_hint": {
-    "zh-CN": "贴图支持水平/垂直翻转、点击穿透与编组联动；关闭后保留基础贴图与已有贴图。",
-    "en": "Adds horizontal/vertical flip, click-through, and grouping to pins; when off, basic pins and existing pins remain."
-  },
-  "settings.toggle.pin_restore_label": {
+  "settings.pin.restore_label": {
     "zh-CN": "重启后恢复贴图",
     "en": "Restore pins on restart"
   },
-  "settings.toggle.pin_restore_hint": {
+  "settings.pin.restore_hint": {
     "zh-CN": "重启后恢复仍存在的贴图及其位置、尺寸与变换；已关闭的贴图不会重现。",
-    "en": "Restores the pins still open, including position, size, and transforms; pins you closed do not reappear."
+    "en": "Restores the pins still open on restart, including position, size, and transforms; pins you closed do not reappear."
   },
-  "settings.toggle.export_beautify_label": {
-    "zh-CN": "导出美化",
-    "en": "Export beautify"
+  "settings.export.apply_template_label": {
+    "zh-CN": "套用文件名模板",
+    "en": "Apply filename template"
   },
-  "settings.toggle.export_beautify_hint": {
-    "zh-CN": "预览可为复制与保存输出添加背景、留白、圆角与阴影；关闭后输出保持原始图像。",
-    "en": "Adds background, padding, rounded corners, and shadow to copied and saved output in the preview; when off, output stays the original image."
-  },
-  "settings.toggle.capture_cursor_label": {
-    "zh-CN": "包含鼠标指针",
-    "en": "Include mouse cursor"
-  },
-  "settings.toggle.capture_cursor_hint": {
-    "zh-CN": "采集瞬间把系统鼠标指针绘制进结果，仅当指针位于采集范围内；默认关闭。",
-    "en": "Draws the system pointer into the capture, only when it is inside the captured area; off by default."
-  },
-  "settings.toggle.history_tools_label": {
-    "zh-CN": "历史检索与收藏",
-    "en": "History search & favorites"
-  },
-  "settings.toggle.history_tools_hint": {
-    "zh-CN": "历史视图支持按时间/模式筛选、收藏置顶与备注检索；关闭后保持现有列表行为，数据保留。",
-    "en": "Adds time/mode filters, favorites on top, and note search to history; when off the existing list behavior stays and data is kept."
-  },
-  "settings.toggle.clipboard_pin_label": {
-    "zh-CN": "剪贴板贴图",
-    "en": "Pin from clipboard"
-  },
-  "settings.toggle.clipboard_pin_hint": {
-    "zh-CN": "托盘可从剪贴板创建图片、文本或色块贴图，并可绑定默认未设置的全局快捷键；关闭后入口与快捷键不生效。",
-    "en": "Creates pins from clipboard images, text, or color blocks in the tray, with an unbound global shortcut by default; when off both entry and shortcut stop working."
-  },
-  "settings.toggle.multi_monitor_label": {
-    "zh-CN": "多屏全屏采集",
-    "en": "Multi-monitor fullscreen"
-  },
-  "settings.toggle.multi_monitor_hint": {
-    "zh-CN": "全屏采集可选择指定显示器或全部显示器拼接；关闭后只抓指针所在屏（现状）。",
-    "en": "Fullscreen capture can target a monitor or stitch all monitors; when off it keeps capturing the pointer's monitor only."
-  },
-  "settings.toggle.ocr_panel_label": {
-    "zh-CN": "OCR 结果面板",
-    "en": "OCR result panel"
-  },
-  "settings.toggle.ocr_panel_hint": {
-    "zh-CN": "识别后显示完整文本面板，可搜索关键词并复制片段；关闭后识别与按点/按框/全部复制不变。",
-    "en": "Shows the full-text panel after recognition with keyword search and fragment copy; when off, recognition and point/rect/all copy stay unchanged."
-  },
-  "settings.toggle.onboarding_label": {
-    "zh-CN": "首次使用引导",
-    "en": "First-run guide"
-  },
-  "settings.toggle.onboarding_hint": {
-    "zh-CN": "全新配置首次启动自动显示一次引导，设置中可随时重开；关闭后不再自动出现。",
-    "en": "Shows the guide once on a fresh profile; it can be reopened from settings at any time. When off it never opens automatically."
-  },
-  "settings.toggle.filename_template_label": {
-    "zh-CN": "保存文件名模板",
-    "en": "Save filename template"
-  },
-  "settings.toggle.filename_template_hint": {
-    "zh-CN": "保存对话框默认文件名按模板生成，非法字符自动替换，空模板回退 Cropmark 时间戳；关闭后使用现有默认命名。同名文件会另存为不覆盖的新路径。",
-    "en": "Builds the default save filename from a template, replaces invalid characters, and falls back to the Cropmark timestamp when empty; when off the existing default naming is used. An existing name is saved to a new path instead of being overwritten."
+  "settings.export.apply_template_hint": {
+    "zh-CN": "开启后保存对话框默认文件名按模板生成，非法字符自动替换，空模板回退 Cropmark 时间戳；关闭后使用现有默认命名。同名文件会另存为不覆盖的新路径。",
+    "en": "When on, the default save filename is built from the template, invalid characters are replaced, and an empty template falls back to the Cropmark timestamp; when off the existing default naming is used. An existing name is saved to a new path instead of being overwritten."
   },
   "settings.export.template_label": {
     "zh-CN": "文件名模板",
@@ -1163,9 +1067,13 @@
     "zh-CN": "导出美化",
     "en": "Export beautify"
   },
+  "settings.export.apply_label": {
+    "zh-CN": "套用美化",
+    "en": "Apply beautify"
+  },
   "settings.export.beautify_hint": {
-    "zh-CN": "开关在「通用 → 功能开关」。开启后预览、复制和保存使用下面的背景、留白、圆角与阴影；标注仍画在原始画面上。格式与质量档位同样生效。",
-    "en": "The switch is under General → Feature switches. When on, preview, copy, and save use the background, padding, corners, and shadow below; annotations stay on the original frame. Format and quality still apply."
+    "zh-CN": "开启「套用美化」后，预览、复制和保存使用下面的背景、留白、圆角与阴影；标注仍画在原始画面上。格式与质量档位同样生效。",
+    "en": "When Apply beautify is on, preview, copy, and save use the background, padding, corners, and shadow below; annotations stay on the original frame. Format and quality still apply."
   },
   "settings.export.preset_label": {
     "zh-CN": "背景",
@@ -1226,54 +1134,6 @@
   "settings.export.preset.dusk": {
     "zh-CN": "暮色",
     "en": "Dusk"
-  },
-  "settings.tool.rect": {
-    "zh-CN": "矩形",
-    "en": "Rectangle"
-  },
-  "settings.tool.ellipse": {
-    "zh-CN": "椭圆",
-    "en": "Ellipse"
-  },
-  "settings.tool.arrow": {
-    "zh-CN": "箭头",
-    "en": "Arrow"
-  },
-  "settings.tool.text": {
-    "zh-CN": "文本",
-    "en": "Text"
-  },
-  "settings.tool.number": {
-    "zh-CN": "序号",
-    "en": "Number"
-  },
-  "settings.tool.highlighter": {
-    "zh-CN": "荧光笔",
-    "en": "Highlighter"
-  },
-  "settings.tool.mosaic": {
-    "zh-CN": "马赛克",
-    "en": "Mosaic"
-  },
-  "settings.tool.spotlight": {
-    "zh-CN": "聚光灯",
-    "en": "Spotlight"
-  },
-  "settings.tool.magnifier": {
-    "zh-CN": "标注放大镜",
-    "en": "Annotation magnifier"
-  },
-  "settings.tool.bubble": {
-    "zh-CN": "对话气泡",
-    "en": "Speech bubble"
-  },
-  "settings.tool.sticker": {
-    "zh-CN": "贴纸",
-    "en": "Sticker"
-  },
-  "settings.tool.erase": {
-    "zh-CN": "内容擦除",
-    "en": "Erase content"
   },
   "settings.about.title": {
     "zh-CN": "关于",
