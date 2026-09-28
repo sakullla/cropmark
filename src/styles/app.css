@@ -278,6 +278,16 @@ html[data-view="overlay"] body {
   letter-spacing: 0.02em;
 }
 
+/* 设置与帮助的标题栏是窗口装饰,名称让给下方主卡片。 */
+html[data-view="settings"] .titlebar .name,
+html[data-view="guide"] .titlebar .name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--muted);
+}
+
 .icon-btn,
 .hotkey-btn,
 .choice,
@@ -326,11 +336,25 @@ html[data-view="overlay"] body {
   overflow: auto;
 }
 
+html[data-view="settings"] .content,
+html[data-view="guide"] .content {
+  padding: 16px;
+  gap: 16px;
+  min-width: 0;
+}
+
 .card {
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: var(--radius-panel);
   padding: 16px 16px 18px;
+}
+
+html[data-view="settings"] .card,
+html[data-view="guide"] .card {
+  padding: 16px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 h1 {
@@ -342,12 +366,29 @@ h1 {
   color: var(--muted);
 }
 
+/* 分组标题是主区块入口,不用小号大写字距;字号仍大于节标题与说明。 */
+html[data-view="settings"] .card > h1 {
+  margin: 0 0 12px;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.35;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
 /* R19:一级分组内的小节用发丝线分隔,分组标题(h1)与节标题(h2)形成层级,
    不再以多个同级卡片平铺。 */
 .block + .block {
   margin-top: 16px;
-  padding-top: 14px;
+  padding-top: 16px;
   border-top: 1px solid var(--line);
+}
+
+.block {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .block h2 {
@@ -356,15 +397,17 @@ h1 {
   font-weight: 650;
   line-height: 1.35;
   color: var(--ink);
+  overflow-wrap: anywhere;
 }
 
 .subheading {
-  margin: 16px 0 0;
+  margin: 16px 0 4px;
   font-size: 12px;
   font-weight: 650;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--muted);
+  overflow-wrap: anywhere;
 }
 
 .hint {
@@ -373,6 +416,12 @@ h1 {
   font-size: 13px;
   line-height: 1.5;
   overflow-wrap: anywhere;
+}
+
+/* 设置里的说明弱于控件标签;帮助正文仍用 13px,只有开篇说明再弱一档。 */
+html[data-view="settings"] .hint {
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .notice,
@@ -396,15 +445,18 @@ h1 {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  margin-top: 14px;
+  margin-top: 12px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .hotkey-row {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, max-content);
   grid-template-areas: "label btn" "error error";
-  gap: 6px 12px;
+  gap: 4px 12px;
   align-items: center;
+  min-width: 0;
 }
 
 .label {
@@ -418,7 +470,9 @@ h1 {
 
 .hotkey-btn {
   grid-area: btn;
-  min-width: 148px;
+  width: 148px;
+  max-width: 100%;
+  min-width: 24px;
   border: 1px solid var(--line);
   background: var(--control-fill);
   color: var(--ink);
@@ -428,8 +482,19 @@ h1 {
   font-size: 13px;
   line-height: 1.3;
   font-variant-numeric: tabular-nums;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: center;
   cursor: pointer;
   transition: var(--control-transition);
+}
+
+/* 清除按钮由脚本写成行内 flex;这里只补换行,避免长热键把卡片撑出。 */
+.hotkey-row > div {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .hotkey-btn:hover,
@@ -459,54 +524,81 @@ h1 {
 
 .autostart-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
-  margin-top: 8px;
+  gap: 12px;
+  margin-top: 12px;
+  min-width: 0;
 }
 
 .feature-rows {
-  margin-top: 14px;
-  gap: 14px;
+  margin-top: 12px;
+  gap: 12px;
 }
 
 .feature-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
+  gap: 12px;
+  min-width: 0;
 }
 
-.feature-row .hint {
-  margin-top: 2px;
+.feature-row .hint,
+.setting-row .hint,
+.autostart-row .hint {
+  margin-top: 4px;
 }
 
 /* R19:标注工具逐项开关数量较多,两列网格保持开关与名称可读。 */
 .tool-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px 12px;
-  margin-top: 10px;
+  gap: 12px;
+  margin-top: 12px;
+  min-width: 0;
 }
 
 .tool-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 12px;
+  min-width: 0;
 }
 
 .tool-row .label {
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 14px;
   font-weight: 600;
 }
 
 .setting-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
-  margin-top: 14px;
+  gap: 12px;
+  margin-top: 12px;
+  min-width: 0;
+}
+
+.setting-row > :first-child:not(:last-child),
+.feature-row > :first-child:not(:last-child),
+.autostart-row > :first-child:not(:last-child) {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.setting-row > :last-child:not(:first-child),
+.feature-row > :last-child:not(:first-child),
+.autostart-row > :last-child:not(:first-child) {
+  flex-shrink: 0;
+  max-width: 100%;
+  margin-left: auto;
 }
 
 .setting-row .label {
@@ -514,12 +606,9 @@ h1 {
   font-weight: 650;
 }
 
-.setting-row .hint {
-  margin-top: 2px;
-}
-
 .number-input {
   width: 84px;
+  max-width: 100%;
   flex: 0 0 auto;
   border: 1px solid var(--line);
   border-radius: var(--radius-control);
@@ -534,6 +623,15 @@ h1 {
   transition: var(--control-transition);
 }
 
+/* 模板框在 settings/index.ts 写了行内宽度和 8px 上边距,这里收进 12px 节奏,避免 84px 数字框裁切长模板。 */
+input[data-filename-template] {
+  display: block;
+  width: 100% !important;
+  max-width: 100%;
+  margin-top: 12px !important;
+  text-align: left !important;
+}
+
 .number-input:hover:not(:disabled) {
   border-color: var(--control-hover-border);
   background: var(--control-hover-bg);
@@ -545,17 +643,32 @@ h1 {
 
 .choices {
   display: flex;
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
   gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.block > .choices {
+  margin-top: 12px;
+}
+
+.setting-row .choices {
+  justify-content: flex-end;
 }
 
 .choice {
+  max-width: 100%;
   border: 1px solid var(--line);
   border-radius: var(--radius-pill);
   padding: 7px 12px;
   font: inherit;
   font-size: 13px;
   line-height: 1.3;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: center;
   color: var(--ink);
   background: var(--control-fill);
   cursor: pointer;
@@ -645,6 +758,7 @@ h1 {
   margin: 4px 0 6px;
   font-size: 18px;
   font-weight: 700;
+  overflow-wrap: anywhere;
 }
 
 .about-version {
@@ -655,10 +769,42 @@ h1 {
   font-variant-numeric: tabular-nums;
 }
 
-.card.about .mark {
-  width: 36px;
-  height: 36px;
-  margin-bottom: 4px;
+/* 关于里的图标是装饰,名称与分组标题先出现;图标沿用标题栏的 26px。 */
+.card.about {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  column-gap: 12px;
+  align-items: center;
+}
+
+.card.about > h1,
+.card.about > .hint,
+.card.about > .setting-row {
+  grid-column: 1 / -1;
+}
+
+.card.about > h1 {
+  grid-row: 1;
+}
+
+.card.about > .mark {
+  grid-column: 1;
+  grid-row: 2;
+  width: 26px;
+  height: 26px;
+  margin: 0;
+}
+
+.card.about > .about-name {
+  grid-column: 2;
+  grid-row: 2;
+  margin: 0;
+  min-width: 0;
+}
+
+.card.about > .hint {
+  grid-row: 3;
+  margin-top: 12px;
 }
 
 /* 自绘提示:约 160ms 出现,比系统 title(~500ms)更容易在小图标上看到。 */
