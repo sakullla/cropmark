@@ -8,6 +8,7 @@ html[data-view="scroll"] #app {
 
 .scroll-root {
   height: 100%;
+  min-height: 0;
   padding: 6px;
   color: var(--ink);
   font-family: inherit;
@@ -20,6 +21,7 @@ html[data-view="scroll"] #app {
   flex-direction: column;
   gap: 6px;
   height: 100%;
+  min-height: 0;
   padding: var(--panel-padding);
   overflow-y: auto;
   background: var(--panel);
@@ -30,9 +32,12 @@ html[data-view="scroll"] #app {
 
 .scroll-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   justify-content: space-between;
   gap: 8px;
+  flex-shrink: 0;
+  background: var(--panel);
 }
 
 .scroll-title {
@@ -41,15 +46,22 @@ html[data-view="scroll"] #app {
 }
 
 .scroll-size {
+  min-width: 0;
   color: var(--muted);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
 }
 
+/* 状态贴在卡片实底上，不随完成/取消自动淡出。 */
 .scroll-status {
+  flex-shrink: 0;
   margin: 0;
   min-height: 32px;
-  font-size: 12px;
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 650;
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
@@ -59,21 +71,33 @@ html[data-view="scroll"] #app {
 }
 
 .scroll-hint {
+  flex-shrink: 0;
   margin: 0;
+  background: var(--panel);
   color: var(--muted);
   font-size: 11px;
   line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .scroll-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
   display: flex;
+  flex-shrink: 0;
   gap: 8px;
   margin-top: auto;
+  background: var(--panel);
+  /* 盖住卡片 gap，滚动中的状态不会穿进按钮。 */
+  box-shadow: 0 -6px 0 var(--panel);
 }
 
 .scroll-actions button {
-  flex: 1;
+  flex: 1 1 auto;
   height: 30px;
+  min-width: 24px;
+  min-height: 30px;
   color: var(--ink);
   font-size: 12px;
   background: var(--control-fill);

@@ -34,11 +34,14 @@
   top: 16px;
   left: 0;
   right: 0;
-  width: fit-content;
+  /* 定宽后长提示才能在屏内换行；透明空隙不挡选区。 */
+  width: calc(100% - 32px);
   margin-inline: auto;
   z-index: 3;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: center;
   gap: 8px;
   pointer-events: auto;
 }
@@ -50,6 +53,7 @@
 }
 
 .overlay-hint {
+  max-width: 100%;
   padding: 8px 14px;
   border-radius: var(--radius-pill);
   background: var(--panel);
@@ -57,6 +61,10 @@
   box-shadow: var(--shadow);
   color: var(--ink);
   font-size: 13px;
+  font-weight: 650;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  text-align: center;
 }
 
 .overlay-cancel,
@@ -90,7 +98,10 @@
 
 .overlay-actions {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
   gap: 6px;
+  max-width: 100%;
   pointer-events: auto;
 }
 
@@ -98,6 +109,7 @@
   cursor: pointer;
   border: 1px solid transparent;
   border-radius: var(--radius-pill);
+  min-width: 24px;
   min-height: 24px;
   padding: 8px 12px;
   background: var(--accent);
@@ -286,6 +298,7 @@
   color: var(--ink);
   font-size: 13px;
   line-height: 1.45;
+  overflow-wrap: anywhere;
   box-shadow: var(--shadow);
   pointer-events: none;
 }
@@ -296,13 +309,18 @@
   display: none;
 }
 
+/* left/top 由脚本按选区写入；必须脱离文档流，否则会被铺满的画布盖住。 */
 .size-badge {
+  position: absolute;
+  z-index: 3;
+  max-width: calc(100% - 8px);
   padding: 4px 8px;
   border-radius: var(--radius-control-sm);
   background: var(--accent);
   color: var(--on-accent);
   font-size: 12px;
   font-weight: 650;
+  overflow-wrap: anywhere;
 }
 
 .window-list {
@@ -364,6 +382,7 @@
   color: var(--muted);
   font-size: 12px;
   line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .delay-root {
@@ -379,15 +398,32 @@
   border: 1px solid var(--line);
   border-radius: var(--radius-window);
   box-shadow: var(--shadow);
+  color: var(--ink);
+  min-height: 0;
+  /* 窗高固定，超出的说明在实底内滚动，不把关闭/取消挤出窗口。 */
+  overflow: hidden;
 }
 
 .delay-root {
-  padding: 14px 16px;
+  padding: 10px 12px;
+}
+
+.delay-root > div {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  justify-content: center;
+  align-self: stretch;
+  min-width: 0;
+  min-height: 0;
 }
 
 .delay-root .count {
+  flex-shrink: 0;
   font-size: 18px;
   font-weight: 700;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
 }
 
 .delay-root .hint,
@@ -395,10 +431,18 @@
   margin: 4px 0 0;
   color: var(--muted);
   font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.delay-root .hint {
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .delay-root button,
 .error-root button {
+  flex-shrink: 0;
   border: 0;
   border-radius: var(--radius-pill);
   min-width: 24px;
@@ -431,16 +475,25 @@
   gap: 12px;
 }
 
+.error-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+
 .error-body h1 {
   margin: 0 0 8px;
   font-size: 16px;
   text-transform: none;
   letter-spacing: 0;
   color: var(--ink);
+  overflow-wrap: anywhere;
 }
 
 .error-body p {
   margin: 0;
+  color: var(--ink);
   font-size: 13px;
   line-height: 1.45;
   overflow-wrap: anywhere;
