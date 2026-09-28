@@ -850,13 +850,10 @@ fn pointer_scale(app: &AppHandle) -> f64 {
         .unwrap_or(1.0)
 }
 
-/// R8 入口:从剪贴板创建贴图。功能开关关闭时静默失效(托盘入口同步消失);
+/// R8 入口:从剪贴板创建贴图。R9 去门控常开,入口与快捷键始终生效;
 /// 读取/排版在阻塞线程完成,建窗与预览贴图走同一条异步路径;失败/空内容
 /// 只提示不建窗。
 pub fn pin_from_clipboard(app: &AppHandle) {
-    if !settings::current_toggles(app).clipboard_pin {
-        return;
-    }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let scale = pointer_scale(&app);
@@ -917,15 +914,7 @@ fn persist_slot() -> &'static (Mutex<PersistState>, Condvar) {
     SLOT.get_or_init(|| (Mutex::new(PersistState::default()), Condvar::new()))
 }
 
-/// 功能开关关闭时不写盘:增强行为随开关消失,保存语义不残留。
-fn persistence_enabled(app: &AppHandle) -> bool {
-    settings::current_toggles(app).pin_enhance
-}
-
 fn schedule_persist(app: &AppHandle) {
-    if !persistence_enabled(app) {
-        return;
-    }
     let (lock, cv) = persist_slot();
     {
         let mut state = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1021,9 +1010,6 @@ fn persist_now(app: &AppHandle) {
 }
 
 fn write_snapshot(app: &AppHandle) {
-    if !persistence_enabled(app) {
-        return;
-    }
     let dir = pin_store::dir(app);
     // 索引与内存状态在同一把锁下快照,避免与「关闭删除」交错写回旧记录。
     let _io = pin_store::io_lock();
@@ -1057,40 +1043,30 @@ fn write_snapshot(app: &AppHandle) {
 }
 
 /// 关闭即从存储删除:移除内容 PNG 并重写索引,索引里不再出现的贴图不会
-/// 因下次恢复而重现;写盘失败只记录,内存关闭语义不受影响。增强开关关闭
-/// 时按索引精确剔除(不覆盖本次会话未加载的记录),避免误删其他状态。
+/// 因下次恢复而重现;写盘失败只记录,内存关闭语义不受影响。R9 去门控后
+/// 持久化常开,索引按当前快照重写。
 fn delete_entries(app: &AppHandle, ids: &[String]) {
     if ids.is_empty() {
         return;
     }
     let dir = pin_store::dir(app);
-    if !persistence_enabled(app) && !dir.exists() {
-        return;
-    }
     let _io = pin_store::io_lock();
     for id in ids {
         pin_store::remove_files(&dir, id);
     }
-    let records = if persistence_enabled(app) {
-        snapshot_records()
-    } else {
-        let mut stored = pin_store::load_from_dir(&dir);
-        stored.retain(|record| !ids.iter().any(|id| id == &record.id));
-        stored
-    };
+    let records = snapshot_records();
     if let Err(error) = pin_store::write_index_to_dir(&dir, &records) {
         eprintln!("Cropmark: 贴图索引更新失败:{error}");
         crate::capture::ui::show_toast_key(app, "toast.pin_index_failed");
     }
 }
 
-/// 启动恢复(ADR-6):仅 `pin_enhance && pin_restore` 时恢复;位置按当前
+/// 启动恢复(ADR-6/R9):仅「重启后恢复」普通选项开启时恢复;位置按当前
 /// 显示器可见区域钳制;内容缺失或超出槽位上限的记录从索引剔除;已关闭的
 /// 贴图早已从索引删除,不会重现。恢复关闭时保留存储但不恢复:
 /// 「重启后恢复」只控制恢复行为,不删除已打开贴图的数据。
 pub fn restore_persisted(app: &AppHandle) {
-    let toggles = settings::current_toggles(app);
-    if !toggles.pin_enhance || !toggles.pin_restore {
+    if !settings::current_pin(app).restore {
         log::debug!("pin restore skipped kind=disabled");
         return;
     }
@@ -1358,7 +1334,7 @@ pub struct PinState {
     pub window_height: f64,
 }
 
-/// 入口可用性:功能开关、平台能力与托盘退出路径。
+/// 入口可用性:贴图增强常开标记、重启恢复普通选项、平台能力与托盘退出路径。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PinOptions {
@@ -1453,7 +1429,6 @@ pub fn get_pin_state(app: AppHandle, label: String) -> Result<PinState, String> 
 
 #[tauri::command]
 pub fn get_pin_options(app: AppHandle) -> PinOptions {
-    let toggles = settings::current_toggles(&app);
     let supported = click_through_supported();
     let tray = tray_available(&app);
     let reason = if !supported {
@@ -1464,8 +1439,9 @@ pub fn get_pin_options(app: AppHandle) -> PinOptions {
         None
     };
     PinOptions {
-        enhance: toggles.pin_enhance,
-        restore: toggles.pin_restore,
+        // R9:贴图增强去门控常开,增强动作入口固定可用。
+        enhance: true,
+        restore: settings::current_pin(&app).restore,
         click_through_supported: supported,
         click_through_reason: reason,
         tray_available: tray,
@@ -1502,9 +1478,6 @@ pub fn rotate_pin(app: AppHandle, label: String) -> Result<PinState, String> {
 /// 水平/垂直翻转:画面、复制与保存都走同一变换。
 #[tauri::command]
 pub fn flip_pin(app: AppHandle, label: String, axis: String) -> Result<PinState, String> {
-    if !settings::current_toggles(&app).pin_enhance {
-        return Err(i18n::t("pin.error.disabled"));
-    }
     let horizontal = match axis.as_str() {
         "horizontal" | "h" => true,
         "vertical" | "v" => false,
@@ -1576,9 +1549,6 @@ pub fn set_pin_click_through(
     label: String,
     enabled: bool,
 ) -> Result<PinState, String> {
-    if !settings::current_toggles(&app).pin_enhance {
-        return Err(i18n::t("pin.error.disabled"));
-    }
     if enabled && !click_through_supported() {
         return Err(i18n::t("pin.click_through.unsupported"));
     }
@@ -1623,9 +1593,6 @@ pub fn exit_pin_click_through(app: AppHandle) {
 /// 编组当前全部贴图(至少两张);组 id 由后端生成并随索引持久化。
 #[tauri::command]
 pub fn group_all_pins(app: AppHandle) -> Result<usize, String> {
-    if !settings::current_toggles(&app).pin_enhance {
-        return Err(i18n::t("pin.error.disabled"));
-    }
     let count = with_store(|slots| slots.iter().filter(|entry| entry.is_some()).count());
     if count < 2 {
         return Err(i18n::t("pin.error.group_need_two"));
@@ -1644,9 +1611,6 @@ pub fn group_all_pins(app: AppHandle) -> Result<usize, String> {
 /// 解组当前贴图;只剩单个成员的组自动消散,便于单独关闭。
 #[tauri::command]
 pub fn ungroup_pin(app: AppHandle, label: String) -> Result<PinState, String> {
-    if !settings::current_toggles(&app).pin_enhance {
-        return Err(i18n::t("pin.error.disabled"));
-    }
     window_for(&app, &label)?;
     with_entry(&label, |entry| entry.group = None)?;
     normalize_groups();
@@ -1672,11 +1636,10 @@ fn normalize_groups() {
     });
 }
 
-fn group_targets(slots: &[Option<PinEntry>; PIN_MAX], slot: usize, enhanced: bool) -> Vec<usize> {
+/// 组内成员联动目标:R9 贴图增强常开后,已编组(成员数 > 1)的贴图始终
+/// 整组联动;未编组只返回自己。
+fn group_targets(slots: &[Option<PinEntry>; PIN_MAX], slot: usize) -> Vec<usize> {
     let mut targets = vec![slot];
-    if !enhanced {
-        return targets;
-    }
     let Some(entry) = slots[slot].as_ref() else {
         return targets;
     };
@@ -1723,7 +1686,6 @@ pub fn move_pin(app: AppHandle, label: String, x: f64, y: f64) -> Result<PinStat
     if !x.is_finite() || !y.is_finite() {
         return state_for(&label);
     }
-    let advanced = settings::current_toggles(&app).pin_enhance;
     type MovePlan = (f64, f64, Vec<usize>, (f64, f64));
     let plan = with_store(|slots| -> Result<MovePlan, String> {
         let slot = slot_from_label(&label).ok_or_else(|| i18n::t("error.pin.window_unknown"))?;
@@ -1733,7 +1695,7 @@ pub fn move_pin(app: AppHandle, label: String, x: f64, y: f64) -> Result<PinStat
         Ok((
             x - entry.position.0,
             y - entry.position.1,
-            group_targets(slots, slot, advanced),
+            group_targets(slots, slot),
             (entry.window_width, entry.window_height),
         ))
     })?;
@@ -1815,13 +1777,12 @@ fn apply_scale(
     if !factor.is_finite() || factor <= 0.0 {
         return state_for(label);
     }
-    let advanced = settings::current_toggles(app).pin_enhance;
     let targets = with_store(|slots| -> Result<Vec<usize>, String> {
         let slot = slot_from_label(label).ok_or_else(|| i18n::t("error.pin.window_unknown"))?;
         if slots[slot].is_none() {
             return Err(i18n::t("error.pin.source_gone"));
         }
-        Ok(group_targets(slots, slot, advanced))
+        Ok(group_targets(slots, slot))
     })?;
     let mut geometry = Vec::new();
     with_store(|slots| {
@@ -2135,7 +2096,7 @@ pub fn close_all_pins(app: AppHandle) {
 }
 
 /// 退出清理:先落盘(防抖窗口内的变化不丢),再关闭全部贴图窗口;
-/// 与用户关闭不同,退出不删除存储,重启由 `pin_restore` 决定是否恢复。
+/// 与用户关闭不同,退出不删除存储,重启由「重启后恢复」普通选项决定是否恢复。
 /// 先置位退出闸门,避免清空内存后的后台防抖写入把空索引写回。
 pub fn close_all(app: &AppHandle) {
     let already_exiting = EXITING.swap(true, Ordering::SeqCst);
@@ -2732,20 +2693,19 @@ mod tests {
     }
 
     #[test]
-    fn group_targets_link_members_only_when_enhanced() {
+    fn group_targets_link_members_only_when_grouped() {
         let mut first = entry(frame(1, 1, vec![0; 4]));
         first.group = Some("g1".into());
         let mut second = entry(frame(1, 1, vec![0; 4]));
         second.group = Some("g1".into());
         let slots = slots_with(vec![(0, first), (2, second)]);
-        assert_eq!(group_targets(&slots, 0, true), vec![0, 2]);
-        // 功能开关关闭时只移动自己,编组联动随开关消失。
-        assert_eq!(group_targets(&slots, 0, false), vec![0]);
+        // R9:贴图增强常开,编组成员始终联动。
+        assert_eq!(group_targets(&slots, 0), vec![0, 2]);
         // 未编组:只移动自己。
         let mut solo = entry(frame(1, 1, vec![0; 4]));
         solo.group = None;
         let slots = slots_with(vec![(0, solo)]);
-        assert_eq!(group_targets(&slots, 0, true), vec![0]);
+        assert_eq!(group_targets(&slots, 0), vec![0]);
     }
 
     #[cfg(not(target_os = "linux"))]

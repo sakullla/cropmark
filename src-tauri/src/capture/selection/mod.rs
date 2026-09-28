@@ -135,7 +135,7 @@ impl AnnotationTool {
         Self::Erase,
     ];
 
-    /// 设置开关表用的稳定 id(与 `settings::ANNOTATION_TOOL_IDS` 同一契约)。
+    /// 工具/开关/测试共用的稳定 id。
     pub fn id(self) -> &'static str {
         match self {
             Self::Arrow => "arrow",
@@ -192,8 +192,9 @@ impl AnnotationTool {
 }
 
 /// R5/R19:标注工具逐项开关。合并工具(line/pen/blur)不单列,其入口随
-/// 保留工具(arrow/highlighter/mosaic)的开关出现/隐藏;默认值与
-/// `settings::default_annotation_tools` 的 R19 精选一致。
+/// 保留工具(arrow/highlighter/mosaic)的开关出现/隐藏。R9 移除设置开关后
+/// 默认全开,运行时固定传入 `default()`;字段作为壳/合成器能力契约保留,
+/// 测试可构造子集验证工具条裁剪。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ToolToggles {
     pub arrow: bool,
@@ -220,11 +221,11 @@ impl Default for ToolToggles {
             mosaic: true,
             text: true,
             number: true,
-            spotlight: false,
-            magnifier: false,
-            bubble: false,
-            sticker: false,
-            erase: false,
+            spotlight: true,
+            magnifier: true,
+            bubble: true,
+            sticker: true,
+            erase: true,
         }
     }
 }
@@ -244,34 +245,6 @@ impl ToolToggles {
             AnnotationTool::Bubble => self.bubble,
             AnnotationTool::Sticker => self.sticker,
             AnnotationTool::Erase => self.erase,
-        }
-    }
-
-    /// 由设置开关表(工具 id → bool)构造;未知键忽略,缺失键取精选默认。
-    pub fn from_map(map: &std::collections::BTreeMap<String, bool>) -> Self {
-        let mut toggles = Self::default();
-        for tool in AnnotationTool::ALL {
-            if let Some(enabled) = map.get(tool.id()) {
-                toggles.set(tool, *enabled);
-            }
-        }
-        toggles
-    }
-
-    fn set(&mut self, tool: AnnotationTool, enabled: bool) {
-        match tool {
-            AnnotationTool::Arrow => self.arrow = enabled,
-            AnnotationTool::Rect => self.rect = enabled,
-            AnnotationTool::Ellipse => self.ellipse = enabled,
-            AnnotationTool::Highlighter => self.highlighter = enabled,
-            AnnotationTool::Mosaic => self.mosaic = enabled,
-            AnnotationTool::Text => self.text = enabled,
-            AnnotationTool::Number => self.number = enabled,
-            AnnotationTool::Spotlight => self.spotlight = enabled,
-            AnnotationTool::Magnifier => self.magnifier = enabled,
-            AnnotationTool::Bubble => self.bubble = enabled,
-            AnnotationTool::Sticker => self.sticker = enabled,
-            AnnotationTool::Erase => self.erase = enabled,
         }
     }
 }
@@ -352,8 +325,9 @@ pub struct AnnotationOverlay<'a> {
 
 /// 选区壳能力集(默认全开);操作条/菜单动作集由此决定。
 /// R19:旧功能入口开关(取字/贴图/复制/保存/放大镜/光标提示/即时标注)已按
-/// 常开语义移除,运行时固定传入全开的 `default()`;字段作为壳/合成器的能力
-/// 契约保留,合成器测试可构造子集验证动作集裁剪。
+/// 常开语义移除,运行时固定传入全开的 `default()`;R9:长截图与标注工具开关
+/// 同样移除(工具默认全开,长截图由会话层固定注入 true)。字段作为壳/合成器的
+/// 能力契约保留,合成器测试可构造子集验证动作集裁剪。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FeatureFlags {
     pub ocr_entry: bool,
@@ -365,12 +339,11 @@ pub struct FeatureFlags {
     pub cursor_hints: bool,
     /// R21:选区即时标注;关闭后选区不出现标注工具,`标注` 动作仍进预览编辑器。
     pub inline_annotation: bool,
-    /// R1:长截图入口;会话层按 `FeatureToggles.long_capture` 注入,关闭时
-    /// 工具条/右键菜单不出现该动作(直接以 `LongCapture` 模式进入的选区壳
-    /// 恒为 true)。
+    /// R1/R9:长截图入口;配置精简后常开,会话层固定传入 true。默认 false
+    /// 仅作为壳/合成器能力契约(测试构造子集验证入口裁剪)。
     pub long_capture: bool,
-    /// R5/R19:标注工具逐项开关(注册表 12 项);关闭的工具不进工具条/
-    /// 「更多」面板/快捷键,已创建标注的渲染与编辑不受影响。
+    /// R5/R19/R9:标注工具逐项开关(注册表 12 项);默认全开,关闭的工具
+    /// 不进工具条/「更多」面板/快捷键,已创建标注的渲染与编辑不受影响。
     pub tools: ToolToggles,
 }
 
@@ -385,7 +358,7 @@ impl Default for FeatureFlags {
             toolbar_pin: true,
             cursor_hints: true,
             inline_annotation: true,
-            // 默认不出现长截图入口:运行时由会话层按功能开关注入。
+            // 默认不出现长截图入口:运行时由会话层固定注入 true(R9 常开)。
             long_capture: false,
             tools: ToolToggles::default(),
         }
@@ -491,7 +464,8 @@ pub enum SelectionAction {
     Delete,
     /// 标注模式「更多」:展开/收起其余工具(仅引擎内部消费)。
     More,
-    /// R1 手动滚动长截图:以当前选区开始滚动会话(功能开关开启时出现)。
+    /// R1 手动滚动长截图:以当前选区开始滚动会话(R9 去门控常开;壳能力集
+    /// 仍可用 `long_capture` 裁剪入口以支持测试子集)。
     LongCapture,
 }
 
@@ -3006,6 +2980,11 @@ mod tests {
             actions,
             vec![
                 SelectionAction::Tool(AnnotationTool::Number),
+                SelectionAction::Tool(AnnotationTool::Spotlight),
+                SelectionAction::Tool(AnnotationTool::Magnifier),
+                SelectionAction::Tool(AnnotationTool::Bubble),
+                SelectionAction::Tool(AnnotationTool::Sticker),
+                SelectionAction::Tool(AnnotationTool::Erase),
                 SelectionAction::Mode(ToolMode::Line),
                 SelectionAction::Mode(ToolMode::Pen),
                 SelectionAction::Mode(ToolMode::Blur),
@@ -3072,6 +3051,11 @@ mod tests {
             actions,
             vec![
                 SelectionAction::Tool(AnnotationTool::Number),
+                SelectionAction::Tool(AnnotationTool::Spotlight),
+                SelectionAction::Tool(AnnotationTool::Magnifier),
+                SelectionAction::Tool(AnnotationTool::Bubble),
+                SelectionAction::Tool(AnnotationTool::Sticker),
+                SelectionAction::Tool(AnnotationTool::Erase),
                 SelectionAction::Mode(ToolMode::Line),
                 SelectionAction::Mode(ToolMode::Pen),
                 SelectionAction::Mode(ToolMode::Blur),
@@ -3761,35 +3745,18 @@ mod tests {
         }
     }
 
-    /// R5/R19:设置开关表(工具 id → bool)构造逐项开关;未知键忽略、
-    /// 缺失键取精选默认。
+    /// R9:标注工具开关移除后全部工具常开。
     #[test]
-    fn tool_toggles_from_settings_map_sanitizes_keys() {
-        let mut map = std::collections::BTreeMap::new();
-        map.insert("rect".to_string(), false);
-        map.insert("spotlight".to_string(), true);
-        map.insert("line".to_string(), true); // 合并工具不单列:忽略
-        map.insert("unknown".to_string(), true);
-        let toggles = ToolToggles::from_map(&map);
-        assert!(!toggles.enabled(AnnotationTool::Rect));
-        assert!(toggles.enabled(AnnotationTool::Spotlight));
-        assert!(toggles.enabled(AnnotationTool::Arrow));
-        // R19 精选默认:关闭的 5 个新增工具。
-        assert!(!toggles.enabled(AnnotationTool::Magnifier));
-        assert!(!toggles.enabled(AnnotationTool::Bubble));
-        assert!(!toggles.enabled(AnnotationTool::Sticker));
-        assert!(!toggles.enabled(AnnotationTool::Erase));
+    fn tool_toggles_default_to_all_enabled() {
+        let toggles = ToolToggles::default();
+        for tool in AnnotationTool::ALL {
+            assert!(toggles.enabled(tool), "{tool:?} 应常开");
+        }
     }
 
-    /// R5:注册表工具 id 与设置白名单(`settings::ANNOTATION_TOOL_IDS`)是同一
-    /// 契约,两侧漂移会让开关表出现永不生效的键或选不到的工具。
+    /// R5:工具注册表覆盖主行与「更多」,两类不重叠;模式归属与默认模式声明一致。
     #[test]
-    fn registry_tool_ids_match_settings_whitelist() {
-        let mut registry: Vec<&str> = AnnotationTool::ALL.iter().map(|tool| tool.id()).collect();
-        registry.sort_unstable();
-        let mut whitelist = crate::settings::ANNOTATION_TOOL_IDS.to_vec();
-        whitelist.sort_unstable();
-        assert_eq!(registry, whitelist, "注册表工具 id 与设置白名单必须一致");
+    fn registry_covers_primary_and_more_tools() {
         // 主行/「更多」不重叠且覆盖全部注册表工具。
         let primary: Vec<_> = AnnotationTool::PRIMARY.to_vec();
         let more: Vec<_> = AnnotationTool::MORE.to_vec();

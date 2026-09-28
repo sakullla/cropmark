@@ -21,10 +21,10 @@ pub const TRAY_ID: &str = "cropmark-tray";
 /// 托盘"上次区域"直取(R6)的菜单 id。
 pub const LAST_REGION_ID: &str = "capture-last-region";
 
-/// R1 托盘长截图入口的菜单 id(功能开关开启时出现)。
+/// R1 托盘长截图入口的菜单 id(R9 去门控常开)。
 pub const LONG_CAPTURE_ID: &str = "capture-long";
 
-/// R8 托盘「从剪贴板贴图」入口的菜单 id(clipboard_pin 开启时出现)。
+/// R8 托盘「从剪贴板贴图」入口的菜单 id(R9 去门控常开)。
 pub const CLIPBOARD_PIN_ID: &str = "pin-from-clipboard";
 
 /// R9 托盘「全部显示器」菜单 id。
@@ -55,17 +55,6 @@ pub fn last_region_label(has_region: bool) -> String {
 /// 无记录时只禁用菜单项并以标签提示,记录保留不受影响。
 fn last_region_enabled(has_region: bool) -> bool {
     has_region
-}
-
-/// R1:长截图入口可见 = 功能开关开启;关闭时不构建菜单项(入口不出现)。
-fn long_capture_enabled(enabled: bool) -> bool {
-    enabled
-}
-
-/// R8:剪贴板贴图入口可见 = clipboard_pin 开启;关闭时不构建菜单项,
-/// 全局快捷键同时失效(动作入口按同一开关判定)。
-fn clipboard_pin_visible(enabled: bool) -> bool {
-    enabled
 }
 
 /// R9:多屏开关开启时全屏是子菜单;关闭时保持单一「全屏」项(只抓指针屏)。
@@ -251,9 +240,9 @@ fn remember_layout(signature: &str) {
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = signature.to_string();
 }
 
-/// 显示器数量或分辨率变化后重建全屏子菜单。开关关闭时不改菜单。
+/// 显示器数量或分辨率变化后重建全屏子菜单。多屏全屏行为关闭时不改菜单。
 pub fn refresh_menu_if_layout_changed(app: &AppHandle) {
-    if !settings::current_toggles(app).multi_monitor {
+    if !settings::current_capture(app).multi_monitor {
         return;
     }
     let next = layout_signature(app);
@@ -268,8 +257,8 @@ pub fn refresh_menu_if_layout_changed(app: &AppHandle) {
     }
 }
 
-/// "上次区域"记录或功能开关变化后重建托盘菜单,标签与可用状态与当前状态一致。
-/// 菜单事件按 id 分发,重建不丢处理器。
+/// "上次区域"记录、设置或贴图状态变化后重建托盘菜单,标签与可用状态与当前
+/// 状态一致。菜单事件按 id 分发,重建不丢处理器。
 pub fn refresh_menu(app: &AppHandle) {
     let Some(tray) = app.tray_by_id(TRAY_ID) else {
         return;
@@ -386,7 +375,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         true,
         None::<&str>,
     )?;
-    let multi_monitor = fullscreen_uses_submenu(settings::current_toggles(app).multi_monitor);
+    let multi_monitor = fullscreen_uses_submenu(settings::current_capture(app).multi_monitor);
     let fullscreen = MenuItem::with_id(
         app,
         "capture-fullscreen",
@@ -395,13 +384,12 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         None::<&str>,
     )?;
     let fullscreen_menu = fullscreen_submenu(app)?;
-    // R1:长截图入口仅在功能开关开启时进入截取子菜单。
-    let long_capture_visible = long_capture_enabled(settings::current_toggles(app).long_capture);
+    // R9:长截图去门控常开,入口固定在截取子菜单。
     let long_capture = MenuItem::with_id(
         app,
         LONG_CAPTURE_ID,
         i18n::t("tray.long_capture"),
-        long_capture_visible,
+        true,
         None::<&str>,
     )?;
     let delay = delay_submenu(app)?;
@@ -411,9 +399,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     } else {
         capture_items.push(&fullscreen);
     }
-    if long_capture_visible {
-        capture_items.push(&long_capture);
-    }
+    capture_items.push(&long_capture);
     capture_items.push(&delay);
     let capture = Submenu::with_items(app, i18n::t("tray.capture"), true, &capture_items)?;
     let settings_item = MenuItem::with_id(
@@ -425,7 +411,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     )?;
     let history_item =
         MenuItem::with_id(app, "history", i18n::t("tray.history"), true, None::<&str>)?;
-    // R8:剪贴板贴图入口仅在功能开关开启时出现;快捷键由 pin 侧同一开关判定。
+    // R9:剪贴板贴图去门控常开,入口固定出现。
     let clipboard_pin = MenuItem::with_id(
         app,
         CLIPBOARD_PIN_ID,
@@ -446,9 +432,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let second_separator = PredefinedMenuItem::separator(app)?;
     let mut items: Vec<&dyn IsMenuItem<tauri::Wry>> =
         vec![&capture, &first_separator, &settings_item, &history_item];
-    if clipboard_pin_visible(settings::current_toggles(app).clipboard_pin) {
-        items.push(&clipboard_pin);
-    }
+    items.push(&clipboard_pin);
     let click_through_visible = exit_click_through_visible(crate::pin::has_click_through());
     if click_through_visible {
         items.push(&exit_click_through);
@@ -636,18 +620,6 @@ mod tests {
             menu_action("capture-long-delay-3"),
             Some(action(CaptureMode::LongCapture, DelayChoice::Once(3000)))
         );
-    }
-
-    #[test]
-    fn long_capture_entry_only_when_the_toggle_is_on() {
-        assert!(long_capture_enabled(true));
-        assert!(!long_capture_enabled(false));
-    }
-
-    #[test]
-    fn clipboard_pin_entry_only_when_the_toggle_is_on() {
-        assert!(clipboard_pin_visible(true));
-        assert!(!clipboard_pin_visible(false));
     }
 
     #[test]

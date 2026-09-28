@@ -283,8 +283,8 @@ pub fn run() {
             };
             hotkeys::apply_to_app(app.handle(), &hotkeys);
             capture::precreate_windows(app.handle());
-            // R2:仅当贴图增强与「重启后恢复」同时开启时恢复上次会话仍存在的
-            // 贴图,并按当前显示器可见区域钳制;已关闭的贴图不重现。
+            // R9:贴图增强常开,启动恢复只由「重启后恢复」普通选项决定
+            // (默认关闭);已关闭的贴图不重现。
             pin::restore_persisted(app.handle());
             // R15:托盘(或降级)、热键与预建窗口就绪,启动路径到此结束;
             // 门控日志只读时钟,不引入启动期同步 IO。
@@ -316,13 +316,12 @@ pub fn run() {
             settings::set_pin_clipboard_hotkey,
             settings::set_autostart_enabled,
             settings::set_annotation_defaults,
-            settings::set_feature,
-            settings::set_annotation_tool,
             annotate::stickers::get_sticker_catalog,
             annotate::stickers::get_sticker_image,
             settings::set_capture_settings,
             settings::set_history_settings,
             settings::set_export_appearance,
+            settings::set_pin_settings,
             capture::get_overlay_frame,
             capture::get_preview_frame,
             capture::confirm_region,

@@ -787,14 +787,6 @@
     "zh-CN": "标注样式已应用",
     "en": "Annotation style applied"
   },
-  "notice.features_applied": {
-    "zh-CN": "功能开关已应用",
-    "en": "Feature switches applied"
-  },
-  "notice.annotation_tools_applied": {
-    "zh-CN": "标注工具设置已应用",
-    "en": "Annotation tool settings applied"
-  },
   "notice.capture_applied": {
     "zh-CN": "截图设置已应用",
     "en": "Capture settings applied"
@@ -802,6 +794,10 @@
   "notice.history_applied": {
     "zh-CN": "历史记录设置已应用",
     "en": "History settings applied"
+  },
+  "notice.pin_applied": {
+    "zh-CN": "贴图设置已应用",
+    "en": "Pin settings applied"
   },
   "notice.export_remembered": {
     "zh-CN": "导出设置已记住",
@@ -826,14 +822,6 @@
   "notice.persist_failed": {
     "zh-CN": "{applied}，但未能写入本机设置：{error}",
     "en": "{applied}, but the local settings could not be written: {error}"
-  },
-  "error.feature.unknown": {
-    "zh-CN": "未知的功能开关：{key}",
-    "en": "Unknown feature switch: {key}"
-  },
-  "error.annotation_tool.unknown": {
-    "zh-CN": "未知的标注工具：{tool}",
-    "en": "Unknown annotation tool: {tool}"
   },
   "language.system": {
     "zh-CN": "跟随系统",
@@ -2390,10 +2378,6 @@
   "pin.error.group_need_two": {
     "zh-CN": "至少需要两张贴图才能编组。",
     "en": "At least two pins are needed to group."
-  },
-  "pin.error.disabled": {
-    "zh-CN": "贴图增强已在设置中关闭。",
-    "en": "Pin enhancements are disabled in Settings."
   },
   "pin.error.copy": {
     "zh-CN": "无法复制贴图。",

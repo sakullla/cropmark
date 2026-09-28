@@ -113,12 +113,13 @@ fn partial_path(path: &Path) -> PathBuf {
 }
 
 /// 预览复制、预览保存与静默保存共用。静默完成的剪贴板写入对帧副本调用
-/// 同一个 `beautify::compose_frame`。开关关闭时原帧原样返回。
+/// 同一个 `beautify::compose_frame`。R9:「套用美化」普通选项关闭时原帧原样返回。
 fn compose_output(app: &AppHandle, frame: Frame) -> Result<Frame, String> {
-    if !settings::current_toggles(app).export_beautify {
+    let export = settings::current_export(app);
+    if !export.apply_beautify {
         return Ok(frame);
     }
-    let options = settings::current_export(app).beautify;
+    let options = export.beautify;
     beautify::compose_frame(frame, true, &options).map_err(fail)
 }
 
@@ -159,8 +160,7 @@ fn suggested_file_name(
     naming: FileNaming,
     extension: &str,
 ) -> String {
-    let template_on =
-        naming == FileNaming::Preview && settings::current_toggles(app).filename_template;
+    let template_on = naming == FileNaming::Preview && export.use_filename_template;
     if !template_on {
         return uniquify_suggested_name(
             export.existing_directory(),

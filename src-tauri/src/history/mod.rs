@@ -95,7 +95,8 @@ pub struct HistoryEntryView {
 pub struct HistoryListPayload {
     pub entries: Vec<HistoryEntryView>,
     pub notice: Option<String>,
-    /// `history_tools` 开关。关闭时前端恢复纯时间列表,索引里的收藏与备注仍保留。
+    /// R9:历史检索与收藏/备注去门控常开,固定为 true;字段保留供前端沿用
+    /// 同一列表布局契约。
     pub tools_enabled: bool,
 }
 
@@ -479,7 +480,7 @@ fn list_payload(app: &AppHandle) -> HistoryListPayload {
     HistoryListPayload {
         entries,
         notice,
-        tools_enabled: crate::settings::current_toggles(app).history_tools,
+        tools_enabled: true,
     }
 }
 

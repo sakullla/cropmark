@@ -811,17 +811,13 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
         let (frame, monitor) = grab_pointer_screen(&handle)?;
         store_pixels(&handle, frame.clone(), monitor.clone(), generation)?;
         // R19:旧入口开关(取字/贴图/复制/保存/放大镜/光标提示/即时标注)已按
-        // 常开语义移除;R5 标注工具逐项开关(注册表 12 项)注入选区壳,
-        // 关闭的工具不进工具条/「更多」面板/快捷键。R1:长截图开关决定入口;
-        // 以长截图模式进入时只保留「开始长截图」确认路径,不出现即时标注与
-        // 静默动作,避免选区内标注的屏幕坐标与拼接结果错位。
+        // 常开语义移除;R9:长截图与全部标注工具去门控常开,选区壳固定传入
+        // 全开的能力集。以长截图模式进入时只保留「开始长截图」确认路径,
+        // 不出现即时标注与静默动作,避免选区内标注的屏幕坐标与拼接结果错位。
         let mode = with_session(&handle, |session| {
             session.as_ref().map(|current| current.mode)
         })
         .unwrap_or(CaptureMode::Region);
-        let tools = super::selection::ToolToggles::from_map(
-            &crate::settings::current_annotation_tools(&handle),
-        );
         let flags = if mode == CaptureMode::LongCapture {
             super::selection::FeatureFlags {
                 long_capture: true,
@@ -831,13 +827,11 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
                 toolbar_copy: false,
                 toolbar_save: false,
                 toolbar_pin: false,
-                tools,
                 ..super::selection::FeatureFlags::default()
             }
         } else {
             super::selection::FeatureFlags {
-                tools,
-                long_capture: crate::settings::current_toggles(&handle).long_capture,
+                long_capture: true,
                 ..super::selection::FeatureFlags::default()
             }
         };
@@ -1058,7 +1052,7 @@ async fn capture_fullscreen(app: &AppHandle, generation: u64) -> Result<(), Capt
             .unwrap_or(FullscreenTarget::Pointer)
     });
     let target = effective_fullscreen_target(
-        crate::settings::current_toggles(app).multi_monitor,
+        crate::settings::current_capture(app).multi_monitor,
         requested,
     );
     let handle = app.clone();
@@ -1119,7 +1113,7 @@ fn grab_pointer_screen(app: &AppHandle) -> Result<(Frame, MonitorGeom), CaptureE
 }
 
 fn cursor_mode(app: &AppHandle) -> platform::CursorMode {
-    if !crate::settings::current_toggles(app).capture_cursor {
+    if !crate::settings::current_capture(app).capture_cursor {
         return platform::CursorMode::Off;
     }
     let long = with_session(app, |session| {
@@ -2073,7 +2067,7 @@ fn write_finish_clipboard(
     frame: &Frame,
     plain_png: &[u8],
 ) -> Result<(), CaptureError> {
-    if !crate::settings::current_toggles(app).export_beautify {
+    if !crate::settings::current_export(app).apply_beautify {
         return clipboard::copy_frame_with_png(frame, plain_png);
     }
     let options = crate::settings::current_export(app).beautify;
