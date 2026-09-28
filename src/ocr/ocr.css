@@ -1,0 +1,158 @@
+/* R2:共享取字面板(预览与冻结帧工作区覆盖层共用)。 */
+
+.ocr-panel {
+  flex: 0 0 auto;
+  /* 窄窗口随舞台宽度弹性收缩,宽窗口仍取 260px。 */
+  width: clamp(180px, 30%, 260px);
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+  border-radius: var(--radius-panel);
+  /* 侧栏贴衬底,不另起一张和主图同等的实底卡片。 */
+  background: color-mix(in srgb, var(--panel) 28%, var(--bg));
+  box-shadow: none;
+  color: var(--ink);
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.ocr-panel-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.ocr-panel-bar h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--muted);
+}
+
+.ocr-panel-search {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.ocr-panel-query {
+  width: 100%;
+  height: 32px;
+  min-height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control-sm);
+  background: var(--control-fill);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  transition: var(--control-transition);
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.ocr-panel-query:hover:not(:disabled) {
+  border-color: var(--control-hover-border);
+  background: var(--control-hover-bg);
+}
+
+.ocr-panel-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ocr-panel-count {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.ocr-panel-nav button,
+.ocr-panel-actions button {
+  min-width: 24px;
+  min-height: 24px;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control-sm);
+  background: color-mix(in srgb, var(--panel) 80%, transparent);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ocr-panel-nav button:hover:not(:disabled),
+.ocr-panel-actions button:hover:not(:disabled) {
+  border-color: var(--control-hover-border);
+  background: var(--control-hover-bg);
+}
+
+.ocr-panel-nav button:active:not(:disabled),
+.ocr-panel-actions button:active:not(:disabled) {
+  filter: var(--control-pressed-filter);
+}
+
+.ocr-panel-nav button:disabled,
+.ocr-panel-actions button:disabled {
+  opacity: var(--control-disabled-opacity);
+  cursor: default;
+}
+
+.ocr-panel-text {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control-sm);
+  background: color-mix(in srgb, var(--bg) 65%, transparent);
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: text;
+}
+
+/* 三态:搜索命中(弱)/ 当前命中(中)/ 已选内容(强)。 */
+.ocr-panel-text mark {
+  background: color-mix(in srgb, var(--ocr-hl) 35%, transparent);
+  color: inherit;
+  border-radius: 2px;
+}
+
+.ocr-panel-text mark.is-search {
+  background: color-mix(in srgb, var(--ocr-hl) 35%, transparent);
+}
+
+.ocr-panel-text mark.is-current {
+  background: color-mix(in srgb, var(--ocr-hl) 70%, transparent);
+}
+
+.ocr-panel-text mark.is-selected {
+  background: color-mix(in srgb, var(--ocr-hl-strong) 55%, transparent);
+}
+
+.ocr-panel-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.ocr-panel-actions button {
+  flex: 1;
+}

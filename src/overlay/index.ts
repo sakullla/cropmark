@@ -9,6 +9,7 @@ import {
   type AnnotationEditor,
 } from "../annotation";
 import { t, type CatalogKey } from "../i18n";
+import { mountOcrModel, type OcrModel } from "../ocr";
 import "./overlay.css";
 
 type CaptureMode = "region" | "window" | "fullscreen";
@@ -170,6 +171,8 @@ export function mountOverlay(root: HTMLElement): () => void {
   /// R24:关闭 inlineAnnotation 后覆盖层不提供标注层,保持原有的松开即完成。
   let inlineEnabled = false;
   let editor: AnnotationEditor | null = null;
+  /// R2:冻结帧工作区的共享取字模型(与预览同一实现)。
+  let ocrModel: OcrModel | null = null;
   /// 标注合成层:与冻帧同物理尺寸的底图 + 图元(马赛克/模糊需要整帧像素)。
   let annotationLayer: HTMLCanvasElement | null = null;
   /// 底图缓存:冻帧位图按物理尺寸只缩放一次,避免逐帧重采样。
@@ -339,6 +342,11 @@ export function mountOverlay(root: HTMLElement): () => void {
     retryAction = null;
     const reduced = frame.reducedCapabilities === true;
     if (frame.fixed) {
+      // R2:取字中提示退出方式;退出后恢复工作区/标注提示。
+      if (ocrModel?.active === true) {
+        hint.textContent = t("overlay.hint.ocr");
+        return;
+      }
       hint.textContent = t(
         annotationActive()
           ? reduced
@@ -441,6 +449,10 @@ export function mountOverlay(root: HTMLElement): () => void {
           );
         }
       }
+      // R2:窗口模式冻结帧工作区同样绘制取字三态。
+      if (ocrModel?.active === true) {
+        ocrModel.paint(ctx);
+      }
       return;
     }
     const crop = roundedRect();
@@ -506,6 +518,10 @@ export function mountOverlay(root: HTMLElement): () => void {
     // 四边钳制:选区贴近屏幕任意边缘时徽标完整可见(常数沿用原右/上值)。
     badge.style.left = `${clamp(cssX + 8, 4, Math.max(4, rect.width - 88))}px`;
     badge.style.top = `${clamp(cssY - 28, 12, Math.max(12, rect.height - 36))}px`;
+    // R2:取字三态画在最上层(已选 > 当前命中 > 搜索命中)。
+    if (ocrModel?.active === true) {
+      ocrModel.paint(ctx);
+    }
   };
 
   const scheduleDraw = (): void => {
@@ -521,6 +537,8 @@ export function mountOverlay(root: HTMLElement): () => void {
   const load = async (): Promise<void> => {
     try {
       frame = await invoke<OverlayFrame>("get_overlay_frame");
+      // R2:新会话先清掉上一帧的取字全文与选择。
+      ocrModel?.reset();
       fitCanvas();
       root.classList.toggle("mode-window", frame.mode === "window");
       root.classList.toggle("mode-region", frame.mode !== "window");
@@ -548,8 +566,9 @@ export function mountOverlay(root: HTMLElement): () => void {
       void getCurrentWindow().setFocus();
       document.body.tabIndex = -1;
       document.body.focus();
-      list.hidden = frame.mode !== "window";
-      if (frame.mode === "window") {
+      // 工作区(fixed)不再列窗:窗口已定,列表没有可选对象。
+      list.hidden = frame.mode !== "window" || frame.fixed === true;
+      if (frame.mode === "window" && frame.fixed !== true) {
         renderWindowList(list, frame.windows, hoverId, (id) => {
           void finishWindow(id);
         });
@@ -572,8 +591,9 @@ export function mountOverlay(root: HTMLElement): () => void {
           toolsEl.hidden = !inlineEnabled;
           root.classList.toggle("has-tools", inlineEnabled);
           editor?.setAnnotations(frame.annotations ?? []);
+          // 壳上的取字动作:工作区打开后自动进入取字,不写剪贴板。
           if (frame.pendingOcr) {
-            void runOcr();
+            activateWorkspaceOcr();
           }
         }
       }
@@ -664,24 +684,48 @@ export function mountOverlay(root: HTMLElement): () => void {
 
   const currentAnnotations = (): Annotation[] => editor?.exportList() ?? [];
 
-  const runOcr = async (): Promise<void> => {
-    if (finishing) {
+  // R2:取字激活期间隐藏工作区动作与标注工具条,退出后恢复;提示随状态切换。
+  let ocrWasActive = false;
+  let ocrNoticeActive = false;
+  const syncOcrChrome = (): void => {
+    const active = ocrModel?.active === true;
+    if (frame?.fixed && frame.capabilities?.workspaceActions !== false) {
+      actionsEl.hidden = active;
+      toolsEl.hidden = active || !inlineEnabled;
+      root.classList.toggle("has-tools", !active && inlineEnabled);
+    }
+    if (!active && ocrWasActive) {
+      // 退出取字:恢复标注工具条高亮并撤掉取字提示。
+      editor?.setTool(editor.tool());
+      if (ocrNoticeActive) {
+        ocrNoticeActive = false;
+        hideNotice();
+      }
+    }
+    ocrWasActive = active;
+    renderHint();
+    scheduleDraw();
+  };
+
+  const activateWorkspaceOcr = (): void => {
+    if (ocrModel?.active) {
       return;
     }
-    setFinishing(true);
-    // 长任务进行中提示持续可见,直到完成/失败文案替换(ADR-2)。
-    showNotice(t("toast.ocr_progress"), true);
-    try {
-      await invoke("recognize_preview");
-      const text = await invoke<string>("copy_ocr_all");
-      const chars = Array.from(text).length;
-      showNotice(t("toast.ocr_copied", { chars: String(chars) }));
-    } catch (error) {
-      showNotice(invokeError(error, t("preview.error.ocr_fallback")));
-    } finally {
-      setFinishing(false);
-    }
+    editor?.commitText();
+    editor?.deactivateTool();
+    editor?.clearSelection();
+    ocrModel?.activate();
   };
+
+  ocrModel = mountOcrModel({
+    host: root,
+    closable: false,
+    notice: (message, kind) => {
+      ocrNoticeActive = true;
+      showNotice(message, kind === "progress" || kind === "hint");
+    },
+    onChange: syncOcrChrome,
+  });
 
   const afterExport = async (kind: string, name?: string): Promise<void> => {
     await invoke("complete_workspace", { kind, name: name ?? null });
@@ -772,7 +816,19 @@ export function mountOverlay(root: HTMLElement): () => void {
   };
 
   canvas.addEventListener("mousedown", (event) => {
-    if (!frame || frame.fixed || frame.mode !== "region" || event.button !== 0) {
+    if (!frame) {
+      return;
+    }
+    // R2:取字激活时画布输入全部交给共享取字模型(点选/划选)。
+    if (ocrModel?.active === true) {
+      if (event.button !== 0) {
+        return;
+      }
+      event.preventDefault();
+      ocrModel.pointerDown(physicalPoint(event));
+      return;
+    }
+    if (frame.fixed || frame.mode !== "region" || event.button !== 0) {
       return;
     }
     if (annotationActive()) {
@@ -805,6 +861,10 @@ export function mountOverlay(root: HTMLElement): () => void {
       return;
     }
     const point = physicalPoint(event);
+    if (ocrModel?.active === true) {
+      ocrModel.pointerMove(point);
+      return;
+    }
     if (frame.mode === "window") {
       const nextHover = hitWindow(frame, point.x, point.y);
       if (nextHover !== hoverId) {
@@ -829,6 +889,10 @@ export function mountOverlay(root: HTMLElement): () => void {
   });
 
   window.addEventListener("mouseup", () => {
+    if (ocrModel?.active === true) {
+      ocrModel.pointerUp();
+      return;
+    }
     if (!dragging || frame?.fixed) {
       dragging = false;
       return;
@@ -838,7 +902,7 @@ export function mountOverlay(root: HTMLElement): () => void {
   });
 
   canvas.addEventListener("click", (event) => {
-    if (!frame || frame.fixed || frame.mode !== "window") {
+    if (!frame || frame.fixed || frame.mode !== "window" || ocrModel?.active === true) {
       return;
     }
     const point = physicalPoint(event);
@@ -857,7 +921,13 @@ export function mountOverlay(root: HTMLElement): () => void {
   // Wayland 覆盖层没有该菜单,必须说明而不是静默无响应(R13)。
   // 标注阶段右键交给共享标注层(命中图元时给出删除菜单)。
   canvas.addEventListener("contextmenu", (event) => {
-    if (!frame || annotationActive()) {
+    if (!frame || ocrModel?.active === true) {
+      if (ocrModel?.active === true) {
+        event.preventDefault();
+      }
+      return;
+    }
+    if (annotationActive()) {
       return;
     }
     if (frame.mode === "window") {
@@ -951,7 +1021,7 @@ export function mountOverlay(root: HTMLElement): () => void {
     } else if (action === "pin") {
       void pinWorkspace();
     } else if (action === "ocr") {
-      void runOcr();
+      activateWorkspaceOcr();
     } else if (action === "edit") {
       void editFurther();
     }
@@ -967,7 +1037,8 @@ export function mountOverlay(root: HTMLElement): () => void {
     textHost: root,
     frame: () => (frame ? { width: frame.width, height: frame.height, scale: frame.scale } : null),
     redraw: () => scheduleDraw(),
-    isEditable: () => annotationActive(),
+    // R2:取字激活时画布输入只给取字,标注编辑暂时禁用。
+    isEditable: () => annotationActive() && ocrModel?.active !== true,
     // 标注阶段右键未命中图元:与 R13 一致地说明操作条缺失与替代路径,
     // 而不是静默无响应。
     onContextMenuMiss: () => {
@@ -980,16 +1051,10 @@ export function mountOverlay(root: HTMLElement): () => void {
     },
   });
 
-  // 标注层已在缺失能力说明里给出替代路径(R13);键盘只处理选区确认/取消,
-  // 标注层先消费 Escape/工具/撤销等按键,未消费时才回到这里。
+  // 标注层已在缺失能力说明里给出替代路径(R13);键盘只处理选区确认/取消与
+  // 取字(Esc 退出、Ctrl+A 全选、Ctrl+C 复制所选),标注层先消费其它按键。
   window.addEventListener("keydown", (event) => {
     if (event.defaultPrevented || editor?.isTextEditing()) {
-      return;
-    }
-    if (
-      document.activeElement instanceof HTMLTextAreaElement ||
-      document.activeElement instanceof HTMLInputElement
-    ) {
       return;
     }
     if (event.key === "Escape") {
@@ -999,7 +1064,34 @@ export function mountOverlay(root: HTMLElement): () => void {
         setCapabilityPanel(false, { restoreFocus: true });
         return;
       }
+      // R2:取字中 Esc 先退出取字(恢复工作区动作),再按一次才取消会话。
+      if (ocrModel?.deactivate()) {
+        return;
+      }
       cancel();
+      return;
+    }
+    if (
+      document.activeElement instanceof HTMLTextAreaElement ||
+      document.activeElement instanceof HTMLInputElement
+    ) {
+      return;
+    }
+    // R2:取字中的 Ctrl+A 全选识别文本,Ctrl+C 复制所选(搜索框内走原生)。
+    if (event.ctrlKey || event.metaKey) {
+      if (ocrModel?.active === true) {
+        const key = event.key.toLowerCase();
+        if (key === "a") {
+          event.preventDefault();
+          ocrModel.selectAll();
+          return;
+        }
+        if (key === "c") {
+          event.preventDefault();
+          void ocrModel.copySelected();
+          return;
+        }
+      }
       return;
     }
     if (event.key === "Enter") {
@@ -1039,10 +1131,11 @@ export function mountOverlay(root: HTMLElement): () => void {
   });
   void load();
 
-  // 语言切换:提示条、能力面板与开关文案即时更新;静态标签由 main 应用。
+  // 语言切换:提示条、能力面板、取字面板与开关文案即时更新;静态标签由 main 应用。
   return () => {
     renderHint();
     editor?.refreshLabels();
+    ocrModel?.refreshLabels();
     setCapabilityPanel(!capabilityPanel.hidden);
     if (!capabilityPanel.hidden) {
       renderCapabilityPanel();

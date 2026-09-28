@@ -102,7 +102,10 @@ pub enum RegionOutcome {
     Preview(PhysicalRect, Vec<Annotation>),
     /// 操作条/菜单的「标注」动作:rect 强制走预览编辑器,不受静默完成配置影响。
     Annotate(PhysicalRect, Vec<Annotation>),
-    /// 操作条/菜单的 copy/save/pin/ocr 动作:rect 走 Quiet 完成路径并执行动作。
+    /// 操作条/菜单的「取字」动作:rect 提交工作区覆盖层并在打开后自动进入
+    /// 取字(R2);不在壳上写剪贴板。
+    Ocr(PhysicalRect, Vec<Annotation>),
+    /// 操作条/菜单的 copy/save/pin 动作:rect 走 Quiet 完成路径并执行动作。
     Quiet(PhysicalRect, QuietAction, Vec<Annotation>),
     /// R1 操作条/菜单的长截图动作:rect 交给会话层开始滚动会话。
     LongCapture(PhysicalRect, Vec<Annotation>),
@@ -358,6 +361,14 @@ fn feed_event(state: &mut ShellState, event: InputEvent, hwnd: HWND) -> bool {
                 }
                 false
             }
+            // R2:取字提交区域,工作区覆盖层打开后自动进入取字。
+            SelectionAction::Ocr => {
+                if let Some(outcome) = ocr_outcome(&state.canvas.engine) {
+                    state.outcome = Some(outcome);
+                    return true;
+                }
+                false
+            }
             // 标注工具条动作(工具切换/撤销/重做/删除/更多)在引擎内消费,
             // 不会到达这里;防御性忽略,不结束会话。
             SelectionAction::Tool(_)
@@ -410,15 +421,22 @@ fn annotate_outcome(engine: &SelectionEngine) -> Option<RegionOutcome> {
         .map(|rect| RegionOutcome::Annotate(rect, engine.annotations().to_vec()))
 }
 
-/// 操作条/菜单动作到静默完成动作的映射;标注/取消/复制色值/标注工具条
-/// 动作不在此列。
+/// R2:「取字」动作到壳结果的映射;与「标注」同形,会话层据此置 pending_ocr。
+fn ocr_outcome(engine: &SelectionEngine) -> Option<RegionOutcome> {
+    engine
+        .selection()
+        .map(|rect| RegionOutcome::Ocr(rect, engine.annotations().to_vec()))
+}
+
+/// 操作条/菜单动作到静默完成动作的映射;标注/取字/取消/复制色值与标注
+/// 工具条动作不在此列。
 fn quiet_action_for(action: SelectionAction) -> Option<QuietAction> {
     match action {
         SelectionAction::Copy => Some(QuietAction::Copy),
         SelectionAction::Save => Some(QuietAction::Save),
         SelectionAction::Pin => Some(QuietAction::Pin),
-        SelectionAction::Ocr => Some(QuietAction::Ocr),
         SelectionAction::Annotate
+        | SelectionAction::Ocr
         | SelectionAction::Cancel
         | SelectionAction::CopyColor
         | SelectionAction::Tool(_)
@@ -1718,6 +1736,25 @@ mod tests {
     }
 
     #[test]
+    fn ocr_outcome_needs_a_selection_and_keeps_rect() {
+        let mut state = test_state(320, 200);
+        assert_eq!(ocr_outcome(&state.canvas.engine), None);
+        let hwnd = HWND::default();
+        for event in [
+            InputEvent::LeftDown { x: 5, y: 6 },
+            InputEvent::PointerMove { x: 35, y: 46 },
+            InputEvent::LeftUp { x: 35, y: 46 },
+        ] {
+            assert!(!feed_event(&mut state, event, hwnd));
+        }
+        let rect = state.canvas.engine.selection().unwrap();
+        assert_eq!(
+            ocr_outcome(&state.canvas.engine),
+            Some(RegionOutcome::Ocr(rect, Vec::new()))
+        );
+    }
+
+    #[test]
     fn edge_drag_release_outside_then_enter_terminates() {
         let mut state = test_state(320, 200);
         let hwnd = HWND::default();
@@ -2216,14 +2253,62 @@ mod tests {
             quiet_action_for(SelectionAction::Pin),
             Some(QuietAction::Pin)
         );
-        assert_eq!(
-            quiet_action_for(SelectionAction::Ocr),
-            Some(QuietAction::Ocr)
-        );
+        // R2:取字不再是静默动作,它提交区域并打开工作区覆盖层。
+        assert_eq!(quiet_action_for(SelectionAction::Ocr), None);
         assert_eq!(quiet_action_for(SelectionAction::Annotate), None);
         assert_eq!(quiet_action_for(SelectionAction::Cancel), None);
         assert_eq!(quiet_action_for(SelectionAction::CopyColor), None);
         assert_eq!(quiet_action_for(SelectionAction::More), None);
+    }
+
+    #[test]
+    fn menu_ocr_requests_workspace_overlay_outcome() {
+        let mut state = test_state(320, 200);
+        let hwnd = HWND::default();
+        for event in [
+            InputEvent::LeftDown { x: 40, y: 30 },
+            InputEvent::PointerMove { x: 200, y: 120 },
+            InputEvent::LeftUp { x: 200, y: 120 },
+            InputEvent::RightDown { x: 150, y: 100 },
+        ] {
+            assert!(!feed_event(&mut state, event, hwnd));
+        }
+        let items = composer::menu_items(state.canvas.engine.flags());
+        let metrics = composer::ChromeMetrics::for_scale(1.0);
+        let panel = composer::menu_panel(
+            metrics,
+            state.canvas.engine.menu_anchor(),
+            (320, 200),
+            &items,
+        );
+        let (_, ocr_rect) = composer::menu_item_rects(metrics, panel, &items)
+            .into_iter()
+            .find(|(action, _)| *action == SelectionAction::Ocr)
+            .unwrap();
+        let (cx, cy) = ocr_rect.center();
+        assert!(!feed_event(
+            &mut state,
+            InputEvent::LeftDown { x: cx, y: cy },
+            hwnd
+        ));
+        assert!(feed_event(
+            &mut state,
+            InputEvent::LeftUp { x: cx, y: cy },
+            hwnd
+        ));
+        // 取字与「标注」一样提交区域,但会话层据此置 pending_ocr 自动进入取字。
+        assert_eq!(
+            state.outcome,
+            Some(RegionOutcome::Ocr(
+                PhysicalRect {
+                    x: 40,
+                    y: 30,
+                    width: 161,
+                    height: 91
+                },
+                Vec::new()
+            ))
+        );
     }
 
     #[test]

@@ -128,9 +128,10 @@ pub async fn confirm_window(app: AppHandle, window_id: String) -> Result<(), Cap
         .map_err(|_| CaptureError::api("error.capture.thread_failed"))?
 }
 
-/// Quiet completion with an immediate action on the cropped region (R3):
-/// the unannotated PNG reaches the clipboard, no preview window opens, and
-/// the session keeps the frame for a short TTL while the action runs.
+/// Quiet completion with an immediate copy/save/pin action on the cropped
+/// region (R3): the unannotated PNG reaches the clipboard for Copy, no preview
+/// window opens, and the session keeps the frame for a short TTL while the
+/// action runs. R2:取字不在此列,改走工作区覆盖层。
 /// 命令层只做参数解包,守卫与动作分发全部委托会话层:只有活动
 /// overlay 会话允许静默裁剪,idle-with-frame(TTL 保留帧)期间的
 /// 重复 invoke 在 `session::finish_region_with` 内被拒绝。
@@ -164,7 +165,6 @@ async fn run_quiet_action(app: &AppHandle, action: QuietAction) {
         // 选区操作条贴图:不经前端、不带标注;成功无提示(贴图窗即反馈),失败 toast。
         QuietAction::Pin => crate::pin::pin_retained(app),
         QuietAction::Save => save_quiet_frame(app).await,
-        QuietAction::Ocr => ocr_quiet_frame(app).await,
     }
 }
 
@@ -194,27 +194,6 @@ async fn save_quiet_frame(app: &AppHandle) {
             ui::show_toast_key_params(app, "toast.saved", &[("name", name)]);
         }
         Ok(_) => {}
-        Err(message) => ui::show_toast(app, &message),
-    }
-}
-
-/// Offline OCR over the retained quiet frame, copying the full text to the
-/// clipboard with toast feedback (empty results included). 首次取字要加载模型,
-/// 先给不自动消失的进行中提示(R11);识别结果与失败提示替换该 toast。
-async fn ocr_quiet_frame(app: &AppHandle) {
-    ui::show_progress_toast_key(app, "toast.ocr_progress");
-    match crate::ocr::recognize_preview(app.clone()).await {
-        Ok(_) => match crate::ocr::copy_ocr_all(app.clone()) {
-            Ok(text) => {
-                let chars = text.chars().count();
-                ui::show_toast_key_params(
-                    app,
-                    "toast.ocr_copied",
-                    &[("chars", &chars.to_string())],
-                );
-            }
-            Err(message) => ui::show_toast(app, &message),
-        },
         Err(message) => ui::show_toast(app, &message),
     }
 }

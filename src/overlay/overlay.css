@@ -202,6 +202,22 @@
   display: none;
 }
 
+/* R2:冻结帧工作区取字面板:浮在画面右侧,不参与画布布局。 */
+.overlay-root > .ocr-panel {
+  position: absolute;
+  top: 64px;
+  right: 18px;
+  z-index: 4;
+  width: min(320px, 42vw);
+  max-height: calc(100% - 92px);
+  background: var(--panel);
+  pointer-events: auto;
+}
+
+.overlay-root > .ocr-panel[hidden] {
+  display: none;
+}
+
 /* Wayland 网页覆盖层的能力说明入口(R13):不伪造操作条/放大镜/取色。*/
 .overlay-capabilities {
   pointer-events: auto;

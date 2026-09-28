@@ -6,31 +6,18 @@ import {
   clampFloatingPanel,
   mountAnnotationEditor,
   readAnnotationDefaults,
-  resolveCanvasColor,
   type Annotation,
   type AnnotationEditor,
 } from "../annotation";
 import { applyTranslations, t, type CatalogKey } from "../i18n";
 import { icons } from "../icons";
+import { mountOcrModel, type OcrModel } from "../ocr";
 import "./preview.css";
 
 interface PreviewFrame {
   width: number;
   height: number;
   scale: number;
-}
-
-interface TextSpan {
-  text: string;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-interface OcrDocument {
-  spans: TextSpan[];
-  fullText: string;
 }
 
 type NoteKind = "success" | "feedback" | "error";
@@ -49,9 +36,6 @@ const SAVE_QUALITIES: Array<{
   { value: "medium", labelKey: "preview.quality.medium", titleKey: "preview.quality.medium_title" },
   { value: "low", labelKey: "preview.quality.low", titleKey: "preview.quality.low_title" },
 ];
-
-const FALLBACK_OCR_HL = "#0ea5e9";
-const FALLBACK_OCR_HL_STRONG = "#0369a1";
 
 export function mountPreview(root: HTMLElement): () => void {
   root.className = "preview-root";
@@ -96,25 +80,6 @@ export function mountPreview(root: HTMLElement): () => void {
           <canvas></canvas>
         </div>
       </div>
-      <aside class="ocr-panel" data-ocr-panel hidden data-tauri-drag-region="false" data-i18n-aria-label="preview.ocr_panel.text" aria-label="识别文本">
-        <div class="ocr-panel-bar">
-          <h2 data-i18n="preview.ocr_panel.title">识别结果</h2>
-          <button type="button" class="icon-btn" data-action="close-ocr-panel" data-i18n-aria-label="preview.ocr_panel.close" aria-label="关闭结果面板" data-tauri-drag-region="false">${icons.close}</button>
-        </div>
-        <div class="ocr-panel-search">
-          <input type="search" class="ocr-panel-query" data-ocr-search data-i18n-placeholder="preview.ocr_panel.search" data-i18n-aria-label="preview.ocr_panel.search" placeholder="搜索关键词" aria-label="搜索关键词" autocomplete="off" spellcheck="false" data-tauri-drag-region="false" />
-          <div class="ocr-panel-nav">
-            <span class="ocr-panel-count" data-ocr-search-count aria-live="polite"></span>
-            <button type="button" data-action="ocr-search-prev" data-i18n="preview.ocr_panel.prev" disabled>上一处</button>
-            <button type="button" data-action="ocr-search-next" data-i18n="preview.ocr_panel.next" disabled>下一处</button>
-          </div>
-        </div>
-        <div class="ocr-panel-text" data-ocr-text tabindex="0"></div>
-        <div class="ocr-panel-actions">
-          <button type="button" data-action="copy-ocr-fragment" data-i18n="preview.ocr_panel.copy_fragment">复制片段</button>
-          <button type="button" data-action="copy-ocr-all" data-i18n="preview.ocr_panel.copy_all">复制全部</button>
-        </div>
-      </aside>
     </div>
   `;
 
@@ -122,6 +87,7 @@ export function mountPreview(root: HTMLElement): () => void {
   const outputEl = root.querySelector("[data-beautify-output]");
   const note = root.querySelector(".preview-note");
   const frameEl = root.querySelector(".preview-frame");
+  const stageEl = root.querySelector(".preview-stage");
   const toolbarEl = root.querySelector("[data-annotation-toolbar]");
   const copyAllBtn = root.querySelector("[data-action=copy-ocr-all]");
   const ocrBtn = root.querySelector("[data-tool=ocr]");
@@ -130,17 +96,12 @@ export function mountPreview(root: HTMLElement): () => void {
   const saveQualityRoot = root.querySelector("[data-save-quality-root]");
   const saveQualityPanel = root.querySelector("[data-save-quality-panel]");
   const saveQualityToggle = root.querySelector("[data-action=toggle-quality]");
-  const ocrPanel = root.querySelector("[data-ocr-panel]");
-  const ocrSearch = root.querySelector("[data-ocr-search]");
-  const ocrSearchCount = root.querySelector("[data-ocr-search-count]");
-  const ocrPanelText = root.querySelector("[data-ocr-text]");
-  const ocrSearchPrev = root.querySelector("[data-action=ocr-search-prev]");
-  const ocrSearchNext = root.querySelector("[data-action=ocr-search-next]");
   if (
     !(canvas instanceof HTMLCanvasElement) ||
     !(outputEl instanceof HTMLElement) ||
     !(note instanceof HTMLElement) ||
     !(frameEl instanceof HTMLElement) ||
+    !(stageEl instanceof HTMLElement) ||
     !(toolbarEl instanceof HTMLElement) ||
     !(copyAllBtn instanceof HTMLButtonElement) ||
     !(ocrBtn instanceof HTMLButtonElement) ||
@@ -148,13 +109,7 @@ export function mountPreview(root: HTMLElement): () => void {
     !(updatePinBtn instanceof HTMLButtonElement) ||
     !(saveQualityRoot instanceof HTMLElement) ||
     !(saveQualityPanel instanceof HTMLElement) ||
-    !(saveQualityToggle instanceof HTMLButtonElement) ||
-    !(ocrPanel instanceof HTMLElement) ||
-    !(ocrSearch instanceof HTMLInputElement) ||
-    !(ocrSearchCount instanceof HTMLElement) ||
-    !(ocrPanelText instanceof HTMLElement) ||
-    !(ocrSearchPrev instanceof HTMLButtonElement) ||
-    !(ocrSearchNext instanceof HTMLButtonElement)
+    !(saveQualityToggle instanceof HTMLButtonElement)
   ) {
     return () => undefined;
   }
@@ -163,41 +118,11 @@ export function mountPreview(root: HTMLElement): () => void {
     return () => undefined;
   }
 
-  const rootStyle = getComputedStyle(root);
-  const ocrHl = resolveCanvasColor(rootStyle.getPropertyValue("--ocr-hl"), FALLBACK_OCR_HL);
-  const ocrHlStrong = resolveCanvasColor(
-    rootStyle.getPropertyValue("--ocr-hl-strong"),
-    FALLBACK_OCR_HL_STRONG,
-  );
-  const ocrColors = {
-    hl: ocrHl,
-    hlStrong: ocrHlStrong,
-    fillWeak: withAlpha(ocrHl, 0.12),
-    fillStrong: withAlpha(ocrHl, 0.38),
-    fillRubber: withAlpha(ocrHl, 0.08),
-    strokeWeak: withAlpha(ocrHl, 0.55),
-    strokeStrong: withAlpha(ocrHlStrong, 0.95),
-    strokeRubber: withAlpha(ocrHlStrong, 0.9),
-  };
-
   let frame: PreviewFrame | null = null;
   let source: HTMLCanvasElement | null = null;
-  // R21:标注层(共享模块)持有图元/撤销栈/文字编辑;这里只保留取字与导出动作。
+  // R21:标注层(共享模块)持有图元/撤销栈/文字编辑;R2:取字走共享 OCR 模型。
   let editor: AnnotationEditor | null = null;
-  let ocrActive = false;
-  let ocrDoc: OcrDocument | null = null;
-  let ocrSelected: number[] = [];
-  let ocrDragging = false;
-  let ocrStart: Point | null = null;
-  let ocrCurrent: Point | null = null;
-  let ocrGen = 0;
-  // R9:OCR 结果面板去门控常开;关闭面板只藏展示,不改变按点/按框/全部复制。
-  // 用户关闭面板后清掉展示;下一次识别成功才再次出现,且只显示最新全文。
-  let ocrPanelDismissed = true;
-  let ocrPanelRendered = "";
-  let ocrMatches: OcrPanelMatch[] = [];
-  let ocrMatchIndex = 0;
-  let ocrSearchGen = 0;
+  let ocrModel: OcrModel | null = null;
   let busy = false;
   // 提示条的来源:词条键可在语言切换后重渲染,不透明文案(宿主错误串)保持原样。
   let noteSource: { key: CatalogKey | null; params?: Record<string, string | number>; text: string } | null =
@@ -286,11 +211,7 @@ export function mountPreview(root: HTMLElement): () => void {
     ctx.drawImage(source, 0, 0);
     editor?.paint(ctx);
     applyBeautifyChrome();
-    if (ocrActive && ocrDoc) {
-      const rubber =
-        ocrDragging && ocrStart && ocrCurrent ? normalizeRect(ocrStart, ocrCurrent) : null;
-      paintOcr(ctx, ocrDoc.spans, ocrSelected, rubber, ocrColors);
-    }
+    ocrModel?.paint(ctx);
   };
 
   const physicalPoint = (event: MouseEvent): Point => {
@@ -303,8 +224,24 @@ export function mountPreview(root: HTMLElement): () => void {
     };
   };
 
-  const syncCopyAll = (): void => {
-    copyAllBtn.hidden = !ocrActive || !ocrDoc || ocrDoc.spans.length === 0;
+  // 取字工具按钮与顶部「复制全部」随共享模型状态同步;退出取字后把画布工具
+  // 标记与工具条高亮还给标注编辑器当前工具,并撤掉取字提示。
+  let ocrWasActive = false;
+  let ocrNoticeActive = false;
+  const syncOcrToolbar = (): void => {
+    const active = ocrModel?.active === true;
+    ocrBtn.classList.toggle("active", active);
+    copyAllBtn.hidden = !active || (ocrModel?.document()?.spans.length ?? 0) === 0;
+    if (!active && ocrWasActive) {
+      editor?.setTool(editor.tool());
+      if (ocrNoticeActive) {
+        ocrNoticeActive = false;
+        setNoteSource(copiedSource, copiedKind);
+      }
+    }
+    ocrWasActive = active;
+    root.dataset.tool = active ? "ocr" : (editor?.tool() ?? "arrow");
+    redraw();
   };
 
   const syncWritebackUi = (): void => {
@@ -403,7 +340,7 @@ export function mountPreview(root: HTMLElement): () => void {
     textHost: frameEl,
     frame: () => frame,
     redraw,
-    isEditable: () => !ocrActive,
+    isEditable: () => ocrModel?.active !== true,
     onToolHint: (hint) => {
       if (hint) {
         setNoteKey(hint.key, hint.params);
@@ -412,13 +349,8 @@ export function mountPreview(root: HTMLElement): () => void {
       }
     },
     onToolChange: () => {
-      ocrBtn.classList.remove("active");
-      if (ocrActive) {
-        ocrActive = false;
-        copyAllBtn.hidden = true;
-        renderOcrPanel();
-        redraw();
-      }
+      // 手动切回标注工具即退出取字,取字结束恢复标注/复制/保存路径。
+      ocrModel?.deactivate();
     },
     // 样式持久化失败等:沿用既有提示条错误呈现,不静默丢失。
     onError: (error) => {
@@ -430,280 +362,31 @@ export function mountPreview(root: HTMLElement): () => void {
     },
   });
 
-  const clearOcrPanelView = (): void => {
-    ocrSearchGen += 1;
-    ocrPanelRendered = "";
-    ocrMatches = [];
-    ocrMatchIndex = 0;
-    ocrSearch.value = "";
-    ocrPanelText.replaceChildren();
-    ocrSearchCount.textContent = "";
-    ocrSearchPrev.disabled = true;
-    ocrSearchNext.disabled = true;
-    ocrPanel.hidden = true;
-  };
-
-  const syncSearchStatus = (): void => {
-    const query = ocrSearch.value.trim();
-    if (!query) {
-      ocrSearchCount.textContent = "";
-    } else if (ocrMatches.length === 0) {
-      ocrSearchCount.textContent = t("preview.ocr_panel.no_match");
-    } else {
-      ocrSearchCount.textContent = t("preview.ocr_panel.match_count", {
-        current: ocrMatchIndex + 1,
-        total: ocrMatches.length,
-      });
-    }
-    const canStep = ocrMatches.length > 0;
-    ocrSearchPrev.disabled = !canStep;
-    ocrSearchNext.disabled = !canStep;
-  };
-
-  const paintPanelText = (text: string, matches: OcrPanelMatch[], current: number): void => {
-    const chars = Array.from(text);
-    ocrPanelText.replaceChildren();
-    if (matches.length === 0) {
-      ocrPanelText.textContent = text;
-      return;
-    }
-    let cursor = 0;
-    matches.forEach((match, index) => {
-      const start = clamp(match.start, 0, chars.length);
-      const end = clamp(match.end, start, chars.length);
-      if (start > cursor) {
-        ocrPanelText.append(document.createTextNode(chars.slice(cursor, start).join("")));
+  // R2:共享取字模型(结果面板 + 图上三态 + 显式复制)。面板挂在预览舞台,
+  // 与标注编辑器的 isEditable 互斥:取字期间画布输入只给取字。
+  ocrModel = mountOcrModel({
+    host: stageEl,
+    notice: (message, kind) => {
+      ocrNoticeActive = true;
+      if (kind === "success") {
+        setNote(message, "success");
+      } else if (kind === "error") {
+        setNote(message, "error");
+      } else {
+        setNote(message);
       }
-      const mark = document.createElement("mark");
-      if (index === current) {
-        mark.className = "is-current";
-      }
-      mark.textContent = chars.slice(start, end).join("");
-      ocrPanelText.append(mark);
-      cursor = end;
-    });
-    if (cursor < chars.length) {
-      ocrPanelText.append(document.createTextNode(chars.slice(cursor).join("")));
-    }
-    ocrPanelText.querySelector("mark.is-current")?.scrollIntoView({ block: "nearest" });
-  };
-
-  // 只替换全文,不把上一次结果拼到后面。未识别时面板不出现。
-  const renderOcrPanel = (): void => {
-    const text = ocrDoc?.fullText ?? "";
-    const visible = ocrActive && !ocrPanelDismissed && text.trim().length > 0;
-    if (!visible) {
-      ocrPanel.hidden = true;
-      return;
-    }
-    ocrPanel.hidden = false;
-    if (ocrPanelRendered !== text) {
-      ocrSearchGen += 1;
-      ocrPanelRendered = text;
-      ocrSearch.value = "";
-      ocrMatches = [];
-      ocrMatchIndex = 0;
-      paintPanelText(text, [], -1);
-      syncSearchStatus();
-    }
-  };
-
-  const closeOcrPanel = (): void => {
-    ocrPanelDismissed = true;
-    clearOcrPanelView();
-    window.getSelection()?.removeAllRanges();
-  };
-
-  const applyOcrSearch = async (): Promise<void> => {
-    const token = ++ocrSearchGen;
-    const text = ocrDoc?.fullText ?? "";
-    const query = ocrSearch.value;
-    if (ocrPanelDismissed || !text.trim() || !query.trim()) {
-      ocrMatches = [];
-      ocrMatchIndex = 0;
-      if (text.trim() && !ocrPanelDismissed) {
-        paintPanelText(text, [], -1);
-      }
-      syncSearchStatus();
-      return;
-    }
-    try {
-      const found = await invoke<OcrPanelMatch[]>("search_ocr_panel", { query });
-      if (token !== ocrSearchGen || ocrDoc?.fullText !== text) {
-        return;
-      }
-      ocrMatches = found;
-      ocrMatchIndex = 0;
-      paintPanelText(text, found, found.length > 0 ? 0 : -1);
-      syncSearchStatus();
-    } catch (error) {
-      if (token !== ocrSearchGen) {
-        return;
-      }
-      setNote(invokeError(error, t("preview.error.ocr_fallback")), "error");
-    }
-  };
-
-  const stepOcrMatch = (delta: number): void => {
-    if (ocrMatches.length === 0) {
-      return;
-    }
-    const text = ocrDoc?.fullText ?? "";
-    ocrMatchIndex = (ocrMatchIndex + delta + ocrMatches.length) % ocrMatches.length;
-    paintPanelText(text, ocrMatches, ocrMatchIndex);
-    syncSearchStatus();
-  };
+    },
+    onChange: syncOcrToolbar,
+  });
 
   const activateOcr = (): void => {
+    if (ocrModel?.active) {
+      return;
+    }
     editor?.commitText();
     editor?.deactivateTool();
     editor?.clearSelection();
-    ocrActive = true;
-    ocrBtn.classList.add("active");
-    root.dataset.tool = "ocr";
-    ocrSelected = [];
-    ocrCurrent = null;
-    ocrStart = null;
-    ocrDragging = false;
-    syncCopyAll();
-    // 关闭面板后再进入取字会重新识别,避免把上次全文留在面板里。
-    if (!ocrDoc || ocrPanelDismissed) {
-      void runOcr();
-    } else {
-      renderOcrPanel();
-      if (!note.classList.contains("is-error")) {
-        setNoteKey("preview.note.ocr_hint");
-      }
-    }
-    redraw();
-  };
-
-  const runOcr = async (): Promise<void> => {
-    if (busy) {
-      return;
-    }
-    const token = ++ocrGen;
-    busy = true;
-    ocrDoc = null;
-    ocrSelected = [];
-    ocrPanelDismissed = true;
-    clearOcrPanelView();
-    syncCopyAll();
-    setNoteKey("preview.note.ocr_running");
-    redraw();
-    try {
-      const doc = await invoke<OcrDocument>("recognize_preview");
-      if (token !== ocrGen) {
-        return;
-      }
-      if (!doc.fullText.trim()) {
-        ocrDoc = null;
-        syncCopyAll();
-        setNote(t("preview.error.no_text"), "error");
-        redraw();
-        return;
-      }
-      ocrDoc = doc;
-      ocrPanelDismissed = false;
-      syncCopyAll();
-      setNoteKey("preview.note.ocr_hint");
-      renderOcrPanel();
-      redraw();
-    } catch (error) {
-      if (token !== ocrGen) {
-        return;
-      }
-      ocrDoc = null;
-      ocrPanelDismissed = true;
-      clearOcrPanelView();
-      syncCopyAll();
-      setNote(invokeError(error, t("preview.error.ocr_fallback")), "error");
-      redraw();
-    } finally {
-      if (token === ocrGen) {
-        busy = false;
-      }
-    }
-  };
-
-  const copyOcrSelection = async (startPoint: Point, endPoint: Point): Promise<void> => {
-    if (busy) {
-      setNoteKey("preview.note.busy");
-      return;
-    }
-    if (!ocrDoc) {
-      return;
-    }
-    busy = true;
-    try {
-      const drag = Math.hypot(endPoint.x - startPoint.x, endPoint.y - startPoint.y);
-      const copiedText =
-        drag < 4
-          ? await invoke<string>("copy_ocr_point", { x: endPoint.x, y: endPoint.y })
-          : await invoke<string>("copy_ocr_rect", normalizeRect(startPoint, endPoint));
-      const snippet = copiedText.length > 24 ? `${copiedText.slice(0, 24)}…` : copiedText;
-      setNoteKey("preview.note.ocr_copied", { snippet }, "success");
-    } catch (error) {
-      setNote(invokeError(error, t("preview.error.no_selection")), "error");
-    } finally {
-      busy = false;
-    }
-  };
-
-  const copyOcrAll = async (): Promise<void> => {
-    if (busy) {
-      setNoteKey("preview.note.busy");
-      return;
-    }
-    busy = true;
-    try {
-      await invoke<string>("copy_ocr_all");
-      setNoteKey("preview.note.ocr_all_copied", undefined, "success");
-    } catch (error) {
-      setNote(invokeError(error, t("preview.error.no_text")), "error");
-    } finally {
-      busy = false;
-    }
-  };
-
-  const selectedPanelFragment = (): string | null => {
-    const selection = window.getSelection();
-    if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
-      return null;
-    }
-    const node = selection.anchorNode;
-    if (!node || !ocrPanelText.contains(node)) {
-      return null;
-    }
-    const text = selection.toString().replace(/\r\n/g, "\n");
-    return text.trim() ? text : null;
-  };
-
-  const copyOcrFragment = async (): Promise<void> => {
-    if (busy) {
-      setNoteKey("preview.note.busy");
-      return;
-    }
-    if (!ocrDoc) {
-      return;
-    }
-    const selected = selectedPanelFragment();
-    const current = ocrMatches[ocrMatchIndex];
-    const text = selected ?? current?.fragment ?? "";
-    if (!text.trim()) {
-      setNoteKey("preview.error.no_selection", undefined, "error");
-      return;
-    }
-    busy = true;
-    try {
-      const copied = await invoke<string>("copy_ocr_fragment", { text });
-      const snippet = copied.length > 24 ? `${copied.slice(0, 24)}…` : copied;
-      setNoteKey("preview.note.ocr_fragment_copied", { snippet }, "success");
-    } catch (error) {
-      setNote(invokeError(error, t("preview.error.no_selection")), "error");
-    } finally {
-      busy = false;
-    }
+    ocrModel?.activate();
   };
 
   const copyBtn = root.querySelector<HTMLButtonElement>("[data-action=copy]");
@@ -833,17 +516,11 @@ export function mountPreview(root: HTMLElement): () => void {
   };
 
   canvas.addEventListener("mousedown", (event) => {
-    if (event.button !== 0 || !frame || !ocrActive || !ocrDoc) {
+    if (event.button !== 0 || !frame || ocrModel?.active !== true) {
       return;
     }
     event.preventDefault();
-    const point = physicalPoint(event);
-    ocrDragging = true;
-    ocrStart = point;
-    ocrCurrent = point;
-    const hit = indexAtPoint(ocrDoc.spans, point.x, point.y);
-    ocrSelected = hit === -1 ? [] : [hit];
-    redraw();
+    ocrModel.pointerDown(physicalPoint(event));
   });
 
   // 取字用右键:共享标注层不接管取字工具,这里兜底阻止浏览器菜单。
@@ -852,31 +529,17 @@ export function mountPreview(root: HTMLElement): () => void {
   });
 
   window.addEventListener("mousemove", (event) => {
-    if (!ocrDragging || !ocrStart || !ocrDoc) {
+    if (ocrModel?.active !== true) {
       return;
     }
-    ocrCurrent = physicalPoint(event);
-    const rubber = normalizeRect(ocrStart, ocrCurrent);
-    if (Math.hypot(ocrCurrent.x - ocrStart.x, ocrCurrent.y - ocrStart.y) < 4) {
-      const hit = indexAtPoint(ocrDoc.spans, ocrCurrent.x, ocrCurrent.y);
-      ocrSelected = hit === -1 ? [] : [hit];
-    } else {
-      ocrSelected = indicesInRect(ocrDoc.spans, rubber);
-    }
-    redraw();
+    ocrModel.pointerMove(physicalPoint(event));
   });
 
   window.addEventListener("mouseup", () => {
-    if (!ocrDragging || !ocrStart || !ocrCurrent) {
+    if (ocrModel?.active !== true) {
       return;
     }
-    ocrDragging = false;
-    const from = ocrStart;
-    const to = ocrCurrent;
-    ocrStart = null;
-    ocrCurrent = null;
-    redraw();
-    void copyOcrSelection(from, to);
+    ocrModel.pointerUp();
   });
 
   root.addEventListener("click", (event) => {
@@ -902,15 +565,7 @@ export function mountPreview(root: HTMLElement): () => void {
     if (button.dataset.action === "copy") {
       void copy();
     } else if (button.dataset.action === "copy-ocr-all") {
-      void copyOcrAll();
-    } else if (button.dataset.action === "copy-ocr-fragment") {
-      void copyOcrFragment();
-    } else if (button.dataset.action === "close-ocr-panel") {
-      closeOcrPanel();
-    } else if (button.dataset.action === "ocr-search-prev") {
-      stepOcrMatch(-1);
-    } else if (button.dataset.action === "ocr-search-next") {
-      stepOcrMatch(1);
+      void ocrModel?.copyAll();
     } else if (button.dataset.action === "save") {
       void save();
     } else if (button.dataset.action === "pin") {
@@ -988,7 +643,7 @@ export function mountPreview(root: HTMLElement): () => void {
   });
 
   // 标注模块已处理编辑器/菜单/面板/选中与撤销快捷键(Escape/Delete/Ctrl+Z);
-  // 这里只保留取字、保存、复制与关闭预览。
+  // 这里保留取字(Esc 退出、Ctrl+A 全选、Ctrl+C 复制所选)、保存、复制与关闭。
   window.addEventListener("keydown", (event) => {
     if (event.defaultPrevented || event.isComposing || event.keyCode === 229) {
       return;
@@ -997,6 +652,11 @@ export function mountPreview(root: HTMLElement): () => void {
       if (!saveQualityPanel.hidden) {
         event.preventDefault();
         toggleQualityPanel(false, true);
+        return;
+      }
+      // R2:取字中先退出取字,再按一次才关预览;退出后恢复标注/复制/保存路径。
+      if (ocrModel?.deactivate()) {
+        event.preventDefault();
         return;
       }
       // 走 closePreview 统一入口:invoke 失败有错误提示而不是静默。
@@ -1009,6 +669,20 @@ export function mountPreview(root: HTMLElement): () => void {
       if (key === "s") {
         event.preventDefault();
         void save();
+        return;
+      }
+      // R2:取字中的 Ctrl+C/Ctrl+A 作用于识别文本;搜索框内的原生复制放行。
+      if (ocrModel?.active === true && document.activeElement instanceof HTMLInputElement) {
+        return;
+      }
+      if (key === "c" && ocrModel?.active === true) {
+        event.preventDefault();
+        void ocrModel.copySelected();
+        return;
+      }
+      if (key === "a" && ocrModel?.active === true) {
+        event.preventDefault();
+        ocrModel.selectAll();
         return;
       }
       if (key === "c") {
@@ -1043,7 +717,7 @@ export function mountPreview(root: HTMLElement): () => void {
       return;
     }
     // 取字工具激活时,A/R/E/L/M/B/H/P/N/T 切回标注工具(与既有预览一致)。
-    if (ocrActive) {
+    if (ocrModel?.active === true) {
       const next = annotationToolForKey(key);
       if (next) {
         event.preventDefault();
@@ -1077,7 +751,6 @@ export function mountPreview(root: HTMLElement): () => void {
         }
         readBeautify(settings);
         editor?.setStyle(readAnnotationDefaults(settings));
-        renderOcrPanel();
         redraw();
       })
       .catch(() => undefined);
@@ -1223,25 +896,10 @@ export function mountPreview(root: HTMLElement): () => void {
   });
   chromeObserver.observe(frameEl);
 
-  ocrSearch.addEventListener("input", () => {
-    void applyOcrSearch();
-  });
-  ocrSearch.addEventListener("keydown", (event) => {
-    if (event.key !== "Enter" || event.isComposing) {
-      return;
-    }
-    event.preventDefault();
-    stepOcrMatch(event.shiftKey ? -1 : 1);
-  });
-  window.addEventListener("focus", renderOcrPanel);
-
   void listen("preview-reload", () => {
     // 新帧可能带入选区即时标注(R21):列表随帧在 loadPreview 中恢复,
-    // 这里先清空避免旧编辑态残留。识别面板也不保留上一帧的全文。
-    ocrDoc = null;
-    ocrSelected = [];
-    ocrPanelDismissed = true;
-    clearOcrPanelView();
+    // 这里先清空避免旧编辑态残留。取字模型也不保留上一帧的全文与选择。
+    ocrModel?.reset();
     editor?.setAnnotations([]);
     editor?.cancelText();
     // 携带说明随新帧重算(image.onload);先清空,避免加载失败时残留旧前缀。
@@ -1252,10 +910,11 @@ export function mountPreview(root: HTMLElement): () => void {
   });
   loadPreview();
 
-  // 语言切换:静态标签由 main 的 applyTranslations 更新;这里刷新标注模块
-  // 组合出的本地化标签,并重渲染来源可解析的提示条。
+  // 语言切换:静态标签由 main 的 applyTranslations 更新;这里刷新标注模块与
+  // 取字模型组合出的本地化标签,并重渲染来源可解析的提示条。
   const refreshOptionLabels = (): void => {
     editor?.refreshLabels();
+    ocrModel?.refreshLabels();
     saveQualityRoot.querySelectorAll<HTMLButtonElement>("[data-save-quality]").forEach((button) => {
       const option = SAVE_QUALITIES.find((item) => item.value === button.dataset.saveQuality);
       if (option) {
@@ -1269,14 +928,7 @@ export function mountPreview(root: HTMLElement): () => void {
   return () => {
     refreshOptionLabels();
     renderNote();
-    syncSearchStatus();
   };
-}
-
-interface OcrPanelMatch {
-  start: number;
-  end: number;
-  fragment: string;
 }
 
 type Point = { x: number; y: number };
@@ -1356,112 +1008,6 @@ function fileNameFromPath(path: string | null | undefined): string | null {
   const parts = path.split(/[\\/]/);
   const name = parts[parts.length - 1];
   return name.length > 0 ? name : null;
-}
-
-function normalizeRect(a: Point, b: Point): { x: number; y: number; width: number; height: number } {
-  const x = Math.min(a.x, b.x);
-  const y = Math.min(a.y, b.y);
-  return { x, y, width: Math.abs(a.x - b.x), height: Math.abs(a.y - b.y) };
-}
-
-function indexAtPoint(spans: TextSpan[], x: number, y: number): number {
-  let best = -1;
-  let area = Number.POSITIVE_INFINITY;
-  for (let i = 0; i < spans.length; i += 1) {
-    const span = spans[i];
-    if (x < span.x || x > span.x + span.width || y < span.y || y > span.y + span.height) {
-      continue;
-    }
-    const nextArea = span.width * span.height;
-    if (nextArea < area) {
-      area = nextArea;
-      best = i;
-    }
-  }
-  return best;
-}
-
-function indicesInRect(
-  spans: TextSpan[],
-  rect: { x: number; y: number; width: number; height: number },
-): number[] {
-  const x1 = rect.x + rect.width;
-  const y1 = rect.y + rect.height;
-  return spans
-    .map((span, index) => ({ span, index }))
-    .filter(
-      ({ span }) => span.x < x1 && span.x + span.width > rect.x && span.y < y1 && span.y + span.height > rect.y,
-    )
-    .map(({ index }) => index);
-}
-
-interface OcrColors {
-  hl: string;
-  hlStrong: string;
-  fillWeak: string;
-  fillStrong: string;
-  fillRubber: string;
-  strokeWeak: string;
-  strokeStrong: string;
-  strokeRubber: string;
-}
-
-function paintOcr(
-  ctx: CanvasRenderingContext2D,
-  spans: TextSpan[],
-  selected: number[],
-  rubber: { x: number; y: number; width: number; height: number } | null,
-  colors: OcrColors,
-): void {
-  ctx.save();
-  const selectedSet = new Set(selected);
-  for (let i = 0; i < spans.length; i += 1) {
-    const span = spans[i];
-    const on = selectedSet.has(i);
-    ctx.fillStyle = on ? colors.fillStrong : colors.fillWeak;
-    ctx.strokeStyle = on ? colors.strokeStrong : colors.strokeWeak;
-    ctx.lineWidth = Math.max(1, ctx.canvas.width / 900);
-    ctx.beginPath();
-    ctx.rect(span.x, span.y, span.width, span.height);
-    ctx.fill();
-    ctx.stroke();
-  }
-  if (rubber && (rubber.width > 3 || rubber.height > 3)) {
-    ctx.fillStyle = colors.fillRubber;
-    ctx.strokeStyle = colors.strokeRubber;
-    ctx.setLineDash([6, 4]);
-    ctx.fillRect(rubber.x, rubber.y, rubber.width, rubber.height);
-    ctx.strokeRect(rubber.x, rubber.y, rubber.width, rubber.height);
-  }
-  ctx.restore();
-}
-
-function withAlpha(color: string, alpha: number): string {
-  let value = color.trim();
-  if (!/^rgba?\(/.test(value) && !/^#[0-9a-f]{3,8}$/i.test(value)) {
-    // 非 hex/rgb 形式(如 color-mix() 计算结果)先规范化为 rgb()
-    value = resolveCanvasColor(value, "");
-  }
-  const rgb = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/.exec(value);
-  if (rgb) {
-    return `rgba(${rgb[1]}, ${rgb[2]}, ${rgb[3]}, ${alpha})`;
-  }
-  const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})(?:[0-9a-f]{2})?$/i.exec(value);
-  if (hex) {
-    let body = hex[1];
-    if (body.length === 3) {
-      body = body
-        .split("")
-        .map((ch) => ch + ch)
-        .join("");
-    }
-    const r = parseInt(body.slice(0, 2), 16);
-    const g = parseInt(body.slice(2, 4), 16);
-    const b = parseInt(body.slice(4, 6), 16);
-    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-  }
-  // 解析失败回退固定 OCR 高亮蓝,保证高亮始终半透明
-  return `rgba(14, 165, 233, ${alpha})`;
 }
 
 function invokeError(error: unknown, fallback: string): string {

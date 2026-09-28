@@ -9,7 +9,8 @@ use super::buffer::{crop_rgba, encode_png, Frame};
 use super::error::CaptureError;
 use super::geometry::{
     crop_from_logical, monitor_at_physical, monitor_dest, monitor_key, stitch_views,
-    virtual_canvas, CanvasFault, LogicalRect, MonitorGeom, RgbaView, STITCH_BACKGROUND,
+    virtual_canvas, CanvasFault, LogicalRect, MonitorGeom, RgbaView, VirtualCanvas,
+    STITCH_BACKGROUND,
 };
 use super::hide::{
     grab_allowed, hide_not_presented_error, plan_delay, wait_compositor_presented,
@@ -224,14 +225,14 @@ pub enum FinishDisposition {
 }
 
 /// Actions a platform shell can request on a finished selection without
-/// opening the preview window (R3).
+/// opening a workspace (R3). R2 起「取字」不再走静默动作:它提交区域并置
+/// `pending_ocr` 打开工作区覆盖层,因此这里没有 Ocr。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum QuietAction {
     Copy,
     Save,
     Pin,
-    Ocr,
 }
 
 /// Retention window for the frame kept after a quiet finish.
@@ -878,26 +879,14 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
             start_scroll_session(app, rect, annotations, generation)
         }
         RegionOutcome::Preview(rect, annotations) | RegionOutcome::Annotate(rect, annotations) => {
-            let handle = app.clone();
-            tauri::async_runtime::spawn_blocking(move || {
-                commit_shell_region(
-                    &handle,
-                    RegionSelection {
-                        x: rect.x,
-                        y: rect.y,
-                        width: rect.width,
-                        height: rect.height,
-                    },
-                    annotations,
-                    false,
-                    generation,
-                )
-            })
-            .await
-            .map_err(|_| CaptureError::api("error.capture.thread_failed"))??;
-            Ok(())
+            commit_region_to_workspace(app, rect, annotations, false, generation).await
         }
-        // 复制/保存/贴图/取字在选区上直接完成,不打开编辑页。
+        // R2:壳上的「取字」不再静默复制;提交区域并置 `pending_ocr`,工作区
+        // 覆盖层打开后自动进入取字。取字前不写剪贴板(含不再先写 PNG)。
+        RegionOutcome::Ocr(rect, annotations) => {
+            commit_region_to_workspace(app, rect, annotations, true, generation).await
+        }
+        // 复制/保存/贴图在选区上直接完成,不打开工作区。
         RegionOutcome::Quiet(rect, action, annotations) => {
             finish_region_with(
                 app,
@@ -922,6 +911,36 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
             Ok(())
         }
     }
+}
+
+/// R2:原生壳把已确认区域交给工作区覆盖层。`pending_ocr` 为 true 时
+/// 覆盖层打开后自动进入取字;不写剪贴板、不打开预览。
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+async fn commit_region_to_workspace(
+    app: &AppHandle,
+    rect: super::geometry::PhysicalRect,
+    annotations: Vec<Annotation>,
+    pending_ocr: bool,
+    generation: u64,
+) -> Result<(), CaptureError> {
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        commit_shell_region(
+            &handle,
+            RegionSelection {
+                x: rect.x,
+                y: rect.y,
+                width: rect.width,
+                height: rect.height,
+            },
+            annotations,
+            pending_ocr,
+            generation,
+        )
+    })
+    .await
+    .map_err(|_| CaptureError::api("error.capture.thread_failed"))??;
+    Ok(())
 }
 
 /// R1:选区确认后交给滚动会话(固定区域周期抓取 + 垂直拼接 + 控制窗)。
@@ -1057,18 +1076,16 @@ async fn capture_fullscreen(app: &AppHandle, generation: u64) -> Result<(), Capt
     );
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let frame = match target {
-            FullscreenTarget::Pointer => {
-                let (frame, _) = grab_pointer_screen(&handle)?;
-                frame
-            }
+        // R2:全屏结果同样停在冻结帧工作区覆盖层;带上落点显示器几何供浮层定位。
+        let (frame, monitor) = match target {
+            FullscreenTarget::Pointer => grab_pointer_screen(&handle)?,
             FullscreenTarget::Monitor(key) => capture_keyed_monitor(&handle, &key)?,
             FullscreenTarget::All => capture_all_monitors(&handle)?,
         };
         if !session_matches_generation(&handle, generation) {
             return Ok(());
         }
-        deliver_fixed_frame(&handle, frame, Vec::new(), None, Some(generation))
+        deliver_fixed_frame(&handle, frame, Vec::new(), Some(monitor), Some(generation))
     })
     .await
     .map_err(|_| CaptureError::api("error.capture.thread_failed"))?
@@ -1150,7 +1167,7 @@ fn take_cursor_unavailable(app: &AppHandle) -> bool {
     })
 }
 
-fn capture_keyed_monitor(app: &AppHandle, key: &str) -> Result<Frame, CaptureError> {
+fn capture_keyed_monitor(app: &AppHandle, key: &str) -> Result<(Frame, MonitorGeom), CaptureError> {
     let monitors = tauri_monitors(app);
     let monitor = monitors
         .iter()
@@ -1159,10 +1176,10 @@ fn capture_keyed_monitor(app: &AppHandle, key: &str) -> Result<Frame, CaptureErr
         .ok_or_else(|| CaptureError::unavailable("error.capture.monitor_unavailable"))?;
     let (frame, outcome) = platform::capture_display(&monitor, &monitors, cursor_mode(app))?;
     note_cursor(app, outcome);
-    Ok(frame)
+    Ok((frame, monitor))
 }
 
-fn capture_all_monitors(app: &AppHandle) -> Result<Frame, CaptureError> {
+fn capture_all_monitors(app: &AppHandle) -> Result<(Frame, MonitorGeom), CaptureError> {
     let monitors = tauri_monitors(app);
     if monitors.is_empty() {
         return Err(CaptureError::unavailable(
@@ -1183,10 +1200,22 @@ fn capture_all_monitors(app: &AppHandle) -> Result<Frame, CaptureError> {
     capture_all_per_display(app, &monitors)
 }
 
+/// 拼接虚拟画布对应的落点几何:工作区覆盖层按它定位与定尺寸。
+fn virtual_monitor(canvas: &VirtualCanvas) -> MonitorGeom {
+    MonitorGeom::from_physical(
+        "virtual",
+        canvas.origin_x,
+        canvas.origin_y,
+        canvas.width,
+        canvas.height,
+        1.0,
+    )
+}
+
 fn capture_all_per_display(
     app: &AppHandle,
     monitors: &[MonitorGeom],
-) -> Result<Frame, CaptureError> {
+) -> Result<(Frame, MonitorGeom), CaptureError> {
     let canvas = virtual_canvas(monitors).map_err(canvas_error)?;
     let mode = cursor_mode(app);
     let mut frames = Vec::with_capacity(monitors.len());
@@ -1216,19 +1245,22 @@ fn capture_all_per_display(
     let rgba = stitch_views(&canvas, &layers, STITCH_BACKGROUND)
         .ok_or_else(|| CaptureError::unavailable("error.capture.stitch_failed"))?;
     note_cursor(app, outcome);
-    Ok(Frame {
-        width: canvas.width,
-        height: canvas.height,
-        rgba,
-        scale: 1.0,
-    })
+    Ok((
+        Frame {
+            width: canvas.width,
+            height: canvas.height,
+            rgba,
+            scale: 1.0,
+        },
+        virtual_monitor(&canvas),
+    ))
 }
 
 #[cfg(target_os = "linux")]
 fn capture_all_from_portal(
     app: &AppHandle,
     monitors: &[MonitorGeom],
-) -> Result<Frame, CaptureError> {
+) -> Result<(Frame, MonitorGeom), CaptureError> {
     let canvas = virtual_canvas(monitors).map_err(canvas_error)?;
     let desktop = platform::capture_portal_desktop()?;
     let outcome = match cursor_mode(app) {
@@ -1237,12 +1269,15 @@ fn capture_all_from_portal(
     };
     if desktop.width == canvas.width && desktop.height == canvas.height {
         note_cursor(app, outcome);
-        return Ok(Frame {
-            width: desktop.width,
-            height: desktop.height,
-            rgba: desktop.rgba,
-            scale: 1.0,
-        });
+        return Ok((
+            Frame {
+                width: desktop.width,
+                height: desktop.height,
+                rgba: desktop.rgba,
+                scale: 1.0,
+            },
+            virtual_monitor(&canvas),
+        ));
     }
     let mut frames = Vec::with_capacity(monitors.len());
     for monitor in monitors {
@@ -1280,12 +1315,15 @@ fn capture_all_from_portal(
     let rgba = stitch_views(&canvas, &layers, STITCH_BACKGROUND)
         .ok_or_else(|| CaptureError::unavailable("error.capture.stitch_unsupported"))?;
     note_cursor(app, outcome);
-    Ok(Frame {
-        width: canvas.width,
-        height: canvas.height,
-        rgba,
-        scale: 1.0,
-    })
+    Ok((
+        Frame {
+            width: canvas.width,
+            height: canvas.height,
+            rgba,
+            scale: 1.0,
+        },
+        virtual_monitor(&canvas),
+    ))
 }
 
 fn canvas_error(fault: CanvasFault) -> CaptureError {
@@ -1526,7 +1564,8 @@ pub fn confirm_region(
     finish_selection(app, selection, annotations, None)
 }
 
-/// 原生壳提交选区:不在壳上结束截图或打开预览,画面交给网页浮层。
+/// 原生壳提交选区:不在壳上结束截图或打开预览,画面交给网页浮层工作区。
+/// `pending_ocr` 让浮层打开后自动进入取字;提交失败时回滚该标记。
 fn commit_shell_region(
     app: &AppHandle,
     selection: RegionSelection,
@@ -1946,30 +1985,92 @@ fn cancel_internal(app: &AppHandle, expected: Option<u64>) -> Result<CancelOutco
     Ok(CancelOutcome::clean())
 }
 
-/// 已定画面的去向:浮层能挂上工作区动作时留在浮层,否则说明缺失并打开预览。
+/// 已定画面的去向(R2):浮层能挂上工作区动作时停在冻结帧工作区覆盖层
+/// (取字、复制、保存、贴图、进一步编辑都在这里);挂不上时退回预览。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkspaceRoute {
+    Overlay,
     Preview,
 }
 
-pub fn workspace_route(_hosted: bool) -> WorkspaceRoute {
-    WorkspaceRoute::Preview
+pub fn workspace_route(hosted: bool) -> WorkspaceRoute {
+    if hosted {
+        WorkspaceRoute::Overlay
+    } else {
+        WorkspaceRoute::Preview
+    }
 }
 
-/// 画面已经定下来:直接打开编辑页,不再盖一层全屏中间页。不写剪贴板。
+/// 画面已经定下来:默认停在冻结帧工作区覆盖层,不再直接打开编辑页;不写
+/// 剪贴板。覆盖层挂不上工作区动作(或没有落点显示器)时说明缺失并退回预览。
 fn deliver_fixed_frame(
     app: &AppHandle,
     frame: Frame,
     annotations: Vec<Annotation>,
-    _monitor: Option<MonitorGeom>,
+    monitor: Option<MonitorGeom>,
     expected: Option<u64>,
 ) -> Result<(), CaptureError> {
     if is_cancelled(app) || finish_generation_stale(app, expected) {
         return Err(CaptureError::cancelled());
     }
-    match workspace_route(true) {
-        WorkspaceRoute::Preview => open_workspace_preview(app, frame, annotations, expected),
+    let (mode, session_monitor, pending_ocr) = with_session(app, |session| {
+        let current = session.as_ref().ok_or_else(CaptureError::cancelled)?;
+        if current.cancelled || generation_mismatch(current, expected) {
+            return Err(CaptureError::cancelled());
+        }
+        Ok((current.mode, current.monitor.clone(), current.pending_ocr))
+    })?;
+    let monitor = monitor.or(session_monitor);
+    // R19:旧入口开关移除后工作区动作固定全开;分支保留给确实挂不上的宿主。
+    let capabilities = ui::OverlayCapabilities::hosted();
+    if workspace_route(capabilities.workspace_actions) == WorkspaceRoute::Preview {
+        ui::show_toast_key(app, "overlay.notice.workspace_unavailable");
+        return open_workspace_preview(app, frame, annotations, expected);
     }
+    let Some(monitor) = monitor else {
+        ui::show_toast_key(app, "overlay.notice.workspace_unavailable");
+        return open_workspace_preview(app, frame, annotations, expected);
+    };
+    let mut overlay = ui::overlay_payload(
+        mode,
+        &frame,
+        &monitor,
+        Vec::new(),
+        overlay_reduced_capabilities(mode, region_native_shell()),
+        capabilities,
+    )?;
+    overlay.fixed = true;
+    overlay.annotations = annotations;
+    overlay.pending_ocr = pending_ocr;
+    with_session_mut(app, |session| {
+        let current = session.as_mut().ok_or_else(CaptureError::cancelled)?;
+        if current.cancelled || generation_mismatch(current, expected) {
+            return Err(CaptureError::cancelled());
+        }
+        current.freeze = Some(frame.clone());
+        current.overlay = Some(overlay);
+        current.monitor = Some(monitor.clone());
+        current.windows.clear();
+        current.preview = None;
+        current.preview_opened = false;
+        Ok(())
+    })?;
+    if ui::open_overlay(app, &monitor).is_err() {
+        ui::show_toast_key(app, "overlay.notice.workspace_unavailable");
+        return open_workspace_preview(app, frame, annotations_from_overlay(app), expected);
+    }
+    Ok(())
+}
+
+/// 工作区覆盖层已装载的标注;打开失败退回预览时不能丢掉已画内容。
+fn annotations_from_overlay(app: &AppHandle) -> Vec<Annotation> {
+    with_session(app, |session| {
+        session
+            .as_ref()
+            .and_then(|current| current.overlay.as_ref())
+            .map(|overlay| overlay.annotations.clone())
+            .unwrap_or_default()
+    })
 }
 
 /// 进一步编辑,或已定画面进入编辑页:打开含当前标注的预览,不写剪贴板。
@@ -2034,12 +2135,18 @@ pub fn complete_workspace(
     Ok(())
 }
 
-/// 进一步编辑:关闭浮层,打开含当前标注的预览,不写剪贴板。
+/// 进一步编辑:关闭浮层,打开含当前标注的预览,不写剪贴板。R2:覆盖层
+/// 打开时已消费壳上的取字标记,预览不再重复自动识别。
 pub fn edit_workspace_further(
     app: &AppHandle,
     annotations: Vec<Annotation>,
 ) -> Result<(), CaptureError> {
     let frame = workspace_frame(app)?;
+    with_session_mut(app, |session| {
+        if let Some(current) = session.as_mut() {
+            current.pending_ocr = false;
+        }
+    });
     open_workspace_preview(app, frame, annotations, None)
 }
 
@@ -2416,7 +2523,7 @@ mod tests {
                     }
                     CaptureMode::Fullscreen => {
                         assert!(!steps.contains(&SessionStep::ShowOverlayOnFreeze));
-                        assert_eq!(workspace_route(true), WorkspaceRoute::Preview);
+                        assert_eq!(workspace_route(true), WorkspaceRoute::Overlay);
                     }
                     // R1:长截图无热键,不进入 `CaptureMode::ALL`。
                     CaptureMode::LongCapture => unreachable!("LongCapture is not a hotkey mode"),
@@ -2441,10 +2548,11 @@ mod tests {
     }
 
     #[test]
-    fn fullscreen_opens_the_edit_page() {
+    fn fullscreen_delivers_workspace_overlay() {
         let steps = session_steps(false, 0);
         assert!(!steps.contains(&SessionStep::ShowOverlayOnFreeze));
-        assert_eq!(workspace_route(true), WorkspaceRoute::Preview);
+        assert_eq!(workspace_route(true), WorkspaceRoute::Overlay);
+        assert_ne!(workspace_route(true), WorkspaceRoute::Preview);
     }
 
     #[test]
@@ -2498,6 +2606,25 @@ mod tests {
         assert!(session.pending_ocr);
         session.pending_ocr = false;
         assert!(!session.pending_ocr);
+    }
+
+    /// R2:静默动作不再包含取字;壳上的「取字」走工作区覆盖层而不是 Quiet 复制。
+    /// 旧前端/旧壳若仍发送 ocr 会被拒绝,不再有先写 PNG 再写文本的路径。
+    #[test]
+    fn quiet_actions_never_include_text_recognition() {
+        assert_eq!(
+            serde_json::from_str::<QuietAction>("\"copy\"").expect("copy stays quiet"),
+            QuietAction::Copy
+        );
+        assert_eq!(
+            serde_json::from_str::<QuietAction>("\"save\"").expect("save stays quiet"),
+            QuietAction::Save
+        );
+        assert_eq!(
+            serde_json::from_str::<QuietAction>("\"pin\"").expect("pin stays quiet"),
+            QuietAction::Pin
+        );
+        assert!(serde_json::from_str::<QuietAction>("\"ocr\"").is_err());
     }
 
     #[test]
@@ -2894,15 +3021,15 @@ mod tests {
     }
 
     #[test]
-    fn fixed_capture_opens_the_edit_page_and_ignores_saved_finish_settings() {
+    fn fixed_capture_stays_on_workspace_overlay_and_ignores_finish_settings() {
         let capture = crate::settings::CaptureSettings::default();
         assert_eq!(capture.delay_seconds, 0);
         let hosted = ui::OverlayCapabilities::hosted();
         assert!(hosted.workspace_actions);
-        assert_eq!(workspace_route(true), WorkspaceRoute::Preview);
+        assert_eq!(workspace_route(true), WorkspaceRoute::Overlay);
         assert_eq!(
             workspace_route(hosted.workspace_actions),
-            WorkspaceRoute::Preview
+            WorkspaceRoute::Overlay
         );
         let saved = serde_json::from_str::<crate::settings::CaptureSettings>(
             r#"{"delaySeconds":3,"autoCopy":true,"finishAction":"preview"}"#,
@@ -2914,19 +3041,21 @@ mod tests {
         )
         .expect("old quiet finish is ignored");
         assert_eq!(quiet.delay_seconds, 1);
-        assert_eq!(workspace_route(true), WorkspaceRoute::Preview);
+        assert_eq!(workspace_route(true), WorkspaceRoute::Overlay);
     }
 
     #[test]
-    fn unhosted_workspace_also_opens_the_edit_page() {
+    fn unhosted_workspace_falls_back_to_preview() {
         let unhosted = ui::OverlayCapabilities::unhosted();
         assert!(!unhosted.workspace_actions);
         assert_eq!(
             workspace_route(unhosted.workspace_actions),
             WorkspaceRoute::Preview
         );
+        // 挂得上的宿主不走预览回退。
         assert_eq!(workspace_route(false), WorkspaceRoute::Preview);
-        assert_eq!(workspace_route(true), WorkspaceRoute::Preview);
+        assert_eq!(workspace_route(true), WorkspaceRoute::Overlay);
+        assert_ne!(workspace_route(true), workspace_route(false));
     }
 
     #[test]

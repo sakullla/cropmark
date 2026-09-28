@@ -406,19 +406,6 @@ pub fn show_toast_key_params(app: &AppHandle, key: &str, params: &[(&str, &str)]
     );
 }
 
-/// 词条键形式的进行中提示(不自动消失):静默取字首次加载模型时保持可见,
-/// 直到结果到达被下一条 toast 替换(R11)。
-pub fn show_progress_toast_key(app: &AppHandle, key: &str) {
-    show_toast_source(
-        app,
-        ToastSource::Key {
-            key: key.into(),
-            params: Vec::new(),
-        },
-        None,
-    );
-}
-
 fn show_toast_source(app: &AppHandle, source: ToastSource, auto_hide: Option<Duration>) {
     let message = source.resolve().trim().to_string();
     if message.is_empty() {
@@ -966,6 +953,43 @@ mod tests {
         )
         .expect("payload builds");
         assert!(!full.reduced_capabilities);
+    }
+
+    #[test]
+    fn fixed_workspace_payload_carries_pending_ocr_camel_case() {
+        // R2:工作区覆盖层载荷必须携带 fixed/annotations/pendingOcr,
+        // 前端据此渲染工作区动作并在打开后自动进入取字。
+        let frame = Frame {
+            width: 4,
+            height: 4,
+            rgba: vec![9; 64],
+            scale: 1.0,
+        };
+        let monitor = MonitorGeom::from_physical("m", 0, 0, 4, 4, 1.0);
+        let mut payload = overlay_payload(
+            CaptureMode::Region,
+            &frame,
+            &monitor,
+            Vec::new(),
+            false,
+            OverlayCapabilities::hosted(),
+        )
+        .expect("payload builds");
+        payload.fixed = true;
+        payload.pending_ocr = true;
+        payload.annotations = vec![Annotation::Rect {
+            x: 1.0,
+            y: 2.0,
+            width: 3.0,
+            height: 4.0,
+            color: "#e11d48".into(),
+            stroke_width: None,
+        }];
+        let json = serde_json::to_value(&payload).expect("payload serializes");
+        assert_eq!(json["fixed"], serde_json::json!(true));
+        assert_eq!(json["pendingOcr"], serde_json::json!(true));
+        assert_eq!(json["annotations"][0]["type"], serde_json::json!("rect"));
+        assert_eq!(json["annotations"][0]["x"], serde_json::json!(1.0));
     }
 
     #[test]

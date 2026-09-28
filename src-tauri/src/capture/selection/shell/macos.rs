@@ -108,7 +108,10 @@ pub enum RegionOutcome {
     Preview(PhysicalRect, Vec<Annotation>),
     /// 操作条/菜单的「标注」动作:rect 强制走预览编辑器,不受静默完成配置影响。
     Annotate(PhysicalRect, Vec<Annotation>),
-    /// 操作条/菜单的 copy/save/pin/ocr 动作:rect 走 Quiet 完成路径并执行动作。
+    /// 操作条/菜单的「取字」动作:rect 提交工作区覆盖层并在打开后自动进入
+    /// 取字(R2);不在壳上写剪贴板。
+    Ocr(PhysicalRect, Vec<Annotation>),
+    /// 操作条/菜单的 copy/save/pin 动作:rect 走 Quiet 完成路径并执行动作。
     Quiet(PhysicalRect, QuietAction, Vec<Annotation>),
     /// R1 操作条/菜单的长截图动作:rect 交给会话层开始滚动会话。
     LongCapture(PhysicalRect, Vec<Annotation>),
@@ -1341,6 +1344,12 @@ fn feed_event(state: &mut ShellState, event: InputEvent, view: &SelectionView) {
                     ));
                 }
             }
+            // R2:取字提交区域,工作区覆盖层打开后自动进入取字。
+            SelectionAction::Ocr => {
+                if let Some(outcome) = ocr_outcome(&state.canvas.engine) {
+                    state.outcome = Some(outcome);
+                }
+            }
             // 标注工具条动作由引擎内部消费,不会到达这里;防御性忽略。
             SelectionAction::Tool(_)
             | SelectionAction::Mode(_)
@@ -1370,15 +1379,22 @@ fn annotate_outcome(engine: &SelectionEngine) -> Option<RegionOutcome> {
         .map(|rect| RegionOutcome::Annotate(rect, engine.annotations().to_vec()))
 }
 
-/// 操作条/菜单动作到静默完成动作的映射;标注/取消/复制色值与标注工具条
-/// 动作不在此列。
+/// R2:「取字」动作到壳结果的映射;与「标注」同形,会话层据此置 pending_ocr。
+fn ocr_outcome(engine: &SelectionEngine) -> Option<RegionOutcome> {
+    engine
+        .selection()
+        .map(|rect| RegionOutcome::Ocr(rect, engine.annotations().to_vec()))
+}
+
+/// 操作条/菜单动作到静默完成动作的映射;标注/取字/取消/复制色值与标注
+/// 工具条动作不在此列。
 fn quiet_action_for(action: SelectionAction) -> Option<QuietAction> {
     match action {
         SelectionAction::Copy => Some(QuietAction::Copy),
         SelectionAction::Save => Some(QuietAction::Save),
         SelectionAction::Pin => Some(QuietAction::Pin),
-        SelectionAction::Ocr => Some(QuietAction::Ocr),
         SelectionAction::Annotate
+        | SelectionAction::Ocr
         | SelectionAction::Cancel
         | SelectionAction::CopyColor
         | SelectionAction::Tool(_)
@@ -1794,13 +1810,25 @@ mod tests {
             quiet_action_for(SelectionAction::Pin),
             Some(QuietAction::Pin)
         );
-        assert_eq!(
-            quiet_action_for(SelectionAction::Ocr),
-            Some(QuietAction::Ocr)
-        );
+        // R2:取字不再是静默动作,它提交区域并打开工作区覆盖层。
+        assert_eq!(quiet_action_for(SelectionAction::Ocr), None);
         assert_eq!(quiet_action_for(SelectionAction::Annotate), None);
         assert_eq!(quiet_action_for(SelectionAction::Cancel), None);
         assert_eq!(quiet_action_for(SelectionAction::CopyColor), None);
+    }
+
+    #[test]
+    fn ocr_outcome_needs_a_selection_and_keeps_rect() {
+        let mut engine = SelectionEngine::new(320, 200, FeatureFlags::default());
+        assert_eq!(ocr_outcome(&engine), None);
+        engine.handle_event(InputEvent::LeftDown { x: 5, y: 6 });
+        engine.handle_event(InputEvent::PointerMove { x: 35, y: 46 });
+        engine.handle_event(InputEvent::LeftUp { x: 35, y: 46 });
+        let rect = engine.selection().unwrap();
+        assert_eq!(
+            ocr_outcome(&engine),
+            Some(RegionOutcome::Ocr(rect, Vec::new()))
+        );
     }
 
     #[test]

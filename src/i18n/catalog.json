@@ -1584,8 +1584,8 @@
     "en": "Pin re-annotation: confirm to update the pin; cancel leaves it unchanged."
   },
   "preview.note.ocr_hint": {
-    "zh-CN": "点选或划选文字，也可复制全部。",
-    "en": "Click or drag to select text, or copy everything."
+    "zh-CN": "点选或划选文字后复制所选或全部 · Ctrl+A 全选 · Ctrl+C 复制 · Esc 退出取字",
+    "en": "Click or drag to select text, then copy selected or all · Ctrl+A select all · Ctrl+C copy · Esc exits"
   },
   "preview.note.text_hint": {
     "zh-CN": "点在图上放置文字框，然后输入汉字。Enter 确认，Esc 取消。",
@@ -1666,6 +1666,10 @@
   "preview.ocr_panel.copy_fragment": {
     "zh-CN": "复制片段",
     "en": "Copy fragment"
+  },
+  "preview.ocr_panel.copy_selected": {
+    "zh-CN": "复制所选",
+    "en": "Copy selected"
   },
   "preview.ocr_panel.copy_all": {
     "zh-CN": "复制全部",
@@ -1810,6 +1814,10 @@
   "overlay.hint.annotate": {
     "zh-CN": "在画面上绘制标注 · Esc 取消",
     "en": "Draw on the capture · Esc to cancel"
+  },
+  "overlay.hint.ocr": {
+    "zh-CN": "取字中:点选或划选文字 · Ctrl+A 全选 · Ctrl+C 复制所选 · Esc 退出取字",
+    "en": "Text mode: click or drag to select · Ctrl+A select all · Ctrl+C copy · Esc exits"
   },
   "overlay.hint.reduced_annotate": {
     "zh-CN": "在画面上绘制标注 · Esc 取消（无放大镜/取色/微调）",
