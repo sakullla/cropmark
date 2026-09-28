@@ -1,10 +1,11 @@
 // 工具条图标生成器(R5/T2):为注册表新增的 5 个标注工具生成 24/48 两档
 // 黑线透明底 PNG,与既有 `icons/toolbar/*.png` 同风格(2px 描边、24px 网格)。
-// 运行:`node src-tauri/icons/toolbar/generate.mjs`
+// 运行:`node src-tauri/icons/toolbar/generate.mjs [id ...]`
+// 带 id 参数时只重建指定图标(R4 起新增 qr),不带时重建全部。
 //
 // 仅用 Node 内置模块:zlib 压缩 + 手写 PNG chunk/CRC32,无外部依赖。
 // 图标语义与前端 `src/icons.ts` 中同名 SVG 保持一致(聚光灯/放大镜/
-// 对话气泡/贴纸/内容擦除)。
+// 对话气泡/贴纸/内容擦除/二维码)。
 
 import { deflateSync } from "node:zlib";
 import { writeFileSync } from "node:fs";
@@ -200,7 +201,41 @@ function erase(w) {
   );
 }
 
-const ICONS = { spotlight, magnifier, bubble, sticker, erase };
+/** 实心圆点(半径 r):circleStroke 的半宽取 r 时中心也覆盖。 */
+function disc(cx, cy, r) {
+  return circleStroke(cx, cy, r / 2, r);
+}
+
+/** 二维码(R4):三个定位角 + 数据模块。 */
+function qr(w) {
+  const finder = (x0, y0) =>
+    union(
+      polygonStroke(
+        [
+          [x0, y0],
+          [x0 + 5.4, y0],
+          [x0 + 5.4, y0 + 5.4],
+          [x0, y0 + 5.4],
+        ],
+        w,
+      ),
+      disc(x0 + 2.7, y0 + 2.7, 1.05),
+    );
+  return union(
+    finder(4.4, 4.4),
+    finder(14.2, 4.4),
+    finder(4.4, 14.2),
+    disc(12.2, 12.1, 1.05),
+    disc(15.3, 12.3, 1.05),
+    disc(18.5, 12.1, 1.05),
+    disc(12.1, 15.3, 1.05),
+    disc(15.5, 15.5, 1.05),
+    disc(18.4, 17.8, 1.05),
+    disc(13.0, 18.4, 1.05),
+  );
+}
+
+const ICONS = { spotlight, magnifier, bubble, sticker, erase, qr };
 const STROKE = 2.0;
 
 // ---------- 渲染 ----------
@@ -237,7 +272,11 @@ function render(test, size) {
 }
 
 const here = dirname(fileURLToPath(import.meta.url));
+const only = new Set(process.argv.slice(2));
 for (const [id, shape] of Object.entries(ICONS)) {
+  if (only.size > 0 && !only.has(id)) {
+    continue;
+  }
   const test = shape(STROKE);
   for (const size of [24, 48]) {
     const file = join(here, `${id}-${size}.png`);

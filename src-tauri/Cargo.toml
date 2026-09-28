@@ -34,6 +34,8 @@ ndarray = "0.16"
 log = "0.4"
 tauri-plugin-log = "2"
 tauri-plugin-opener = "2"
+# R4:纯本地二维码解码(无网络、无运行时资源);仅解码二维码,不含一维条码。
+rqrr = { version = "0.10.1", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 clipboard-win = "5.4"
@@ -102,6 +104,10 @@ url = "2"
 # MIT-SHM/XPutImage 呈现;libc 用于共享内存段(shmget/shmat)。
 x11rb = { version = "0.13", features = ["randr", "shm"] }
 libc = "0.2"
+
+# R4 测试:按内容生成二维码样例图,验证解码成功/失败路径(仅测试构建,不随包分发)。
+[dev-dependencies]
+qrcode = { version = "0.14.1", default-features = false }
 
 # Keep the app debuggable without running full-resolution image codecs unoptimized.
 [profile.dev.package.cropmark]

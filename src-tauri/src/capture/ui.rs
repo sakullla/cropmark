@@ -81,12 +81,13 @@ pub struct ToastPayload {
 pub struct OverlayCapabilities {
     /// 选区即时标注:旧开关移除后保持开启。
     pub inline_annotation: bool,
-    /// 网页浮层能否挂上复制/保存/贴图/取字/进一步编辑。能挂上时为 true。
+    /// 网页浮层能否挂上复制/保存/贴图/取字/二维码/进一步编辑。能挂上时为 true。
     pub workspace_actions: bool,
     pub copy: bool,
     pub save: bool,
     pub pin: bool,
     pub ocr: bool,
+    pub qr: bool,
 }
 
 impl OverlayCapabilities {
@@ -99,6 +100,7 @@ impl OverlayCapabilities {
             save: true,
             pin: true,
             ocr: true,
+            qr: true,
         }
     }
 
@@ -111,6 +113,7 @@ impl OverlayCapabilities {
             save: false,
             pin: false,
             ocr: false,
+            qr: false,
         }
     }
 }
@@ -137,6 +140,8 @@ pub struct OverlayPayload {
     pub annotations: Vec<Annotation>,
     /// 壳上的取字动作:工作区打开后开始取字,不因此关闭浮层。
     pub pending_ocr: bool,
+    /// 壳上的识别二维码动作:工作区打开后开始本地识别,不写剪贴板。
+    pub pending_qr: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -255,6 +260,7 @@ pub fn overlay_payload(
         fixed: false,
         annotations: Vec::new(),
         pending_ocr: false,
+        pending_qr: false,
     })
 }
 
@@ -1048,9 +1054,9 @@ mod tests {
     }
 
     #[test]
-    fn fixed_workspace_payload_carries_pending_ocr_camel_case() {
-        // R2:工作区覆盖层载荷必须携带 fixed/annotations/pendingOcr,
-        // 前端据此渲染工作区动作并在打开后自动进入取字。
+    fn fixed_workspace_payload_carries_pending_recognition_camel_case() {
+        // R2/R4:工作区覆盖层载荷必须携带 fixed/annotations/pendingOcr/
+        // pendingQr,前端据此渲染工作区动作并在打开后自动进入取字或二维码识别。
         let frame = Frame {
             width: 4,
             height: 4,
@@ -1069,6 +1075,7 @@ mod tests {
         .expect("payload builds");
         payload.fixed = true;
         payload.pending_ocr = true;
+        payload.pending_qr = true;
         payload.annotations = vec![Annotation::Rect {
             x: 1.0,
             y: 2.0,
@@ -1080,6 +1087,7 @@ mod tests {
         let json = serde_json::to_value(&payload).expect("payload serializes");
         assert_eq!(json["fixed"], serde_json::json!(true));
         assert_eq!(json["pendingOcr"], serde_json::json!(true));
+        assert_eq!(json["pendingQr"], serde_json::json!(true));
         assert_eq!(json["annotations"][0]["type"], serde_json::json!("rect"));
         assert_eq!(json["annotations"][0]["x"], serde_json::json!(1.0));
     }
@@ -1094,6 +1102,7 @@ mod tests {
         assert!(hosted.save);
         assert!(hosted.pin);
         assert!(hosted.ocr);
+        assert!(hosted.qr);
         let json = serde_json::to_value(hosted).expect("capabilities serialize");
         assert_eq!(json["inlineAnnotation"], serde_json::json!(true));
         assert_eq!(json["workspaceActions"], serde_json::json!(true));
@@ -1101,6 +1110,7 @@ mod tests {
         assert_eq!(json["save"], serde_json::json!(true));
         assert_eq!(json["pin"], serde_json::json!(true));
         assert_eq!(json["ocr"], serde_json::json!(true));
+        assert_eq!(json["qr"], serde_json::json!(true));
     }
 
     #[test]

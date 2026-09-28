@@ -34,6 +34,7 @@ pub enum IconName {
     Blur,
     Pin,
     Ocr,
+    Qr,
     Annotate,
     Spotlight,
     Magnifier,
@@ -48,7 +49,7 @@ type CoverageCache = Mutex<HashMap<(IconName, u8), CachedBitmap>>;
 type TintedCache = Mutex<HashMap<(IconName, u32, [u8; 4]), CachedBitmap>>;
 
 impl IconName {
-    pub const ALL: [Self; 25] = [
+    pub const ALL: [Self; 26] = [
         Self::Rect,
         Self::Ellipse,
         Self::Arrow,
@@ -68,6 +69,7 @@ impl IconName {
         Self::Blur,
         Self::Pin,
         Self::Ocr,
+        Self::Qr,
         Self::Annotate,
         Self::Spotlight,
         Self::Magnifier,
@@ -97,6 +99,7 @@ impl IconName {
             Self::Blur => "blur",
             Self::Pin => "pin",
             Self::Ocr => "ocr",
+            Self::Qr => "qr",
             Self::Annotate => "annotate",
             Self::Spotlight => "spotlight",
             Self::Magnifier => "magnifier",
@@ -130,6 +133,7 @@ impl IconName {
                 Self::Blur => include_bytes!("../../../icons/toolbar/blur-24.png"),
                 Self::Pin => include_bytes!("../../../icons/toolbar/pin-24.png"),
                 Self::Ocr => include_bytes!("../../../icons/toolbar/ocr-24.png"),
+                Self::Qr => include_bytes!("../../../icons/toolbar/qr-24.png"),
                 Self::Annotate => include_bytes!("../../../icons/toolbar/annotate-24.png"),
                 Self::Spotlight => include_bytes!("../../../icons/toolbar/spotlight-24.png"),
                 Self::Magnifier => include_bytes!("../../../icons/toolbar/magnifier-24.png"),
@@ -159,6 +163,7 @@ impl IconName {
                 Self::Blur => include_bytes!("../../../icons/toolbar/blur-48.png"),
                 Self::Pin => include_bytes!("../../../icons/toolbar/pin-48.png"),
                 Self::Ocr => include_bytes!("../../../icons/toolbar/ocr-48.png"),
+                Self::Qr => include_bytes!("../../../icons/toolbar/qr-48.png"),
                 Self::Annotate => include_bytes!("../../../icons/toolbar/annotate-48.png"),
                 Self::Spotlight => include_bytes!("../../../icons/toolbar/spotlight-48.png"),
                 Self::Magnifier => include_bytes!("../../../icons/toolbar/magnifier-48.png"),
@@ -284,6 +289,7 @@ impl IconName {
             SelectionAction::Pin => Self::Pin,
             SelectionAction::Annotate => Self::Annotate,
             SelectionAction::Ocr => Self::Ocr,
+            SelectionAction::Qr => Self::Qr,
             SelectionAction::Cancel => Self::Cancel,
             SelectionAction::Tool(AnnotationTool::Rect) => Self::Rect,
             SelectionAction::Tool(AnnotationTool::Ellipse) => Self::Ellipse,
@@ -409,7 +415,7 @@ mod tests {
 
     const INK: [u8; 4] = [255, 255, 255, 255];
 
-    /// 解码测试(icon-assets 的可加载性由本任务验证):25 个图标 ×
+    /// 解码测试(icon-assets 的可加载性由本任务验证):26 个图标 ×
     /// 两档缩放,尺寸正确且确有笔画覆盖像素。
     #[test]
     fn all_toolbar_icons_decode_at_both_tiers_with_stroke_pixels() {
@@ -526,8 +532,8 @@ mod tests {
             SelectionAction::Copy,
             SelectionAction::Save,
             SelectionAction::Pin,
-            SelectionAction::Annotate,
             SelectionAction::Ocr,
+            SelectionAction::Qr,
             SelectionAction::Cancel,
             SelectionAction::Undo,
             SelectionAction::Redo,
@@ -562,7 +568,7 @@ mod tests {
         assert!(buf.chunks_exact(4).all(|px| px[0] == 7));
     }
 
-    /// 全图标绘制烟测:25 个资产在目标尺寸下都能落笔(验收「彼此可分辨」
+    /// 全图标绘制烟测:26 个资产在目标尺寸下都能落笔(验收「彼此可分辨」
     /// 的底线:每个图标都有可见笔画)。
     #[test]
     fn every_icon_paints_pixels_at_toolbar_and_menu_sizes() {
@@ -587,6 +593,7 @@ mod tests {
                 IconName::Cancel => SelectionAction::Cancel,
                 IconName::Pin => SelectionAction::Pin,
                 IconName::Ocr => SelectionAction::Ocr,
+                IconName::Qr => SelectionAction::Qr,
                 IconName::Annotate => SelectionAction::Annotate,
                 IconName::Spotlight => SelectionAction::Tool(AnnotationTool::Spotlight),
                 IconName::Magnifier => SelectionAction::Tool(AnnotationTool::Magnifier),

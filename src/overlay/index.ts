@@ -10,6 +10,7 @@ import {
 } from "../annotation";
 import { t, type CatalogKey } from "../i18n";
 import { mountOcrModel, type OcrModel } from "../ocr";
+import { mountQrModel, type QrModel } from "../qr";
 import { canvasGeometry } from "./geometry";
 import "./overlay.css";
 
@@ -35,6 +36,7 @@ interface OverlayCapabilities {
   save?: boolean;
   pin?: boolean;
   ocr?: boolean;
+  qr?: boolean;
 }
 
 interface OverlayFrame {
@@ -51,6 +53,7 @@ interface OverlayFrame {
   fixed?: boolean;
   annotations?: Annotation[];
   pendingOcr?: boolean;
+  pendingQr?: boolean;
 }
 
 interface Selection {
@@ -111,6 +114,7 @@ export function mountOverlay(root: HTMLElement): () => void {
       <button type="button" class="overlay-retry" data-i18n="overlay.retry" hidden>重试</button>
       <div class="overlay-actions" hidden>
         <button type="button" data-workspace="ocr" data-i18n="overlay.action.ocr">取字</button>
+        <button type="button" data-workspace="qr" data-i18n="overlay.action.qr">识别二维码</button>
         <button type="button" data-workspace="pin" data-i18n="overlay.action.pin">贴图</button>
         <button type="button" data-workspace="save" data-i18n="overlay.action.save">保存</button>
         <button type="button" data-workspace="copy" data-i18n="overlay.action.copy">复制</button>
@@ -174,6 +178,8 @@ export function mountOverlay(root: HTMLElement): () => void {
   let editor: AnnotationEditor | null = null;
   /// R2:冻结帧工作区的共享取字模型(与预览同一实现)。
   let ocrModel: OcrModel | null = null;
+  /// R4:冻结帧工作区的共享二维码识别模型(与预览同一实现)。
+  let qrModel: QrModel | null = null;
   /// 标注合成层:与冻帧同物理尺寸的底图 + 图元(马赛克/模糊需要整帧像素)。
   let annotationLayer: HTMLCanvasElement | null = null;
   /// 底图缓存:冻帧位图按物理尺寸只缩放一次,避免逐帧重采样。
@@ -343,9 +349,13 @@ export function mountOverlay(root: HTMLElement): () => void {
     retryAction = null;
     const reduced = frame.reducedCapabilities === true;
     if (frame.fixed) {
-      // R2:取字中提示退出方式;退出后恢复工作区/标注提示。
+      // R2/R4:取字/二维码识别中提示退出方式;退出后恢复工作区/标注提示。
       if (ocrModel?.active === true) {
         hint.textContent = t("overlay.hint.ocr");
+        return;
+      }
+      if (qrModel?.active === true) {
+        hint.textContent = t("overlay.hint.qr");
         return;
       }
       hint.textContent = t(
@@ -566,8 +576,9 @@ export function mountOverlay(root: HTMLElement): () => void {
   const load = async (): Promise<void> => {
     try {
       frame = await invoke<OverlayFrame>("get_overlay_frame");
-      // R2:新会话先清掉上一帧的取字全文与选择。
+      // R2/R4:新会话先清掉上一帧的取字全文、二维码结果与选择。
       ocrModel?.reset();
+      qrModel?.reset();
       fitCanvas();
       root.classList.toggle("mode-window", frame.mode === "window");
       root.classList.toggle("mode-region", frame.mode !== "window");
@@ -623,6 +634,10 @@ export function mountOverlay(root: HTMLElement): () => void {
           // 壳上的取字动作:工作区打开后自动进入取字,不写剪贴板。
           if (frame.pendingOcr) {
             activateWorkspaceOcr();
+          }
+          // 壳上的识别二维码动作:工作区打开后自动开始识别,不写剪贴板。
+          if (frame.pendingQr) {
+            activateWorkspaceQr();
           }
         }
       }
@@ -694,11 +709,15 @@ export function mountOverlay(root: HTMLElement): () => void {
       return found instanceof HTMLButtonElement ? found : null;
     };
     const ocr = button("ocr");
+    const qr = button("qr");
     const pin = button("pin");
     const save = button("save");
     const copy = button("copy");
     if (ocr) {
       ocr.hidden = caps?.ocr === false;
+    }
+    if (qr) {
+      qr.hidden = caps?.qr === false;
     }
     if (pin) {
       pin.hidden = caps?.pin === false;
@@ -713,25 +732,30 @@ export function mountOverlay(root: HTMLElement): () => void {
 
   const currentAnnotations = (): Annotation[] => editor?.exportList() ?? [];
 
-  // R2:取字激活期间隐藏工作区动作与标注工具条,退出后恢复;提示随状态切换。
+  // R2/R4:取字或二维码识别激活期间隐藏工作区动作与标注工具条,退出后恢复;
+  // 提示随状态切换。两种识别模型互斥激活,共用同一份 chrome 状态。
   let ocrWasActive = false;
-  let ocrNoticeActive = false;
-  const syncOcrChrome = (): void => {
-    const active = ocrModel?.active === true;
+  let qrWasActive = false;
+  let recognitionNoticeActive = false;
+  const syncRecognitionChrome = (): void => {
+    const ocrActive = ocrModel?.active === true;
+    const qrActive = qrModel?.active === true;
+    const active = ocrActive || qrActive;
     if (frame?.fixed && frame.capabilities?.workspaceActions !== false) {
       actionsEl.hidden = active;
       toolsEl.hidden = active || !inlineEnabled;
       root.classList.toggle("has-tools", !active && inlineEnabled);
     }
-    if (!active && ocrWasActive) {
-      // 退出取字:恢复标注工具条高亮并撤掉取字提示。
+    if (!active && (ocrWasActive || qrWasActive)) {
+      // 退出识别:恢复标注工具条高亮并撤掉识别提示。
       editor?.setTool(editor.tool());
-      if (ocrNoticeActive) {
-        ocrNoticeActive = false;
+      if (recognitionNoticeActive) {
+        recognitionNoticeActive = false;
         hideNotice();
       }
     }
-    ocrWasActive = active;
+    ocrWasActive = ocrActive;
+    qrWasActive = qrActive;
     renderHint();
     scheduleDraw();
   };
@@ -740,20 +764,42 @@ export function mountOverlay(root: HTMLElement): () => void {
     if (ocrModel?.active) {
       return;
     }
+    qrModel?.deactivate();
     editor?.commitText();
     editor?.deactivateTool();
     editor?.clearSelection();
     ocrModel?.activate();
   };
 
+  const activateWorkspaceQr = (): void => {
+    if (qrModel?.active) {
+      return;
+    }
+    ocrModel?.deactivate();
+    editor?.commitText();
+    editor?.deactivateTool();
+    editor?.clearSelection();
+    qrModel?.activate();
+  };
+
   ocrModel = mountOcrModel({
     host: root,
     closable: false,
     notice: (message, kind) => {
-      ocrNoticeActive = true;
+      recognitionNoticeActive = true;
       showNotice(message, kind === "progress" || kind === "hint");
     },
-    onChange: syncOcrChrome,
+    onChange: syncRecognitionChrome,
+  });
+
+  qrModel = mountQrModel({
+    host: root,
+    closable: false,
+    notice: (message, kind) => {
+      recognitionNoticeActive = true;
+      showNotice(message, kind === "progress" || kind === "hint");
+    },
+    onChange: syncRecognitionChrome,
   });
 
   const afterExport = async (kind: string, name?: string): Promise<void> => {
@@ -857,6 +903,10 @@ export function mountOverlay(root: HTMLElement): () => void {
       ocrModel.pointerDown(physicalPoint(event));
       return;
     }
+    // R4:二维码识别中画布不接收输入(结果面板只读,复制走面板按钮)。
+    if (qrModel?.active === true) {
+      return;
+    }
     if (frame.fixed || frame.mode !== "region" || event.button !== 0) {
       return;
     }
@@ -894,6 +944,9 @@ export function mountOverlay(root: HTMLElement): () => void {
       ocrModel.pointerMove(point);
       return;
     }
+    if (qrModel?.active === true) {
+      return;
+    }
     if (frame.mode === "window") {
       const nextHover = hitWindow(frame, point.x, point.y);
       if (nextHover !== hoverId) {
@@ -922,6 +975,9 @@ export function mountOverlay(root: HTMLElement): () => void {
       ocrModel.pointerUp();
       return;
     }
+    if (qrModel?.active === true) {
+      return;
+    }
     if (!dragging || frame?.fixed) {
       dragging = false;
       return;
@@ -931,7 +987,13 @@ export function mountOverlay(root: HTMLElement): () => void {
   });
 
   canvas.addEventListener("click", (event) => {
-    if (!frame || frame.fixed || frame.mode !== "window" || ocrModel?.active === true) {
+    if (
+      !frame ||
+      frame.fixed ||
+      frame.mode !== "window" ||
+      ocrModel?.active === true ||
+      qrModel?.active === true
+    ) {
       return;
     }
     const point = physicalPoint(event);
@@ -950,8 +1012,8 @@ export function mountOverlay(root: HTMLElement): () => void {
   // Wayland 覆盖层没有该菜单,必须说明而不是静默无响应(R13)。
   // 标注阶段右键交给共享标注层(命中图元时给出删除菜单)。
   canvas.addEventListener("contextmenu", (event) => {
-    if (!frame || ocrModel?.active === true) {
-      if (ocrModel?.active === true) {
+    if (!frame || ocrModel?.active === true || qrModel?.active === true) {
+      if (ocrModel?.active === true || qrModel?.active === true) {
         event.preventDefault();
       }
       return;
@@ -1051,6 +1113,8 @@ export function mountOverlay(root: HTMLElement): () => void {
       void pinWorkspace();
     } else if (action === "ocr") {
       activateWorkspaceOcr();
+    } else if (action === "qr") {
+      activateWorkspaceQr();
     } else if (action === "edit") {
       void editFurther();
     }
@@ -1066,8 +1130,9 @@ export function mountOverlay(root: HTMLElement): () => void {
     textHost: root,
     frame: () => (frame ? { width: frame.width, height: frame.height, scale: frame.scale } : null),
     redraw: () => scheduleDraw(),
-    // R2:取字激活时画布输入只给取字,标注编辑暂时禁用。
-    isEditable: () => annotationActive() && ocrModel?.active !== true,
+    // R2/R4:取字或二维码识别激活时画布输入只给识别层,标注编辑暂时禁用。
+    isEditable: () =>
+      annotationActive() && ocrModel?.active !== true && qrModel?.active !== true,
     // 标注阶段右键未命中图元:与 R13 一致地说明操作条缺失与替代路径,
     // 而不是静默无响应。
     onContextMenuMiss: () => {
@@ -1081,7 +1146,7 @@ export function mountOverlay(root: HTMLElement): () => void {
   });
 
   // 标注层已在缺失能力说明里给出替代路径(R13);键盘只处理选区确认/取消与
-  // 取字(Esc 退出、Ctrl+A 全选、Ctrl+C 复制所选),标注层先消费其它按键。
+  // 取字/二维码识别(Esc 退出、Ctrl+A 全选、Ctrl+C 复制所选),标注层先消费其它按键。
   window.addEventListener("keydown", (event) => {
     if (event.defaultPrevented || editor?.isTextEditing()) {
       return;
@@ -1097,6 +1162,10 @@ export function mountOverlay(root: HTMLElement): () => void {
       if (ocrModel?.deactivate()) {
         return;
       }
+      // R4:二维码识别中 Esc 同样先退出识别面板。
+      if (qrModel?.deactivate()) {
+        return;
+      }
       cancel();
       return;
     }
@@ -1107,9 +1176,10 @@ export function mountOverlay(root: HTMLElement): () => void {
       return;
     }
     // R2:取字中的 Ctrl+A 全选识别文本,Ctrl+C 复制所选(搜索框内走原生)。
+    // R4:二维码识别中的 Ctrl+C 复制首条内容。
     if (event.ctrlKey || event.metaKey) {
+      const key = event.key.toLowerCase();
       if (ocrModel?.active === true) {
-        const key = event.key.toLowerCase();
         if (key === "a") {
           event.preventDefault();
           ocrModel.selectAll();
@@ -1120,6 +1190,11 @@ export function mountOverlay(root: HTMLElement): () => void {
           void ocrModel.copySelected();
           return;
         }
+      }
+      if (qrModel?.active === true && key === "c") {
+        event.preventDefault();
+        void qrModel.copy(0);
+        return;
       }
       return;
     }
@@ -1165,11 +1240,12 @@ export function mountOverlay(root: HTMLElement): () => void {
   });
   void load();
 
-  // 语言切换:提示条、能力面板、取字面板与开关文案即时更新;静态标签由 main 应用。
+  // 语言切换:提示条、能力面板、取字/二维码面板与开关文案即时更新;静态标签由 main 应用。
   return () => {
     renderHint();
     editor?.refreshLabels();
     ocrModel?.refreshLabels();
+    qrModel?.refreshLabels();
     setCapabilityPanel(!capabilityPanel.hidden);
     if (!capabilityPanel.hidden) {
       renderCapabilityPanel();

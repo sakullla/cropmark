@@ -1,0 +1,111 @@
+/* R4:本地二维码识别结果面板(预览与冻结帧工作区覆盖层共用同一面板载体)。 */
+
+.qr-panel {
+  flex: 0 0 auto;
+  /* 窄窗口随舞台宽度弹性收缩,宽窗口仍取 260px(与取字面板同载体)。 */
+  width: clamp(180px, 30%, 260px);
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+  border-radius: var(--radius-panel);
+  background: color-mix(in srgb, var(--panel) 28%, var(--bg));
+  box-shadow: none;
+  color: var(--ink);
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.qr-panel-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.qr-panel-bar h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--muted);
+}
+
+.qr-panel-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: auto;
+}
+
+.qr-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control-sm);
+  background: color-mix(in srgb, var(--bg) 65%, transparent);
+}
+
+.qr-item-text {
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: text;
+}
+
+.qr-item-copy {
+  align-self: flex-end;
+  min-width: 24px;
+  min-height: 24px;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control-sm);
+  background: color-mix(in srgb, var(--panel) 80%, transparent);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: var(--control-transition);
+}
+
+.qr-item-copy:hover:not(:disabled) {
+  border-color: var(--control-hover-border);
+  background: var(--control-hover-bg);
+}
+
+.qr-item-copy:active:not(:disabled) {
+  filter: var(--control-pressed-filter);
+}
+
+.qr-item-copy:disabled {
+  opacity: var(--control-disabled-opacity);
+  cursor: default;
+}
+
+/* 冻结帧工作区:浮在画面右侧,不参与画布布局(与取字面板同位置)。 */
+.overlay-root > .qr-panel {
+  position: absolute;
+  top: 64px;
+  right: 18px;
+  z-index: 4;
+  width: min(320px, 42vw);
+  max-height: calc(100% - 92px);
+  background: var(--panel);
+  pointer-events: auto;
+}
+
+.overlay-root > .qr-panel[hidden] {
+  display: none;
+}

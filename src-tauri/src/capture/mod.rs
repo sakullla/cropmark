@@ -263,6 +263,11 @@ pub fn take_pending_preview_ocr(app: AppHandle) -> bool {
 }
 
 #[tauri::command]
+pub fn take_pending_preview_qr(app: AppHandle) -> bool {
+    session::take_pending_preview_qr(&app)
+}
+
+#[tauri::command]
 pub fn close_capture_error(app: AppHandle) {
     session::close_error(&app);
 }

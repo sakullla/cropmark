@@ -451,6 +451,8 @@ pub enum SelectionAction {
     Pin,
     Annotate,
     Ocr,
+    /// R4:识别选区内的二维码,结果交工作区覆盖层展示,不自动复制/打开。
+    Qr,
     Cancel,
     /// 复制放大镜当前指向像素的色值文本。
     CopyColor,
@@ -2378,7 +2380,16 @@ mod tests {
 
     #[test]
     fn menu_actions_confirm_and_cancel_correctly() {
-        let mut engine = new_engine();
+        // 7 项菜单(含二维码)需要足够的竖直空间才能完整落在画面内;
+        // 小画布上菜单会按屏内钳制,取消项可能落在夹取范围之外。
+        let mut engine = SelectionEngine::new(
+            320,
+            400,
+            FeatureFlags {
+                inline_annotation: false,
+                ..FeatureFlags::default()
+            },
+        );
         drag(&mut engine, (40, 30), (200, 120));
         engine.handle_event(InputEvent::PointerMove { x: 150, y: 100 });
         assert_eq!(
@@ -2991,6 +3002,7 @@ mod tests {
                 SelectionAction::Delete,
                 SelectionAction::Pin,
                 SelectionAction::Ocr,
+                SelectionAction::Qr,
             ]
         );
         // 面板整体在屏幕内、底部对齐「更多」按钮。
@@ -3060,6 +3072,7 @@ mod tests {
                 SelectionAction::Mode(ToolMode::Pen),
                 SelectionAction::Mode(ToolMode::Blur),
                 SelectionAction::Delete,
+                SelectionAction::Qr,
             ]
         );
     }
@@ -3176,7 +3189,7 @@ mod tests {
             },
         );
         drag(&mut engine, (40, 30), (200, 120));
-        // 关闭即时标注时主行为 标注/复制/保存/取消/更多,「更多」只含贴图/取字。
+        // 关闭即时标注时主行为 标注/复制/保存/取消/更多,「更多」只含贴图/取字/二维码。
         assert_eq!(
             engine_buttons(&engine),
             vec![
@@ -3195,7 +3208,14 @@ mod tests {
             .iter()
             .map(|(a, _)| *a)
             .collect();
-        assert_eq!(actions, vec![SelectionAction::Pin, SelectionAction::Ocr]);
+        assert_eq!(
+            actions,
+            vec![
+                SelectionAction::Pin,
+                SelectionAction::Ocr,
+                SelectionAction::Qr
+            ]
+        );
         // 点「标注」打开预览编辑器:动作交回会话层。
         assert_eq!(
             click_toolbar_action(&mut engine, SelectionAction::Annotate),
@@ -4029,8 +4049,11 @@ mod tests {
             .map(|(a, _)| *a)
             .collect();
         for action in more_actions {
-            // 贴图/取字是会话层动作,另有专项测试;这里只验内部动作。
-            if matches!(action, SelectionAction::Pin | SelectionAction::Ocr) {
+            // 贴图/取字/二维码是会话层动作,另有专项测试;这里只验内部动作。
+            if matches!(
+                action,
+                SelectionAction::Pin | SelectionAction::Ocr | SelectionAction::Qr
+            ) {
                 continue;
             }
             // 内部动作可能收起面板(选工具/再点更多):每次点击前确保展开,

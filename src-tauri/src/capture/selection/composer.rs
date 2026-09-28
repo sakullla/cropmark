@@ -304,6 +304,7 @@ pub fn action_label(action: SelectionAction) -> String {
         SelectionAction::Pin => "selection.action.pin",
         SelectionAction::Annotate => "selection.action.annotate",
         SelectionAction::Ocr => "selection.action.ocr",
+        SelectionAction::Qr => "selection.action.qr",
         SelectionAction::Cancel => "selection.action.cancel",
         SelectionAction::CopyColor => "selection.action.copy_color",
         // 标注工具条按钮为纯图标;名称仍提供词条供辅助文本/后续提示复用。
@@ -332,9 +333,10 @@ pub fn action_label(action: SelectionAction) -> String {
 
 /// 右键菜单动作过滤(顺序固定,保持现状):
 /// Copy←`toolbar_copy`, Save←`toolbar_save`, Pin←`toolbar_pin && pin_entry`,
-/// Annotate 恒在, LongCapture←`long_capture`(R1), Ocr←`ocr_entry`, Cancel 恒在。
+/// Annotate 恒在, LongCapture←`long_capture`(R1), Ocr←`ocr_entry`,
+/// Qr 恒在(R4), Cancel 恒在。
 fn capture_actions(flags: FeatureFlags) -> Vec<SelectionAction> {
-    let mut actions = Vec::with_capacity(7);
+    let mut actions = Vec::with_capacity(8);
     if flags.toolbar_copy {
         actions.push(SelectionAction::Copy);
     }
@@ -351,6 +353,7 @@ fn capture_actions(flags: FeatureFlags) -> Vec<SelectionAction> {
     if flags.ocr_entry {
         actions.push(SelectionAction::Ocr);
     }
+    actions.push(SelectionAction::Qr);
     actions.push(SelectionAction::Cancel);
     actions
 }
@@ -420,6 +423,8 @@ pub fn more_panel_buttons(flags: FeatureFlags) -> Vec<SelectionAction> {
     if flags.ocr_entry {
         buttons.push(SelectionAction::Ocr);
     }
+    // R4:二维码识别常开(R19 去门控);结果只在工作区/预览面板展示并复制。
+    buttons.push(SelectionAction::Qr);
     buttons
 }
 
@@ -2696,9 +2701,10 @@ mod tests {
                 SelectionAction::Delete,
                 SelectionAction::Pin,
                 SelectionAction::Ocr,
+                SelectionAction::Qr,
             ]
         );
-        // 关闭贴图/取字后,「更多」仍含收进的工具、非默认模式和删除。
+        // 关闭贴图/取字后,「更多」仍含收进的工具、非默认模式、删除与二维码。
         assert_eq!(
             more_panel_buttons(off),
             vec![
@@ -2712,16 +2718,17 @@ mod tests {
                 SelectionAction::Mode(ToolMode::Pen),
                 SelectionAction::Mode(ToolMode::Blur),
                 SelectionAction::Delete,
+                SelectionAction::Qr,
             ]
         );
-        // 即时标注关闭:「更多」只含贴图/取字。
+        // 即时标注关闭:「更多」只含贴图/取字/二维码。
         let inline_off = FeatureFlags {
             inline_annotation: false,
             ..FeatureFlags::default()
         };
         assert_eq!(
             more_panel_buttons(inline_off),
-            vec![SelectionAction::Pin, SelectionAction::Ocr]
+            vec![SelectionAction::Pin, SelectionAction::Ocr, SelectionAction::Qr]
         );
         // R5:全量开启时「更多」含全部注册表收进工具(序号/聚光灯/放大镜/
         // 对话气泡/贴纸/内容擦除)。
@@ -2751,6 +2758,7 @@ mod tests {
                 SelectionAction::Delete,
                 SelectionAction::Pin,
                 SelectionAction::Ocr,
+                SelectionAction::Qr,
             ]
         );
         // R5/R19:逐项开关关闭工具后主行不再含该入口;关闭全部绘图工具后
@@ -2801,6 +2809,7 @@ mod tests {
                 SelectionAction::Delete,
                 SelectionAction::Pin,
                 SelectionAction::Ocr,
+                SelectionAction::Qr,
             ]
         );
         // 合并工具的默认模式入口同样随所属工具开关裁剪:关闭马赛克后,
@@ -2971,6 +2980,7 @@ mod tests {
             SelectionAction::Pin,
             SelectionAction::Annotate,
             SelectionAction::Ocr,
+            SelectionAction::Qr,
             SelectionAction::Cancel,
             SelectionAction::Undo,
             SelectionAction::Redo,
@@ -3613,6 +3623,7 @@ mod tests {
             SelectionAction::Pin,
             SelectionAction::Annotate,
             SelectionAction::Ocr,
+            SelectionAction::Qr,
             SelectionAction::Cancel,
         ];
         assert_eq!(menu_items(FeatureFlags::default()), default_items);
@@ -3630,10 +3641,11 @@ mod tests {
                 SelectionAction::Copy,
                 SelectionAction::Save,
                 SelectionAction::Annotate,
+                SelectionAction::Qr,
                 SelectionAction::Cancel,
             ]
         );
-        // 关闭操作条复制/保存/贴图后,菜单不再出现对应项;标注与取消恒在。
+        // 关闭操作条复制/保存/贴图后,菜单不再出现对应项;标注、二维码与取消恒在。
         let toolbar_off = FeatureFlags {
             toolbar_copy: false,
             toolbar_save: false,
@@ -3641,7 +3653,11 @@ mod tests {
             ocr_entry: false,
             ..FeatureFlags::default()
         };
-        let filtered = vec![SelectionAction::Annotate, SelectionAction::Cancel];
+        let filtered = vec![
+            SelectionAction::Annotate,
+            SelectionAction::Qr,
+            SelectionAction::Cancel,
+        ];
         assert_eq!(menu_items(toolbar_off), filtered);
         // 贴图需 toolbar_pin 与 pin_entry 同时开启。
         let pin_entry_only = FeatureFlags {
@@ -3659,7 +3675,7 @@ mod tests {
     #[test]
     fn menu_geometry_has_touch_targets_and_cancel_separator() {
         let items = menu_items(FeatureFlags::default());
-        assert_eq!(items.len(), 6);
+        assert_eq!(items.len(), 7);
         let metrics = metrics_1();
         let row = menu_row_width(metrics, &items);
         let panel = menu_panel(metrics, (50, 50), (800, 600), &items);
@@ -3676,9 +3692,10 @@ mod tests {
             assert_eq!(rect.x, panel.x + MENU_PAD);
         }
         // 分隔线:紧贴倒数第二项底部,末项(取消)在线下 1px。
+        let last = rects.len() - 1;
         let sep_y = menu_separator_y(metrics_1(), panel, &items);
-        assert_eq!(rects[4].1.bottom(), sep_y);
-        assert_eq!(rects[5].1.y, sep_y + MENU_SEPARATOR_H);
+        assert_eq!(rects[last - 1].1.bottom(), sep_y);
+        assert_eq!(rects[last].1.y, sep_y + MENU_SEPARATOR_H);
         // 图标/文字内边距。
         assert_eq!(MENU_ICON_CX, 18);
         assert_eq!(MENU_TEXT_X, 38);
@@ -3717,12 +3734,12 @@ mod tests {
             );
         }
         // 贴屏幕左上角的「更多」按钮:面板翻转后仍在屏内(短列表场景:
-        // 关闭即时标注时「更多」只含贴图/取字)。
+        // 关闭即时标注时「更多」只含贴图/取字/二维码)。
         let short = more_panel_buttons(FeatureFlags {
             inline_annotation: false,
             ..FeatureFlags::default()
         });
-        assert_eq!(short.len(), 2);
+        assert_eq!(short.len(), 3);
         let tight = IntRect {
             x: 4,
             y: 4,
@@ -4039,8 +4056,9 @@ mod tests {
                 assert_eq!(rect.x, menu.x + metrics.menu_pad);
             }
             let sep_y = menu_separator_y(metrics, menu, &items);
-            assert_eq!(mrects[4].1.bottom(), sep_y);
-            assert_eq!(mrects[5].1.y, sep_y + metrics.menu_separator_h);
+            let last = mrects.len() - 1;
+            assert_eq!(mrects[last - 1].1.bottom(), sep_y);
+            assert_eq!(mrects[last].1.y, sep_y + metrics.menu_separator_h);
             // 「更多」面板几何随 metrics 派生。
             let more = more_panel_buttons(FeatureFlags::default());
             let m_panel = more_panel(

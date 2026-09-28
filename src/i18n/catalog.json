@@ -111,6 +111,10 @@
     "zh-CN": "取字",
     "en": "Text"
   },
+  "selection.action.qr": {
+    "zh-CN": "识别二维码",
+    "en": "QR code"
+  },
   "selection.action.cancel": {
     "zh-CN": "取消",
     "en": "Cancel"
@@ -606,6 +610,26 @@
   "error.ocr.no_preview": {
     "zh-CN": "没有可预览的截图。",
     "en": "No preview screenshot is available."
+  },
+  "error.qr.no_code": {
+    "zh-CN": "没有识别到二维码。",
+    "en": "No QR code was found."
+  },
+  "error.qr.failed": {
+    "zh-CN": "无法识别图上的二维码。",
+    "en": "Could not decode the QR code in the image."
+  },
+  "error.qr.no_preview": {
+    "zh-CN": "没有可预览的截图。",
+    "en": "No preview screenshot is available."
+  },
+  "error.qr.no_result": {
+    "zh-CN": "没有可复制的二维码内容，请先识别。",
+    "en": "There is no decoded QR content to copy; run recognition first."
+  },
+  "error.qr.copy": {
+    "zh-CN": "无法把二维码内容放入剪贴板。截图仍保留。",
+    "en": "Could not put the QR content on the clipboard. The screenshot is still available."
   },
   "error.hotkey.invalid": {
     "zh-CN": "无法识别该热键。",
@@ -1511,6 +1535,14 @@
     "zh-CN": "取字",
     "en": "Text"
   },
+  "preview.action.qr_title": {
+    "zh-CN": "识别二维码",
+    "en": "Read QR code"
+  },
+  "preview.action.qr": {
+    "zh-CN": "识别二维码",
+    "en": "QR code"
+  },
   "preview.action.copy_all": {
     "zh-CN": "复制全部",
     "en": "Copy all"
@@ -1643,6 +1675,18 @@
     "zh-CN": "已复制片段「{snippet}」",
     "en": "Copied fragment \"{snippet}\""
   },
+  "preview.note.qr_running": {
+    "zh-CN": "正在识别二维码…",
+    "en": "Reading QR code…"
+  },
+  "preview.note.qr_hint": {
+    "zh-CN": "已识别到二维码内容，点复制写入剪贴板；不会自动打开。",
+    "en": "QR content found. Click Copy to put it on the clipboard; links are never opened automatically."
+  },
+  "preview.note.qr_copied": {
+    "zh-CN": "已复制二维码内容。",
+    "en": "QR content copied."
+  },
   "preview.ocr_panel.title": {
     "zh-CN": "识别结果",
     "en": "Recognized text"
@@ -1686,6 +1730,22 @@
   "preview.ocr_panel.text": {
     "zh-CN": "识别文本",
     "en": "Recognized text"
+  },
+  "preview.qr_panel.title": {
+    "zh-CN": "二维码",
+    "en": "QR code"
+  },
+  "preview.qr_panel.close": {
+    "zh-CN": "关闭二维码面板",
+    "en": "Close QR panel"
+  },
+  "preview.qr_panel.copy": {
+    "zh-CN": "复制",
+    "en": "Copy"
+  },
+  "preview.qr_panel.text": {
+    "zh-CN": "二维码内容",
+    "en": "QR content"
   },
   "preview.note.saving": {
     "zh-CN": "正在保存…",
@@ -1763,6 +1823,10 @@
     "zh-CN": "无法识别图上的文字。",
     "en": "Could not recognize text in the image."
   },
+  "preview.error.qr_fallback": {
+    "zh-CN": "无法识别二维码。",
+    "en": "Could not read the QR code."
+  },
   "preview.error.no_selection": {
     "zh-CN": "没有选中文字。",
     "en": "No text selected."
@@ -1808,8 +1872,8 @@
     "en": "Drag to select a region · Enter to confirm"
   },
   "overlay.hint.workspace": {
-    "zh-CN": "可以标注、复制、保存、贴图或取字 · Esc 取消",
-    "en": "Annotate, copy, save, pin, or extract text · Esc to cancel"
+    "zh-CN": "可以标注、复制、保存、贴图、取字或识别二维码 · Esc 取消",
+    "en": "Annotate, copy, save, pin, extract text, or read a QR code · Esc to cancel"
   },
   "overlay.hint.annotate": {
     "zh-CN": "在画面上绘制标注 · Esc 取消",
@@ -1818,6 +1882,10 @@
   "overlay.hint.ocr": {
     "zh-CN": "取字中:点选或划选文字 · Ctrl+A 全选 · Ctrl+C 复制所选 · Esc 退出取字",
     "en": "Text mode: click or drag to select · Ctrl+A select all · Ctrl+C copy · Esc exits"
+  },
+  "overlay.hint.qr": {
+    "zh-CN": "二维码识别中:内容显示在右侧面板 · 点复制写入剪贴板 · Esc 退出",
+    "en": "QR mode: content appears in the panel · Copy to clipboard · Esc exits"
   },
   "overlay.hint.reduced_annotate": {
     "zh-CN": "在画面上绘制标注 · Esc 取消（无放大镜/取色/微调）",
@@ -1832,12 +1900,12 @@
     "en": "The selection is too small; drag at least 2 × 2 pixels."
   },
   "overlay.notice.toolbar": {
-    "zh-CN": "当前覆盖层没有原生操作条与右键菜单；复制、保存、贴图和取字使用浮层上的按钮。",
-    "en": "This overlay has no native action bar or context menu; use the overlay buttons to copy, save, pin, or extract text."
+    "zh-CN": "当前覆盖层没有原生操作条与右键菜单；复制、保存、贴图、取字和识别二维码使用浮层上的按钮。",
+    "en": "This overlay has no native action bar or context menu; use the overlay buttons to copy, save, pin, extract text, or read a QR code."
   },
   "overlay.notice.workspace_unavailable": {
-    "zh-CN": "浮层无法提供标注、复制、保存、贴图或取字，已打开预览继续处理。",
-    "en": "This overlay cannot annotate, copy, save, pin, or extract text. Preview is open so you can continue."
+    "zh-CN": "浮层无法提供标注、复制、保存、贴图、取字或识别二维码，已打开预览继续处理。",
+    "en": "This overlay cannot annotate, copy, save, pin, extract text, or read a QR code. Preview is open so you can continue."
   },
   "overlay.notice.save_cancelled": {
     "zh-CN": "已取消保存。截图仍在，可继续复制、贴图或再试。",
@@ -1870,6 +1938,10 @@
   "overlay.action.ocr": {
     "zh-CN": "取字",
     "en": "Text"
+  },
+  "overlay.action.qr": {
+    "zh-CN": "识别二维码",
+    "en": "QR code"
   },
   "overlay.action.edit": {
     "zh-CN": "进一步编辑",

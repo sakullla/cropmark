@@ -12,6 +12,7 @@ import {
 import { applyTranslations, t, type CatalogKey } from "../i18n";
 import { icons } from "../icons";
 import { mountOcrModel, type OcrModel } from "../ocr";
+import { mountQrModel, type QrModel } from "../qr";
 import "./preview.css";
 
 interface PreviewFrame {
@@ -53,6 +54,7 @@ export function mountPreview(root: HTMLElement): () => void {
       <div class="preview-tools" role="toolbar" data-annotation-toolbar data-i18n-aria-label="preview.toolbar_group" aria-label="标注" data-tauri-drag-region="false"></div>
       <div class="preview-actions" data-tauri-drag-region="false">
         <button type="button" class="icon-action" data-tool="ocr" data-i18n-title="preview.action.ocr_title" data-i18n-aria-label="preview.action.ocr" aria-label="取字" data-tauri-drag-region="false">${icons.ocr}</button>
+        <button type="button" class="icon-action" data-tool="qr" data-i18n-title="preview.action.qr_title" data-i18n-aria-label="preview.action.qr" aria-label="识别二维码" data-tauri-drag-region="false">${icons.qr}</button>
         <button type="button" class="icon-action" data-action="copy-ocr-all" hidden data-i18n-title="preview.action.copy_all" data-i18n-aria-label="preview.action.copy_all" aria-label="复制全部" data-tauri-drag-region="false">${icons.copy}</button>
         <button type="button" class="icon-action" data-action="pin" data-i18n-title="preview.action.pin_title" data-i18n-aria-label="preview.action.pin" aria-label="贴图" data-tauri-drag-region="false">${icons.pin}</button>
         <button type="button" class="icon-action" data-action="update-pin" data-i18n-title="preview.action.update_pin_title" data-i18n-aria-label="preview.action.update_pin" aria-label="更新贴图" hidden data-tauri-drag-region="false">${icons.annotate}</button>
@@ -91,6 +93,7 @@ export function mountPreview(root: HTMLElement): () => void {
   const toolbarEl = root.querySelector("[data-annotation-toolbar]");
   const copyAllBtn = root.querySelector("[data-action=copy-ocr-all]");
   const ocrBtn = root.querySelector("[data-tool=ocr]");
+  const qrBtn = root.querySelector("[data-tool=qr]");
   const pinBtn = root.querySelector("[data-action=pin]");
   const updatePinBtn = root.querySelector("[data-action=update-pin]");
   const saveQualityRoot = root.querySelector("[data-save-quality-root]");
@@ -105,6 +108,7 @@ export function mountPreview(root: HTMLElement): () => void {
     !(toolbarEl instanceof HTMLElement) ||
     !(copyAllBtn instanceof HTMLButtonElement) ||
     !(ocrBtn instanceof HTMLButtonElement) ||
+    !(qrBtn instanceof HTMLButtonElement) ||
     !(pinBtn instanceof HTMLButtonElement) ||
     !(updatePinBtn instanceof HTMLButtonElement) ||
     !(saveQualityRoot instanceof HTMLElement) ||
@@ -123,6 +127,8 @@ export function mountPreview(root: HTMLElement): () => void {
   // R21:标注层(共享模块)持有图元/撤销栈/文字编辑;R2:取字走共享 OCR 模型。
   let editor: AnnotationEditor | null = null;
   let ocrModel: OcrModel | null = null;
+  // R4:二维码识别走共享 QR 模型(与冻结帧工作区同一实现,互斥激活)。
+  let qrModel: QrModel | null = null;
   let busy = false;
   // 提示条的来源:词条键可在语言切换后重渲染,不透明文案(宿主错误串)保持原样。
   let noteSource: { key: CatalogKey | null; params?: Record<string, string | number>; text: string } | null =
@@ -224,23 +230,27 @@ export function mountPreview(root: HTMLElement): () => void {
     };
   };
 
-  // 取字工具按钮与顶部「复制全部」随共享模型状态同步;退出取字后把画布工具
-  // 标记与工具条高亮还给标注编辑器当前工具,并撤掉取字提示。
+  // 取字/二维码工具按钮与顶部「复制全部」随共享模型状态同步;退出识别后把
+  // 画布工具标记与工具条高亮还给标注编辑器当前工具,并撤掉识别提示。
   let ocrWasActive = false;
-  let ocrNoticeActive = false;
-  const syncOcrToolbar = (): void => {
-    const active = ocrModel?.active === true;
-    ocrBtn.classList.toggle("active", active);
-    copyAllBtn.hidden = !active || (ocrModel?.document()?.spans.length ?? 0) === 0;
-    if (!active && ocrWasActive) {
+  let qrWasActive = false;
+  let recognitionNoticeActive = false;
+  const syncRecognitionToolbar = (): void => {
+    const ocrActive = ocrModel?.active === true;
+    const qrActive = qrModel?.active === true;
+    ocrBtn.classList.toggle("active", ocrActive);
+    qrBtn.classList.toggle("active", qrActive);
+    copyAllBtn.hidden = !ocrActive || (ocrModel?.document()?.spans.length ?? 0) === 0;
+    if (!ocrActive && !qrActive && (ocrWasActive || qrWasActive)) {
       editor?.setTool(editor.tool());
-      if (ocrNoticeActive) {
-        ocrNoticeActive = false;
+      if (recognitionNoticeActive) {
+        recognitionNoticeActive = false;
         setNoteSource(copiedSource, copiedKind);
       }
     }
-    ocrWasActive = active;
-    root.dataset.tool = active ? "ocr" : (editor?.tool() ?? "arrow");
+    ocrWasActive = ocrActive;
+    qrWasActive = qrActive;
+    root.dataset.tool = ocrActive ? "ocr" : qrActive ? "qr" : (editor?.tool() ?? "arrow");
     redraw();
   };
 
@@ -340,7 +350,7 @@ export function mountPreview(root: HTMLElement): () => void {
     textHost: frameEl,
     frame: () => frame,
     redraw,
-    isEditable: () => ocrModel?.active !== true,
+    isEditable: () => ocrModel?.active !== true && qrModel?.active !== true,
     onToolHint: (hint) => {
       if (hint) {
         setNoteKey(hint.key, hint.params);
@@ -349,8 +359,9 @@ export function mountPreview(root: HTMLElement): () => void {
       }
     },
     onToolChange: () => {
-      // 手动切回标注工具即退出取字,取字结束恢复标注/复制/保存路径。
+      // 手动切回标注工具即退出取字/二维码识别,结束识别后恢复标注/复制/保存路径。
       ocrModel?.deactivate();
+      qrModel?.deactivate();
     },
     // 样式持久化失败等:沿用既有提示条错误呈现,不静默丢失。
     onError: (error) => {
@@ -367,7 +378,7 @@ export function mountPreview(root: HTMLElement): () => void {
   ocrModel = mountOcrModel({
     host: stageEl,
     notice: (message, kind) => {
-      ocrNoticeActive = true;
+      recognitionNoticeActive = true;
       if (kind === "success") {
         setNote(message, "success");
       } else if (kind === "error") {
@@ -376,17 +387,46 @@ export function mountPreview(root: HTMLElement): () => void {
         setNote(message);
       }
     },
-    onChange: syncOcrToolbar,
+    onChange: syncRecognitionToolbar,
+  });
+
+  // R4:共享二维码识别模型(结果面板 + 显式复制)。与取字互斥激活:
+  // 识别只读预览帧,内容展示后由用户点复制写入剪贴板,不自动打开链接。
+  qrModel = mountQrModel({
+    host: stageEl,
+    notice: (message, kind) => {
+      recognitionNoticeActive = true;
+      if (kind === "success") {
+        setNote(message, "success");
+      } else if (kind === "error") {
+        setNote(message, "error");
+      } else {
+        setNote(message);
+      }
+    },
+    onChange: syncRecognitionToolbar,
   });
 
   const activateOcr = (): void => {
     if (ocrModel?.active) {
       return;
     }
+    qrModel?.deactivate();
     editor?.commitText();
     editor?.deactivateTool();
     editor?.clearSelection();
     ocrModel?.activate();
+  };
+
+  const activateQr = (): void => {
+    if (qrModel?.active) {
+      return;
+    }
+    ocrModel?.deactivate();
+    editor?.commitText();
+    editor?.deactivateTool();
+    editor?.clearSelection();
+    qrModel?.activate();
   };
 
   const copyBtn = root.querySelector<HTMLButtonElement>("[data-action=copy]");
@@ -515,6 +555,7 @@ export function mountPreview(root: HTMLElement): () => void {
     });
   };
 
+  // 取字/二维码识别期间交给共享模型;二维码面板只读,画布不接受输入。
   canvas.addEventListener("mousedown", (event) => {
     if (event.button !== 0 || !frame || ocrModel?.active !== true) {
       return;
@@ -549,6 +590,10 @@ export function mountPreview(root: HTMLElement): () => void {
     }
     if (button.dataset.tool === "ocr") {
       activateOcr();
+      return;
+    }
+    if (button.dataset.tool === "qr") {
+      activateQr();
       return;
     }
     const nextQuality = button.dataset.saveQuality;
@@ -659,6 +704,11 @@ export function mountPreview(root: HTMLElement): () => void {
         event.preventDefault();
         return;
       }
+      // R4:二维码识别中 Esc 同样先退出识别面板。
+      if (qrModel?.deactivate()) {
+        event.preventDefault();
+        return;
+      }
       // 走 closePreview 统一入口:invoke 失败有错误提示而不是静默。
       closePreview();
       return;
@@ -683,6 +733,12 @@ export function mountPreview(root: HTMLElement): () => void {
       if (key === "a" && ocrModel?.active === true) {
         event.preventDefault();
         ocrModel.selectAll();
+        return;
+      }
+      // R4:二维码识别中的 Ctrl+C 复制首条内容(面板按钮是主路径)。
+      if (key === "c" && qrModel?.active === true) {
+        event.preventDefault();
+        void qrModel.copy(0);
         return;
       }
       if (key === "c") {
@@ -716,8 +772,8 @@ export function mountPreview(root: HTMLElement): () => void {
       activateOcr();
       return;
     }
-    // 取字工具激活时,A/R/E/L/M/B/H/P/N/T 切回标注工具(与既有预览一致)。
-    if (ocrModel?.active === true) {
+    // 取字/二维码识别工具激活时,A/R/E/L/M/B/H/P/N/T 切回标注工具(与既有预览一致)。
+    if (ocrModel?.active === true || qrModel?.active === true) {
       const next = annotationToolForKey(key);
       if (next) {
         event.preventDefault();
@@ -864,6 +920,14 @@ export function mountPreview(root: HTMLElement): () => void {
             }
           })
           .catch(() => undefined);
+        // R4:壳上的「识别二维码」在预览路径打开后同样自动开始识别。
+        void invoke<boolean>("take_pending_preview_qr")
+          .then((startQr) => {
+            if (generation === previewLoad && startQr) {
+              activateQr();
+            }
+          })
+          .catch(() => undefined);
         // 携带说明与复制状态共用同一提示条:先登记携带前缀,再写复制状态,
         // 二者合并可见(review P3:分别写入会互相覆盖)。
         carriedNoteSource =
@@ -898,8 +962,9 @@ export function mountPreview(root: HTMLElement): () => void {
 
   void listen("preview-reload", () => {
     // 新帧可能带入选区即时标注(R21):列表随帧在 loadPreview 中恢复,
-    // 这里先清空避免旧编辑态残留。取字模型也不保留上一帧的全文与选择。
+    // 这里先清空避免旧编辑态残留。取字/二维码模型也不保留上一帧的结果。
     ocrModel?.reset();
+    qrModel?.reset();
     editor?.setAnnotations([]);
     editor?.cancelText();
     // 携带说明随新帧重算(image.onload);先清空,避免加载失败时残留旧前缀。
@@ -911,10 +976,11 @@ export function mountPreview(root: HTMLElement): () => void {
   loadPreview();
 
   // 语言切换:静态标签由 main 的 applyTranslations 更新;这里刷新标注模块与
-  // 取字模型组合出的本地化标签,并重渲染来源可解析的提示条。
+  // 取字/二维码模型组合出的本地化标签,并重渲染来源可解析的提示条。
   const refreshOptionLabels = (): void => {
     editor?.refreshLabels();
     ocrModel?.refreshLabels();
+    qrModel?.refreshLabels();
     saveQualityRoot.querySelectorAll<HTMLButtonElement>("[data-save-quality]").forEach((button) => {
       const option = SAVE_QUALITIES.find((item) => item.value === button.dataset.saveQuality);
       if (option) {

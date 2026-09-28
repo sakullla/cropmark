@@ -105,6 +105,9 @@ pub enum RegionOutcome {
     /// 操作条/菜单的「取字」动作:rect 提交工作区覆盖层并在打开后自动进入
     /// 取字(R2);不在壳上写剪贴板。
     Ocr(PhysicalRect, Vec<Annotation>),
+    /// 操作条/菜单的「识别二维码」动作(R4):rect 提交工作区覆盖层并在打开
+    /// 后自动开始本地识别;不自动复制、不打开链接。
+    Qr(PhysicalRect, Vec<Annotation>),
     /// 操作条/菜单的 copy/save/pin 动作:rect 走 Quiet 完成路径并执行动作。
     Quiet(PhysicalRect, QuietAction, Vec<Annotation>),
     /// R1 操作条/菜单的长截图动作:rect 交给会话层开始滚动会话。
@@ -369,6 +372,14 @@ fn feed_event(state: &mut ShellState, event: InputEvent, hwnd: HWND) -> bool {
                 }
                 false
             }
+            // R4:识别二维码提交区域,工作区覆盖层打开后自动开始本地识别。
+            SelectionAction::Qr => {
+                if let Some(outcome) = qr_outcome(&state.canvas.engine) {
+                    state.outcome = Some(outcome);
+                    return true;
+                }
+                false
+            }
             // 标注工具条动作(工具切换/撤销/重做/删除/更多)在引擎内消费,
             // 不会到达这里;防御性忽略,不结束会话。
             SelectionAction::Tool(_)
@@ -428,8 +439,15 @@ fn ocr_outcome(engine: &SelectionEngine) -> Option<RegionOutcome> {
         .map(|rect| RegionOutcome::Ocr(rect, engine.annotations().to_vec()))
 }
 
-/// 操作条/菜单动作到静默完成动作的映射;标注/取字/取消/复制色值与标注
-/// 工具条动作不在此列。
+/// R4:「识别二维码」动作到壳结果的映射;会话层据此置 pending_qr。
+fn qr_outcome(engine: &SelectionEngine) -> Option<RegionOutcome> {
+    engine
+        .selection()
+        .map(|rect| RegionOutcome::Qr(rect, engine.annotations().to_vec()))
+}
+
+/// 操作条/菜单动作到静默完成动作的映射;标注/取字/二维码/取消/复制色值与
+/// 标注工具条动作不在此列。
 fn quiet_action_for(action: SelectionAction) -> Option<QuietAction> {
     match action {
         SelectionAction::Copy => Some(QuietAction::Copy),
@@ -437,6 +455,7 @@ fn quiet_action_for(action: SelectionAction) -> Option<QuietAction> {
         SelectionAction::Pin => Some(QuietAction::Pin),
         SelectionAction::Annotate
         | SelectionAction::Ocr
+        | SelectionAction::Qr
         | SelectionAction::Cancel
         | SelectionAction::CopyColor
         | SelectionAction::Tool(_)
@@ -2255,6 +2274,8 @@ mod tests {
         );
         // R2:取字不再是静默动作,它提交区域并打开工作区覆盖层。
         assert_eq!(quiet_action_for(SelectionAction::Ocr), None);
+        // R4:二维码识别同样提交区域,走工作区面板而不是静默动作。
+        assert_eq!(quiet_action_for(SelectionAction::Qr), None);
         assert_eq!(quiet_action_for(SelectionAction::Annotate), None);
         assert_eq!(quiet_action_for(SelectionAction::Cancel), None);
         assert_eq!(quiet_action_for(SelectionAction::CopyColor), None);
@@ -2300,6 +2321,56 @@ mod tests {
         assert_eq!(
             state.outcome,
             Some(RegionOutcome::Ocr(
+                PhysicalRect {
+                    x: 40,
+                    y: 30,
+                    width: 161,
+                    height: 91
+                },
+                Vec::new()
+            ))
+        );
+    }
+
+    #[test]
+    fn menu_qr_requests_workspace_overlay_outcome() {
+        let mut state = test_state(320, 200);
+        let hwnd = HWND::default();
+        for event in [
+            InputEvent::LeftDown { x: 40, y: 30 },
+            InputEvent::PointerMove { x: 200, y: 120 },
+            InputEvent::LeftUp { x: 200, y: 120 },
+            InputEvent::RightDown { x: 150, y: 100 },
+        ] {
+            assert!(!feed_event(&mut state, event, hwnd));
+        }
+        let items = composer::menu_items(state.canvas.engine.flags());
+        let metrics = composer::ChromeMetrics::for_scale(1.0);
+        let panel = composer::menu_panel(
+            metrics,
+            state.canvas.engine.menu_anchor(),
+            (320, 200),
+            &items,
+        );
+        let (_, qr_rect) = composer::menu_item_rects(metrics, panel, &items)
+            .into_iter()
+            .find(|(action, _)| *action == SelectionAction::Qr)
+            .unwrap();
+        let (cx, cy) = qr_rect.center();
+        assert!(!feed_event(
+            &mut state,
+            InputEvent::LeftDown { x: cx, y: cy },
+            hwnd
+        ));
+        assert!(feed_event(
+            &mut state,
+            InputEvent::LeftUp { x: cx, y: cy },
+            hwnd
+        ));
+        // 二维码动作提交当前区域,由会话层置 pending_qr 打开识别面板。
+        assert_eq!(
+            state.outcome,
+            Some(RegionOutcome::Qr(
                 PhysicalRect {
                     x: 40,
                     y: 30,

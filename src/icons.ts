@@ -64,6 +64,9 @@ export const icons = {
   ocr: svg(
     `<rect x="6.2" y="4.4" width="11.6" height="15.2" rx="2"/><path d="M8.8 8.8h6.4M8.8 12.2h6.4M8.8 15.6h4.2"/>`,
   ),
+  qr: svg(
+    `<rect x="4.4" y="4.4" width="6.8" height="6.8" rx="1.2"/><rect x="12.8" y="4.4" width="6.8" height="6.8" rx="1.2"/><rect x="4.4" y="12.8" width="6.8" height="6.8" rx="1.2"/><g fill="currentColor" stroke="none"><rect x="6.9" y="6.9" width="1.8" height="1.8" rx="0.4"/><rect x="15.3" y="6.9" width="1.8" height="1.8" rx="0.4"/><rect x="6.9" y="15.3" width="1.8" height="1.8" rx="0.4"/><rect x="12.9" y="12.9" width="1.9" height="1.9" rx="0.4"/><rect x="16.5" y="12.9" width="1.9" height="1.9" rx="0.4"/><rect x="12.9" y="16.5" width="1.9" height="1.9" rx="0.4"/><rect x="17.3" y="17.3" width="1.9" height="1.9" rx="0.4"/></g>`,
+  ),
   rotate: svg(
     `<path d="M19 11.2a7 7 0 1 1-2.1-5.1"/><path d="M19.2 3.6v4.8h-4.8"/>`,
   ),

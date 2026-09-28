@@ -81,6 +81,8 @@ struct ActiveSession {
     writeback: Option<String>,
     /// 选区「取字」打开预览后由前端消费一次,自动进入取字而不是静默退出。
     pending_ocr: bool,
+    /// 选区「识别二维码」打开工作区后由前端消费一次,自动开始识别。
+    pending_qr: bool,
     /// 全屏目标;非全屏会话保持指针屏。
     fullscreen_target: FullscreenTarget,
     /// 本次采集请求了指针但平台拿不到图像。完成时提示,不阻断输出。
@@ -109,6 +111,7 @@ impl ActiveSession {
             cancel_requested_at: None,
             writeback: None,
             pending_ocr: false,
+            pending_qr: false,
             fullscreen_target: FullscreenTarget::Pointer,
             cursor_unavailable: false,
         }
@@ -879,12 +882,17 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
             start_scroll_session(app, rect, annotations, generation)
         }
         RegionOutcome::Preview(rect, annotations) | RegionOutcome::Annotate(rect, annotations) => {
-            commit_region_to_workspace(app, rect, annotations, false, generation).await
+            commit_region_to_workspace(app, rect, annotations, false, false, generation).await
         }
         // R2:壳上的「取字」不再静默复制;提交区域并置 `pending_ocr`,工作区
         // 覆盖层打开后自动进入取字。取字前不写剪贴板(含不再先写 PNG)。
         RegionOutcome::Ocr(rect, annotations) => {
-            commit_region_to_workspace(app, rect, annotations, true, generation).await
+            commit_region_to_workspace(app, rect, annotations, true, false, generation).await
+        }
+        // R4:壳上的「识别二维码」提交区域并置 `pending_qr`;工作区打开后
+        // 对冻结帧自动开始本地识别,识别与展示阶段不写剪贴板、不打开链接。
+        RegionOutcome::Qr(rect, annotations) => {
+            commit_region_to_workspace(app, rect, annotations, false, true, generation).await
         }
         // 复制/保存/贴图在选区上直接完成,不打开工作区。
         RegionOutcome::Quiet(rect, action, annotations) => {
@@ -913,14 +921,15 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
     }
 }
 
-/// R2:原生壳把已确认区域交给工作区覆盖层。`pending_ocr` 为 true 时
-/// 覆盖层打开后自动进入取字;不写剪贴板、不打开预览。
+/// R2/R4:原生壳把已确认区域交给工作区覆盖层。`pending_ocr` / `pending_qr`
+/// 为 true 时覆盖层打开后自动进入取字/二维码识别;不写剪贴板、不打开预览。
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 async fn commit_region_to_workspace(
     app: &AppHandle,
     rect: super::geometry::PhysicalRect,
     annotations: Vec<Annotation>,
     pending_ocr: bool,
+    pending_qr: bool,
     generation: u64,
 ) -> Result<(), CaptureError> {
     let handle = app.clone();
@@ -935,6 +944,7 @@ async fn commit_region_to_workspace(
             },
             annotations,
             pending_ocr,
+            pending_qr,
             generation,
         )
     })
@@ -1565,26 +1575,30 @@ pub fn confirm_region(
 }
 
 /// 原生壳提交选区:不在壳上结束截图或打开预览,画面交给网页浮层工作区。
-/// `pending_ocr` 让浮层打开后自动进入取字;提交失败时回滚该标记。
+/// `pending_ocr` / `pending_qr` 让浮层打开后自动进入取字/二维码识别;
+/// 提交失败时回滚这些标记。
 fn commit_shell_region(
     app: &AppHandle,
     selection: RegionSelection,
     annotations: Vec<Annotation>,
     pending_ocr: bool,
+    pending_qr: bool,
     generation: u64,
 ) -> Result<(), CaptureError> {
-    if pending_ocr {
+    if pending_ocr || pending_qr {
         with_session_mut(app, |session| {
             if let Some(current) = session.as_mut() {
-                current.pending_ocr = true;
+                current.pending_ocr = pending_ocr;
+                current.pending_qr = pending_qr;
             }
         });
     }
     let result = finish_selection(app, selection, annotations, Some(generation));
-    if result.is_err() && pending_ocr {
+    if result.is_err() && (pending_ocr || pending_qr) {
         with_session_mut(app, |session| {
             if let Some(current) = session.as_mut() {
                 current.pending_ocr = false;
+                current.pending_qr = false;
             }
         });
     }
@@ -1597,6 +1611,17 @@ pub fn take_pending_preview_ocr(app: &AppHandle) -> bool {
         session.as_mut().is_some_and(|current| {
             let pending = current.pending_ocr;
             current.pending_ocr = false;
+            pending
+        })
+    })
+}
+
+/// 预览加载后消费一次「打开即识别二维码」标记。
+pub fn take_pending_preview_qr(app: &AppHandle) -> bool {
+    with_session_mut(app, |session| {
+        session.as_mut().is_some_and(|current| {
+            let pending = current.pending_qr;
+            current.pending_qr = false;
             pending
         })
     })
@@ -2041,12 +2066,17 @@ fn deliver_fixed_frame(
     if is_cancelled(app) || finish_generation_stale(app, expected) {
         return Err(CaptureError::cancelled());
     }
-    let (mode, session_monitor, pending_ocr) = with_session(app, |session| {
+    let (mode, session_monitor, pending_ocr, pending_qr) = with_session(app, |session| {
         let current = session.as_ref().ok_or_else(CaptureError::cancelled)?;
         if current.cancelled || generation_mismatch(current, expected) {
             return Err(CaptureError::cancelled());
         }
-        Ok((current.mode, current.monitor.clone(), current.pending_ocr))
+        Ok((
+            current.mode,
+            current.monitor.clone(),
+            current.pending_ocr,
+            current.pending_qr,
+        ))
     })?;
     let monitor = monitor.or(session_monitor);
     // R19:旧入口开关移除后工作区动作固定全开;分支保留给确实挂不上的宿主。
@@ -2070,6 +2100,7 @@ fn deliver_fixed_frame(
     overlay.fixed = true;
     overlay.annotations = annotations;
     overlay.pending_ocr = pending_ocr;
+    overlay.pending_qr = pending_qr;
     with_session_mut(app, |session| {
         let current = session.as_mut().ok_or_else(CaptureError::cancelled)?;
         if current.cancelled || generation_mismatch(current, expected) {
@@ -2163,8 +2194,8 @@ pub fn complete_workspace(
     Ok(())
 }
 
-/// 进一步编辑:关闭浮层,打开含当前标注的预览,不写剪贴板。R2:覆盖层
-/// 打开时已消费壳上的取字标记,预览不再重复自动识别。
+/// 进一步编辑:关闭浮层,打开含当前标注的预览,不写剪贴板。R2/R4:覆盖层
+/// 打开时已消费壳上的取字/二维码标记,预览不再重复自动识别。
 pub fn edit_workspace_further(
     app: &AppHandle,
     annotations: Vec<Annotation>,
@@ -2173,6 +2204,7 @@ pub fn edit_workspace_further(
     with_session_mut(app, |session| {
         if let Some(current) = session.as_mut() {
             current.pending_ocr = false;
+            current.pending_qr = false;
         }
     });
     open_workspace_preview(app, frame, annotations, None)
@@ -2659,13 +2691,18 @@ mod tests {
     }
 
     #[test]
-    fn take_pending_preview_ocr_is_consumed_once() {
+    fn pending_preview_recognition_flags_are_independent() {
         let mut session = ActiveSession::new(CaptureMode::Region, 0, Instant::now());
         session.busy = false;
         session.pending_ocr = true;
+        session.pending_qr = true;
         assert!(session.pending_ocr);
+        assert!(session.pending_qr);
         session.pending_ocr = false;
         assert!(!session.pending_ocr);
+        assert!(session.pending_qr, "消费取字标记不得清掉二维码标记");
+        session.pending_qr = false;
+        assert!(!session.pending_qr);
     }
 
     /// R2:静默动作不再包含取字;壳上的「取字」走工作区覆盖层而不是 Quiet 复制。

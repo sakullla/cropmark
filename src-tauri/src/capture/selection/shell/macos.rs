@@ -111,6 +111,9 @@ pub enum RegionOutcome {
     /// 操作条/菜单的「取字」动作:rect 提交工作区覆盖层并在打开后自动进入
     /// 取字(R2);不在壳上写剪贴板。
     Ocr(PhysicalRect, Vec<Annotation>),
+    /// 操作条/菜单的「识别二维码」动作(R4):rect 提交工作区覆盖层并在打开
+    /// 后自动开始本地识别;不自动复制、不打开链接。
+    Qr(PhysicalRect, Vec<Annotation>),
     /// 操作条/菜单的 copy/save/pin 动作:rect 走 Quiet 完成路径并执行动作。
     Quiet(PhysicalRect, QuietAction, Vec<Annotation>),
     /// R1 操作条/菜单的长截图动作:rect 交给会话层开始滚动会话。
@@ -1350,6 +1353,12 @@ fn feed_event(state: &mut ShellState, event: InputEvent, view: &SelectionView) {
                     state.outcome = Some(outcome);
                 }
             }
+            // R4:识别二维码提交区域,工作区覆盖层打开后自动开始本地识别。
+            SelectionAction::Qr => {
+                if let Some(outcome) = qr_outcome(&state.canvas.engine) {
+                    state.outcome = Some(outcome);
+                }
+            }
             // 标注工具条动作由引擎内部消费,不会到达这里;防御性忽略。
             SelectionAction::Tool(_)
             | SelectionAction::Mode(_)
@@ -1386,8 +1395,15 @@ fn ocr_outcome(engine: &SelectionEngine) -> Option<RegionOutcome> {
         .map(|rect| RegionOutcome::Ocr(rect, engine.annotations().to_vec()))
 }
 
-/// 操作条/菜单动作到静默完成动作的映射;标注/取字/取消/复制色值与标注
-/// 工具条动作不在此列。
+/// R4:「识别二维码」动作到壳结果的映射;会话层据此置 pending_qr。
+fn qr_outcome(engine: &SelectionEngine) -> Option<RegionOutcome> {
+    engine
+        .selection()
+        .map(|rect| RegionOutcome::Qr(rect, engine.annotations().to_vec()))
+}
+
+/// 操作条/菜单动作到静默完成动作的映射;标注/取字/二维码/取消/复制色值与
+/// 标注工具条动作不在此列。
 fn quiet_action_for(action: SelectionAction) -> Option<QuietAction> {
     match action {
         SelectionAction::Copy => Some(QuietAction::Copy),
@@ -1395,6 +1411,7 @@ fn quiet_action_for(action: SelectionAction) -> Option<QuietAction> {
         SelectionAction::Pin => Some(QuietAction::Pin),
         SelectionAction::Annotate
         | SelectionAction::Ocr
+        | SelectionAction::Qr
         | SelectionAction::Cancel
         | SelectionAction::CopyColor
         | SelectionAction::Tool(_)
@@ -1812,6 +1829,8 @@ mod tests {
         );
         // R2:取字不再是静默动作,它提交区域并打开工作区覆盖层。
         assert_eq!(quiet_action_for(SelectionAction::Ocr), None);
+        // R4:二维码识别同样提交区域,走工作区面板而不是静默动作。
+        assert_eq!(quiet_action_for(SelectionAction::Qr), None);
         assert_eq!(quiet_action_for(SelectionAction::Annotate), None);
         assert_eq!(quiet_action_for(SelectionAction::Cancel), None);
         assert_eq!(quiet_action_for(SelectionAction::CopyColor), None);
@@ -1828,6 +1847,20 @@ mod tests {
         assert_eq!(
             ocr_outcome(&engine),
             Some(RegionOutcome::Ocr(rect, Vec::new()))
+        );
+    }
+
+    #[test]
+    fn qr_outcome_needs_a_selection_and_keeps_rect() {
+        let mut engine = SelectionEngine::new(320, 200, FeatureFlags::default());
+        assert_eq!(qr_outcome(&engine), None);
+        engine.handle_event(InputEvent::LeftDown { x: 5, y: 6 });
+        engine.handle_event(InputEvent::PointerMove { x: 35, y: 46 });
+        engine.handle_event(InputEvent::LeftUp { x: 35, y: 46 });
+        let rect = engine.selection().unwrap();
+        assert_eq!(
+            qr_outcome(&engine),
+            Some(RegionOutcome::Qr(rect, Vec::new()))
         );
     }
 

@@ -13,6 +13,7 @@ mod logging;
 mod ocr;
 mod pin;
 mod pin_store;
+mod qr;
 mod settings;
 mod single_instance;
 mod tray;
@@ -268,6 +269,7 @@ pub fn run() {
             settings::apply_language(app.handle());
             app.manage(capture::session::CaptureRuntime::default());
             app.manage(ocr::OcrRuntime::default());
+            app.manage(qr::QrRuntime::default());
             // R16:托盘构建失败(典型为缺少 AppIndicator 的 Linux 桌面)不再
             // 中止启动:`install_guarded` 把构建 Err 与构建期 panic(锁定依赖
             // 在 AppIndicator dlopen 失败时直接 panic)统一记为不可用,继续注册
@@ -337,6 +339,7 @@ pub fn run() {
             capture::cancel_capture,
             capture::close_preview,
             capture::take_pending_preview_ocr,
+            capture::take_pending_preview_qr,
             capture::close_capture_error,
             capture::get_delay_state,
             capture::get_capture_error,
@@ -351,6 +354,8 @@ pub fn run() {
             ocr::copy_ocr_all,
             ocr::copy_ocr_fragment,
             ocr::search_ocr_panel,
+            qr::recognize_qr_preview,
+            qr::copy_qr_content,
             pin::pin_current,
             pin::get_pin_image,
             pin::get_pin_state,
