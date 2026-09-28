@@ -8,7 +8,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::Ordering;
 
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject,
     AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS,
@@ -16,13 +16,14 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{GetCurrentProcessId, GetCurrentThreadId};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
-    GetWindow, GetWindowLongPtrW, GetWindowThreadProcessId, PostMessageW, PostThreadMessageW,
-    RegisterClassExW, SetTimer, SetWindowDisplayAffinity, ShowWindow, TranslateMessage,
-    UpdateLayeredWindow, WindowFromPoint, GWL_EXSTYLE, GW_HWNDNEXT, HCURSOR, HICON, MSG,
-    SW_SHOWNOACTIVATE, ULW_ALPHA, WINDOW_DISPLAY_AFFINITY, WM_MOUSEWHEEL, WM_NCHITTEST, WM_QUIT,
-    WM_TIMER, WNDCLASSEXW, CS_HREDRAW, CS_VREDRAW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP, HTTRANSPARENT,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetAncestor, GetMessageW,
+    GetWindow, GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId, IsWindowVisible,
+    PostMessageW, PostThreadMessageW, RegisterClassExW, SetTimer, SetWindowDisplayAffinity,
+    ShowWindow, TranslateMessage, UpdateLayeredWindow, WindowFromPoint, GA_ROOT, GWL_EXSTYLE,
+    GW_HWNDNEXT, HCURSOR, HICON, MSG, SW_SHOWNOACTIVATE, ULW_ALPHA, WINDOW_DISPLAY_AFFINITY,
+    WM_MOUSEWHEEL, WM_NCHITTEST, WM_QUIT, WM_TIMER, WNDCLASSEXW, CS_HREDRAW, CS_VREDRAW,
+    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    HTTRANSPARENT,
 };
 
 use crate::capture::geometry::MonitorGeom;
@@ -378,10 +379,10 @@ static SCROLL_Y: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::ne
 fn nudge_scroll() {
     let x = SCROLL_X.load(Ordering::SeqCst);
     let y = SCROLL_Y.load(Ordering::SeqCst);
-    let hwnd = window_under(POINT { x, y });
-    if hwnd.0.is_null() {
+    let point = POINT { x, y };
+    let Some(hwnd) = scroll_target(point) else {
         return;
-    }
+    };
     // 负值表示向下。坐标是屏幕坐标。
     let delta: i32 = -120;
     let packed = ((y as u32) << 16) | (x as u16 as u32);
@@ -395,29 +396,68 @@ fn nudge_scroll() {
     }
 }
 
-fn window_under(pt: POINT) -> HWND {
+/// 滚轮目标：鼠标真实落在的那个窗口。命中的窗口属于我们自己的范围框/控制窗时，
+/// 才从它的顶层沿 Z 序往下找第一个「可见、覆盖该点、不属于我们」的顶层窗口
+/// （范围框区域内的像素 alpha 为 0，命中测试通常会直接穿透到下面的内容窗口）。
+///
+/// 不能按 WS_EX_TRANSPARENT 过滤命中窗口：Chromium 系的页面子窗
+/// （Chrome_RenderWidgetHostHWND）就带这个风格，过滤掉会让 Z 序回退落到子窗
+/// 的兄弟链上一路走到空——滚轮发不出去，自动滚动看起来「截取不到内容」。
+fn scroll_target(pt: POINT) -> Option<HWND> {
     unsafe {
-        let mut hwnd = WindowFromPoint(pt);
-        let ours = our_pid();
-        for _ in 0..8 {
+        let hit = WindowFromPoint(pt);
+        if hit.0.is_null() {
+            return None;
+        }
+        if !belongs_to_us(hit) {
+            return Some(hit);
+        }
+        // 命中的是我们自己的穿透范围框：它下面的窗口才是要滚的对象。
+        let root = GetAncestor(hit, GA_ROOT);
+        let mut hwnd = if root.0.is_null() { hit } else { root };
+        for _ in 0..16 {
             if hwnd.0.is_null() {
-                return hwnd;
+                return None;
             }
-            let mut pid = 0u32;
-            GetWindowThreadProcessId(hwnd, Some(&mut pid));
-            let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
-            if pid != ours && ex & WS_EX_TRANSPARENT.0 == 0 {
-                return hwnd;
+            if !belongs_to_us(hwnd) && is_scroll_candidate(hwnd, pt) {
+                return Some(hwnd);
             }
             let Ok(next) = GetWindow(hwnd, GW_HWNDNEXT) else {
-                break;
+                return None;
             };
             if next.0.is_null() || next == hwnd {
-                break;
+                return None;
             }
             hwnd = next;
         }
-        HWND::default()
+        None
+    }
+}
+
+fn belongs_to_us(hwnd: HWND) -> bool {
+    let mut pid = 0u32;
+    unsafe {
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    }
+    pid == our_pid()
+}
+
+/// Z 序回退时的候选校验：可见、点落在窗口矩形内，且自身不是点击穿透的覆盖层
+/// （顶层窗口层面的保守过滤；命中窗口不做这个过滤，避免误伤页面子窗）。
+fn is_scroll_candidate(hwnd: HWND, pt: POINT) -> bool {
+    unsafe {
+        if !IsWindowVisible(hwnd).as_bool() {
+            return false;
+        }
+        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+        if ex & WS_EX_TRANSPARENT.0 != 0 {
+            return false;
+        }
+        let mut rect = RECT::default();
+        if GetWindowRect(hwnd, &mut rect).is_err() {
+            return false;
+        }
+        pt.x >= rect.left && pt.y >= rect.top && pt.x < rect.right && pt.y < rect.bottom
     }
 }
 
@@ -489,4 +529,268 @@ unsafe fn present(
     ReleaseDC(None, screen);
     let _ = info;
     Ok(())
+}
+
+/// 真机回归（手动，`#[ignore]`）：范围框在屏幕上时，滚轮必须发到框内内容窗口。
+///
+/// 目标窗口按真实页面容器的形状搭建：顶层窗口 + 覆盖整个客户区、带
+/// `WS_EX_TRANSPARENT` 的子窗（Chromium 的 `Chrome_RenderWidgetHostHWND`
+/// 就带这个风格）。修复前 `window_under` 会跳过该子窗并沿子窗兄弟链走到空，
+/// 滚轮发不出去；本测试断言目标窗口（另一个进程）按 `-120` 的位移和屏幕
+/// 坐标收到了滚轮。
+#[cfg(all(test, windows))]
+mod live_target {
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    use windows::core::w;
+    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::UI::HiDpi::{
+        SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DestroyWindow, DispatchMessageW, FindWindowW, GetParent, PeekMessageW,
+        RegisterClassExW, SendMessageW, ShowWindow, TranslateMessage, MSG, PM_REMOVE, SW_SHOW,
+        WM_MOUSEWHEEL, WNDCLASSEXW, WS_CHILD, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+        WS_VISIBLE,
+    };
+
+    use super::*;
+    use crate::capture::platform;
+
+    /// 子进程模式标记与窗口标题；父进程按标题找到目标窗口。
+    const SPEC_ENV: &str = "CROPMARK_SCROLL_TARGET_SPEC";
+    const PARENT_CLASS: windows::core::PCWSTR = w!("CropmarkScrollTargetWnd");
+    const CHILD_CLASS: windows::core::PCWSTR = w!("CropmarkScrollTargetPage");
+    const TITLE: windows::core::PCWSTR = w!("CropmarkScrollTarget");
+
+    unsafe extern "system" fn target_proc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        if msg == WM_MOUSEWHEEL {
+            let delta = ((wparam.0 as u32) >> 16) as u16 as i16;
+            let x = (lparam.0 as u32 & 0xFFFF) as u16 as i16;
+            let y = ((lparam.0 as u32 >> 16) & 0xFFFF) as u16 as i16;
+            println!("wheel {delta} {x} {y}");
+            let _ = std::io::stdout().flush();
+            return LRESULT(0);
+        }
+        DefWindowProcW(hwnd, msg, wparam, lparam)
+    }
+
+    /// 页面子窗自己不处理滚轮，转发给父窗（Chromium 页面子窗的实际行为）。
+    unsafe extern "system" fn page_proc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        if msg == WM_MOUSEWHEEL {
+            if let Ok(parent) = GetParent(hwnd) {
+                if !parent.0.is_null() {
+                    SendMessageW(parent, msg, Some(wparam), Some(lparam));
+                    return LRESULT(0);
+                }
+            }
+        }
+        DefWindowProcW(hwnd, msg, wparam, lparam)
+    }
+
+    fn register(class: windows::core::PCWSTR, proc_: WndprocArg) {
+        unsafe {
+            let Ok(instance) = GetModuleHandleW(None) else {
+                return;
+            };
+            let wc = WNDCLASSEXW {
+                cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+                lpfnWndProc: Some(proc_),
+                hInstance: instance.into(),
+                lpszClassName: class,
+                ..Default::default()
+            };
+            let _ = RegisterClassExW(&wc);
+        }
+    }
+
+    type WndprocArg = unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT;
+
+    /// 目标窗口子进程：`SPEC_ENV` 缺失时直接跳过（普通 `cargo test` 不做事）。
+    #[test]
+    fn helper_scroll_target_window() {
+        let Ok(spec) = std::env::var(SPEC_ENV) else {
+            return;
+        };
+        let numbers: Vec<i32> = spec
+            .split(',')
+            .filter_map(|part| part.trim().parse().ok())
+            .collect();
+        let [x, y, width, height, millis] = numbers[..] else {
+            return;
+        };
+        unsafe {
+            let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+            register(PARENT_CLASS, target_proc);
+            register(CHILD_CLASS, page_proc);
+            let Ok(instance) = GetModuleHandleW(None) else {
+                return;
+            };
+            let Ok(parent) = CreateWindowExW(
+                WS_EX_TOPMOST,
+                PARENT_CLASS,
+                TITLE,
+                WS_POPUP | WS_VISIBLE,
+                x,
+                y,
+                width,
+                height,
+                None,
+                None,
+                Some(instance.into()),
+                None,
+            ) else {
+                return;
+            };
+            let _ = CreateWindowExW(
+                WS_EX_TRANSPARENT,
+                CHILD_CLASS,
+                windows::core::PCWSTR::null(),
+                WS_CHILD | WS_VISIBLE,
+                0,
+                0,
+                width,
+                height,
+                Some(parent),
+                None,
+                Some(instance.into()),
+                None,
+            );
+            let _ = ShowWindow(parent, SW_SHOW);
+            let deadline = Instant::now() + Duration::from_millis(millis.max(1_000) as u64);
+            let mut msg = MSG::default();
+            while Instant::now() < deadline {
+                while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                    let _ = TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            let _ = DestroyWindow(parent);
+        }
+    }
+
+    /// 驱动侧：像滚动会话一样把范围框放在目标窗口上，滚轮必须落到目标进程。
+    #[test]
+    #[ignore = "manual: opens real windows on the desktop"]
+    fn wheel_reaches_the_content_window_under_the_scroll_frame() {
+        unsafe {
+            let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        }
+        let monitor = platform::pointer_monitor().expect("pointer monitor");
+        let spec = format!(
+            "{},{},420,320,8000",
+            monitor.physical_x + 80,
+            monitor.physical_y + 80
+        );
+        let mut helper = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "capture::scroll::highlight::live_target::helper_scroll_target_window",
+                "--nocapture",
+            ])
+            .env(SPEC_ENV, &spec)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn target window process");
+        let stdout = helper.stdout.take().expect("helper stdout");
+        let lines = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = lines.clone();
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            for line in std::io::BufReader::new(stdout).lines() {
+                let Ok(line) = line else {
+                    break;
+                };
+                sink.lock().expect("lines").push(line);
+            }
+        });
+
+        let mut target = None;
+        for _ in 0..100 {
+            if let Ok(hwnd) = unsafe { FindWindowW(windows::core::PCWSTR::null(), TITLE) } {
+                if !hwnd.0.is_null() {
+                    target = Some(hwnd);
+                    break;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let target = target.expect("target window must appear");
+        std::thread::sleep(Duration::from_millis(300));
+
+        // 范围框套住目标窗口客户区中心；SCROLL_X/Y 就是后台定时器使用的滚轮落点。
+        let region = RegionSelection {
+            x: 120,
+            y: 120,
+            width: 220,
+            height: 160,
+        };
+        let center_x = monitor.physical_x + region.x as i32 + region.width as i32 / 2;
+        let center_y = monitor.physical_y + region.y as i32 + region.height as i32 / 2;
+        SCROLL_X.store(center_x, Ordering::SeqCst);
+        SCROLL_Y.store(center_y, Ordering::SeqCst);
+        let guard = Guard::open(&monitor, &region).expect("scroll frame opens");
+
+        let found = scroll_target(POINT {
+            x: center_x,
+            y: center_y,
+        })
+        .expect("wheel target must exist under the frame");
+        assert!(
+            !belongs_to_us(found),
+            "wheel must not be posted to our own overlay"
+        );
+        let mut pid = 0u32;
+        unsafe {
+            GetWindowThreadProcessId(found, Some(&mut pid));
+        }
+        assert_eq!(
+            pid,
+            helper.id(),
+            "wheel target must be the page window of the target process"
+        );
+        assert_eq!(
+            unsafe { GetAncestor(found, GA_ROOT) },
+            target,
+            "wheel target must live under the target window"
+        );
+
+        nudge_scroll();
+        let mut reported = None;
+        for _ in 0..80 {
+            let seen = lines
+                .lock()
+                .expect("lines")
+                .iter()
+                .find(|line| line.starts_with("wheel "))
+                .cloned();
+            if seen.is_some() {
+                reported = seen;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        drop(guard);
+        let _ = helper.kill();
+        let _ = helper.wait();
+        let reported = reported.expect("target window must receive the wheel");
+        assert_eq!(
+            reported,
+            format!("wheel -120 {center_x} {center_y}"),
+            "wheel must be one downward notch at the frame center"
+        );
+    }
 }
