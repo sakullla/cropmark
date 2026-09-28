@@ -34,7 +34,7 @@
   top: 16px;
   left: 0;
   right: 0;
-  /* 定宽后长提示才能在屏内换行；透明空隙不挡选区。 */
+  /* 定宽后长提示才能在屏内换行。容器不接事件，透明空隙不挡选区。 */
   width: calc(100% - 32px);
   margin-inline: auto;
   z-index: 3;
@@ -43,7 +43,7 @@
   align-items: center;
   justify-content: center;
   gap: 8px;
-  pointer-events: auto;
+  pointer-events: none;
 }
 
 .overlay-hint,
@@ -309,10 +309,11 @@
   display: none;
 }
 
-/* left/top 由脚本按选区写入；必须脱离文档流，否则会被铺满的画布盖住。 */
+/* left/top 由脚本按选区写入；必须脱离文档流，否则会被铺满的画布盖住。
+   层级低于顶栏，贴顶时不透明徽标不能盖住提示文字。 */
 .size-badge {
   position: absolute;
-  z-index: 3;
+  z-index: 2;
   max-width: calc(100% - 8px);
   padding: 4px 8px;
   border-radius: var(--radius-control-sm);
