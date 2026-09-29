@@ -161,6 +161,13 @@ export interface AnnotationEditorOptions {
   canRedoFallback?: () => boolean;
   /** 选区工具配置。缺省时全部工具可见。 */
   enabledTools?: readonly AnnotationTool[];
+  /**
+   * 启用的工具都放在主行，不再按主次收进「更多」。
+   * 预览在一行放不下时自行把多出来的按钮收进带名称的菜单。
+   */
+  inlineTools?: boolean;
+  /** 工具显隐变化后通知宿主重新排布。 */
+  onToolsChanged?: () => void;
 }
 
 export interface AnnotationEditor {
@@ -388,6 +395,26 @@ export const TOOL_MODE_ENTRIES: Array<{ tool: AnnotationTool; mode: ToolModeDefi
   TOOL_REGISTRY.flatMap((definition) =>
     (definition.modes ?? []).map((mode) => ({ tool: definition.id, mode })),
   );
+
+/** 颜色只跟会用到颜色的当前工具一起出现。 */
+const COLOR_STYLE_TOOLS: ReadonlySet<AnnotationTool> = new Set([
+  "arrow",
+  "rect",
+  "ellipse",
+  "highlighter",
+  "text",
+  "number",
+  "bubble",
+  "magnifier",
+]);
+
+/** 线宽只跟笔画类工具出现；文字不带线宽。 */
+const WIDTH_STYLE_TOOLS: ReadonlySet<AnnotationTool> = new Set([
+  "arrow",
+  "rect",
+  "ellipse",
+  "highlighter",
+]);
 
 const FALLBACK_STROKE = "#e11d48";
 const FALLBACK_SELECT = "#1d4ed8";
@@ -1265,7 +1292,11 @@ export function exportableList(annotations: Annotation[]): Annotation[] {
 }
 
 function toolButton(definition: ToolDefinition): string {
-  return `<button type="button" data-tool="${definition.id}" data-i18n-title="${definition.titleKey}" data-i18n-aria-label="${definition.labelKey}" data-tooltip="${t(definition.titleKey)}" aria-label="${t(definition.labelKey)}">${definition.icon}</button>`;
+  return `<button type="button" class="annotation-chrome" data-tool="${definition.id}" data-i18n-title="${definition.titleKey}" data-i18n-aria-label="${definition.labelKey}" data-tooltip="${t(definition.titleKey)}" aria-label="${t(definition.labelKey)}">${definition.icon}<span class="tool-label" data-i18n="${definition.labelKey}">${t(definition.labelKey)}</span></button>`;
+}
+
+function chromeButton(action: string, titleKey: CatalogKey, labelKey: CatalogKey, icon: string): string {
+  return `<button type="button" class="annotation-chrome" data-action="${action}" data-i18n-title="${titleKey}" data-i18n-aria-label="${labelKey}" data-tooltip="${t(titleKey)}" aria-label="${t(labelKey)}">${icon}<span class="tool-label" data-i18n="${labelKey}">${t(labelKey)}</span></button>`;
 }
 
 function modeButton(entry: { tool: AnnotationTool; mode: ToolModeDefinition }): string {
@@ -1287,25 +1318,29 @@ function applySwatches(root: ParentNode): void {
   });
 }
 
-function toolbarMarkup(): string {
+function toolbarMarkup(inlineTools: boolean): string {
+  const inline = TOOL_REGISTRY.map(toolButton).join("");
   const primary = TOOL_REGISTRY.filter((definition) => definition.primary)
     .map(toolButton)
     .join("");
   const extra = TOOL_REGISTRY.filter((definition) => !definition.primary)
     .map(toolButton)
     .join("");
+  const tools = inlineTools ? inline : primary;
+  const moreTools = inlineTools ? "" : extra;
+  const moreHidden = inlineTools ? " hidden" : "";
   return `
-    ${primary}
-    <div class="annotation-more" data-more-root>
-      <button type="button" data-action="more" data-i18n-title="preview.tool.more_title" data-i18n-aria-label="preview.tool.more" data-tooltip="${t("preview.tool.more_title")}" aria-label="${t("preview.tool.more")}" aria-haspopup="true" aria-expanded="false">${icons.more}</button>
-      <div class="annotation-more-panel" data-more-panel hidden>${extra}</div>
+    ${tools}
+    <div class="annotation-more" data-more-root${moreHidden}>
+      <button type="button" class="annotation-chrome" data-action="more" data-i18n-title="preview.tool.more_title" data-i18n-aria-label="preview.tool.more" data-tooltip="${t("preview.tool.more_title")}" aria-label="${t("preview.tool.more")}" aria-haspopup="true" aria-expanded="false">${icons.more}<span class="tool-label" data-i18n="preview.tool.more">${t("preview.tool.more")}</span></button>
+      <div class="annotation-more-panel" data-more-panel hidden>${moreTools}</div>
     </div>
     <span class="toolbar-sep" aria-hidden="true"></span>
-    <button type="button" data-action="undo" data-i18n-title="preview.tool.undo_title" data-i18n-aria-label="preview.tool.undo" data-tooltip="${t("preview.tool.undo_title")}" aria-label="${t("preview.tool.undo")}">${icons.undo}</button>
-    <button type="button" data-action="redo" data-i18n-title="preview.tool.redo_title" data-i18n-aria-label="preview.tool.redo" data-tooltip="${t("preview.tool.redo_title")}" aria-label="${t("preview.tool.redo")}">${icons.redo}</button>
-    <button type="button" data-action="delete" data-i18n-title="preview.tool.delete_title" data-i18n-aria-label="preview.tool.delete" data-tooltip="${t("preview.tool.delete_title")}" aria-label="${t("preview.tool.delete")}">${icons.trash}</button>
+    ${chromeButton("undo", "preview.tool.undo_title", "preview.tool.undo", icons.undo)}
+    ${chromeButton("redo", "preview.tool.redo_title", "preview.tool.redo", icons.redo)}
+    ${chromeButton("delete", "preview.tool.delete_title", "preview.tool.delete", icons.trash)}
     <div class="annotation-style" data-style-root>
-      <button type="button" data-action="style" data-i18n-title="preview.tool.style_title" data-i18n-aria-label="preview.tool.style_title" data-tooltip="${t("preview.tool.style_title")}" aria-label="${t("preview.tool.style_title")}" aria-haspopup="true" aria-expanded="false">${icons.style}</button>
+      <button type="button" class="annotation-chrome" data-action="style" data-i18n-title="preview.tool.style_title" data-i18n-aria-label="preview.tool.style_title" data-tooltip="${t("preview.tool.style_title")}" aria-label="${t("preview.tool.style_title")}" aria-haspopup="true" aria-expanded="false">${icons.style}<span class="tool-label" data-i18n="preview.tool.style_title">${t("preview.tool.style_title")}</span></button>
       <div class="annotation-style-panel" data-style-panel hidden>
         <div class="style-group" data-style-group="mode" hidden>
           <span class="style-label" data-i18n="preview.style.mode">模式</span>
@@ -1313,7 +1348,7 @@ function toolbarMarkup(): string {
             ${TOOL_MODE_ENTRIES.map(modeButton).join("")}
           </div>
         </div>
-        <div class="style-group">
+        <div class="style-group" data-style-group="color">
           <span class="style-label" data-i18n="preview.style.color">颜色</span>
           <div class="style-options" role="group" data-i18n-aria-label="preview.style.color_group" aria-label="标注颜色">
             ${STYLE_COLORS.map(
@@ -1322,7 +1357,7 @@ function toolbarMarkup(): string {
             ).join("")}
           </div>
         </div>
-        <div class="style-group">
+        <div class="style-group" data-style-group="width">
           <span class="style-label" data-i18n="preview.style.width">线宽</span>
           <div class="style-options" role="group" data-i18n-aria-label="preview.style.width" aria-label="线宽">
             ${STYLE_WIDTHS.map(
@@ -1331,7 +1366,7 @@ function toolbarMarkup(): string {
             ).join("")}
           </div>
         </div>
-        <div class="style-group">
+        <div class="style-group" data-style-group="text" hidden>
           <span class="style-label" data-i18n="preview.style.text_size">字号</span>
           <div class="style-options" role="group" data-i18n-aria-label="preview.style.text_size_group" aria-label="文字字号">
             ${STYLE_TEXT_SIZES.map(
@@ -1340,7 +1375,7 @@ function toolbarMarkup(): string {
             ).join("")}
           </div>
         </div>
-        <div class="style-group">
+        <div class="style-group" data-style-group="number" hidden>
           <span class="style-label" data-i18n="preview.style.number">序号</span>
           <div class="style-options" role="group" data-i18n-aria-label="preview.style.number_group" aria-label="序号起始值">
             <input
@@ -1459,7 +1494,8 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
   const { root, canvas, ctx, toolbar, textHost } = options;
 
   toolbar.classList.add("annotation-tools");
-  toolbar.innerHTML = toolbarMarkup();
+  const inlineTools = options.inlineTools === true;
+  toolbar.innerHTML = toolbarMarkup(inlineTools);
   applySwatches(toolbar);
 
   const editor = document.createElement("textarea");
@@ -1489,6 +1525,10 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
   const moreRoot = toolbar.querySelector("[data-more-root]");
   const numberStartInput = toolbar.querySelector("[data-style-number-start]");
   const modeGroup = toolbar.querySelector("[data-style-group=mode]");
+  const colorGroup = toolbar.querySelector("[data-style-group=color]");
+  const widthGroup = toolbar.querySelector("[data-style-group=width]");
+  const textSizeGroup = toolbar.querySelector("[data-style-group=text]");
+  const numberGroup = toolbar.querySelector("[data-style-group=number]");
   const zoomGroup = toolbar.querySelector("[data-style-group=zoom]");
   const dimGroup = toolbar.querySelector("[data-style-group=dim]");
   const eraseGroup = toolbar.querySelector("[data-style-group=erase]");
@@ -1507,6 +1547,10 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     !(moreRoot instanceof HTMLElement) ||
     !(numberStartInput instanceof HTMLInputElement) ||
     !(modeGroup instanceof HTMLElement) ||
+    !(colorGroup instanceof HTMLElement) ||
+    !(widthGroup instanceof HTMLElement) ||
+    !(textSizeGroup instanceof HTMLElement) ||
+    !(numberGroup instanceof HTMLElement) ||
     !(zoomGroup instanceof HTMLElement) ||
     !(dimGroup instanceof HTMLElement) ||
     !(eraseGroup instanceof HTMLElement) ||
@@ -1655,13 +1699,21 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
       const value = button.dataset.tool;
       button.hidden = !value || !isAnnotationTool(value) || !isToolEnabled(value);
     });
-    const moreVisible =
-      MORE_TOOLS.some((id) => isToolEnabled(id)) ||
-      morePanel.querySelector("button:not([data-tool])") !== null;
-    moreRoot.hidden = !moreVisible;
-    if (!moreVisible) {
-      toggleMorePanel(false);
+    if (inlineTools) {
+      moreRoot.hidden = true;
+      if (!morePanel.hidden) {
+        toggleMorePanel(false);
+      }
+    } else {
+      const moreVisible =
+        MORE_TOOLS.some((id) => isToolEnabled(id)) ||
+        morePanel.querySelector("button:not([data-tool])") !== null;
+      moreRoot.hidden = !moreVisible;
+      if (!moreVisible && !morePanel.hidden) {
+        toggleMorePanel(false);
+      }
     }
+    options.onToolsChanged?.();
   };
 
   // 几何命中:从最上层(数组末尾)往下找,箭头/直线/自由绘制按线段距离,
@@ -2108,7 +2160,8 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
   const syncStylePanel = (): void => {
     const definition = TOOL_BY_ID.get(tool);
     const modes = definition?.modes ?? [];
-    modeGroup.hidden = modes.length === 0;
+    const enabled = isToolEnabled(tool);
+    modeGroup.hidden = !enabled || modes.length === 0;
     if (modes.length > 0) {
       const active = modeFor(tool);
       modeGroup.querySelectorAll<HTMLButtonElement>("[data-mode-tool]").forEach((button) => {
@@ -2116,21 +2169,26 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
         button.classList.toggle("active", button.dataset.toolMode === active);
       });
     }
-    zoomGroup.hidden = tool !== "magnifier";
+    colorGroup.hidden = !enabled || !COLOR_STYLE_TOOLS.has(tool);
+    widthGroup.hidden = !enabled || !WIDTH_STYLE_TOOLS.has(tool);
+    // 字号只跟文字工具。箭头、序号、气泡都不带字号。
+    textSizeGroup.hidden = !enabled || tool !== "text";
+    numberGroup.hidden = !enabled || tool !== "number";
+    zoomGroup.hidden = !enabled || tool !== "magnifier";
     if (tool === "magnifier") {
       setGroupActive(zoomGroup, "data-zoom", String(magnifierZoom));
     }
-    dimGroup.hidden = tool !== "spotlight";
+    dimGroup.hidden = !enabled || tool !== "spotlight";
     if (tool === "spotlight") {
       setGroupActive(dimGroup, "data-dim", String(spotlightDim));
     }
-    eraseGroup.hidden = tool !== "erase";
+    eraseGroup.hidden = !enabled || tool !== "erase";
     if (tool === "erase") {
       setGroupActive(eraseGroup, "data-erase-fill", eraseFill ?? "auto");
     }
-    stickerGroup.hidden = tool !== "sticker";
-    stickerSizeGroup.hidden = tool !== "sticker";
-    if (tool === "sticker") {
+    stickerGroup.hidden = !enabled || tool !== "sticker";
+    stickerSizeGroup.hidden = !enabled || tool !== "sticker";
+    if (tool === "sticker" && enabled) {
       setGroupActive(stickerSizeGroup, "data-sticker-size", String(stickerSizeBase ?? 96));
       syncStickerSelection();
     }
@@ -2617,13 +2675,19 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     }, 200);
   });
 
-  toolbar.addEventListener("click", (event) => {
+  // 预览会把放不下的按钮移出工具条；监听挂在宿主根上，移走后仍能点到。
+  // 右键菜单不在工具条里，留给它自己的监听，避免删除被处理两次。
+  root.addEventListener("click", (event) => {
     const button = event.target instanceof Element ? event.target.closest("button") : null;
-    if (button && !button.dataset.tool && !button.dataset.action && button.closest("[data-style-panel]")) {
-      // 样式面板内由各自监听处理。
+    if (!(button instanceof HTMLButtonElement)) {
       return;
     }
-    if (!(button instanceof HTMLButtonElement)) {
+    const inChrome =
+      toolbar.contains(button) || button.closest("[data-preview-overflow-menu]") !== null;
+    if (!inChrome) {
+      return;
+    }
+    if (!button.dataset.tool && !button.dataset.action && button.closest("[data-style-panel]")) {
       return;
     }
     const nextTool = button.dataset.tool;
@@ -2916,6 +2980,7 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
         }
       }
       syncToolVisibility();
+      syncStylePanel();
     },
   };
 }
@@ -2963,5 +3028,6 @@ function noopEditor(): AnnotationEditor {
     style: () => ({ color: FALLBACK_STROKE, width: null, textSize: null, numberStart: MIN_NUMBER_START }),
     setStyle: () => undefined,
     refreshLabels: () => undefined,
+    setEnabledTools: () => undefined,
   };
 }

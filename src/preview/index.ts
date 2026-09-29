@@ -4,12 +4,14 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   annotationToolForKey,
   clampFloatingPanel,
+  PRIMARY_TOOLS,
   isAnnotationTool,
   mountAnnotationEditor,
   readAnnotationDefaults,
   resolveCanvasColor,
   type Annotation,
   type AnnotationEditor,
+  type AnnotationTool,
 } from "../annotation";
 import { applyTranslations, t, type CatalogKey } from "../i18n";
 import { icons } from "../icons";
@@ -36,6 +38,27 @@ interface PreviewTransformResult {
 
 /** R6:裁剪最小边长(物理像素),与 Rust `session::MIN_CROP_EDGE` 一致。 */
 const MIN_CROP_EDGE = 8;
+
+/** 设置还没读到时先不放工具，避免关闭项在挂载瞬间闪一下。 */
+const PREVIEW_TOOL_DEFAULTS: RegionTools = {
+  arrow: true,
+  rect: true,
+  ellipse: true,
+  highlighter: true,
+  mosaic: true,
+  text: true,
+  number: false,
+  spotlight: false,
+  magnifier: false,
+  bubble: false,
+  sticker: false,
+  erase: false,
+  line: false,
+  blur: false,
+  pin: true,
+  ocr: true,
+  qr: false,
+};
 /** 裁剪确认条离画面边缘的间距,与样式里的 12px 悬浮一致。 */
 const CROP_BAR_INSET = 12;
 const FALLBACK_CROP_EDGE = "#0ea5e9";
@@ -69,25 +92,26 @@ export function mountPreview(root: HTMLElement): () => void {
       <p class="preview-note" data-drag-handle data-tauri-drag-region>${t("preview.copied_clean")}</p>
       <button type="button" class="preview-close icon-btn" data-action="close" data-i18n-aria-label="preview.close" aria-label="关闭">${icons.close}</button>
     </header>
-    <div class="preview-toolbar">
-      <div class="preview-tools" role="toolbar" data-annotation-toolbar data-i18n-aria-label="preview.toolbar_group" aria-label="标注" data-tauri-drag-region="false"></div>
-      <div class="preview-actions" data-tauri-drag-region="false">
+    <div class="preview-toolbar" data-preview-toolbar>
+      <div class="preview-toolbar-row" data-preview-row>
+        <div class="preview-tools" role="toolbar" data-annotation-toolbar data-preview-group="draw" data-i18n-aria-label="preview.toolbar_group" aria-label="标注" data-tauri-drag-region="false"></div>
+        <span class="preview-group-sep" data-preview-sep="draw" aria-hidden="true"></span>
         <div class="preview-action-group" data-preview-group="picture" data-tauri-drag-region="false">
-          <button type="button" class="icon-action" data-tool="ocr" data-i18n-title="preview.action.ocr_title" data-i18n-aria-label="preview.action.ocr" aria-label="取字" data-tauri-drag-region="false">${icons.ocr}</button>
-          <button type="button" class="icon-action" data-tool="qr" data-i18n-title="preview.action.qr_title" data-i18n-aria-label="preview.action.qr" aria-label="识别二维码" data-tauri-drag-region="false">${icons.qr}</button>
-          <button type="button" class="icon-action preview-more-action" data-action="rotate-left" data-i18n-title="preview.action.rotate_left_title" data-i18n-aria-label="preview.action.rotate_left" aria-label="左旋 90°" data-tauri-drag-region="false">${icons.rotateLeft}</button>
-          <button type="button" class="icon-action preview-more-action" data-action="rotate-right" data-i18n-title="preview.action.rotate_right_title" data-i18n-aria-label="preview.action.rotate_right" aria-label="右旋 90°" data-tauri-drag-region="false">${icons.rotateRight}</button>
-          <button type="button" class="icon-action preview-more-action" data-action="crop" data-i18n-title="preview.action.crop_title" data-i18n-aria-label="preview.action.crop" aria-label="裁剪" data-tauri-drag-region="false">${icons.crop}</button>
-          <button type="button" class="icon-action" data-action="copy-ocr-all" hidden data-i18n-title="preview.action.copy_all" data-i18n-aria-label="preview.action.copy_all" aria-label="复制全部" data-tauri-drag-region="false">${icons.copy}</button>
+          <button type="button" class="preview-named" data-tool="ocr" hidden data-i18n-title="preview.action.ocr_title" data-i18n-aria-label="preview.action.ocr" aria-label="取字" data-tauri-drag-region="false">${icons.ocr}<span class="tool-label" data-i18n="preview.action.ocr">取字</span></button>
+          <button type="button" class="preview-named" data-tool="qr" hidden data-i18n-title="preview.action.qr_title" data-i18n-aria-label="preview.action.qr" aria-label="识别二维码" data-tauri-drag-region="false">${icons.qr}<span class="tool-label" data-i18n="preview.action.qr">识别二维码</span></button>
+          <button type="button" class="preview-named" data-action="rotate-left" data-i18n-title="preview.action.rotate_left_title" data-i18n-aria-label="preview.action.rotate_left" aria-label="左旋 90°" data-tauri-drag-region="false">${icons.rotateLeft}<span class="tool-label" data-i18n="preview.action.rotate_left">左旋 90°</span></button>
+          <button type="button" class="preview-named" data-action="rotate-right" data-i18n-title="preview.action.rotate_right_title" data-i18n-aria-label="preview.action.rotate_right" aria-label="右旋 90°" data-tauri-drag-region="false">${icons.rotateRight}<span class="tool-label" data-i18n="preview.action.rotate_right">右旋 90°</span></button>
+          <button type="button" class="preview-named" data-action="crop" data-i18n-title="preview.action.crop_title" data-i18n-aria-label="preview.action.crop" aria-label="裁剪" data-tauri-drag-region="false">${icons.crop}<span class="tool-label" data-i18n="preview.action.crop">裁剪</span></button>
+          <button type="button" class="preview-named" data-action="copy-ocr-all" hidden data-i18n-title="preview.action.copy_all" data-i18n-aria-label="preview.action.copy_all" aria-label="复制全部" data-tauri-drag-region="false">${icons.copy}<span class="tool-label" data-i18n="preview.action.copy_all">复制全部</span></button>
         </div>
-        <span class="preview-action-sep" aria-hidden="true"></span>
+        <span class="preview-group-sep" data-preview-sep="picture" aria-hidden="true"></span>
         <div class="preview-action-group" data-preview-group="output" data-tauri-drag-region="false">
-          <button type="button" class="icon-action" data-action="pin" data-i18n-title="preview.action.pin_title" data-i18n-aria-label="preview.action.pin" aria-label="贴图" data-tauri-drag-region="false">${icons.pin}</button>
-          <button type="button" class="icon-action" data-action="update-pin" data-i18n-title="preview.action.update_pin_title" data-i18n-aria-label="preview.action.update_pin" aria-label="更新贴图" hidden data-tauri-drag-region="false">${icons.annotate}</button>
+          <button type="button" class="preview-named" data-action="pin" data-i18n-title="preview.action.pin_title" data-i18n-aria-label="preview.action.pin" aria-label="贴图" data-tauri-drag-region="false">${icons.pin}<span class="tool-label" data-i18n="preview.action.pin">贴图</span></button>
+          <button type="button" class="preview-named" data-action="update-pin" data-i18n-title="preview.action.update_pin_title" data-i18n-aria-label="preview.action.update_pin" aria-label="更新贴图" hidden data-tauri-drag-region="false">${icons.annotate}<span class="tool-label" data-i18n="preview.action.update_pin">更新贴图</span></button>
           <div class="preview-save" data-save-quality-root>
             <div class="preview-save-split">
-              <button type="button" data-action="save" data-i18n-title="preview.action.save_title" data-tauri-drag-region="false">${icons.save}<span data-i18n="preview.action.save">保存</span></button>
-              <button type="button" class="preview-save-caret" data-action="toggle-quality" data-i18n-title="preview.quality.group" data-i18n-aria-label="preview.quality.group" aria-label="保存质量" aria-haspopup="true" aria-expanded="false" data-tauri-drag-region="false">${icons.chevronDown}</button>
+              <button type="button" class="preview-named" data-action="save" data-i18n-title="preview.action.save_title" data-tauri-drag-region="false">${icons.save}<span class="tool-label" data-i18n="preview.action.save">保存</span></button>
+              <button type="button" class="preview-save-caret preview-named" data-action="toggle-quality" data-i18n-title="preview.quality.group" data-i18n-aria-label="preview.quality.group" aria-label="保存质量" aria-haspopup="true" aria-expanded="false" data-tauri-drag-region="false">${icons.chevronDown}</button>
             </div>
             <div class="preview-quality-panel" data-save-quality-panel hidden>
               <span class="style-label" data-i18n="preview.quality.label">质量</span>
@@ -99,8 +123,12 @@ export function mountPreview(root: HTMLElement): () => void {
               </div>
             </div>
           </div>
-          <button type="button" class="primary" data-action="copy" data-i18n-title="preview.action.copy_title" data-tauri-drag-region="false">${icons.copy}<span data-i18n="preview.action.copy">复制</span></button>
         </div>
+      </div>
+      <button type="button" class="primary preview-named" data-action="copy" data-i18n-title="preview.action.copy_title" data-tauri-drag-region="false">${icons.copy}<span class="tool-label" data-i18n="preview.action.copy">复制</span></button>
+      <div class="preview-overflow" data-preview-overflow hidden>
+        <button type="button" class="preview-named" data-action="preview-more" data-i18n-title="preview.tool.more_title" data-i18n-aria-label="preview.tool.more" aria-label="更多" aria-haspopup="menu" aria-expanded="false" data-tauri-drag-region="false">${icons.more}<span class="tool-label" data-i18n="preview.tool.more">更多</span></button>
+        <div class="preview-overflow-menu" data-preview-overflow-menu role="menu" hidden></div>
       </div>
     </div>
     <div class="preview-stage">
@@ -123,6 +151,14 @@ export function mountPreview(root: HTMLElement): () => void {
   const frameEl = root.querySelector(".preview-frame");
   const stageEl = root.querySelector(".preview-stage");
   const toolbarEl = root.querySelector("[data-annotation-toolbar]");
+  const toolbarRow = root.querySelector("[data-preview-row]");
+  const pictureGroup = root.querySelector("[data-preview-group=picture]");
+  const outputGroup = root.querySelector("[data-preview-group=output]");
+  const drawSep = root.querySelector("[data-preview-sep=draw]");
+  const pictureSep = root.querySelector("[data-preview-sep=picture]");
+  const overflowRoot = root.querySelector("[data-preview-overflow]");
+  const overflowMenu = root.querySelector("[data-preview-overflow-menu]");
+  const overflowToggle = root.querySelector("[data-action=preview-more]");
   const copyAllBtn = root.querySelector("[data-action=copy-ocr-all]");
   const ocrBtn = root.querySelector("[data-tool=ocr]");
   const qrBtn = root.querySelector("[data-tool=qr]");
@@ -143,6 +179,14 @@ export function mountPreview(root: HTMLElement): () => void {
     !(frameEl instanceof HTMLElement) ||
     !(stageEl instanceof HTMLElement) ||
     !(toolbarEl instanceof HTMLElement) ||
+    !(toolbarRow instanceof HTMLElement) ||
+    !(pictureGroup instanceof HTMLElement) ||
+    !(outputGroup instanceof HTMLElement) ||
+    !(drawSep instanceof HTMLElement) ||
+    !(pictureSep instanceof HTMLElement) ||
+    !(overflowRoot instanceof HTMLElement) ||
+    !(overflowMenu instanceof HTMLElement) ||
+    !(overflowToggle instanceof HTMLButtonElement) ||
     !(copyAllBtn instanceof HTMLButtonElement) ||
     !(ocrBtn instanceof HTMLButtonElement) ||
     !(qrBtn instanceof HTMLButtonElement) ||
@@ -333,6 +377,11 @@ export function mountPreview(root: HTMLElement): () => void {
     };
   };
 
+  // 工具显隐和文案宽度变化后重排顶栏。挂载早期还是空操作。
+  let requestOverflowLayout = (): void => undefined;
+  let closeOverflowMenu = (): void => undefined;
+  let enabledAnnotation = new Set<AnnotationTool>();
+
   // 取字/二维码工具按钮与顶部「复制全部」随共享模型状态同步;退出识别后把
   // 画布工具标记与工具条高亮还给标注编辑器当前工具,并撤掉识别提示。
   let ocrWasActive = false;
@@ -355,11 +404,13 @@ export function mountPreview(root: HTMLElement): () => void {
     qrWasActive = qrActive;
     syncToolDataset();
     redraw();
+    requestOverflowLayout();
   };
 
   const syncWritebackUi = (): void => {
     updatePinBtn.hidden = writebackLabel === null;
     pinBtn.hidden = writebackLabel !== null;
+    requestOverflowLayout();
   };
 
   let cropPlaceAttempts = 0;
@@ -505,6 +556,7 @@ export function mountPreview(root: HTMLElement): () => void {
     saveQualityToggle.classList.toggle("active", next);
     saveQualityToggle.setAttribute("aria-expanded", next ? "true" : "false");
     if (next) {
+      closeOverflowMenu();
       clampFloatingPanel(saveQualityPanel);
       const current = saveQualityPanel.querySelector<HTMLButtonElement>(
         `[data-save-quality="${saveQuality}"]`,
@@ -541,6 +593,9 @@ export function mountPreview(root: HTMLElement): () => void {
     ctx,
     toolbar: toolbarEl,
     textHost: frameEl,
+    inlineTools: true,
+    enabledTools: [],
+    onToolsChanged: () => requestOverflowLayout(),
     frame: () => frame,
     redraw,
     // R2/R4/R6:取字、二维码与裁剪任一激活时画布输入只走对应宿主分支,
@@ -576,48 +631,6 @@ export function mountPreview(root: HTMLElement): () => void {
     canRedoFallback: () => !cropping && transformRedo && !(editor?.canUndo() ?? false),
   });
 
-  const morePanel = toolbarEl.querySelector("[data-more-panel]");
-  if (morePanel instanceof HTMLElement) {
-    const sep = document.createElement("span");
-    sep.className = "toolbar-sep";
-    sep.setAttribute("aria-hidden", "true");
-    morePanel.append(sep, rotateLeftBtn, rotateRightBtn, cropBtn);
-  }
-
-  const applyRegionTools = (tools: RegionTools): void => {
-    editor?.setEnabledTools(
-      REGION_TOOL_FIELDS.flatMap((field) =>
-        tools[field.id] && isAnnotationTool(field.id) ? [field.id] : [],
-      ),
-    );
-  };
-  applyRegionTools({
-    arrow: true,
-    rect: true,
-    ellipse: true,
-    highlighter: true,
-    mosaic: true,
-    text: true,
-    number: true,
-    spotlight: true,
-    magnifier: true,
-    bubble: true,
-    sticker: true,
-    erase: true,
-    line: true,
-    blur: true,
-    pin: true,
-    ocr: true,
-    qr: true,
-  });
-  void invoke<{ regionTools?: RegionTools }>("get_ui_settings")
-    .then((settings) => {
-      if (settings.regionTools) {
-        applyRegionTools(settings.regionTools);
-      }
-    })
-    .catch(() => undefined);
-
   // R2:共享取字模型(结果面板 + 图上三态 + 显式复制)。面板挂在预览舞台,
   // 与标注编辑器的 isEditable 互斥:取字期间画布输入只给取字。
   ocrModel = mountOcrModel({
@@ -652,8 +665,237 @@ export function mountPreview(root: HTMLElement): () => void {
     onChange: syncRecognitionToolbar,
   });
 
+  // 一行放不下时，按优先级把按钮收进带名称的菜单。复制、保存和样式留在主行。
+  interface OverflowItem {
+    node: HTMLElement;
+    kind: "tool" | "tail" | "picture" | "output";
+    order: number;
+    rank: number;
+    keep: boolean;
+  }
+  const overflowItems: OverflowItem[] = [];
+  const registerOverflow = (
+    node: HTMLElement | null,
+    kind: OverflowItem["kind"],
+    rank: number,
+    keep = false,
+  ): void => {
+    if (!(node instanceof HTMLElement)) {
+      return;
+    }
+    overflowItems.push({ node, kind, order: overflowItems.length, rank, keep });
+  };
+  const primaryToolIds = new Set<string>(PRIMARY_TOOLS);
+  const toolRank = (button: HTMLButtonElement): number => {
+    const id = button.dataset.tool;
+    if (id && isAnnotationTool(id)) {
+      return primaryToolIds.has(id) ? 50 : 10;
+    }
+    return 50;
+  };
+  toolbarEl.querySelectorAll<HTMLButtonElement>(":scope > button[data-tool]").forEach((button) => {
+    registerOverflow(button, "tool", toolRank(button));
+  });
+  registerOverflow(toolbarEl.querySelector<HTMLElement>("[data-action=undo]"), "tail", 60);
+  registerOverflow(toolbarEl.querySelector<HTMLElement>("[data-action=redo]"), "tail", 60);
+  registerOverflow(toolbarEl.querySelector<HTMLElement>("[data-action=delete]"), "tail", 20);
+  registerOverflow(toolbarEl.querySelector<HTMLElement>("[data-style-root]"), "tail", 65, true);
+  pictureGroup.querySelectorAll<HTMLElement>(":scope > button").forEach((button) => {
+    registerOverflow(button, "picture", 30);
+  });
+  registerOverflow(pinBtn, "output", 80);
+  registerOverflow(updatePinBtn, "output", 80);
+  registerOverflow(saveQualityRoot, "output", 90, true);
+
+  const groupOccupied = (group: HTMLElement): boolean =>
+    Array.from(group.children).some((child) => {
+      if (!(child instanceof HTMLElement) || child.hidden) {
+        return false;
+      }
+      return !child.classList.contains("toolbar-sep");
+    });
+
+  const syncGroupSeps = (): void => {
+    const drawOn = groupOccupied(toolbarEl);
+    const pictureOn = groupOccupied(pictureGroup);
+    const outputOn = groupOccupied(outputGroup);
+    drawSep.hidden = !(drawOn && (pictureOn || outputOn));
+    pictureSep.hidden = !(pictureOn && outputOn);
+    const toolbarSep = toolbarEl.querySelector<HTMLElement>(":scope > .toolbar-sep");
+    if (toolbarSep) {
+      const toolVisible = Array.from(
+        toolbarEl.querySelectorAll<HTMLElement>(":scope > button[data-tool]"),
+      ).some((button) => !button.hidden);
+      const tailVisible = Array.from(
+        toolbarEl.querySelectorAll<HTMLElement>(":scope > button[data-action], :scope > .annotation-style"),
+      ).some((node) => !node.hidden);
+      toolbarSep.hidden = !(toolVisible && tailVisible);
+    }
+  };
+
+  const placeOverflowMenu = (): void => {
+    overflowMenu.style.position = "fixed";
+    overflowMenu.style.right = "auto";
+    overflowMenu.style.bottom = "auto";
+    overflowMenu.style.left = "0px";
+    overflowMenu.style.top = "0px";
+    const width = overflowMenu.offsetWidth;
+    const height = overflowMenu.offsetHeight;
+    const box = overflowToggle.getBoundingClientRect();
+    const margin = 8;
+    const maxLeft = Math.max(margin, window.innerWidth - margin - width);
+    const maxTop = Math.max(margin, window.innerHeight - margin - height);
+    let left = box.right - width;
+    let top = box.bottom + 6;
+    if (top > maxTop) {
+      top = Math.max(margin, box.top - 6 - height);
+    }
+    left = Math.min(Math.max(left, margin), maxLeft);
+    top = Math.min(Math.max(top, margin), maxTop);
+    overflowMenu.style.left = `${Math.round(left)}px`;
+    overflowMenu.style.top = `${Math.round(top)}px`;
+    const room = Math.max(120, window.innerHeight - margin * 2);
+    overflowMenu.style.maxHeight = `${Math.min(room, 480)}px`;
+  };
+
+  closeOverflowMenu = (): void => {
+    if (!overflowMenu.hidden) {
+      toggleOverflowMenu(false);
+    }
+  };
+
+  const toggleOverflowMenu = (open?: boolean, restoreFocus = false): void => {
+    if (overflowRoot.hidden) {
+      overflowMenu.hidden = true;
+      overflowToggle.setAttribute("aria-expanded", "false");
+      return;
+    }
+    const next = open ?? overflowMenu.hidden;
+    const hadFocus = overflowMenu.contains(document.activeElement);
+    overflowMenu.hidden = !next;
+    overflowToggle.classList.toggle("active", next);
+    overflowToggle.setAttribute("aria-expanded", next ? "true" : "false");
+    if (next) {
+      placeOverflowMenu();
+      const first = overflowMenu.querySelector<HTMLElement>("button:not([hidden])");
+      first?.focus();
+    } else if (restoreFocus || hadFocus) {
+      overflowToggle.focus();
+    }
+  };
+
+  let layoutEpoch = 0;
+  let layoutToken = "";
+  let layingOut = false;
+  const layoutOverflow = (): void => {
+    if (layingOut) {
+      return;
+    }
+    const visibleKey = overflowItems.map((item) => (item.node.hidden ? "0" : "1")).join("");
+    const tokenNow = (): string => `${layoutEpoch}|${toolbarRow.clientWidth}|${visibleKey}`;
+    if (tokenNow() === layoutToken) {
+      return;
+    }
+    layingOut = true;
+    const menuWasOpen = !overflowMenu.hidden;
+    const moreHome = toolbarEl.querySelector("[data-more-root]");
+    const tools = overflowItems.filter((item) => item.kind === "tool").sort((a, b) => a.order - b.order);
+    if (moreHome instanceof HTMLElement) {
+      for (const item of [...tools].reverse()) {
+        toolbarEl.insertBefore(item.node, moreHome);
+      }
+    }
+    for (const kind of ["tail", "picture", "output"] as const) {
+      const home = kind === "tail" ? toolbarEl : kind === "picture" ? pictureGroup : outputGroup;
+      for (const item of overflowItems.filter((entry) => entry.kind === kind).sort((a, b) => a.order - b.order)) {
+        home.append(item.node);
+      }
+    }
+    overflowRoot.hidden = true;
+    overflowMenu.hidden = true;
+    overflowMenu.replaceChildren();
+    const fits = (): boolean => toolbarRow.scrollWidth <= toolbarRow.clientWidth + 1;
+    const moved: OverflowItem[] = [];
+    if (!fits()) {
+      overflowRoot.hidden = false;
+      const movable = overflowItems
+        .filter((item) => !item.keep && !item.node.hidden)
+        .sort((a, b) => a.rank - b.rank || b.order - a.order);
+      for (const item of movable) {
+        if (fits()) {
+          break;
+        }
+        item.node.remove();
+        moved.push(item);
+      }
+      moved.sort((a, b) => a.order - b.order);
+      overflowMenu.append(...moved.map((item) => item.node));
+      if (moved.length === 0) {
+        overflowRoot.hidden = true;
+      }
+    }
+    const menuOpen = moved.length > 0 && menuWasOpen;
+    overflowMenu.hidden = !menuOpen;
+    overflowToggle.classList.toggle("active", menuOpen || overflowMenu.querySelector(".active") !== null);
+    overflowToggle.setAttribute("aria-expanded", menuOpen ? "true" : "false");
+    if (menuOpen) {
+      placeOverflowMenu();
+    }
+    syncGroupSeps();
+    layingOut = false;
+    layoutToken = tokenNow();
+  };
+  requestOverflowLayout = (): void => {
+    layoutEpoch += 1;
+    layoutOverflow();
+  };
+
+  let regionToolsTicket = 0;
+  const applyRegionTools = (tools: RegionTools): void => {
+    const enabled = REGION_TOOL_FIELDS.flatMap((field) =>
+      tools[field.id] && isAnnotationTool(field.id) ? [field.id] : [],
+    );
+    enabledAnnotation = new Set(enabled);
+    editor?.setEnabledTools(enabled);
+    ocrBtn.hidden = tools.ocr !== true;
+    qrBtn.hidden = tools.qr !== true;
+    if (tools.ocr !== true) {
+      ocrModel?.deactivate();
+    }
+    if (tools.qr !== true) {
+      qrModel?.deactivate();
+    }
+    requestOverflowLayout();
+  };
+  const loadRegionTools = (): void => {
+    const ticket = ++regionToolsTicket;
+    editor?.setEnabledTools([]);
+    enabledAnnotation = new Set();
+    ocrBtn.hidden = true;
+    qrBtn.hidden = true;
+    requestOverflowLayout();
+    void invoke<{ regionTools?: RegionTools }>("get_ui_settings")
+      .then((settings) => {
+        if (ticket !== regionToolsTicket) {
+          return;
+        }
+        applyRegionTools(settings.regionTools ?? PREVIEW_TOOL_DEFAULTS);
+      })
+      .catch(() => {
+        if (ticket !== regionToolsTicket) {
+          return;
+        }
+        applyRegionTools(PREVIEW_TOOL_DEFAULTS);
+      });
+  };
+  const overflowObserver = new ResizeObserver(() => {
+    layoutOverflow();
+  });
+  overflowObserver.observe(toolbarRow);
+  loadRegionTools();
+
   const activateOcr = (): void => {
-    if (ocrModel?.active) {
+    if (ocrBtn.hidden || ocrModel?.active) {
       return;
     }
     qrModel?.deactivate();
@@ -664,7 +906,7 @@ export function mountPreview(root: HTMLElement): () => void {
   };
 
   const activateQr = (): void => {
-    if (qrModel?.active) {
+    if (qrBtn.hidden || qrModel?.active) {
       return;
     }
     ocrModel?.deactivate();
@@ -912,21 +1154,38 @@ export function mountPreview(root: HTMLElement): () => void {
     }
   });
 
-  const closeTransformMenu = (): void => {
-    const panel = toolbarEl.querySelector("[data-more-panel]");
-    const more = toolbarEl.querySelector("[data-action=more]");
-    if (panel instanceof HTMLElement) {
-      panel.hidden = true;
-    }
-    if (more instanceof HTMLButtonElement) {
-      more.setAttribute("aria-expanded", "false");
-    }
-  };
+  window.addEventListener(
+    "keydown",
+    (event) => {
+      if (
+        event.key !== "Escape" ||
+        event.isComposing ||
+        event.keyCode === 229 ||
+        overflowMenu.hidden
+      ) {
+        return;
+      }
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      toggleOverflowMenu(false, true);
+    },
+    { capture: true },
+  );
 
   root.addEventListener("click", (event) => {
     const button = event.target instanceof Element ? event.target.closest("button") : null;
     if (!(button instanceof HTMLButtonElement)) {
       return;
+    }
+    if (button.dataset.action === "preview-more") {
+      if (!saveQualityPanel.hidden) {
+        toggleQualityPanel(false);
+      }
+      toggleOverflowMenu();
+      return;
+    }
+    if (overflowMenu.contains(button) && button.dataset.action !== "toggle-quality") {
+      toggleOverflowMenu(false);
     }
     // 裁剪中只受理裁剪条与关闭:其余动作先退出裁剪再执行会丢失当前选区语义。
     if (cropping && button.dataset.action !== "crop" && button.dataset.action !== "close") {
@@ -941,17 +1200,14 @@ export function mountPreview(root: HTMLElement): () => void {
       return;
     }
     if (button.dataset.action === "rotate-left") {
-      closeTransformMenu();
       void rotate("left");
       return;
     }
     if (button.dataset.action === "rotate-right") {
-      closeTransformMenu();
       void rotate("right");
       return;
     }
     if (button.dataset.action === "crop") {
-      closeTransformMenu();
       if (cropping) {
         exitCrop();
       } else {
@@ -1018,12 +1274,21 @@ export function mountPreview(root: HTMLElement): () => void {
       toggleQualityPanel(false, qualityPanelHadFocusOnPointerDown);
     }
     qualityPanelHadFocusOnPointerDown = false;
+    if (
+      !overflowMenu.hidden &&
+      !(event.target instanceof Node && overflowRoot.contains(event.target))
+    ) {
+      toggleOverflowMenu(false);
+    }
   });
 
   pinBtn.addEventListener("pointerdown", (event) => event.stopPropagation());
   pinBtn.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
+    if (overflowMenu.contains(pinBtn)) {
+      toggleOverflowMenu(false);
+    }
     void pin();
   });
 
@@ -1145,14 +1410,17 @@ export function mountPreview(root: HTMLElement): () => void {
     }
     const key = event.key.toLowerCase();
     if (key === "o") {
+      if (ocrBtn.hidden) {
+        return;
+      }
       event.preventDefault();
       activateOcr();
       return;
     }
-    // 取字/二维码识别工具激活时,A/R/E/L/M/B/H/P/N/T 切回标注工具(与既有预览一致)。
+    // 取字/二维码识别时，单键切回仍启用的标注工具。关闭的工具不响应。
     if (ocrModel?.active === true || qrModel?.active === true) {
       const next = annotationToolForKey(key);
-      if (next) {
+      if (next && enabledAnnotation.has(next)) {
         event.preventDefault();
         editor?.setTool(next);
       }
@@ -1160,8 +1428,7 @@ export function mountPreview(root: HTMLElement): () => void {
   });
 
   // 跨会话记忆:加载时读后端保存的上次样式、质量档位与「套用美化」普通选项
-  // (读写失败均静默回退当前值)。R19:旧取字/贴图入口开关按常开语义移除,
-  // 工具条按钮与 O 键固定可用,不再随设置显隐。
+  // (读写失败均静默回退当前值)。取字是否出现由选区工具开关决定。
   const loadStyleDefaults = (): void => {
     void invoke<{
       annotationDefaults?: {
@@ -1546,8 +1813,8 @@ export function mountPreview(root: HTMLElement): () => void {
     syncCropUi();
     // 携带说明随新帧重算(image.onload);先清空,避免加载失败时残留旧前缀。
     carriedNoteSource = null;
-    // R19:旧取字/贴图入口开关按常开语义移除;样式默认只在首次加载,
-    // 不在 reload 重置。
+    // 样式默认只在首次加载，不在 reload 重置。工具开关每次重载都重读。
+    loadRegionTools();
     loadPreview();
   });
   loadPreview();
@@ -1572,6 +1839,7 @@ export function mountPreview(root: HTMLElement): () => void {
     refreshOptionLabels();
     renderNote();
     placeCropBar();
+    requestOverflowLayout();
   };
 }
 

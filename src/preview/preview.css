@@ -121,73 +121,114 @@
 
 .preview-toolbar {
   /* 抬升整个工具条为独立堆叠上下文:悬停按钮的 filter 会把 tooltip 锁进
-     按钮级上下文,导致自绘提示被 stage 画布内容盖住(z-order 低于画布
-     合成层)。这里整体提到画布之上,提示溢出到图片区也保持可见。 */
+     按钮级上下文,导致自绘提示被 stage 画布内容盖住。 */
   position: relative;
   z-index: 10;
   display: flex;
   align-items: center;
-  gap: 8px;
-  /* 窄窗口允许换行(预览窗最小尺寸保证两行可用),不再横向裁切工具。 */
-  flex-wrap: wrap;
-  row-gap: 6px;
+  flex-wrap: nowrap;
+  gap: 6px;
+  min-width: 0;
   padding: 6px 10px;
   border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
   flex: 0 0 auto;
+  overflow: visible;
   -webkit-app-region: no-drag;
   app-region: no-drag;
 }
 
-/* 标注工具按钮样式由共享 `annotation/editor.css` 提供(annotation-tools)。 */
-.preview-tools,
-.preview-actions {
+/* 主行不换行。放不下的项由脚本收进菜单，而不是排成第二行或竖条。 */
+.preview-toolbar-row {
   display: flex;
   align-items: center;
-  gap: 4px;
-}
-
-/* 最小宽度下工具行本身也可能超宽:允许逐个换行,保证不裁切。 */
-.preview-tools {
-  flex-wrap: wrap;
-  row-gap: 4px;
-  min-width: 0;
-}
-
-.preview-tools .annotation-more-panel {
-  flex-wrap: wrap;
-  max-width: min(420px, calc(100vw - 24px));
-}
-
-.preview-actions {
-  margin-left: auto;
-  flex-wrap: wrap;
-  justify-content: flex-end;
+  flex: 1 1 auto;
+  flex-wrap: nowrap;
   gap: 6px;
-  row-gap: 6px;
-  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
 }
 
+.preview-tools,
 .preview-action-group {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-  row-gap: 4px;
-  max-width: 100%;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  gap: 4px;
+  min-width: 0;
 }
 
-/* 与标注工具条 `.toolbar-sep` 同一画法，隔开画面处理与产出。 */
-.preview-action-sep {
+.preview-action-group[data-preview-group="output"] {
+  margin-left: auto;
+}
+
+.preview-group-sep {
   width: 1px;
-  height: 16px;
+  height: 20px;
   margin: 0 2px;
   background: var(--line);
   flex: 0 0 auto;
 }
 
-/* 作者样式的 display 会盖过无 !important 的 [hidden]。 */
-.preview-actions [hidden] {
+.preview-named[hidden],
+.preview-save[hidden],
+.preview-overflow[hidden],
+.preview-overflow-menu[hidden],
+.preview-group-sep[hidden],
+.preview-root .preview-toolbar .annotation-chrome[hidden],
+.preview-root .preview-overflow-menu .annotation-chrome[hidden] {
   display: none;
+}
+
+.preview-root .annotation-chrome .tool-label,
+.preview-root .preview-named .tool-label {
+  display: inline;
+  font-size: 13px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.preview-root .preview-toolbar .annotation-chrome,
+.preview-root .preview-overflow-menu .annotation-chrome {
+  width: auto;
+  min-width: 40px;
+  height: 40px;
+  min-height: 40px;
+  padding: 0 10px;
+  gap: 6px;
+  color: var(--ink);
+}
+
+.preview-toolbar > .preview-named,
+.preview-overflow {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.preview-overflow-menu {
+  position: fixed;
+  z-index: 40;
+  width: max-content;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  min-width: 168px;
+  max-width: calc(100vw - 16px);
+  max-height: min(420px, calc(100vh - 16px));
+  overflow: auto;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-menu);
+  background: var(--card);
+  box-shadow: var(--shadow);
+}
+
+.preview-overflow-menu .preview-named,
+.preview-overflow-menu .annotation-chrome {
+  width: 100%;
+  justify-content: flex-start;
+  border-radius: var(--radius-control-sm);
 }
 
 /* R6:裁剪确认条默认贴画面下缘;与裁剪矩形相交时由脚本改到上缘。 */
@@ -222,14 +263,14 @@
 }
 
 /* 动作按钮只保留这一套基础规则:形状与尺寸,状态语义消费共享 token。 */
-.preview-actions button,
+.preview-named,
 .preview-crop-bar button {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 32px;
-  min-width: 24px;
-  min-height: 24px;
+  height: 40px;
+  min-width: 40px;
+  min-height: 40px;
   padding: 0 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius-pill);
@@ -243,39 +284,43 @@
   app-region: no-drag;
 }
 
-.preview-actions button:hover:not(.primary):not(:disabled),
-.preview-actions button:active:not(.primary):not(:disabled),
+.preview-named:hover:not(.primary):not(:disabled),
+.preview-named:active:not(.primary):not(:disabled),
 .preview-crop-bar button:hover:not(.primary):not(:disabled),
 .preview-crop-bar button:active:not(.primary):not(:disabled) {
   border-color: var(--control-hover-border);
   background: var(--control-hover-bg);
 }
 
-.preview-actions button:active:not(.primary):not(:disabled),
+.preview-named:active:not(.primary):not(:disabled),
 .preview-crop-bar button:active:not(.primary):not(:disabled) {
   filter: var(--control-pressed-filter);
 }
 
-.preview-actions button.active {
+.preview-named.active,
+.preview-root .preview-overflow-menu .annotation-chrome.active,
+.preview-root .preview-toolbar .annotation-chrome.active {
   background: var(--accent-soft);
   border-color: var(--accent);
   color: var(--accent);
 }
 
-.preview-actions button:disabled,
+.preview-named:disabled,
+.preview-overflow-menu .annotation-chrome:disabled,
 .preview-crop-bar button:disabled {
   opacity: var(--control-disabled-opacity);
   cursor: default;
 }
 
-.preview-actions button svg {
+.preview-named svg,
+.preview-crop-bar button svg {
   width: 15px;
   height: 15px;
   display: block;
   flex: 0 0 auto;
 }
 
-.preview-actions .primary,
+.preview-named.primary,
 .preview-crop-bar .primary {
   background: var(--accent);
   border-color: transparent;
@@ -284,28 +329,19 @@
   padding: 0 16px;
 }
 
-.preview-actions .primary:hover:not(:disabled),
+.preview-named.primary:hover:not(:disabled),
 .preview-crop-bar .primary:hover:not(:disabled) {
   filter: var(--control-hover-filter);
 }
 
-.preview-actions .primary:active:not(:disabled),
+.preview-named.primary:active:not(:disabled),
 .preview-crop-bar .primary:active:not(:disabled) {
   filter: var(--control-pressed-filter);
 }
 
-.preview-actions .primary.is-copied {
+.preview-named.primary.is-copied {
   background: var(--ok);
   border-color: var(--ok);
-}
-
-.preview-actions button.icon-action {
-  width: 32px;
-  min-width: 32px;
-  padding: 0;
-  border-radius: var(--radius-control);
-  justify-content: center;
-  line-height: 0;
 }
 
 .preview-save {
@@ -317,7 +353,7 @@
 .preview-save-split {
   display: inline-flex;
   align-items: stretch;
-  height: 32px;
+  height: 40px;
   border: 1px solid var(--line);
   border-radius: var(--radius-pill);
   background: transparent;
@@ -329,7 +365,7 @@
   border: 0;
   border-radius: 0;
   background: transparent;
-  height: 32px;
+  height: 40px;
 }
 
 .preview-save-split > [data-action="save"] {

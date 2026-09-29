@@ -28,6 +28,12 @@
   width: 18px;
   height: 18px;
   display: block;
+  flex: 0 0 auto;
+}
+
+/* 名称默认不占位。预览在自己的顶栏里再显示短名称。 */
+.annotation-tools .tool-label {
+  display: none;
 }
 
 /* R5:逐项工具开关关闭后入口从工具条与更多面板移除;[hidden] 优先级低于
@@ -43,6 +49,10 @@
   margin: 0 4px;
   background: var(--line);
   flex: 0 0 auto;
+}
+
+.annotation-tools .toolbar-sep[hidden] {
+  display: none;
 }
 
 .annotation-more {
