@@ -1694,8 +1694,11 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     deleteBtn.disabled = selected === null || editorOpen();
   };
 
+  // 预览会把放不下的按钮移出工具条。节点引用要在移动前抓住，重载开关才藏得掉。
+  const toolButtons = Array.from(toolbar.querySelectorAll<HTMLButtonElement>("[data-tool]"));
+
   const syncToolVisibility = (): void => {
-    toolbar.querySelectorAll<HTMLButtonElement>("[data-tool]").forEach((button) => {
+    toolButtons.forEach((button) => {
       const value = button.dataset.tool;
       button.hidden = !value || !isAnnotationTool(value) || !isToolEnabled(value);
     });
