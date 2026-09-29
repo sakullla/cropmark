@@ -6,7 +6,8 @@
 //! - 按区域固定目标帧率(默认 10fps)用现有平台单帧抓取 API 抓帧,
 //!   `crop_rgba` 裁剪后用 `rasterize_lenient` 合并实时标注,再流式编码;
 //! - 支持开始/暂停/继续/停止;暂停不产帧也不推进录制时间;
-//! - 单次上限 30 分钟,到时自动停止并保留已完成内容;
+//! - 上限、时长与帧时间戳都按墙钟(暂停时段不计入)计:单次上限 30 分钟,
+//!   低帧率/大区域下也按真实经过时间自动停止并保留已完成内容;
 //! - 无音轨;编码全部离线(GIF/WebP 复用现有依赖,MP4 构建期内置 openh264);
 //! - 录制产物只写临时文件,不经过 `history::record_capture`,不进入截图历史。
 
@@ -36,7 +37,7 @@ pub use save::{
 
 /// 默认目标帧率:固定帧率抓帧,与现有平台单帧抓取 API 的能力一致。
 pub const DEFAULT_FPS: u32 = 10;
-/// 单次录制上限(毫秒):30 分钟。到时自动停止并保留已完成内容。
+/// 单次录制上限(毫秒,墙钟活跃时长):30 分钟。到时自动停止并保留已完成内容。
 pub const MAX_RECORDING_MS: u64 = 30 * 60 * 1000;
 
 /// 录制区域:显示器整屏物理帧内的偏移与尺寸。
@@ -189,7 +190,7 @@ pub struct RecordingStatus {
     pub phase: RecordingPhase,
     pub format: RecordFormat,
     pub frame_count: u64,
-    /// 已录时长(毫秒):按帧数推算,暂停时段不计入。
+    /// 已录时长(毫秒):墙钟真实活动时长,暂停时段不计入。
     pub elapsed_ms: u64,
     pub width: u32,
     pub height: u32,
@@ -209,6 +210,7 @@ pub struct RecordingOutput {
     pub width: u32,
     pub height: u32,
     pub frame_count: u64,
+    /// 实际录制时长(毫秒,墙钟活跃时间,暂停时段不计入)。
     pub duration_ms: u64,
     pub auto_stopped: bool,
     /// 抓帧持续失败导致的中断说明;正常停止时为 None。
@@ -238,6 +240,10 @@ impl Phase {
 
 struct WorkerState {
     phase: Phase,
+    /// 当前活跃录制段起点:墙钟时间轴按活跃段累计,暂停时段不计入。
+    segment_started_at: Instant,
+    /// 已冻结的活跃录制时长(暂停、停止或失败时并入)。
+    elapsed_frozen: Duration,
     annotations: Vec<Annotation>,
     frame_count: u64,
     auto_stopped: bool,
@@ -250,6 +256,8 @@ impl WorkerState {
     fn new() -> Self {
         Self {
             phase: Phase::Recording,
+            segment_started_at: Instant::now(),
+            elapsed_frozen: Duration::ZERO,
             annotations: Vec::new(),
             frame_count: 0,
             auto_stopped: false,
@@ -257,6 +265,25 @@ impl WorkerState {
             output: None,
             error: None,
         }
+    }
+
+    /// 当前已录时长(墙钟):录制中随真实时间推进,暂停/停止后取冻结值。
+    fn elapsed(&self, now: Instant) -> Duration {
+        if self.phase == Phase::Recording {
+            self.elapsed_frozen + now.saturating_duration_since(self.segment_started_at)
+        } else {
+            self.elapsed_frozen
+        }
+    }
+
+    /// 冻结已录时长:把当前活跃段的墙钟增量并入。已冻结阶段调用保持不变。
+    fn freeze_elapsed(&mut self, now: Instant) {
+        self.elapsed_frozen = self.elapsed(now);
+    }
+
+    /// 暂停后继续:开启新的活跃段,暂停期间不计入时长。
+    fn restart_segment(&mut self, now: Instant) {
+        self.segment_started_at = now;
     }
 }
 
@@ -314,7 +341,7 @@ impl RecordingSession {
             phase: state.phase.public(),
             format: self.config.format,
             frame_count: state.frame_count,
-            elapsed_ms: elapsed_ms_for(state.frame_count, self.config.fps),
+            elapsed_ms: millis(state.elapsed(Instant::now())),
             width: self.region.width,
             height: self.region.height,
             auto_stopped: state.auto_stopped,
@@ -328,30 +355,45 @@ impl RecordingSession {
     }
 
     /// 暂停:停止产帧,录制时间不推进。已暂停时幂等返回。
+    ///
+    /// 注意:幂等分支也必须先释放 `shared` 守卫再查询状态,`status()` 会再次
+    /// 获取同一把 std Mutex(不可重入)。
     pub fn pause(&self) -> Result<RecordingStatus, RecordError> {
-        {
+        let changed = {
             let mut state = self.shared.lock();
             match state.phase {
-                Phase::Recording => state.phase = Phase::Paused,
-                Phase::Paused => return Ok(self.status()),
+                Phase::Recording => {
+                    state.freeze_elapsed(Instant::now());
+                    state.phase = Phase::Paused;
+                    true
+                }
+                Phase::Paused => false,
                 _ => return Err(RecordError::NotRunning),
             }
+        };
+        if changed {
+            self.shared.wake.notify_all();
         }
-        self.shared.wake.notify_all();
         Ok(self.status())
     }
 
-    /// 继续:从暂停处恢复,不追赶暂停期间的时间。
+    /// 继续:从暂停处恢复,不追赶暂停期间的时间。已录制中时幂等返回。
     pub fn resume(&self) -> Result<RecordingStatus, RecordError> {
-        {
+        let changed = {
             let mut state = self.shared.lock();
             match state.phase {
-                Phase::Paused => state.phase = Phase::Recording,
-                Phase::Recording => return Ok(self.status()),
+                Phase::Paused => {
+                    state.phase = Phase::Recording;
+                    state.restart_segment(Instant::now());
+                    true
+                }
+                Phase::Recording => false,
                 _ => return Err(RecordError::NotRunning),
             }
+        };
+        if changed {
+            self.shared.wake.notify_all();
         }
-        self.shared.wake.notify_all();
         Ok(self.status())
     }
 
@@ -364,7 +406,10 @@ impl RecordingSession {
                 Phase::Failed => {
                     return Err(state.error.clone().unwrap_or(RecordError::Empty));
                 }
-                _ => state.phase = Phase::StopRequested,
+                _ => {
+                    state.freeze_elapsed(Instant::now());
+                    state.phase = Phase::StopRequested;
+                }
             }
         }
         self.shared.wake.notify_all();
@@ -407,6 +452,7 @@ impl Drop for RecordingSession {
         let abandoned = {
             let mut state = self.shared.lock();
             if matches!(state.phase, Phase::Recording | Phase::Paused) {
+                state.freeze_elapsed(Instant::now());
                 state.phase = Phase::StopRequested;
                 true
             } else {
@@ -424,12 +470,9 @@ impl Drop for RecordingSession {
     }
 }
 
-fn elapsed_ms_for(frame_count: u64, fps: u32) -> u64 {
-    frame_count.saturating_mul(1000) / u64::from(fps.max(1))
-}
-
-fn max_frames_for(config: &RecordConfig) -> u64 {
-    (config.max_duration_ms.saturating_mul(u64::from(config.fps)) / 1000).max(1)
+/// Duration → 毫秒(u64 饱和):对外时间轴统一按墙钟毫秒。
+fn millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 /// 等待到下一帧时刻;暂停时挂起,停止请求时返回 false。
@@ -473,7 +516,7 @@ fn run_worker(
         }
     };
     let interval = Duration::from_micros(1_000_000 / u64::from(config.fps.max(1)));
-    let max_frames = max_frames_for(&config);
+    let max_duration = Duration::from_millis(config.max_duration_ms);
     // 连续抓帧失败达到约 10 秒:保留已完成内容并中断,避免空转。
     let failure_limit = u64::from(config.fps).saturating_mul(10).max(10);
     let mut consecutive_failures = 0u64;
@@ -485,12 +528,19 @@ fn run_worker(
         if !wait_for_slot(&shared, next_at) {
             break;
         }
-        let annotations = {
+        let (annotations, timestamp_ms) = {
             let state = shared.lock();
             if state.phase == Phase::Paused {
                 continue;
             }
-            state.annotations.clone()
+            // 上限按墙钟已录时长判定:低帧率/大区域下单帧耗时超过 1/fps 时,
+            // 不等到攒满 标称帧率 × 上限 的帧数,而是真实时间到点即停。
+            let elapsed = state.elapsed(Instant::now());
+            if elapsed >= max_duration {
+                auto_stopped = true;
+                break 'recording;
+            }
+            (state.annotations.clone(), millis(elapsed))
         };
         let captured = source
             .capture()
@@ -510,25 +560,21 @@ fn run_worker(
         };
         consecutive_failures = 0;
         let merged = rasterize_lenient(&frame, &annotations);
-        let timestamp_ms = elapsed_ms_for(shared.lock().frame_count, config.fps);
         if let Err(error) = encoder.push(&merged, timestamp_ms) {
             finish_failed(&shared, error);
             return;
         }
-        let produced = {
-            let mut state = shared.lock();
-            state.frame_count += 1;
-            state.frame_count
-        };
-        if produced >= max_frames {
-            auto_stopped = true;
-            break 'recording;
-        }
+        shared.lock().frame_count += 1;
         next_at = Instant::now() + interval;
     }
 
-    let frame_count = shared.lock().frame_count;
-    let duration_ms = elapsed_ms_for(frame_count, config.fps);
+    // 停止/上限/失败都先冻结墙钟时长再收尾编码,状态与产物时长保持一致。
+    let (frame_count, duration_ms) = {
+        let mut state = shared.lock();
+        let now = Instant::now();
+        state.freeze_elapsed(now);
+        (state.frame_count, millis(state.elapsed(now)))
+    };
     if frame_count == 0 {
         // 一帧都没产出:丢弃空临时文件,保留原始抓帧错误(若有)作为原因。
         let error = interrupted
@@ -564,6 +610,7 @@ fn run_worker(
 
 fn finish_failed(shared: &Shared, error: RecordError) {
     let mut state = shared.lock();
+    state.freeze_elapsed(Instant::now());
     state.phase = Phase::Failed;
     state.error = Some(error);
 }
@@ -591,6 +638,8 @@ mod tests {
         width: u32,
         height: u32,
         margin: u32,
+        /// 单帧抓取耗时:模拟大区域/低吞吐下真实帧率低于目标帧率。
+        capture_delay: Duration,
         frames: Arc<AtomicU32>,
         fail_first: Arc<AtomicU32>,
     }
@@ -601,6 +650,7 @@ mod tests {
                 width,
                 height,
                 margin: 4,
+                capture_delay: Duration::ZERO,
                 frames: Arc::new(AtomicU32::new(0)),
                 fail_first: Arc::new(AtomicU32::new(0)),
             }
@@ -609,6 +659,9 @@ mod tests {
 
     impl FrameSource for SyntheticSource {
         fn capture(&mut self) -> Result<Frame, CaptureError> {
+            if !self.capture_delay.is_zero() {
+                std::thread::sleep(self.capture_delay);
+            }
             let remaining = self.fail_first.load(Ordering::SeqCst);
             if remaining > 0 {
                 self.fail_first.fetch_sub(1, Ordering::SeqCst);
@@ -708,7 +761,32 @@ mod tests {
     }
 
     #[test]
+    fn wall_clock_timeline_excludes_paused_segments() {
+        let mut state = WorkerState::new();
+        // 以活跃段起点为基准,墙钟增量原样计入已录时长。
+        let base = state.segment_started_at;
+        assert_eq!(
+            state.elapsed(base + Duration::from_millis(120)),
+            Duration::from_millis(120)
+        );
+        state.freeze_elapsed(base + Duration::from_millis(120));
+        state.phase = Phase::Paused;
+        // 暂停期间墙钟继续走,已录时长保持冻结。
+        assert_eq!(
+            state.elapsed(base + Duration::from_secs(60)),
+            Duration::from_millis(120)
+        );
+        state.phase = Phase::Recording;
+        state.restart_segment(base + Duration::from_secs(60));
+        assert_eq!(
+            state.elapsed(base + Duration::from_secs(60) + Duration::from_millis(80)),
+            Duration::from_millis(200)
+        );
+    }
+
+    #[test]
     fn pause_does_not_produce_frames_and_timeline_skips_paused_time() {
+        let started = Instant::now();
         let source = SyntheticSource::new(48, 32);
         let region = RecordRegion::new(2, 2, 48, 32);
         let session =
@@ -720,10 +798,14 @@ mod tests {
         assert_eq!(paused.phase, RecordingPhase::Paused);
         let frozen = paused.frame_count;
         std::thread::sleep(Duration::from_millis(150));
+        let paused_status = session.status();
         assert_eq!(
-            session.status().frame_count,
-            frozen,
+            paused_status.frame_count, frozen,
             "paused session must not produce frames"
+        );
+        assert_eq!(
+            paused_status.elapsed_ms, paused.elapsed_ms,
+            "paused elapsed must stay frozen"
         );
         let resumed = session.resume().expect("resume");
         assert_eq!(resumed.phase, RecordingPhase::Recording);
@@ -731,12 +813,54 @@ mod tests {
             .status()
             .frame_count
             > frozen));
+        // 继续录制后再记录 60ms:墙钟时长必须包含这段真实活动时间。
+        std::thread::sleep(Duration::from_millis(60));
         let output = session.stop().expect("stop");
-        assert_eq!(
+        let wall_ms = millis(started.elapsed());
+        assert!(
+            output.duration_ms >= paused.elapsed_ms + 50,
+            "duration must advance with wall clock while recording: duration={} paused={}",
             output.duration_ms,
-            output.frame_count * 1000 / 50,
-            "timeline must not include paused time"
+            paused.elapsed_ms
         );
+        // 150ms 暂停时段不得计入录制时长。
+        assert!(
+            wall_ms.saturating_sub(output.duration_ms) >= 130,
+            "paused time must not count into duration: duration={} wall={wall_ms}",
+            output.duration_ms
+        );
+        let _ = std::fs::remove_file(&output.temp_path);
+    }
+
+    #[test]
+    fn repeated_pause_and_resume_are_idempotent_and_session_stays_usable() {
+        let source = SyntheticSource::new(48, 32);
+        let region = RecordRegion::new(2, 2, 48, 32);
+        let session =
+            RecordingSession::start(region, test_config(RecordFormat::Gif, 60_000), source)
+                .expect("start");
+        run_until_frames(&session, 2);
+        // 连续 pause 与 Recording 上 resume 都必须幂等返回,不得在持有
+        // shared 守卫时再次加锁(回归:不可重入 Mutex 死锁)。
+        let first = session.pause().expect("first pause");
+        assert_eq!(first.phase, RecordingPhase::Paused);
+        let second = session.pause().expect("second pause");
+        assert_eq!(second.phase, RecordingPhase::Paused);
+        let third = session.pause().expect("third pause");
+        assert_eq!(third.phase, RecordingPhase::Paused);
+        let resumed = session.resume().expect("resume");
+        assert_eq!(resumed.phase, RecordingPhase::Recording);
+        let resumed_again = session.resume().expect("resume while recording");
+        assert_eq!(resumed_again.phase, RecordingPhase::Recording);
+        // 会话仍可继续产帧、停止并保存。
+        let before = resumed_again.frame_count;
+        assert!(wait_until(Duration::from_secs(5), || session
+            .status()
+            .frame_count
+            > before));
+        let output = session.stop().expect("stop after idempotent calls");
+        assert!(output.frame_count > before);
+        assert!(output.temp_path.exists());
         let _ = std::fs::remove_file(&output.temp_path);
     }
 
@@ -744,7 +868,7 @@ mod tests {
     fn duration_cap_auto_stops_and_keeps_completed_content() {
         let source = SyntheticSource::new(48, 32);
         let region = RecordRegion::new(2, 2, 48, 32);
-        // 50fps × 100ms = 5 帧上限。
+        // 50fps 标称 100ms = 5 帧,但上限按墙钟判定,允许 ±1 个帧间隔的收尾偏差。
         let session = RecordingSession::start(region, test_config(RecordFormat::Gif, 100), source)
             .expect("start");
         let finished = wait_until(Duration::from_secs(5), || {
@@ -753,15 +877,55 @@ mod tests {
         assert!(finished, "cap must auto-stop the session");
         let status = session.status();
         assert!(status.auto_stopped);
-        assert_eq!(status.frame_count, 5);
-        assert_eq!(status.elapsed_ms, 100);
+        assert!(status.frame_count >= 1);
+        assert!(
+            status.elapsed_ms >= 100,
+            "auto-stop must be driven by wall clock: elapsed={}",
+            status.elapsed_ms
+        );
         let output = session.stop().expect("stop after auto-stop");
         assert!(output.auto_stopped);
-        assert_eq!(output.frame_count, 5);
-        assert_eq!(output.duration_ms, 100);
+        assert!(output.frame_count >= 1);
+        assert!(output.duration_ms >= 100);
         assert!(output.temp_path.exists());
         let bytes = std::fs::read(&output.temp_path).expect("gif bytes");
         assert_eq!(&bytes[0..3], b"GIF");
+        let _ = std::fs::remove_file(&output.temp_path);
+    }
+
+    #[test]
+    fn slow_capture_auto_stops_at_wall_clock_limit_not_frame_count() {
+        let mut source = SyntheticSource::new(48, 32);
+        // 单帧 100ms 远慢于 50fps 的 20ms 标称间隔:按帧数上限(15 帧)
+        // 需要约 1.5s,墙钟上限 300ms 必须先触发。
+        source.capture_delay = Duration::from_millis(100);
+        let region = RecordRegion::new(2, 2, 48, 32);
+        let session = RecordingSession::start(region, test_config(RecordFormat::Gif, 300), source)
+            .expect("start");
+        let finished = wait_until(Duration::from_secs(10), || {
+            session.status().phase == RecordingPhase::Finished
+        });
+        assert!(finished, "slow capture must still auto-stop");
+        let status = session.status();
+        assert!(status.auto_stopped);
+        assert!(
+            status.frame_count < 15,
+            "must not wait for the nominal frame cap"
+        );
+        assert!(
+            status.elapsed_ms >= 300,
+            "HUD elapsed must be wall clock: elapsed={} frames={}",
+            status.elapsed_ms,
+            status.frame_count
+        );
+        // 墙钟时长必须大于按帧数换算的标称时长。
+        assert!(
+            status.elapsed_ms > status.frame_count * 1000 / 50,
+            "elapsed must not be derived from frame count"
+        );
+        let output = session.stop().expect("stop after auto-stop");
+        assert!(output.auto_stopped);
+        assert!(output.duration_ms >= 300);
         let _ = std::fs::remove_file(&output.temp_path);
     }
 
@@ -782,8 +946,8 @@ mod tests {
 
     #[test]
     fn session_without_frames_fails_empty_and_removes_temp_file() {
-        // 抓帧固定失败:上限按 50fps 取 10 秒 → 500 次失败,测试里直接用
-        // 极小上限不可行,这里用首帧失败 + 立即停止来验证 Empty 路径。
+        // 抓帧固定失败:连续失败上限为 50fps × 10 秒 = 500 次,测试里等待
+        // 10 秒不可行,这里用首帧失败 + 立即停止来验证 Empty 路径。
         let mut source = SyntheticSource::new(48, 32);
         source.fail_first = Arc::new(AtomicU32::new(1));
         let region = RecordRegion::new(2, 2, 48, 32);

@@ -5,7 +5,8 @@ description = "Cropmark screenshot tool"
 authors = ["Cropmark"]
 license = "GPL-3.0-only"
 edition = "2021"
-rust-version = "1.77"
+# openh264 0.9.8 与 openh264-sys2 0.9.8 声明 rust-version = "1.85"。
+rust-version = "1.85"
 
 [lib]
 name = "cropmark_lib"
