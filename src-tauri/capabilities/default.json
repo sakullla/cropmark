@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Cropmark window permissions",
-  "windows": ["settings", "overlay", "preview", "capture-error", "capture-delay", "toast", "pin-*", "history", "scroll", "guide", "record-control", "record-overlay"],
+  "windows": ["settings", "overlay", "preview", "capture-error", "capture-delay", "toast", "pin-*", "history", "scroll", "guide", "record-control", "record-overlay", "record-border-top", "record-border-right", "record-border-bottom", "record-border-left"],
   "permissions": [
     "core:default",
     "core:window:allow-close",

@@ -73,6 +73,13 @@ function messageOf(error: unknown): string {
 }
 
 export function mountRecordOverlay(root: HTMLElement): () => void {
+  // 区域边框是四条不覆盖捕获矩形的细窗,复用标注层页面但不挂编辑器。
+  if (new URLSearchParams(location.search).get("chrome") === "border") {
+    document.documentElement.dataset.chrome = "border";
+    root.className = "record-border-root";
+    root.replaceChildren();
+    return () => undefined;
+  }
   root.className = "record-overlay-root";
   root.innerHTML = `
     <canvas class="record-canvas"></canvas>

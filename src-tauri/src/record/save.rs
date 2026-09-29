@@ -197,9 +197,35 @@ mod tests {
             height: 200,
             frame_count: 12,
             duration_ms: 1200,
+            fps: 15,
             auto_stopped: false,
             interrupted: None,
         }
+    }
+
+    #[test]
+    fn discard_removes_the_temp_file_and_leaves_the_save_directory_empty() {
+        let root =
+            std::env::temp_dir().join(format!("cropmark-record-fidelity-{}", std::process::id()));
+        let save_dir = root.join("saved");
+        let temp_dir = root.join("temp");
+        fs::create_dir_all(&save_dir).expect("save dir");
+        fs::create_dir_all(&temp_dir).expect("temp dir");
+        let output = sample_output(&temp_dir, RecordFormat::Mp4);
+        assert!(
+            save_dir.read_dir().expect("read save").next().is_none(),
+            "save directory must stay empty before an explicit save"
+        );
+        discard_recording(&output);
+        assert!(
+            !output.temp_path.exists(),
+            "discard must delete the temp file"
+        );
+        assert!(
+            save_dir.read_dir().expect("read save").next().is_none(),
+            "discard must not leave a file in the save directory"
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

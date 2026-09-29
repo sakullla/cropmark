@@ -58,6 +58,18 @@ const CONTROL_HEIGHT: f64 = 64.0;
 const CONTROL_HEIGHT_EXPANDED: f64 = 248.0;
 /// 控制条与录制区域/显示器边缘的间距(逻辑像素)。
 const CONTROL_MARGIN: f64 = 12.0;
+/// 区域边框厚度(逻辑像素)。画在捕获矩形之外,不进入成片。
+const BORDER_LOGICAL: f64 = 4.0;
+/// 让给控制条的高度:紧凑条再加一行说明,跟不上的提示不用挤进捕获矩形。
+const CONTROL_RESERVED_LOGICAL: f64 = CONTROL_HEIGHT + 40.0;
+/// 预览分片读取上限,避免一次 IPC 塞进整段 30 分钟成片。
+const PREVIEW_CHUNK_BYTES: usize = 192 * 1024;
+const BORDER_LABELS: [&str; 4] = [
+    "record-border-top",
+    "record-border-right",
+    "record-border-bottom",
+    "record-border-left",
+];
 /// 与 `.record-overlay-notice` 的 `bottom: 16px` 一致(标注层 CSS 像素)。
 #[cfg(test)]
 const NOTICE_BOTTOM_INSET: f64 = 16.0;
@@ -166,6 +178,12 @@ struct HudRuntime {
     /// 最近一次放置控制条使用的逻辑尺寸;状态里的矩形与窗口一致。
     control_width: f64,
     control_height: f64,
+    /// 让出边框/控制条之后真正抓取的矩形。录制中控制条不得再进入它。
+    capture: Option<RecordRegion>,
+    /// 控制条最近一次的屏幕物理矩形。
+    control_screen: Option<ScreenRect>,
+    /// 停止后待播放的临时成片。保存前不进入保存目录。
+    preview: Option<super::RecordingOutput>,
 }
 
 static HUD: Mutex<HudRuntime> = Mutex::new(HudRuntime {
@@ -175,6 +193,9 @@ static HUD: Mutex<HudRuntime> = Mutex::new(HudRuntime {
     paused_for_draw: false,
     control_width: CONTROL_WIDTH,
     control_height: CONTROL_HEIGHT,
+    capture: None,
+    control_screen: None,
+    preview: None,
 });
 
 fn hud_lock() -> MutexGuard<'static, HudRuntime> {
@@ -241,6 +262,23 @@ pub struct RecordingHudState {
     pub control_frame: Option<HudControlFrame>,
     /// 单次录制上限(毫秒),控制条据此显示 已录/上限。
     pub limit_ms: u64,
+    /// 停止后可播放的临时成片。保存前只有这一份,不在保存目录里。
+    pub preview: Option<RecordingPreviewInfo>,
+    /// 当前格式实际会使用的帧率档(录制中与会话一致)。
+    pub fps: u32,
+}
+
+/// 停止后先播放的成片。`temp_path` 只指向临时文件。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingPreviewInfo {
+    pub temp_path: String,
+    pub format: RecordFormat,
+    pub width: u32,
+    pub height: u32,
+    pub duration_ms: u64,
+    pub fps: u32,
+    pub auto_stopped: bool,
 }
 
 /// 控制条相对标注层左上角的矩形,单位是 CSS 像素。
@@ -269,9 +307,11 @@ pub enum RecordingStopOutcome {
         retryable: bool,
     },
     Empty,
+    /// 已停止并可以播放,还没有写入保存目录。
+    Preview,
 }
 
-/// 打开 HUD:定位控制条与标注层并开始广播状态。
+/// 打开 HUD:定位控制条、区域边框与标注层并开始广播状态。
 pub fn open(app: &AppHandle, region: RecordRegion, monitor: MonitorGeom) {
     {
         let mut hud = hud_lock();
@@ -279,8 +319,29 @@ pub fn open(app: &AppHandle, region: RecordRegion, monitor: MonitorGeom) {
         hud.monitor = Some(monitor.clone());
         hud.interactive = false;
         hud.paused_for_draw = false;
+        hud.preview = None;
     }
+    apply_chrome(app, region, &monitor);
+    broadcast_open(app);
+    broadcast_state(app);
+}
+
+fn apply_chrome(app: &AppHandle, region: RecordRegion, monitor: &MonitorGeom) {
+    let format = settings::current_recording(app).format;
+    let spec = chrome_spec_for(monitor, format);
+    let Some(plan) = plan_recording_chrome(region, monitor, spec).ok() else {
+        return;
+    };
     let capabilities = capabilities();
+    {
+        let mut hud = hud_lock();
+        hud.region = Some(region);
+        hud.monitor = Some(monitor.clone());
+        hud.capture = Some(plan.capture);
+        hud.control_screen = Some(plan.control);
+        hud.control_width = CONTROL_WIDTH;
+        hud.control_height = CONTROL_HEIGHT;
+    }
     if let Ok(control) = ensure(
         app,
         CONTROL,
@@ -291,13 +352,10 @@ pub fn open(app: &AppHandle, region: RecordRegion, monitor: MonitorGeom) {
     ) {
         let _ = control.set_content_protected(capabilities.capture_protection);
         let _ = control.set_ignore_cursor_events(false);
-        let size = LogicalSize {
-            width: CONTROL_WIDTH,
-            height: CONTROL_HEIGHT,
-        };
-        place_control(&control, region, &monitor, size);
+        place_screen_rect(&control, plan.control);
         let _ = control.show();
     }
+    sync_borders(app, &plan.borders);
     if let Ok(overlay) = ensure(
         app,
         OVERLAY,
@@ -322,17 +380,61 @@ pub fn open(app: &AppHandle, region: RecordRegion, monitor: MonitorGeom) {
             let _ = overlay.hide();
         }
     }
-    broadcast_open(app);
-    broadcast_state(app);
+}
+
+fn place_screen_rect(window: &WebviewWindow, rect: ScreenRect) {
+    let _ = window.set_size(Size::Physical(PhysicalSize {
+        width: u32::try_from(rect.width).unwrap_or(1).max(1),
+        height: u32::try_from(rect.height).unwrap_or(1).max(1),
+    }));
+    let _ = window.set_position(Position::Physical(PhysicalPosition {
+        x: rect.x,
+        y: rect.y,
+    }));
+}
+
+fn sync_borders(app: &AppHandle, borders: &[Option<ScreenRect>; 4]) {
+    let protection = capabilities().capture_protection;
+    for (label, rect) in BORDER_LABELS.iter().zip(borders.iter()) {
+        let Some(rect) = rect.filter(|rect| rect.width > 0 && rect.height > 0) else {
+            if let Some(window) = app.get_webview_window(label) {
+                let _ = window.hide();
+            }
+            continue;
+        };
+        let Ok(window) = ensure(app, label, "record-overlay&chrome=border", 8.0, 8.0, false) else {
+            continue;
+        };
+        let _ = window.set_content_protected(protection);
+        let _ = window.set_ignore_cursor_events(true);
+        place_screen_rect(&window, rect);
+        let _ = window.show();
+    }
+}
+
+fn hide_borders(app: &AppHandle) {
+    for label in BORDER_LABELS {
+        if let Some(window) = app.get_webview_window(label) {
+            let _ = window.hide();
+        }
+    }
 }
 
 /// 收起 HUD(保存成功/丢弃/没有活动会话且无待处理产物时)。
 pub fn close(app: &AppHandle) {
-    {
+    let preview = {
         let mut hud = hud_lock();
         hud.interactive = false;
         hud.paused_for_draw = false;
+        hud.capture = None;
+        hud.control_screen = None;
+        hud.preview.take()
+    };
+    if let Some(output) = preview {
+        // 关掉控制条却没保存:临时成片不能留在保存目录,也不继续占着临时文件。
+        save::discard_recording(&output);
     }
+    hide_borders(app);
     for label in [CONTROL, OVERLAY] {
         if let Some(window) = app.get_webview_window(label) {
             let _ = window.emit(EVENT_CLOSE, ());
@@ -481,7 +583,7 @@ fn ensure(
     .inner_size(width, height)
     .visible(false)
     .always_on_top(true);
-    if label == OVERLAY {
+    if label == OVERLAY || label.starts_with("record-border") {
         builder = builder.visible_on_all_workspaces(true);
     }
     builder.build().map_err(|error| error.to_string())
@@ -493,16 +595,67 @@ fn place_control(
     monitor: &MonitorGeom,
     size: LogicalSize<f64>,
 ) {
+    let capture = hud_lock().capture;
+    let rect = if let Some(capture) = capture {
+        control_rect_outside_capture(capture, monitor, size)
+    } else {
+        let (x, y) = control_origin(region, monitor, size, true);
+        let scale = monitor.scale.max(f64::EPSILON);
+        ScreenRect {
+            x,
+            y,
+            width: physical_px(size.width, scale),
+            height: physical_px(size.height, scale),
+        }
+    };
     {
         let mut hud = hud_lock();
         hud.control_width = size.width;
         hud.control_height = size.height;
+        hud.control_screen = Some(rect);
     }
-    let _ = control.set_size(Size::Logical(size));
-    // 优先放在区域外(不挡录制内容;无内容保护能力的平台也据此避免入画),
-    // 放不下时按显示器边界回落到区域内部底边。
-    let (x, y) = control_origin(region, monitor, size, true);
-    let _ = control.set_position(Position::Physical(PhysicalPosition { x, y }));
+    place_screen_rect(control, rect);
+}
+
+/// 录制进行中控制条只能停在捕获矩形外面。外面不够时把窗口高度收到让出的带子里。
+fn control_rect_outside_capture(
+    capture: RecordRegion,
+    monitor: &MonitorGeom,
+    size: LogicalSize<f64>,
+) -> ScreenRect {
+    let scale = monitor.scale.max(f64::EPSILON);
+    let mon_w = monitor.physical_width as i32;
+    let mon_h = monitor.physical_height as i32;
+    let cap_x = capture.x as i32;
+    let cap_y = capture.y as i32;
+    let cap_w = capture.width as i32;
+    let cap_h = capture.height as i32;
+    let margin = physical_px(CONTROL_MARGIN, scale);
+    let width = physical_px(size.width, scale).min(mon_w.max(1));
+    let mut height = physical_px(size.height, scale);
+    let bottom_space = mon_h - (cap_y + cap_h);
+    let top_space = cap_y;
+    let y = if bottom_space >= height + margin {
+        cap_y + cap_h + margin
+    } else if top_space >= height + margin {
+        cap_y - height - margin
+    } else if bottom_space > margin {
+        height = (bottom_space - margin).max(1);
+        cap_y + cap_h + margin
+    } else if top_space > margin {
+        height = (top_space - margin).max(1);
+        cap_y - height - margin
+    } else {
+        (mon_h - height).max(0)
+    };
+    let x = (cap_x + (cap_w - width) / 2).clamp(0, (mon_w - width).max(0));
+    let y = y.clamp(0, (mon_h - height).max(0));
+    ScreenRect {
+        x: monitor.physical_x + x,
+        y: monitor.physical_y + y,
+        width,
+        height,
+    }
 }
 
 #[cfg(test)]
@@ -571,6 +724,228 @@ fn visible_region_notice(
     }
 }
 
+/// 屏幕物理像素矩形。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScreenRect {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+impl ScreenRect {
+    fn intersects(self, other: Self) -> bool {
+        self.width > 0
+            && self.height > 0
+            && other.width > 0
+            && other.height > 0
+            && self.x < other.x + other.width
+            && self.x + self.width > other.x
+            && self.y < other.y + other.height
+            && self.y + self.height > other.y
+    }
+}
+
+/// 边框和控制条的放置参数,单位是物理像素。
+#[derive(Debug, Clone, Copy)]
+pub struct ChromeSpec {
+    pub control_width: i32,
+    pub control_height: i32,
+    pub control_margin: i32,
+    pub border: i32,
+    pub capture_protection: bool,
+    pub even: bool,
+}
+
+/// 捕获矩形、四条边框和控制条。边框顺序是上、右、下、左。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChromePlan {
+    pub capture: RecordRegion,
+    pub borders: [Option<ScreenRect>; 4],
+    pub control: ScreenRect,
+    /// 捕获矩形比确认矩形小,边框或控制条占用了让出的位置。
+    pub yielded: bool,
+}
+
+fn physical_px(logical: f64, scale: f64) -> i32 {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    ((logical * scale).round() as i32).max(1)
+}
+
+/// 与会话抓帧使用同一套尺寸,避免边框和控制条跟成片错位。
+pub fn chrome_spec_for(monitor: &MonitorGeom, format: RecordFormat) -> ChromeSpec {
+    let scale = monitor.scale;
+    ChromeSpec {
+        control_width: physical_px(CONTROL_WIDTH, scale),
+        control_height: physical_px(CONTROL_RESERVED_LOGICAL, scale),
+        control_margin: physical_px(CONTROL_MARGIN, scale),
+        border: physical_px(BORDER_LOGICAL, scale),
+        capture_protection: capabilities().capture_protection,
+        even: format == RecordFormat::Mp4,
+    }
+}
+
+pub fn annotation_inset(confirmed: RecordRegion, capture: RecordRegion) -> (i32, i32) {
+    (
+        capture.x as i32 - confirmed.x as i32,
+        capture.y as i32 - confirmed.y as i32,
+    )
+}
+
+/// 边框画在捕获矩形外面。四边都贴住显示器且没有内容保护时,捕获矩形向内让出边框。
+/// 控制条放不下时,从矩形一边让出控制条高度。让出后的尺寸就是成片尺寸。
+pub fn plan_recording_chrome(
+    region: RecordRegion,
+    monitor: &MonitorGeom,
+    spec: ChromeSpec,
+) -> Result<ChromePlan, ()> {
+    let mon_w = i32::try_from(monitor.physical_width).unwrap_or(i32::MAX);
+    let mon_h = i32::try_from(monitor.physical_height).unwrap_or(i32::MAX);
+    if mon_w <= 0 || mon_h <= 0 {
+        return Err(());
+    }
+    let mut x = i32::try_from(region.x).map_err(|_| ())?;
+    let mut y = i32::try_from(region.y).map_err(|_| ())?;
+    let mut w = i32::try_from(region.width).map_err(|_| ())?;
+    let mut h = i32::try_from(region.height).map_err(|_| ())?;
+    if x < 0
+        || y < 0
+        || w <= 0
+        || h <= 0
+        || x.saturating_add(w) > mon_w
+        || y.saturating_add(h) > mon_h
+    {
+        return Err(());
+    }
+    let border = spec.border.max(1);
+    let margin = spec.control_margin.max(0);
+    let control_w = spec.control_width.clamp(1, mon_w);
+    let control_h = spec.control_height.max(1);
+    let gap = margin.max(border);
+    let band = control_h.saturating_add(gap);
+    let min_edge = if spec.even { 2 } else { 1 };
+    let outside = |x: i32, y: i32, w: i32, h: i32| [x, y, mon_w - (x + w), mon_h - (y + h)];
+    let confirmed_space = outside(x, y, w, h);
+    let all_flush = confirmed_space.iter().all(|side| *side < border);
+    let mut overlap_border = false;
+    if all_flush {
+        if spec.capture_protection {
+            overlap_border = true;
+        } else if w < border * 2 + min_edge || h < border * 2 + min_edge {
+            return Err(());
+        } else {
+            x += border;
+            y += border;
+            w -= border * 2;
+            h -= border * 2;
+        }
+    }
+    let bottom_space = mon_h - (y + h);
+    let top_space = y;
+    if bottom_space >= band || top_space >= band {
+        // 控制条放在捕获矩形外面。
+    } else if h >= band + min_edge {
+        h -= band;
+    } else {
+        return Err(());
+    }
+    if spec.even {
+        let even_w = w & !1;
+        let even_h = h & !1;
+        if even_w < min_edge || even_h < min_edge {
+            return Err(());
+        }
+        w = even_w;
+        h = even_h;
+    }
+    if w < min_edge || h < min_edge {
+        return Err(());
+    }
+    let bottom_space = mon_h - (y + h);
+    let top_space = y;
+    let control_y = if bottom_space >= control_h + gap {
+        y + h + gap
+    } else if top_space >= control_h + gap {
+        y - control_h - gap
+    } else {
+        return Err(());
+    };
+    let control_x = (x + (w - control_w) / 2).clamp(0, (mon_w - control_w).max(0));
+    let control_y = control_y.clamp(0, (mon_h - control_h).max(0));
+    let screen = |local_x: i32, local_y: i32, width: i32, height: i32| ScreenRect {
+        x: monitor.physical_x.saturating_add(local_x),
+        y: monitor.physical_y.saturating_add(local_y),
+        width,
+        height,
+    };
+    let capture_screen = screen(x, y, w, h);
+    let control = screen(control_x, control_y, control_w, control_h);
+    if control.intersects(capture_screen) {
+        return Err(());
+    }
+    let space = outside(x, y, w, h);
+    let mut borders = [None, None, None, None];
+    let push = |slot: &mut Option<ScreenRect>, rect: ScreenRect| {
+        if rect.width > 0 && rect.height > 0 && !rect.intersects(control) {
+            *slot = Some(rect);
+        }
+    };
+    if space[1] >= border {
+        push(&mut borders[0], screen(x, y - border, w, border));
+    } else if overlap_border {
+        push(&mut borders[0], screen(x, y, w, border.min(h)));
+    }
+    if space[2] >= border {
+        push(&mut borders[1], screen(x + w, y, border, h));
+    } else if overlap_border {
+        push(
+            &mut borders[1],
+            screen(x + w - border.min(w), y, border.min(w), h),
+        );
+    }
+    if space[3] >= border {
+        push(&mut borders[2], screen(x, y + h, w, border));
+    } else if overlap_border {
+        push(
+            &mut borders[2],
+            screen(x, y + h - border.min(h), w, border.min(h)),
+        );
+    }
+    if space[0] >= border {
+        push(&mut borders[3], screen(x - border, y, border, h));
+    } else if overlap_border {
+        push(&mut borders[3], screen(x, y, border.min(w), h));
+    }
+    if !overlap_border
+        && borders
+            .iter()
+            .flatten()
+            .any(|border_rect| border_rect.intersects(capture_screen))
+    {
+        return Err(());
+    }
+    let capture = RecordRegion::new(
+        u32::try_from(x).unwrap_or(0),
+        u32::try_from(y).unwrap_or(0),
+        u32::try_from(w).unwrap_or(0),
+        u32::try_from(h).unwrap_or(0),
+    );
+    let yielded = capture.x != region.x
+        || capture.y != region.y
+        || capture.width != region.width
+        || capture.height != region.height;
+    Ok(ChromePlan {
+        capture,
+        borders,
+        control,
+        yielded,
+    })
+}
+
 /// 控制条物理坐标:默认贴录制区域底边居中;无捕获排除能力时优先放到区域外
 /// (区域下方,放不下则上方),避免控制条进入录制画面。
 pub fn control_origin(
@@ -629,7 +1004,7 @@ fn broadcast_state(app: &AppHandle) {
 }
 
 pub fn state_snapshot(app: &AppHandle) -> RecordingHudState {
-    let (interactive, context, control_size) = {
+    let (interactive, context, control_size, control_screen, parked_preview) = {
         let hud = hud_lock();
         (
             hud.interactive,
@@ -638,10 +1013,26 @@ pub fn state_snapshot(app: &AppHandle) -> RecordingHudState {
                 width: hud.control_width,
                 height: hud.control_height,
             },
+            hud.control_screen,
+            hud.preview.clone(),
         )
     };
+    let status = session::with_recording(app, |recording| recording.status());
+    let live_preview = parked_preview
+        .clone()
+        .or_else(|| {
+            session::with_recording(app, |recording| recording.finished_output()).flatten()
+        });
+    let recording_settings = settings::current_recording(app);
+    let fps = status
+        .as_ref()
+        .map(|status| status.fps)
+        .or_else(|| live_preview.as_ref().map(|output| output.fps))
+        .unwrap_or_else(|| {
+            super::resolve_recording_fps(recording_settings.format, recording_settings.fps)
+        });
     RecordingHudState {
-        status: session::with_recording(app, |recording| recording.status()),
+        status,
         pending: save::pending_recordings()
             .iter()
             .map(pending_info)
@@ -654,10 +1045,49 @@ pub fn state_snapshot(app: &AppHandle) -> RecordingHudState {
             height: region.height,
             scale: monitor.scale,
         }),
-        control_frame: context
-            .as_ref()
-            .map(|(region, monitor)| control_frame_in_region(*region, monitor, control_size, true)),
+        control_frame: context.as_ref().and_then(|(region, monitor)| {
+            control_screen
+                .map(|rect| control_frame_from_screen(*region, monitor, rect))
+                .or_else(|| {
+                    Some(control_frame_in_region(
+                        *region,
+                        monitor,
+                        control_size,
+                        true,
+                    ))
+                })
+        }),
         limit_ms: MAX_RECORDING_MS,
+        preview: live_preview.as_ref().map(preview_info),
+        fps,
+    }
+}
+
+fn control_frame_from_screen(
+    region: RecordRegion,
+    monitor: &MonitorGeom,
+    rect: ScreenRect,
+) -> HudControlFrame {
+    let scale = monitor.scale.max(f64::EPSILON);
+    let left = monitor.physical_x + region.x as i32;
+    let top = monitor.physical_y + region.y as i32;
+    HudControlFrame {
+        x: f64::from(rect.x - left) / scale,
+        y: f64::from(rect.y - top) / scale,
+        width: f64::from(rect.width) / scale,
+        height: f64::from(rect.height) / scale,
+    }
+}
+
+fn preview_info(output: &super::RecordingOutput) -> RecordingPreviewInfo {
+    RecordingPreviewInfo {
+        temp_path: output.temp_path.to_string_lossy().into_owned(),
+        format: output.format,
+        width: output.width,
+        height: output.height,
+        duration_ms: output.duration_ms,
+        fps: output.fps,
+        auto_stopped: output.auto_stopped,
     }
 }
 
@@ -710,7 +1140,7 @@ fn start_from_hud(app: &AppHandle) -> Result<RecordingStatus, String> {
         return Err(RecordError::NotRunning.user_message());
     };
     let config = RecordConfig::from_settings(app, settings::current_recording(app).format);
-    let recording = RecordingSession::start(region, config, MonitorSource::new(monitor))
+    let recording = RecordingSession::start(region, config, MonitorSource::new(monitor.clone()))
         .map_err(|error| error.user_message())?;
     if !session::install_recording(app, recording) {
         return Err(i18n::t("toast.recording_busy"));
@@ -719,7 +1149,9 @@ fn start_from_hud(app: &AppHandle) -> Result<RecordingStatus, String> {
         let mut hud = hud_lock();
         hud.interactive = false;
         hud.paused_for_draw = false;
+        hud.preview = None;
     }
+    apply_chrome(app, region, &monitor);
     // 重新开始:标注层复位后按新会话的标注(空)重新初始化,旧会话残留的
     // 绘制内容不会继续显示或被误并入新录制。
     reset_overlay(app);
@@ -730,11 +1162,14 @@ fn start_from_hud(app: &AppHandle) -> Result<RecordingStatus, String> {
         .ok_or_else(|| RecordError::NotRunning.user_message())
 }
 
-/// 停止并进入保存(控制条「停止并保存」/自动停止后的「保存」)。返回结构化结果:
-/// 保存失败时保留待处理产物并保持 HUD 打开,供重试或丢弃。
+/// 停止并先播放(控制条「停止」/托盘停止/自动停止后的收尾)。
+/// 不打开保存对话框,保存目录里也不会出现成品。
 #[tauri::command]
 pub async fn stop_recording_from_hud(app: AppHandle) -> RecordingStopOutcome {
     let Some(recording) = session::take_recording_session(&app) else {
+        if hud_lock().preview.is_some() {
+            return RecordingStopOutcome::Preview;
+        }
         return RecordingStopOutcome::Empty;
     };
     let stopped = tauri::async_runtime::spawn_blocking(move || recording.stop()).await;
@@ -759,40 +1194,180 @@ pub async fn stop_recording_from_hud(app: AppHandle) -> RecordingStopOutcome {
             };
         }
     };
-    // 上限自动停止/抓帧中断先给可见说明,再进入保存对话框。
+    present_preview(&app, output);
+    RecordingStopOutcome::Preview
+}
+
+/// 把刚停下来的临时成片留在控制条里播放。保存前不写入保存目录。
+pub fn present_preview(app: &AppHandle, output: super::RecordingOutput) {
     if output.auto_stopped {
-        ui::show_toast_key(&app, "toast.recording_auto_stopped");
+        ui::show_toast_key(app, "toast.recording_auto_stopped");
     }
     if let Some(interrupted) = output.interrupted.as_deref() {
-        ui::show_toast(&app, interrupted);
+        ui::show_toast(app, interrupted);
     }
+    {
+        let mut hud = hud_lock();
+        hud.preview = Some(output);
+        hud.capture = None;
+        hud.interactive = false;
+        hud.paused_for_draw = false;
+    }
+    hide_borders(app);
+    if let Some(overlay) = app.get_webview_window(OVERLAY) {
+        let _ = overlay.hide();
+    }
+    let context = {
+        let hud = hud_lock();
+        hud.region.zip(hud.monitor.clone())
+    };
+    let capabilities = capabilities();
+    if let Some((region, monitor)) = context {
+        if let Ok(control) = ensure(
+            app,
+            CONTROL,
+            "record-control",
+            CONTROL_WIDTH,
+            CONTROL_HEIGHT,
+            true,
+        ) {
+            let _ = control.set_content_protected(capabilities.capture_protection);
+            place_control(
+                &control,
+                region,
+                &monitor,
+                LogicalSize {
+                    width: CONTROL_WIDTH,
+                    height: CONTROL_HEIGHT,
+                },
+            );
+            let _ = control.show();
+            let _ = control.emit(EVENT_OPEN, ());
+        }
+    }
+    session::refresh_tray_menu(app);
+    broadcast_state(app);
+}
+
+fn take_preview_output(app: &AppHandle) -> Option<super::RecordingOutput> {
+    if let Some(output) = hud_lock().preview.take() {
+        return Some(output);
+    }
+    let recording = session::take_recording_session(app)?;
+    recording
+        .finished_output()
+        .or_else(|| recording.stop().ok())
+}
+
+fn preview_path_allowed(app: &AppHandle, requested: &std::path::Path) -> bool {
+    if hud_lock()
+        .preview
+        .as_ref()
+        .is_some_and(|output| output.temp_path == requested)
+    {
+        return true;
+    }
+    if session::with_recording(app, |recording| {
+        recording
+            .finished_output()
+            .is_some_and(|output| output.temp_path == requested)
+    })
+    .unwrap_or(false)
+    {
+        return true;
+    }
+    save::pending_recordings()
+        .iter()
+        .any(|output| output.temp_path == requested)
+}
+
+/// 保存已经停下来的预览。取消对话框不删除临时文件,保存目录仍没有成品。
+#[tauri::command]
+pub async fn save_recording_preview(app: AppHandle) -> RecordingStopOutcome {
+    let Some(output) = take_preview_output(&app) else {
+        return RecordingStopOutcome::Empty;
+    };
     let parent = app.get_webview_window(CONTROL);
     let result = save::save_recording_with_dialog(&app, parent.as_ref(), &output).await;
-    let outcome = match crate::capture::conclude_recording_save(output, result) {
-        crate::capture::RecordingSaveNotice::Saved { name } => {
+    match result {
+        Ok(result) if result.saved => {
+            let name = result
+                .path
+                .as_deref()
+                .and_then(|path| std::path::Path::new(path).file_name())
+                .and_then(|name| name.to_str())
+                .unwrap_or("cropmark")
+                .to_string();
             ui::show_toast_key_params(&app, "toast.saved", &[("name", &name)]);
+            session::refresh_tray_menu(&app);
+            if save::pending_recordings().is_empty() {
+                close(&app);
+            } else {
+                broadcast_state(&app);
+            }
             RecordingStopOutcome::Saved { name }
         }
-        crate::capture::RecordingSaveNotice::Discarded => {
-            ui::show_toast_key(&app, "toast.recording_discarded");
-            RecordingStopOutcome::Discarded
+        Ok(_) => {
+            // 用户取消保存:成片仍只在临时文件里,可以继续播放或丢弃。
+            present_preview(&app, output);
+            RecordingStopOutcome::Cancelled
         }
-        crate::capture::RecordingSaveNotice::Failed { message } => {
+        Err(message) => {
+            save::keep_pending_recording(output);
             ui::show_toast(&app, &message);
+            session::refresh_tray_menu(&app);
+            broadcast_state(&app);
             RecordingStopOutcome::Failed {
                 message,
                 retryable: true,
             }
         }
+    }
+}
+
+/// 丢弃这次预览:删除临时文件,保存目录里没有成品。
+#[tauri::command]
+pub fn discard_recording_preview(app: AppHandle) -> bool {
+    let Some(output) = take_preview_output(&app) else {
+        return false;
     };
+    save::discard_recording(&output);
+    ui::show_toast_key(&app, "toast.recording_discarded");
     session::refresh_tray_menu(&app);
-    // 没有待处理产物才收起;失败保留产物时保持打开,重试或丢弃后再关闭。
+    broadcast_state(&app);
     if save::pending_recordings().is_empty() {
         close(&app);
-    } else {
-        broadcast_state(&app);
     }
-    outcome
+    true
+}
+
+/// 按偏移读取预览临时文件的一块 base64。只能读当前预览或待处理录制。
+#[tauri::command]
+pub fn read_recording_preview_chunk(
+    app: AppHandle,
+    temp_path: String,
+    offset: u64,
+) -> Result<Option<String>, String> {
+    let path = std::path::PathBuf::from(&temp_path);
+    if !preview_path_allowed(&app, &path) {
+        return Err(i18n::t("error.record.pending_missing"));
+    }
+    let mut file = std::fs::File::open(&path)
+        .map_err(|error| i18n::tp("error.record.temp_io", &[("detail", &error.to_string())]))?;
+    let length = file.metadata().map(|meta| meta.len()).unwrap_or(0);
+    if offset >= length {
+        return Ok(None);
+    }
+    let take = usize::try_from(length - offset)
+        .unwrap_or(PREVIEW_CHUNK_BYTES)
+        .min(PREVIEW_CHUNK_BYTES);
+    use std::io::{Read, Seek, SeekFrom};
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|error| RecordError::TempIo(error.to_string()).user_message())?;
+    let mut buffer = vec![0u8; take];
+    file.read_exact(&mut buffer)
+        .map_err(|error| RecordError::TempIo(error.to_string()).user_message())?;
+    Ok(Some(STANDARD.encode(buffer)))
 }
 
 /// 重试保存某个待处理产物:成功删除临时文件;取消/失败放回待处理列表。
@@ -1126,6 +1701,81 @@ mod tests {
         let en = i18n::tr(crate::i18n::Language::En, "record.hud.degraded");
         assert!(!en.contains("record.hud.degraded"));
         assert_ne!(en, i18n::t("record.hud.degraded"));
+        assert!(!i18n::t("record.hud.behind").contains("record.hud.behind"));
+    }
+
+    fn spec(protection: bool, even: bool) -> ChromeSpec {
+        ChromeSpec {
+            control_width: 420,
+            control_height: 64,
+            control_margin: 12,
+            border: 4,
+            capture_protection: protection,
+            even,
+        }
+    }
+
+    fn capture_screen(region: RecordRegion, monitor: &MonitorGeom) -> ScreenRect {
+        ScreenRect {
+            x: monitor.physical_x + region.x as i32,
+            y: monitor.physical_y + region.y as i32,
+            width: region.width as i32,
+            height: region.height as i32,
+        }
+    }
+
+    #[test]
+    fn chrome_keeps_border_and_control_outside_when_the_margin_exists() {
+        let screen = monitor();
+        let region = RecordRegion::new(80, 60, 900, 640);
+        let plan = plan_recording_chrome(region, &screen, spec(false, false)).expect("plan");
+        assert!(!plan.yielded);
+        assert_eq!((plan.capture.width, plan.capture.height), (900, 640));
+        let capture = capture_screen(plan.capture, &screen);
+        assert!(!plan.control.intersects(capture));
+        assert!(plan.borders.iter().flatten().count() >= 3);
+        for border in plan.borders.iter().flatten() {
+            assert!(!border.intersects(capture));
+            assert!(!border.intersects(plan.control));
+        }
+    }
+
+    #[test]
+    fn chrome_yields_when_fullscreen_has_no_outside_room() {
+        let screen = monitor();
+        let region = RecordRegion::new(0, 0, 1920, 1080);
+        let unprotected = plan_recording_chrome(region, &screen, spec(false, true)).expect("plan");
+        assert!(unprotected.yielded);
+        let capture = capture_screen(unprotected.capture, &screen);
+        assert!(!unprotected.control.intersects(capture));
+        assert!(unprotected.borders.iter().flatten().count() == 4);
+        for border in unprotected.borders.iter().flatten() {
+            assert!(
+                !border.intersects(capture),
+                "unprotected border entered the capture"
+            );
+        }
+        assert_eq!(unprotected.capture.width % 2, 0);
+        assert_eq!(unprotected.capture.height % 2, 0);
+        // 成片尺寸就是让出之后的捕获矩形。
+        assert!(
+            unprotected.capture.width < region.width || unprotected.capture.height < region.height
+        );
+
+        let protected = plan_recording_chrome(region, &screen, spec(true, true)).expect("plan");
+        assert!(protected.yielded, "control bar still needs a yielded band");
+        let protected_capture = capture_screen(protected.capture, &screen);
+        assert!(!protected.control.intersects(protected_capture));
+        assert!(protected.borders.iter().flatten().count() == 4);
+        // 有内容保护时边框可以贴在矩形边缘,但控制条不能进入捕获矩形。
+        assert!(protected.capture.width % 2 == 0 && protected.capture.height % 2 == 0);
+    }
+
+    #[test]
+    fn chrome_refuses_a_region_too_small_for_the_control_bar() {
+        let screen = MonitorGeom::from_physical("tiny", 0, 0, 40, 40, 1.0);
+        let region = RecordRegion::new(0, 0, 40, 40);
+        assert!(plan_recording_chrome(region, &screen, spec(false, false)).is_err());
     }
 
     #[test]
@@ -1186,6 +1836,7 @@ mod tests {
             height: 480,
             frame_count: 30,
             duration_ms: 3450,
+            fps: 30,
             auto_stopped,
             interrupted: Some("中断说明".into()),
         }
@@ -1244,6 +1895,8 @@ mod tests {
             }),
             control_frame: None,
             limit_ms: MAX_RECORDING_MS,
+            preview: None,
+            fps: 30,
         };
         let json = serde_json::to_value(state).unwrap();
         assert_eq!(json["hasContext"], true);
@@ -1258,6 +1911,12 @@ mod tests {
         assert_eq!(json["region"]["scale"], 2.0);
         assert!(json.get("controlFrame").is_none());
         assert_eq!(json["interactive"], false);
+        assert_eq!(json["fps"], 30);
+        assert!(json["preview"].is_null());
+        assert_eq!(
+            serde_json::to_value(RecordingStopOutcome::Preview).unwrap()["kind"],
+            "preview"
+        );
     }
 
     #[test]

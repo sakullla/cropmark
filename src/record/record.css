@@ -174,6 +174,49 @@ html[data-view="record-overlay"] #app {
   display: none;
 }
 
+.record-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+  flex-shrink: 0;
+}
+
+.record-preview[hidden] {
+  display: none;
+}
+
+.record-preview-image,
+.record-preview-video {
+  display: block;
+  width: 100%;
+  max-height: 120px;
+  object-fit: contain;
+  background: #111;
+  border-radius: var(--radius-control-sm);
+}
+
+.record-preview-image[hidden],
+.record-preview-video[hidden] {
+  display: none;
+}
+
+.record-preview-meta {
+  margin: 0;
+  color: var(--ink);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.record-border-root,
+html[data-chrome="border"],
+html[data-chrome="border"] body,
+html[data-chrome="border"] #app {
+  width: 100%;
+  height: 100%;
+  background: #f43f5e;
+}
+
 .record-pending {
   display: flex;
   flex-direction: column;

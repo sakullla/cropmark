@@ -10,8 +10,22 @@ export interface RecordingStatus {
   elapsedMs: number;
   width: number;
   height: number;
+  /** 这次录制实际使用的帧率档。 */
+  fps: number;
+  /** 抓帧慢于间隔;成片仍覆盖整段时间。 */
+  behind: boolean;
   autoStopped: boolean;
   error: string | null;
+}
+
+export interface RecordingPreview {
+  tempPath: string;
+  format: string;
+  width: number;
+  height: number;
+  durationMs: number;
+  fps: number;
+  autoStopped: boolean;
 }
 
 export interface HudRegion {
@@ -49,6 +63,10 @@ export interface RecordingHudState {
   hasContext: boolean;
   region: HudRegion | null;
   limitMs: number;
+  /** 停止后先播放的临时成片;保存前保存目录里没有它。 */
+  preview: RecordingPreview | null;
+  /** 未开录时也是当前格式会使用的帧率档。 */
+  fps: number;
 }
 
 export type StopOutcome =

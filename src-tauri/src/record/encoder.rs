@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
-use crate::capture::buffer::{flatten_rgba_over_white, Frame};
+use crate::capture::buffer::Frame;
 
 use super::{RecordConfig, RecordError, RecordRegion};
 
@@ -71,9 +71,10 @@ const MP4_MAX_OTHER_EDGE: u32 = 2160;
 const GIF_SPEED: i32 = 10;
 
 /// 逐帧编码接口。`finish` 成功后才保留临时文件,失败或未收尾时由 `Drop` 清理。
+/// `end_ms` 是不含暂停的录制结束时刻,最后一帧的持续时间补到这个时刻。
 pub(crate) trait FrameEncoder: Send {
     fn push(&mut self, frame: &Frame, timestamp_ms: u64) -> Result<(), RecordError>;
-    fn finish(self: Box<Self>) -> Result<(), RecordError>;
+    fn finish(self: Box<Self>, end_ms: u64) -> Result<(), RecordError>;
     fn temp_path(&self) -> &Path;
 }
 
@@ -123,15 +124,9 @@ pub(crate) fn qp_range_for_quality(quality: u8) -> (u8, u8) {
     }
 }
 
-/// GIF 每帧延时(单位 10ms):固定帧率下取整,最小 2(主流解码器下限)。
-fn gif_delay_cs(fps: u32) -> u16 {
-    let centiseconds = 1000 / fps.max(1) / 10;
-    centiseconds.clamp(2, u16::MAX.into()) as u16
-}
-
-/// 一帧的标称时长(毫秒)。
-fn frame_interval_ms(fps: u32) -> u32 {
-    (1000 / u64::from(fps.max(1))).max(1) as u32
+/// 毫秒时间戳落到 GIF 厘秒网格。总时长与墙钟的差不超过 10ms,小于一帧。
+fn gif_cs(timestamp_ms: u64) -> u64 {
+    timestamp_ms / 10
 }
 
 fn temp_path(format: RecordFormat) -> PathBuf {
@@ -164,9 +159,15 @@ fn check_frame(frame: &Frame, width: u32, height: u32) -> Result<(), RecordError
     Ok(())
 }
 
-/// 把 RGBA 压白后交给需要 RGB 的编码器(GIF/WebP 录制画面不接受透明通道)。
+/// 取出 RGB,不把整帧铺到白底上。
+/// 不透明像素保持裁剪后的屏幕颜色;带透明的像素只保留该像素自己的颜色,
+/// 不用白色替换整帧。
 fn frame_rgb(frame: &Frame) -> Result<Vec<u8>, RecordError> {
-    flatten_rgba_over_white(frame).map_err(RecordError::Capture)
+    let mut rgb = Vec::with_capacity(frame.width as usize * frame.height as usize * 3);
+    for pixel in frame.rgba.chunks_exact(4) {
+        rgb.extend_from_slice(&[pixel[0], pixel[1], pixel[2]]);
+    }
+    Ok(rgb)
 }
 
 // ---------------------------------------------------------------------------
@@ -178,12 +179,15 @@ struct GifEncoder {
     path: PathBuf,
     width: u16,
     height: u16,
-    delay_cs: u16,
+    /// 上一帧的 RGB 与它开始覆盖的录制时刻。持续时间要等下一帧才知道。
+    pending: Option<Vec<u8>>,
+    /// 已经写进文件的厘秒终点,用来把各帧对齐到同一条墙钟网格。
+    written_cs: u64,
     finished: bool,
 }
 
 impl GifEncoder {
-    fn new(config: &RecordConfig, region: RecordRegion) -> Result<Self, RecordError> {
+    fn new(_config: &RecordConfig, region: RecordRegion) -> Result<Self, RecordError> {
         let path = temp_path(RecordFormat::Gif);
         let file = create_file(&path)?;
         let width = region.width as u16;
@@ -198,26 +202,59 @@ impl GifEncoder {
             path,
             width,
             height,
-            delay_cs: gif_delay_cs(config.fps),
+            pending: None,
+            written_cs: 0,
             finished: false,
         })
     }
-}
 
-impl FrameEncoder for GifEncoder {
-    fn push(&mut self, frame: &Frame, _timestamp_ms: u64) -> Result<(), RecordError> {
-        check_frame(frame, u32::from(self.width), u32::from(self.height))?;
-        let rgb = frame_rgb(frame)?;
-        let mut gif_frame = gif::Frame::from_rgb_speed(self.width, self.height, &rgb, GIF_SPEED);
-        gif_frame.delay = self.delay_cs;
+    fn write_rgb(&mut self, rgb: &[u8], delay_cs: u16) -> Result<(), RecordError> {
+        let mut gif_frame = gif::Frame::from_rgb_speed(self.width, self.height, rgb, GIF_SPEED);
+        gif_frame.delay = delay_cs.max(1);
         self.encoder
             .as_mut()
             .ok_or_else(|| encode_error("gif encoder already finished"))?
             .write_frame(&gif_frame)
             .map_err(|error| encode_error(error.to_string()))
     }
+}
 
-    fn finish(mut self: Box<Self>) -> Result<(), RecordError> {
+impl FrameEncoder for GifEncoder {
+    fn push(&mut self, frame: &Frame, timestamp_ms: u64) -> Result<(), RecordError> {
+        check_frame(frame, u32::from(self.width), u32::from(self.height))?;
+        let rgb = frame_rgb(frame)?;
+        // 第一帧从 0 开始覆盖,抓第一帧花掉的时间也算进成片。
+        let timestamp_ms = if self.pending.is_none() {
+            0
+        } else {
+            timestamp_ms
+        };
+        if let Some(pending) = self.pending.take() {
+            let end_cs = gif_cs(timestamp_ms);
+            if end_cs > self.written_cs {
+                let delay = u16::try_from(end_cs - self.written_cs).unwrap_or(u16::MAX);
+                self.write_rgb(&pending, delay)?;
+                self.written_cs = end_cs;
+                self.pending = Some(rgb);
+            } else {
+                // 仍落在同一厘秒:保留更新的画面,持续时间继续留给后面的帧。
+                self.pending = Some(rgb);
+            }
+        } else {
+            self.pending = Some(rgb);
+        }
+        Ok(())
+    }
+
+    fn finish(mut self: Box<Self>, end_ms: u64) -> Result<(), RecordError> {
+        let Some(pending) = self.pending.take() else {
+            return Err(RecordError::Empty);
+        };
+        let end_cs = gif_cs(end_ms);
+        // 厘秒网格可能让最后一档为 0;补 1 个厘秒,和墙钟的差仍不超过一帧。
+        let delay =
+            u16::try_from(end_cs.saturating_sub(self.written_cs).max(1)).unwrap_or(u16::MAX);
+        self.write_rgb(&pending, delay)?;
         let encoder = self
             .encoder
             .take()
@@ -255,8 +292,7 @@ struct WebpEncoder {
     width: u32,
     height: u32,
     quality: u8,
-    frame_interval_ms: u32,
-    /// 下一帧的时长要等下一帧时间戳才知道:先压一帧,收尾时补默认时长。
+    /// 下一帧的时长要等下一帧时间戳才知道:先压一帧,收尾时补到录制结束。
     pending: Option<(Vec<u8>, u64)>,
     finished: bool,
 }
@@ -271,7 +307,6 @@ impl WebpEncoder {
             width: region.width,
             height: region.height,
             quality: config.quality.clamp(1, 100),
-            frame_interval_ms: frame_interval_ms(config.fps),
             pending: None,
             finished: false,
         })
@@ -292,6 +327,11 @@ impl FrameEncoder for WebpEncoder {
     fn push(&mut self, frame: &Frame, timestamp_ms: u64) -> Result<(), RecordError> {
         check_frame(frame, self.width, self.height)?;
         let rgb = frame_rgb(frame)?;
+        let timestamp_ms = if self.pending.is_none() {
+            0
+        } else {
+            timestamp_ms
+        };
         if let Some((_, pending_timestamp)) = self.pending.as_ref() {
             let duration = timestamp_ms.saturating_sub(*pending_timestamp).max(1) as u32;
             self.flush_pending(duration)?;
@@ -300,9 +340,11 @@ impl FrameEncoder for WebpEncoder {
         Ok(())
     }
 
-    fn finish(mut self: Box<Self>) -> Result<(), RecordError> {
-        let duration = self.frame_interval_ms.max(1);
-        self.flush_pending(duration)?;
+    fn finish(mut self: Box<Self>, end_ms: u64) -> Result<(), RecordError> {
+        if let Some((_, start)) = self.pending.as_ref() {
+            let duration = end_ms.saturating_sub(*start).max(1) as u32;
+            self.flush_pending(duration)?;
+        }
         if let Some(writer) = self.writer.take() {
             writer.finish()?;
         }
@@ -463,16 +505,22 @@ fn write_u24(buffer: &mut Vec<u8>, value: u32) {
 // MP4(H.264)
 // ---------------------------------------------------------------------------
 
+struct PendingMp4 {
+    bytes: Vec<u8>,
+    is_sync: bool,
+    timestamp_ms: u64,
+}
+
 struct Mp4Encoder {
     encoder: openh264::encoder::Encoder,
     writer: Option<mp4::Mp4Writer<BufWriter<File>>>,
     path: PathBuf,
     width: u16,
     height: u16,
-    fps: u32,
     sps: Vec<u8>,
     pps: Vec<u8>,
-    samples: u64,
+    /// 上一帧样本。持续时间用下一帧的录制时刻减去这一帧的时刻。
+    pending: Option<PendingMp4>,
     finished: bool,
 }
 
@@ -512,10 +560,9 @@ impl Mp4Encoder {
             path: temp_path(RecordFormat::Mp4),
             width,
             height,
-            fps,
             sps: Vec::new(),
             pps: Vec::new(),
-            samples: 0,
+            pending: None,
             finished: false,
         })
     }
@@ -541,14 +588,15 @@ impl Mp4Encoder {
                 .iter()
                 .map(|brand| str::parse(brand).map_err(|_| encode_error("mp4 brand")))
                 .collect::<Result<Vec<_>, _>>()?,
-            timescale: self.fps,
+            // 时间刻度用毫秒,样本时长才能写成真实录制间隔,而不是恒定的 1/fps。
+            timescale: 1000,
         };
         let mut writer = mp4::Mp4Writer::write_start(BufWriter::new(file), &mp4_config)
             .map_err(|error| encode_error(error.to_string()))?;
         writer
             .add_track(&mp4::TrackConfig {
                 track_type: mp4::TrackType::Video,
-                timescale: self.fps,
+                timescale: 1000,
                 language: String::from("und"),
                 media_conf: mp4::MediaConfig::AvcConfig(avc),
             })
@@ -556,10 +604,34 @@ impl Mp4Encoder {
         self.writer = Some(writer);
         Ok(())
     }
+
+    fn write_pending(&mut self, next_timestamp_ms: u64) -> Result<(), RecordError> {
+        let Some(pending) = self.pending.take() else {
+            return Ok(());
+        };
+        let duration = u32::try_from(
+            next_timestamp_ms
+                .saturating_sub(pending.timestamp_ms)
+                .max(1),
+        )
+        .unwrap_or(u32::MAX);
+        let sample = mp4::Mp4Sample {
+            start_time: pending.timestamp_ms,
+            duration,
+            rendering_offset: 0,
+            is_sync: pending.is_sync,
+            bytes: pending.bytes.into(),
+        };
+        self.writer
+            .as_mut()
+            .ok_or_else(|| encode_error("mp4 writer missing"))?
+            .write_sample(1, &sample)
+            .map_err(|error| encode_error(error.to_string()))
+    }
 }
 
 impl FrameEncoder for Mp4Encoder {
-    fn push(&mut self, frame: &Frame, _timestamp_ms: u64) -> Result<(), RecordError> {
+    fn push(&mut self, frame: &Frame, timestamp_ms: u64) -> Result<(), RecordError> {
         check_frame(frame, u32::from(self.width), u32::from(self.height))?;
         let yuv =
             openh264::formats::YUVBuffer::from_rgba8_source(openh264::formats::RgbaSliceU8::new(
@@ -602,28 +674,29 @@ impl FrameEncoder for Mp4Encoder {
         if self.writer.is_none() {
             self.start_writer()?;
         }
-        let sample_bytes = avcc_sample(&nals);
+        let timestamp_ms = if self.pending.is_none() {
+            0
+        } else {
+            timestamp_ms
+        };
+        self.write_pending(timestamp_ms)?;
         let is_sync = matches!(
             frame_type,
             openh264::encoder::FrameType::IDR | openh264::encoder::FrameType::I
         );
-        let sample = mp4::Mp4Sample {
-            start_time: self.samples,
-            duration: 1,
-            rendering_offset: 0,
+        self.pending = Some(PendingMp4 {
+            bytes: avcc_sample(&nals),
             is_sync,
-            bytes: sample_bytes.into(),
-        };
-        self.writer
-            .as_mut()
-            .ok_or_else(|| encode_error("mp4 writer missing"))?
-            .write_sample(1, &sample)
-            .map_err(|error| encode_error(error.to_string()))?;
-        self.samples += 1;
+            timestamp_ms,
+        });
         Ok(())
     }
 
-    fn finish(mut self: Box<Self>) -> Result<(), RecordError> {
+    fn finish(mut self: Box<Self>, end_ms: u64) -> Result<(), RecordError> {
+        if self.pending.is_none() {
+            return Err(RecordError::Empty);
+        }
+        self.write_pending(end_ms.max(1))?;
         let Some(mut writer) = self.writer.take() else {
             return Err(RecordError::Empty);
         };
@@ -636,8 +709,7 @@ impl FrameEncoder for Mp4Encoder {
             .map_err(|error| RecordError::TempIo(error.to_string()))?;
         self.finished = true;
         log::info!(
-            "record mp4 wrote samples={} size={}x{} path={}",
-            self.samples,
+            "record mp4 wrote size={}x{} path={}",
             self.width,
             self.height,
             self.path.display()
@@ -730,7 +802,7 @@ mod tests {
                 .push(&test_frame(32, 24, index * 3), u64::from(index) * 100)
                 .expect("push");
         }
-        encoder.finish().expect("finish");
+        encoder.finish(300).expect("finish");
         let bytes = std::fs::read(&path).expect("gif bytes");
         let frames = decode_gif(&bytes);
         assert_eq!(frames.len(), 3);
@@ -759,7 +831,7 @@ mod tests {
                 .push(&test_frame(32, 24, index * 5), u64::from(index) * 100)
                 .expect("push");
         }
-        encoder.finish().expect("finish");
+        encoder.finish(300).expect("finish");
         let bytes = std::fs::read(&path).expect("webp bytes");
         assert_eq!(&bytes[0..4], b"RIFF");
         assert_eq!(&bytes[8..12], b"WEBP");
@@ -800,7 +872,7 @@ mod tests {
                 .push(&test_frame(64, 48, index * 7), u64::from(index) * 100)
                 .expect("push");
         }
-        encoder.finish().expect("finish");
+        encoder.finish(300).expect("finish");
 
         let bytes = std::fs::read(&path).expect("mp4 bytes");
         let mut reader =
@@ -884,7 +956,7 @@ mod tests {
         let mut encoder = open(&config, region).expect("mp4 encoder");
         let path = encoder.temp_path().to_path_buf();
         encoder.push(&solid, 0).expect("push");
-        encoder.finish().expect("finish");
+        encoder.finish(100).expect("finish");
 
         let bytes = std::fs::read(&path).expect("mp4 bytes");
         let mut reader =
@@ -1006,5 +1078,125 @@ mod tests {
         assert!(path.exists());
         drop(encoder);
         assert!(!path.exists(), "unfinished temp file must be removed");
+    }
+
+    fn solid(width: u32, height: u32, pixel: [u8; 4]) -> Frame {
+        accept_buffer(RawBuffer::ready(
+            width,
+            height,
+            pixel.repeat((width * height) as usize),
+        ))
+        .expect("solid")
+    }
+
+    #[test]
+    fn slow_frames_stretch_to_the_recording_clock() {
+        // 第二帧晚了 300ms:上一帧拉长补上,成片总时长仍是结束时刻。
+        for format in [RecordFormat::Gif, RecordFormat::Webp, RecordFormat::Mp4] {
+            let wide = if format == RecordFormat::Mp4 { 64 } else { 32 };
+            let tall = if format == RecordFormat::Mp4 { 48 } else { 24 };
+            let config = RecordConfig {
+                format,
+                fps: 10,
+                quality: 80,
+                max_duration_ms: 1_000,
+            };
+            let region = RecordRegion {
+                x: 0,
+                y: 0,
+                width: wide,
+                height: tall,
+            };
+            let mut encoder = open(&config, region).expect("encoder");
+            let path = encoder.temp_path().to_path_buf();
+            for (index, timestamp) in [0u64, 100, 400].into_iter().enumerate() {
+                encoder
+                    .push(&test_frame(wide, tall, index as u32 * 3), timestamp)
+                    .expect("push");
+            }
+            encoder.finish(450).expect("finish");
+            match format {
+                RecordFormat::Gif => {
+                    let frames = decode_gif(&std::fs::read(&path).expect("gif"));
+                    let delays: Vec<u16> = frames.iter().map(|frame| frame.2).collect();
+                    assert_eq!(delays, vec![10, 30, 5]);
+                    let total_ms = delays
+                        .iter()
+                        .map(|delay| u64::from(*delay) * 10)
+                        .sum::<u64>();
+                    assert!(
+                        total_ms.abs_diff(450) <= 100,
+                        "gif clock drifted past one frame: {total_ms}"
+                    );
+                }
+                RecordFormat::Webp => {
+                    let bytes = std::fs::read(&path).expect("webp");
+                    let decoded = webp::AnimDecoder::new(&bytes).decode().expect("webp");
+                    let times: Vec<i32> = (0..decoded.len())
+                        .map(|index| decoded.get_frame(index).expect("frame").get_time_ms())
+                        .collect();
+                    assert_eq!(times, vec![100, 400, 450]);
+                }
+                RecordFormat::Mp4 => {
+                    let bytes = std::fs::read(&path).expect("mp4");
+                    let mut reader = mp4::Mp4Reader::read_header(
+                        std::io::Cursor::new(bytes.clone()),
+                        bytes.len() as u64,
+                    )
+                    .expect("mp4");
+                    let track_id = {
+                        let (id, _) = reader.tracks().iter().next().expect("track");
+                        *id
+                    };
+                    let mut total = 0u64;
+                    for index in 1..=3 {
+                        let sample = reader
+                            .read_sample(track_id, index)
+                            .expect("read")
+                            .expect("sample");
+                        total += sample.duration as u64;
+                    }
+                    assert_eq!(total, 450);
+                }
+            }
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    #[test]
+    fn gif_does_not_matte_dark_or_transparent_pixels_onto_white() {
+        let config = RecordConfig {
+            format: RecordFormat::Gif,
+            fps: 15,
+            quality: 80,
+            max_duration_ms: 1_000,
+        };
+        let region = RecordRegion {
+            x: 0,
+            y: 0,
+            width: 32,
+            height: 24,
+        };
+        let assert_dark = |pixel: [u8; 4]| {
+            let mut encoder = open(&config, region).expect("gif");
+            let path = encoder.temp_path().to_path_buf();
+            encoder.push(&solid(32, 24, pixel), 0).expect("push");
+            encoder.finish(100).expect("finish");
+            let bytes = std::fs::read(&path).expect("gif");
+            let mut options = gif::DecodeOptions::new();
+            options.set_color_output(gif::ColorOutput::RGBA);
+            let mut decoder = options.read_info(std::io::Cursor::new(bytes)).expect("gif");
+            let frame = decoder.read_next_frame().expect("frame").expect("frame");
+            for channel in frame.buffer.chunks_exact(4) {
+                assert!(
+                    channel[0] < 80 && channel[1] < 80 && channel[2] < 80,
+                    "dark frame was matted toward white: {channel:?}"
+                );
+            }
+            let _ = std::fs::remove_file(&path);
+        };
+        assert_dark([12, 18, 24, 255]);
+        // alpha 为 0 时只动这个像素,不能把整帧铺白。
+        assert_dark([0, 0, 0, 0]);
     }
 }

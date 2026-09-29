@@ -696,8 +696,20 @@
     "en": "Could not capture a still frame; annotation mode was closed and recording continues."
   },
   "record.hud.degraded": {
-    "zh-CN": "当前环境不支持透明实时标注层：标注在定格画面上进行，绘制期间自动暂停录制，控制条可能出现在录制画面中。",
-    "en": "This environment does not support a transparent live annotation layer: annotate on a still frame; recording pauses while drawing, and the control bar may appear in the recording."
+    "zh-CN": "当前环境不支持透明实时标注层：标注在定格画面上进行，绘制期间自动暂停录制。区域边框和控制条画在成片之外。",
+    "en": "This environment does not support a transparent live annotation layer: annotate on a still frame, and recording pauses while drawing. The region border and control bar stay outside the recording."
+  },
+  "record.hud.behind": {
+    "zh-CN": "抓帧慢于所选帧率，已拉长上一帧补上这段时间，成片仍覆盖整段录制。",
+    "en": "Frames are arriving slower than the selected rate. Each previous frame is held longer so the result still covers the whole recording."
+  },
+  "record.bar.fps": {
+    "zh-CN": "{fps} 帧/秒",
+    "en": "{fps} fps"
+  },
+  "record.preview.failed": {
+    "zh-CN": "无法播放预览，仍可保存或丢弃。",
+    "en": "Could not play the preview. You can still save or discard it."
   },
   "record.error.action": {
     "zh-CN": "操作未能完成：{detail}",

@@ -47,9 +47,8 @@ pub fn dispatch_recording(app: &AppHandle) {
     );
 }
 
-/// R3:停止活动录制并进入保存(托盘与后续录制 HUD 共用)。无活动录制时
-/// no-op;保存取消时明确丢弃本次录制并使用录制专用文案;保存失败时保留
-/// 临时文件并登记待重试,错误文案给出保留位置,应用继续可用。
+/// R3:停止活动录制并先在控制条里播放。无活动录制时 no-op。
+/// 保存和丢弃由控制条继续处理;这里不把成品写进保存目录。
 pub fn stop_recording(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -75,29 +74,8 @@ async fn stop_recording_inner(app: AppHandle) {
             return;
         }
     };
-    // 上限自动停止/抓帧中断先给可见说明,再进入保存对话框。
-    if output.auto_stopped {
-        ui::show_toast_key(&app, "toast.recording_auto_stopped");
-    }
-    if let Some(interrupted) = output.interrupted.as_deref() {
-        ui::show_toast(&app, interrupted);
-    }
-    let result = crate::record::save_recording_with_dialog(&app, None, &output).await;
-    match conclude_recording_save(output, result) {
-        RecordingSaveNotice::Saved { name } => {
-            ui::show_toast_key_params(&app, "toast.saved", &[("name", &name)]);
-        }
-        RecordingSaveNotice::Discarded => {
-            ui::show_toast_key(&app, "toast.recording_discarded");
-        }
-        RecordingSaveNotice::Failed { message } => {
-            ui::show_toast(&app, &message);
-            // 托盘路径的保存对话框期间控制条可能已按「无会话」自动收起:
-            // 重新呼出以兑现错误文案承诺的重试保存/丢弃入口。
-            crate::record::hud::show_pending(&app);
-        }
-    }
-    session::refresh_tray_menu(&app);
+    // 托盘停止和满时自动停止都先在控制条里播放,不立刻写入保存目录。
+    crate::record::hud::present_preview(&app, output);
 }
 
 /// 停止录制后的保存收尾:提示与实际文件去向必须一致,供托盘与后续录制
@@ -440,6 +418,7 @@ mod tests {
             height: 200,
             frame_count: 12,
             duration_ms: 1200,
+            fps: 15,
             auto_stopped: false,
             interrupted: None,
         }

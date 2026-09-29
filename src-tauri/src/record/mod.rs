@@ -3,8 +3,9 @@
 //! 引擎与入口解耦:托盘/选区入口与录制 HUD 由后续任务接入,本模块提供
 //! 可独立复验的录制会话与保存链路。
 //!
-//! - 按区域固定目标帧率(默认 10fps)用现有平台单帧抓取 API 抓帧,
+//! - 按设置帧率用现有平台单帧抓取 API 抓帧(未选时 MP4 为 30,GIF/WebP 为 15),
 //!   `crop_rgba` 裁剪后用 `rasterize_lenient` 合并实时标注,再流式编码;
+//!   每一帧的持续时间按不含暂停的录制时刻书写,慢帧拉长上一帧而不是缩时;
 //! - 支持开始/暂停/继续/停止;暂停不产帧也不推进录制时间;
 //! - 上限、时长与帧时间戳都按墙钟(暂停时段不计入)计:单次上限 30 分钟,
 //!   低帧率/大区域下也按真实经过时间自动停止并保留已完成内容;
@@ -103,12 +104,13 @@ impl Default for RecordConfig {
 }
 
 impl RecordConfig {
-    /// 从当前设置读取质量记忆(导出质量档位),帧率与上限取录制默认值。
+    /// 从当前设置读取质量记忆和帧率。没选过帧率时按格式取默认档。
     pub fn from_settings(app: &AppHandle, format: RecordFormat) -> Self {
         let export = settings::current_export(app);
+        let recording = settings::current_recording(app);
         Self {
             format,
-            fps: DEFAULT_FPS,
+            fps: resolve_recording_fps(format, recording.fps),
             quality: export.quality.value(),
             max_duration_ms: MAX_RECORDING_MS,
         }
@@ -128,6 +130,11 @@ impl RecordConfig {
 /// 帧源:录制会话从它按目标帧率取源画面(显示器整屏物理像素)。
 pub trait FrameSource: Send {
     fn capture(&mut self) -> Result<Frame, CaptureError>;
+
+    /// 生产帧源所在的显示器。有几何信息时,会话会把边框和控制条让出捕获矩形。
+    fn monitor_geometry(&self) -> Option<MonitorGeom> {
+        None
+    }
 }
 
 /// 生产用帧源:现有平台单帧抓取 API 按显示器抓整屏,由会话裁剪区域。
@@ -144,6 +151,21 @@ impl MonitorSource {
 impl FrameSource for MonitorSource {
     fn capture(&mut self) -> Result<Frame, CaptureError> {
         platform::capture_monitor(&self.monitor)
+    }
+
+    fn monitor_geometry(&self) -> Option<MonitorGeom> {
+        Some(self.monitor.clone())
+    }
+}
+
+/// 未单独选过帧率时,MP4 用 30,GIF 和 WebP 用 15。选定 10/15/30 后三种格式都用这一档。
+pub fn resolve_recording_fps(format: RecordFormat, chosen: Option<u32>) -> u32 {
+    if let Some(fps) = chosen.filter(|fps| settings::RECORDING_FPS_CHOICES.contains(fps)) {
+        return fps;
+    }
+    match format {
+        RecordFormat::Mp4 => 30,
+        RecordFormat::Gif | RecordFormat::Webp => 15,
     }
 }
 
@@ -201,6 +223,10 @@ pub struct RecordingStatus {
     pub elapsed_ms: u64,
     pub width: u32,
     pub height: u32,
+    /// 这次录制实际使用的帧率档。
+    pub fps: u32,
+    /// 抓帧慢于帧间隔。成片会拉长上一帧补上时间,录制中需要说明。
+    pub behind: bool,
     /// 是否因到达 30 分钟上限自动停止。
     pub auto_stopped: bool,
     /// 失败或中断时的本地化说明。
@@ -219,6 +245,8 @@ pub struct RecordingOutput {
     pub frame_count: u64,
     /// 实际录制时长(毫秒,墙钟活跃时间,暂停时段不计入)。
     pub duration_ms: u64,
+    /// 写入成片的帧率档。
+    pub fps: u32,
     pub auto_stopped: bool,
     /// 抓帧持续失败导致的中断说明;正常停止时为 None。
     pub interrupted: Option<String>,
@@ -253,6 +281,8 @@ struct WorkerState {
     elapsed_frozen: Duration,
     annotations: Vec<Annotation>,
     frame_count: u64,
+    /// 至少有一帧的抓取慢于目标间隔。
+    behind: bool,
     auto_stopped: bool,
     interrupted: Option<String>,
     output: Option<RecordingOutput>,
@@ -267,6 +297,7 @@ impl WorkerState {
             elapsed_frozen: Duration::ZERO,
             annotations: Vec::new(),
             frame_count: 0,
+            behind: false,
             auto_stopped: false,
             interrupted: None,
             output: None,
@@ -311,6 +342,8 @@ impl Shared {
 pub struct RecordingSession {
     shared: Arc<Shared>,
     region: RecordRegion,
+    /// 标注仍用确认矩形的坐标系;捕获矩形让出边框或控制条时,合成前平移这段差值。
+    annotation_inset: (i32, i32),
     config: RecordConfig,
     worker: Mutex<Option<JoinHandle<()>>>,
 }
@@ -323,22 +356,45 @@ impl RecordingSession {
         source: impl FrameSource + 'static,
     ) -> Result<Self, RecordError> {
         let config = config.sanitized();
+        let confirmed = region;
+        let monitor = source.monitor_geometry();
+        let (region, annotation_inset) = match monitor.as_ref() {
+            Some(monitor) => {
+                let spec = hud::chrome_spec_for(monitor, config.format);
+                let plan = hud::plan_recording_chrome(confirmed, monitor, spec)
+                    .map_err(|_| RecordError::Region)?;
+                (plan.capture, hud::annotation_inset(confirmed, plan.capture))
+            }
+            None => (confirmed, (0, 0)),
+        };
         let region = region.for_format(config.format)?;
         let shared = Arc::new(Shared {
             state: Mutex::new(WorkerState::new()),
             wake: Condvar::new(),
         });
         let worker_shared = Arc::clone(&shared);
+        let worker_inset = annotation_inset;
         let worker = std::thread::Builder::new()
             .name("cropmark-record".into())
-            .spawn(move || run_worker(worker_shared, region, config, source))
+            .spawn(move || run_worker(worker_shared, region, worker_inset, config, source))
             .map_err(|_| RecordError::Thread)?;
         Ok(Self {
             shared,
             region,
+            annotation_inset,
             config,
             worker: Mutex::new(Some(worker)),
         })
+    }
+
+    /// 这次会话实际使用的帧率档。
+    pub fn fps(&self) -> u32 {
+        self.config.fps
+    }
+
+    /// 捕获矩形相对确认矩形的原点差值。标注合成前按它平移。
+    pub fn annotation_inset(&self) -> (i32, i32) {
+        self.annotation_inset
     }
 
     /// 当前状态快照(HUD 实时时长与阶段)。
@@ -351,6 +407,8 @@ impl RecordingSession {
             elapsed_ms: millis(state.elapsed(Instant::now())),
             width: self.region.width,
             height: self.region.height,
+            fps: self.config.fps,
+            behind: state.behind,
             auto_stopped: state.auto_stopped,
             error: state.error.as_ref().map(RecordError::user_message),
         }
@@ -438,6 +496,16 @@ impl RecordingSession {
         self.shared.lock().output.clone()
     }
 
+    /// 上限自动停止后、用户还没拿走会话时的成片。
+    pub fn finished_output(&self) -> Option<RecordingOutput> {
+        let state = self.shared.lock();
+        if state.phase == Phase::Finished {
+            state.output.clone()
+        } else {
+            None
+        }
+    }
+
     fn join_worker(&self) {
         let handle = self
             .worker
@@ -517,6 +585,7 @@ fn wait_for_slot(shared: &Shared, deadline: Instant) -> bool {
 fn run_worker(
     shared: Arc<Shared>,
     region: RecordRegion,
+    annotation_inset: (i32, i32),
     config: RecordConfig,
     mut source: impl FrameSource,
 ) {
@@ -554,9 +623,14 @@ fn run_worker(
             }
             (state.annotations.clone(), millis(elapsed))
         };
+        let capture_started = Instant::now();
         let captured = source
             .capture()
             .and_then(|full| crop_rgba(&full, region.x, region.y, region.width, region.height));
+        if capture_started.elapsed() > interval {
+            // 慢于间隔:拉长上一帧补上这段时间,并让控制条说明跟不上。
+            shared.lock().behind = true;
+        }
         let frame = match captured {
             Ok(frame) => frame,
             Err(error) => {
@@ -571,6 +645,15 @@ fn run_worker(
             }
         };
         consecutive_failures = 0;
+        let annotations = if annotation_inset == (0, 0) {
+            annotations
+        } else {
+            crate::annotate::translated_all(
+                &annotations,
+                -f64::from(annotation_inset.0),
+                -f64::from(annotation_inset.1),
+            )
+        };
         let merged = rasterize_lenient(&frame, &annotations);
         if let Err(error) = encoder.push(&merged, timestamp_ms) {
             finish_failed(&shared, error);
@@ -596,7 +679,7 @@ fn run_worker(
         return;
     }
     let temp_path = encoder.temp_path().to_path_buf();
-    match encoder.finish() {
+    match encoder.finish(duration_ms) {
         Ok(()) => {
             let output = RecordingOutput {
                 format: config.format,
@@ -605,6 +688,7 @@ fn run_worker(
                 height: region.height,
                 frame_count,
                 duration_ms,
+                fps: config.fps,
                 auto_stopped,
                 interrupted: interrupted.map(|error| error.user_message()),
             };
@@ -666,6 +750,21 @@ mod tests {
                 frames: Arc::new(AtomicU32::new(0)),
                 fail_first: Arc::new(AtomicU32::new(0)),
             }
+        }
+    }
+
+    struct MonitoredSource {
+        inner: SyntheticSource,
+        monitor: MonitorGeom,
+    }
+
+    impl FrameSource for MonitoredSource {
+        fn capture(&mut self) -> Result<Frame, CaptureError> {
+            self.inner.capture()
+        }
+
+        fn monitor_geometry(&self) -> Option<MonitorGeom> {
+            Some(self.monitor.clone())
         }
     }
 
@@ -987,6 +1086,96 @@ mod tests {
         assert!(RecordRegion::new(0, 0, 1, 1)
             .for_format(RecordFormat::Mp4)
             .is_err());
+    }
+
+    #[test]
+    fn resolve_fps_uses_the_format_default_until_a_step_is_chosen() {
+        assert_eq!(resolve_recording_fps(RecordFormat::Mp4, None), 30);
+        assert_eq!(resolve_recording_fps(RecordFormat::Gif, None), 15);
+        assert_eq!(resolve_recording_fps(RecordFormat::Webp, None), 15);
+        for format in [RecordFormat::Mp4, RecordFormat::Gif, RecordFormat::Webp] {
+            assert_eq!(resolve_recording_fps(format, Some(10)), 10);
+            assert_eq!(resolve_recording_fps(format, Some(15)), 15);
+            assert_eq!(resolve_recording_fps(format, Some(30)), 30);
+            assert_eq!(
+                resolve_recording_fps(format, Some(60)),
+                resolve_recording_fps(format, None)
+            );
+        }
+    }
+
+    #[test]
+    fn fullscreen_session_capture_matches_the_yielded_chrome_rect() {
+        let monitor = MonitorGeom::from_physical("m", 10, 20, 240, 180, 1.0);
+        let region = RecordRegion::new(0, 0, 240, 180);
+        let config = RecordConfig {
+            format: RecordFormat::Gif,
+            fps: 10,
+            quality: 70,
+            max_duration_ms: 60_000,
+        };
+        let plan = hud::plan_recording_chrome(
+            region,
+            &monitor,
+            hud::chrome_spec_for(&monitor, RecordFormat::Gif),
+        )
+        .expect("plan");
+        assert!(plan.yielded);
+        let source = MonitoredSource {
+            inner: SyntheticSource::new(240, 180),
+            monitor: monitor.clone(),
+        };
+        let session = RecordingSession::start(region, config, source).expect("start");
+        assert_eq!(
+            (session.region.width, session.region.height),
+            (plan.capture.width, plan.capture.height)
+        );
+        assert_eq!(
+            session.annotation_inset(),
+            hud::annotation_inset(region, plan.capture)
+        );
+        run_until_frames(&session, 1);
+        let output = session.stop().expect("stop");
+        assert_eq!(
+            (output.width, output.height),
+            (plan.capture.width, plan.capture.height)
+        );
+        assert_eq!(output.fps, 10);
+        let _ = std::fs::remove_file(&output.temp_path);
+    }
+
+    #[test]
+    fn region_too_small_for_chrome_does_not_start() {
+        let monitor = MonitorGeom::from_physical("tiny", 0, 0, 40, 40, 1.0);
+        let source = MonitoredSource {
+            inner: SyntheticSource::new(40, 40),
+            monitor,
+        };
+        let error = RecordingSession::start(
+            RecordRegion::new(0, 0, 40, 40),
+            test_config(RecordFormat::Gif, 60_000),
+            source,
+        );
+        assert!(matches!(error, Err(RecordError::Region)));
+    }
+
+    #[test]
+    fn slow_capture_marks_behind_without_dropping_the_clock() {
+        let mut source = SyntheticSource::new(48, 32);
+        source.capture_delay = Duration::from_millis(40);
+        let region = RecordRegion::new(2, 2, 48, 32);
+        let session =
+            RecordingSession::start(region, test_config(RecordFormat::Gif, 60_000), source)
+                .expect("start");
+        run_until_frames(&session, 2);
+        let status = session.status();
+        assert!(
+            status.behind,
+            "slow capture must be explained while recording"
+        );
+        let output = session.stop().expect("stop");
+        assert!(output.duration_ms >= 40, "duration {}", output.duration_ms);
+        let _ = std::fs::remove_file(&output.temp_path);
     }
 
     #[test]

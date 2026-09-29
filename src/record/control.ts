@@ -5,6 +5,7 @@ import {
   formatDuration,
   type PendingRecording,
   type RecordingHudState,
+  type RecordingPreview,
   type RecordingStatus,
   type StopOutcome,
 } from "./types";
@@ -47,8 +48,14 @@ export function mountRecordControl(root: HTMLElement): () => void {
         <div class="record-actions">
           <button type="button" class="record-btn record-toggle" hidden></button>
           <button type="button" class="record-btn record-primary record-stop" hidden></button>
+          <button type="button" class="record-btn record-discard" data-i18n="record.pending.discard" hidden></button>
           <button type="button" class="record-btn record-draw" data-i18n="record.bar.draw" hidden></button>
         </div>
+      </div>
+      <div class="record-preview" hidden>
+        <img class="record-preview-image" alt="" hidden />
+        <video class="record-preview-video" muted autoplay loop playsinline hidden></video>
+        <p class="record-preview-meta"></p>
       </div>
       <p class="record-notice" role="status" hidden></p>
       <div class="record-pending" hidden>
@@ -66,7 +73,12 @@ export function mountRecordControl(root: HTMLElement): () => void {
   const phase = root.querySelector(".record-phase");
   const toggle = root.querySelector(".record-toggle");
   const stop = root.querySelector(".record-stop");
+  const discard = root.querySelector(".record-discard");
   const draw = root.querySelector(".record-draw");
+  const previewBox = root.querySelector(".record-preview");
+  const previewImage = root.querySelector(".record-preview-image");
+  const previewVideo = root.querySelector(".record-preview-video");
+  const previewMeta = root.querySelector(".record-preview-meta");
   const notice = root.querySelector(".record-notice");
   const pending = root.querySelector(".record-pending");
   const pendingTitle = root.querySelector(".record-pending-title");
@@ -80,7 +92,12 @@ export function mountRecordControl(root: HTMLElement): () => void {
     !(phase instanceof HTMLElement) ||
     !(toggle instanceof HTMLButtonElement) ||
     !(stop instanceof HTMLButtonElement) ||
+    !(discard instanceof HTMLButtonElement) ||
     !(draw instanceof HTMLButtonElement) ||
+    !(previewBox instanceof HTMLElement) ||
+    !(previewImage instanceof HTMLImageElement) ||
+    !(previewVideo instanceof HTMLVideoElement) ||
+    !(previewMeta instanceof HTMLElement) ||
     !(notice instanceof HTMLElement) ||
     !(pending instanceof HTMLElement) ||
     !(pendingTitle instanceof HTMLElement) ||
@@ -94,6 +111,9 @@ export function mountRecordControl(root: HTMLElement): () => void {
   let state: RecordingHudState | null = null;
   let busy = false;
   let lastError = "";
+  let previewError = "";
+  let previewKey = "";
+  let previewUrl = "";
   let overlayNotice = "";
   let appliedHeight = -1;
   let timer: number | null = null;
@@ -164,7 +184,12 @@ export function mountRecordControl(root: HTMLElement): () => void {
     } else if (lastError) {
       text = lastError;
       error = true;
-    } else if (status && (status.autoStopped || status.phase === "finished")) {
+    } else if (previewError) {
+      text = previewError;
+      error = true;
+    } else if (status?.behind && (status.phase === "recording" || status.phase === "paused")) {
+      text = t("record.hud.behind");
+    } else if (status?.autoStopped || state?.preview?.autoStopped) {
       text = t("toast.recording_auto_stopped");
     } else if (!status && (state?.pending.length ?? 0) > 0) {
       text = t("record.pending.kept");
@@ -221,18 +246,102 @@ export function mountRecordControl(root: HTMLElement): () => void {
     );
   };
 
+  const releasePreview = (): void => {
+    if (previewUrl) {
+      URL.revokeObjectURL(previewUrl);
+      previewUrl = "";
+    }
+    previewImage.hidden = true;
+    previewVideo.hidden = true;
+    previewImage.removeAttribute("src");
+    previewVideo.removeAttribute("src");
+  };
+
+  const loadPreview = async (item: RecordingPreview): Promise<void> => {
+    if (item.tempPath === previewKey) {
+      return;
+    }
+    previewKey = item.tempPath;
+    previewError = "";
+    releasePreview();
+    try {
+      const parts: Uint8Array[] = [];
+      let offset = 0;
+      for (;;) {
+        const chunk = await invoke<string | null>("read_recording_preview_chunk", {
+          tempPath: item.tempPath,
+          offset,
+        });
+        if (!chunk) {
+          break;
+        }
+        const binary = atob(chunk);
+        const bytes = new Uint8Array(binary.length);
+        for (let index = 0; index < binary.length; index += 1) {
+          bytes[index] = binary.charCodeAt(index);
+        }
+        parts.push(bytes);
+        offset += bytes.length;
+        if (previewKey !== item.tempPath) {
+          return;
+        }
+      }
+      const type =
+        item.format === "mp4" ? "video/mp4" : item.format === "webp" ? "image/webp" : "image/gif";
+      const total = parts.reduce((sum, part) => sum + part.length, 0);
+      const merged = new Uint8Array(total);
+      let cursor = 0;
+      for (const part of parts) {
+        merged.set(part, cursor);
+        cursor += part.length;
+      }
+      const blob = new Blob([merged.buffer], { type });
+      previewUrl = URL.createObjectURL(blob);
+      if (item.format === "mp4") {
+        previewVideo.src = previewUrl;
+        previewVideo.hidden = false;
+        void previewVideo.play().catch(() => undefined);
+      } else {
+        previewImage.src = previewUrl;
+        previewImage.hidden = false;
+      }
+    } catch {
+      if (previewKey === item.tempPath) {
+        previewError = t("record.preview.failed");
+        render();
+      }
+    }
+  };
+
   const render = (): void => {
     const status = state?.status ?? null;
+    const preview = state?.preview ?? null;
+    const reviewing = preview !== null || status?.phase === "finished";
+    const fpsLabel = t("record.bar.fps", {
+      fps: String(preview?.fps ?? status?.fps ?? state?.fps ?? 0),
+    });
     time.textContent = status
-      ? `${formatDuration(status.elapsedMs)} / ${formatDuration(state?.limitMs ?? 0)}`
-      : "--:--";
+      ? `${formatDuration(status.elapsedMs)} / ${formatDuration(state?.limitMs ?? 0)} · ${fpsLabel}`
+      : preview
+        ? `${formatDuration(preview.durationMs)} · ${fpsLabel}`
+        : "--:--";
     phase.textContent = status ? t(PHASE_KEYS[status.phase]) : "";
-    root.dataset.phase = status?.phase ?? "idle";
+    root.dataset.phase = status?.phase ?? (preview ? "finished" : "idle");
     root.classList.toggle("is-paused", status?.phase === "paused");
-    root.classList.toggle("is-stopped", status?.phase === "finished");
+    root.classList.toggle("is-stopped", reviewing);
     root.classList.toggle("is-failed", status?.phase === "failed" || lastError.length > 0);
 
-    toggle.hidden = !status;
+    previewBox.hidden = preview === null;
+    if (preview) {
+      previewMeta.textContent = `${formatDuration(preview.durationMs)} · ${fpsLabel} · ${preview.width}×${preview.height}`;
+      void loadPreview(preview);
+    } else if (previewKey) {
+      previewKey = "";
+      previewError = "";
+      releasePreview();
+    }
+
+    toggle.hidden = !status || reviewing;
     // 标注模式期间暂停/继续不可用:先「完成标注」退出绘制层再控制录制
     // (降级平台的不透明绘制层会在恢复录制后入画)。
     toggle.disabled = busy || state?.interactive === true;
@@ -246,16 +355,18 @@ export function mountRecordControl(root: HTMLElement): () => void {
       toggle.hidden = true;
     }
 
-    stop.hidden = !status;
+    stop.hidden = !status && !reviewing;
     stop.disabled = busy;
-    stop.textContent =
-      status?.phase === "finished"
-        ? t("record.bar.save")
-        : status?.phase === "failed"
-          ? t("record.bar.close")
-          : t("record.bar.stop");
+    stop.dataset.action = reviewing ? "save" : "stop";
+    stop.textContent = reviewing
+      ? t("record.bar.save")
+      : status?.phase === "failed"
+        ? t("record.bar.close")
+        : t("record.bar.stop");
+    discard.hidden = !reviewing;
+    discard.disabled = busy;
 
-    draw.hidden = !status;
+    draw.hidden = !status || reviewing;
     const drawCapable = status?.phase === "recording" || status?.phase === "paused";
     draw.disabled = busy || !drawCapable;
     draw.textContent = state?.interactive
@@ -268,9 +379,9 @@ export function mountRecordControl(root: HTMLElement): () => void {
     notice.textContent = noticeInfo.text;
     notice.classList.toggle("is-error", noticeInfo.error);
 
-    start.hidden = status !== null || !state?.hasContext;
+    start.hidden = status !== null || state?.preview != null || !state?.hasContext;
     start.disabled = busy;
-    close.hidden = status !== null;
+    close.hidden = status !== null || state?.preview != null;
     close.disabled = busy;
     renderPending();
     syncWindow();
@@ -283,7 +394,7 @@ export function mountRecordControl(root: HTMLElement): () => void {
       // 打开事件可能早于视图挂载(极早期录制/开发重载):见到会话就持续轮询。
       startPolling();
     }
-    if (!busy && next.status === null && next.pending.length === 0) {
+    if (!busy && next.status === null && next.pending.length === 0 && !next.preview) {
       stopPolling();
       void invoke("close_recording_hud");
     }
@@ -319,6 +430,43 @@ export function mountRecordControl(root: HTMLElement): () => void {
     render();
     try {
       await invoke<RecordingStatus>("recording_control", { action });
+    } catch (error) {
+      lastError = messageOf(error);
+    }
+    busy = false;
+    await refresh();
+  };
+
+  const savePreview = async (): Promise<void> => {
+    if (busy) {
+      return;
+    }
+    busy = true;
+    lastError = "";
+    render();
+    try {
+      const outcome = await invoke<StopOutcome>("save_recording_preview");
+      if (outcome.kind === "failed") {
+        lastError = outcome.message;
+      }
+    } catch (error) {
+      lastError = messageOf(error);
+    }
+    busy = false;
+    await refresh();
+  };
+
+  const discardPreview = async (): Promise<void> => {
+    if (busy) {
+      return;
+    }
+    busy = true;
+    lastError = "";
+    previewKey = "";
+    releasePreview();
+    render();
+    try {
+      await invoke<boolean>("discard_recording_preview");
     } catch (error) {
       lastError = messageOf(error);
     }
@@ -410,7 +558,14 @@ export function mountRecordControl(root: HTMLElement): () => void {
       void runControl(action);
     }
   });
-  stop.addEventListener("click", () => void stopRecording());
+  stop.addEventListener("click", () => {
+    if (stop.dataset.action === "save") {
+      void savePreview();
+    } else {
+      void stopRecording();
+    }
+  });
+  discard.addEventListener("click", () => void discardPreview());
   draw.addEventListener("click", () => void toggleDraw());
   start.addEventListener("click", () => void runControl("start"));
   close.addEventListener("click", () => {
@@ -442,6 +597,7 @@ export function mountRecordControl(root: HTMLElement): () => void {
   });
   resizeObserver.observe(row);
   resizeObserver.observe(notice);
+  resizeObserver.observe(previewBox);
   void listen<RecordingHudState>("record-hud-state", (event) => {
     apply(event.payload);
   });
