@@ -1076,9 +1076,11 @@ mod tests {
         // 决定,列表为空时即使平台 provider 声明窗口级可用也为 false;
         // 控件级按平台能力(核心任务为降级态)。
         assert_eq!(json["snapWindowLevel"], serde_json::json!(false));
-        assert_eq!(json["snapControlLevel"], serde_json::json!(false));
+        // 控件级跟随本机探测:有 UIA 时为 true,会话隔离时为 false。
+        let control_level = crate::capture::snap::platform_capability().control_level();
+        assert_eq!(json["snapControlLevel"], serde_json::json!(control_level));
         assert!(!reduced.snap_window_level);
-        assert!(!reduced.snap_control_level);
+        assert_eq!(reduced.snap_control_level, control_level);
 
         // R7:会话能枚举窗口时,Web 覆盖层的窗口级吸附可用。
         let listed = ListedWindow {
