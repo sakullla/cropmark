@@ -369,7 +369,8 @@ html[data-view="settings"] .settings-nav-item {
   padding: 9px 12px;
   font: inherit;
   font-size: 14px;
-  font-weight: 650;
+  /* 650 与 700 在 Segoe UI、微软雅黑上是同一粗体，未选中必须停在 500 才轻于选中项。 */
+  font-weight: 500;
   line-height: 1.35;
   text-align: left;
   overflow-wrap: anywhere;
@@ -390,6 +391,7 @@ html[data-view="settings"] .settings-nav-item[aria-selected="true"]:hover,
 html[data-view="settings"] .settings-nav-item[aria-selected="true"]:active {
   background: var(--accent-soft);
   color: var(--accent);
+  font-weight: 700;
 }
 
 html[data-view="settings"] .settings-main {

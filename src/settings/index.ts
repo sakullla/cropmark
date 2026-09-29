@@ -650,6 +650,8 @@ export function mountSettings(root: HTMLElement): () => void {
       const selected = item.value === settings.format;
       button.setAttribute("aria-checked", selected ? "true" : "false");
       button.classList.toggle("selected", selected);
+      // 开关关闭时格式仍可见；disabled 后点击与方向键都不改写格式。
+      button.disabled = !settings.enabled;
       // 漫游 tabindex:与语言/预设组一致的 radio 组键盘行为。
       button.tabIndex = selected ? 0 : -1;
       recordingFormatsEl.append(button);
@@ -1085,7 +1087,7 @@ export function mountSettings(root: HTMLElement): () => void {
 
   recordingFormatsEl.addEventListener("click", (event) => {
     const target = event.target;
-    if (!(target instanceof Element) || applying) {
+    if (!(target instanceof Element) || applying || !recordingSettings.enabled) {
       return;
     }
     const button = target.closest("[data-recording-format]");
@@ -1306,6 +1308,9 @@ export function mountSettings(root: HTMLElement): () => void {
     handleRadioGroupKeydown(event, presetRoot, "[data-beautify-preset]");
   });
   recordingFormatsEl.addEventListener("keydown", (event) => {
+    if (!recordingSettings.enabled) {
+      return;
+    }
     handleRadioGroupKeydown(event, recordingFormatsEl, "[data-recording-format]");
   });
 
