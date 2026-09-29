@@ -5,7 +5,9 @@
 //! 的候选时不追加,避免相似文本行被拼错行。
 //! Web 控制窗(`index.html?view=scroll`,置顶非模态、位于选区旁)承载状态
 //! 提示、方向选择与「完成/取消」。默认纵向(R5 前行为);横向在控制窗选择,
-//! 首个内容变化后锁定。内容未变化连续若干次、匹配失败、滚动过快都给出可
+//! 首个内容变化后锁定。Windows 自动滚动的首个 nudge 推迟到控制窗就绪且
+//! 方向选择落定(用户点选或就绪后过了宽限期)之后,避免在用户能选横向之前
+//! 就把轴向锁死为纵向。内容未变化连续若干次、匹配失败、滚动过快都给出可
 //! 理解的状态提示并允许继续或取消;沿滚动轴的拼接长度设上限,达到上限自动
 //! 完成并提示。
 //!
@@ -17,7 +19,7 @@
 //! 「上次区域」规则同源);取消、内容未变化、平台不支持三类路径给出提示且
 //! 不写剪贴板、历史或磁盘。
 
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -43,6 +45,15 @@ pub const WINDOW: &str = "scroll";
 
 /// 周期抓取间隔。约 100ms,正常滚动时相邻帧仍有大段重叠。
 pub(crate) const CAPTURE_INTERVAL: Duration = Duration::from_millis(100);
+
+/// 自动滚动宽限:控制窗就绪后留给用户选方向的时间;超时按当前(默认纵向)
+/// 方向开始自动滚动,保持纵向默认体验。
+#[cfg(any(windows, test))]
+pub(crate) const AUTO_SCROLL_GRACE: Duration = Duration::from_millis(2_000);
+/// 前端就绪信号迟迟不到时的兜底:超过该时限按控制窗已就绪处理,避免自动
+/// 滚动永久停摆(无前端交互时仍沿用旧的自动滚动行为)。
+#[cfg(any(windows, test))]
+pub(crate) const AUTO_SCROLL_READY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// 对齐模板沿滚动轴的最大长度。取区域沿轴长度的 1/3,保证单帧还能识别
 /// 超过半屏的位移。
@@ -91,6 +102,11 @@ static LAST_STATUS: Mutex<Option<ScrollStatus>> = Mutex::new(None);
 /// 控制窗请求的滚动轴:会话线程在下一次循环应用到拼接器;首个内容变化后
 /// 请求被拒绝(见 `set_scroll_axis`/`Stitcher::set_axis`)。
 static SCROLL_AXIS_REQUEST: AtomicU8 = AtomicU8::new(0);
+/// 控制窗前端就绪信号:页面挂载并渲染出可交互的方向按钮后置位。Windows
+/// 自动滚动在此之前不发送任何 nudge,保证用户能在首个内容变化前选方向。
+static SCROLL_CONTROL_READY: AtomicBool = AtomicBool::new(false);
+/// 控制窗是否已由用户显式选定方向(默认纵向下用户可能不点任何按钮)。
+static SCROLL_AXIS_CHOSEN: AtomicBool = AtomicBool::new(false);
 
 /// R5:长截图滚动轴。默认纵向;控制窗在首个内容变化前可切换为横向。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -726,6 +742,31 @@ fn clear_status() {
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
 }
 
+/// 自动滚动开始门:首个自动 nudge 必须在控制窗可用于交互且方向选择落定之后。
+///
+/// - `axis_chosen`:用户已显式点选方向(点击本身就证明窗口可交互),立即放行;
+/// - `since_ready`:控制窗就绪至今;宽限期内(`AUTO_SCROLL_GRACE`)不滚动,
+///   让用户先选横向;
+/// - 就绪信号缺失时(`None`)用会话开始时间兜底,超过
+///   `AUTO_SCROLL_READY_TIMEOUT` 视为已就绪。
+///
+/// 由此首个 append 不再可能发生在控制窗可交互之前,横向在自动滚动锁定前
+/// 可达;用户不点方向时宽限到期仍按默认纵向自动滚动。
+#[cfg(any(windows, test))]
+pub(crate) fn auto_scroll_start_allowed(
+    axis_chosen: bool,
+    since_start: Duration,
+    since_ready: Option<Duration>,
+) -> bool {
+    if axis_chosen {
+        return true;
+    }
+    match since_ready {
+        Some(elapsed) => elapsed >= AUTO_SCROLL_GRACE,
+        None => since_start >= AUTO_SCROLL_READY_TIMEOUT,
+    }
+}
+
 /// R1:开始一次滚动会话。冻结帧与显示器几何从会话槽位读取;`axis` 为初始
 /// 滚动方向(选区壳动作结果,默认纵向;控制窗可在首个内容变化前切换)。
 /// 平台不支持时返回明确失败文案(不进入选区、不产出)。
@@ -756,6 +797,8 @@ pub(crate) fn start(
     }
     SCROLL_GENERATION.store(generation, Ordering::SeqCst);
     SCROLL_AXIS_REQUEST.store(axis.as_u8(), Ordering::SeqCst);
+    SCROLL_AXIS_CHOSEN.store(false, Ordering::SeqCst);
+    SCROLL_CONTROL_READY.store(false, Ordering::SeqCst);
     let (freeze, monitor) = match session::scroll_source(app, generation) {
         Ok(source) => source,
         Err(error) => {
@@ -937,6 +980,14 @@ fn run_session(
     let highlight = highlight::Guard::open(&monitor, &region, axis);
     #[cfg(windows)]
     let mut painted_length = stitcher.axis_length();
+    // Windows 自动滚动的开闸状态:控制窗就绪且方向选择落定后,本循环才允许
+    // 范围框定时器发送首个滚轮消息(见 `auto_scroll_start_allowed`)。
+    #[cfg(windows)]
+    let session_started = std::time::Instant::now();
+    #[cfg(windows)]
+    let mut control_ready_at: Option<std::time::Instant> = None;
+    #[cfg(windows)]
+    let mut auto_scroll_armed = false;
     loop {
         match SCROLL_STATE.load(Ordering::SeqCst) {
             STATE_FINISH => break,
@@ -966,6 +1017,22 @@ fn run_session(
                 SCROLL_AXIS_REQUEST.store(stitcher.axis().as_u8(), Ordering::SeqCst);
             }
             emit_status(&app, status_from(&stitcher, "running"));
+        }
+        #[cfg(windows)]
+        if !auto_scroll_armed {
+            // 方向请求先于开闸应用(上一段):用户点选后立即按新方向开闸,
+            // 首个自动 nudge 不会用旧方向抢跑。
+            if control_ready_at.is_none() && SCROLL_CONTROL_READY.load(Ordering::SeqCst) {
+                control_ready_at = Some(std::time::Instant::now());
+            }
+            let chosen = SCROLL_AXIS_CHOSEN.load(Ordering::SeqCst);
+            let since_ready = control_ready_at.map(|ready| ready.elapsed());
+            if auto_scroll_start_allowed(chosen, session_started.elapsed(), since_ready) {
+                if highlight.is_some() {
+                    highlight::arm_auto_scroll();
+                }
+                auto_scroll_armed = true;
+            }
         }
         std::thread::sleep(CAPTURE_INTERVAL);
         if SCROLL_STATE.load(Ordering::SeqCst) != STATE_RUNNING {
@@ -1112,12 +1179,22 @@ pub fn set_scroll_axis(axis: CaptureAxis) -> Result<(), CaptureError> {
         return Err(CaptureError::api("error.capture.scroll_axis_locked"));
     }
     SCROLL_AXIS_REQUEST.store(axis.as_u8(), Ordering::SeqCst);
+    // 用户点选方向即视为窗口可交互:自动滚动不必再等宽限期(见
+    // `auto_scroll_start_allowed`)。
+    SCROLL_AXIS_CHOSEN.store(true, Ordering::SeqCst);
     Ok(())
 }
 
 /// 方向切换窗口:会话运行中且还没有任何内容拼入。
 fn axis_switch_allowed(state: u8, appended: u32) -> bool {
     state == STATE_RUNNING && appended == 0
+}
+
+/// 控制窗前端消息:控制窗已挂载并渲染出可交互状态(方向按钮可用)。
+/// Windows 自动滚动在此之前不发送首个 nudge,保证用户能先选方向。
+#[tauri::command]
+pub fn scroll_control_ready() {
+    SCROLL_CONTROL_READY.store(true, Ordering::SeqCst);
 }
 
 /// 控制窗前端消息:取消滚动会话,不写剪贴板、历史或磁盘。
@@ -1728,6 +1805,133 @@ mod tests {
         assert!(!axis_switch_allowed(STATE_RUNNING, 1));
         assert!(!axis_switch_allowed(STATE_FINISH, 0));
         assert!(!axis_switch_allowed(STATE_IDLE, 0));
+    }
+
+    /// P1 回归:自动滚动的首个 nudge 不得在控制窗可交互前发生,否则首个
+    /// append 会把轴向锁死为纵向,横向不可达。
+    #[test]
+    fn auto_scroll_waits_for_the_control_window_and_a_settled_direction() {
+        // 会话刚开始、前端就绪信号未到:不滚动(旧实现 400ms 就发首个 nudge)。
+        assert!(!auto_scroll_start_allowed(
+            false,
+            Duration::from_millis(400),
+            None
+        ));
+        assert!(!auto_scroll_start_allowed(
+            false,
+            Duration::from_millis(1_000),
+            None
+        ));
+        // 就绪信号缺失时,兜底时限前同样不滚动。
+        assert!(!auto_scroll_start_allowed(
+            false,
+            AUTO_SCROLL_READY_TIMEOUT - Duration::from_millis(1),
+            None
+        ));
+        // 控制窗已就绪但宽限期未到:留给用户选横向。
+        assert!(!auto_scroll_start_allowed(
+            false,
+            Duration::from_secs(1),
+            Some(Duration::ZERO)
+        ));
+        assert!(!auto_scroll_start_allowed(
+            false,
+            Duration::from_secs(3),
+            Some(AUTO_SCROLL_GRACE - Duration::from_millis(1))
+        ));
+    }
+
+    /// 方向选择落定后放行:用户点选立即开闸;不点选则宽限到期后仍按当前
+    /// (默认纵向)方向开始,横向可达且纵向默认行为不变。
+    #[test]
+    fn auto_scroll_starts_after_a_direction_choice_or_the_grace_period() {
+        assert!(auto_scroll_start_allowed(
+            true,
+            Duration::ZERO,
+            Some(Duration::ZERO)
+        ));
+        assert!(auto_scroll_start_allowed(true, Duration::ZERO, None));
+        assert!(auto_scroll_start_allowed(
+            false,
+            Duration::from_secs(10),
+            Some(AUTO_SCROLL_GRACE)
+        ));
+        // 前端就绪信号迟迟不到:兜底时限后开始,避免自动滚动永久停摆。
+        assert!(auto_scroll_start_allowed(
+            false,
+            AUTO_SCROLL_READY_TIMEOUT,
+            None
+        ));
+    }
+
+    /// 方向选择门:自动滚动开闸前选择横向必须真的走横向拼接(宽度增长),
+    /// 之后才被首个 append 锁定。
+    #[test]
+    fn choosing_horizontal_before_the_first_append_stitches_columns() {
+        let page = wide_page(300, 96, 5);
+        let mut stitcher = Stitcher::new(
+            horizontal_viewport(&page, 0, 120),
+            CaptureAxis::Vertical,
+            4000,
+        );
+        assert!(stitcher.set_axis(CaptureAxis::Horizontal));
+        assert_eq!(stitcher.axis(), CaptureAxis::Horizontal);
+        assert_eq!(
+            stitcher.tick(horizontal_viewport(&page, 30, 120)),
+            ScrollTick::Appended { fast: false }
+        );
+        assert_eq!(stitcher.width(), 150);
+        assert_eq!(stitcher.height(), 96);
+        assert_eq!(stitcher.appended(), 30);
+    }
+
+    /// 控制窗方向入口在首个内容变化前登记请求并标记「用户已选定」:
+    /// 自动滚动开闸条件因此立即满足;锁定后同一入口拒绝且不再标记。
+    #[test]
+    fn set_scroll_axis_before_the_first_append_marks_the_direction_chosen() {
+        let previous_state = SCROLL_STATE.swap(STATE_RUNNING, Ordering::SeqCst);
+        let mut status = LAST_STATUS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous_status = status.take();
+        *status = Some(ScrollStatus::new(
+            "running",
+            CaptureAxis::Vertical,
+            10,
+            10,
+            0,
+        ));
+        drop(status);
+        SCROLL_AXIS_REQUEST.store(CaptureAxis::Vertical.as_u8(), Ordering::SeqCst);
+        SCROLL_AXIS_CHOSEN.store(false, Ordering::SeqCst);
+        assert!(set_scroll_axis(CaptureAxis::Horizontal).is_ok());
+        assert!(SCROLL_AXIS_CHOSEN.load(Ordering::SeqCst));
+        assert_eq!(
+            CaptureAxis::from_u8(SCROLL_AXIS_REQUEST.load(Ordering::SeqCst)),
+            CaptureAxis::Horizontal
+        );
+        // 已有内容拼入:拒绝切换,也不把方向标成已选定(宽限/锁定语义不变)。
+        SCROLL_AXIS_CHOSEN.store(false, Ordering::SeqCst);
+        let mut status = LAST_STATUS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *status = Some(ScrollStatus::new(
+            "running",
+            CaptureAxis::Vertical,
+            10,
+            10,
+            1,
+        ));
+        drop(status);
+        assert!(set_scroll_axis(CaptureAxis::Horizontal).is_err());
+        assert!(!SCROLL_AXIS_CHOSEN.load(Ordering::SeqCst));
+        // 恢复全局状态,避免影响其他测试。
+        let mut status = LAST_STATUS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *status = previous_status;
+        drop(status);
+        SCROLL_STATE.store(previous_state, Ordering::SeqCst);
     }
 
     #[test]

@@ -4,8 +4,8 @@
 //! 这层窗口点击穿透、不抢焦点，并用 WDA_EXCLUDEFROMCAPTURE 排除出屏幕抓取，
 //! 边框和压暗不会进到拼接结果里。
 
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU8, Ordering};
 
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
@@ -36,6 +36,22 @@ const DIM_ALPHA: u8 = 72;
 /// 自动滚动方向:定时器线程与拼接会话线程之间共享(首个内容变化前可切换)。
 static AXIS: AtomicU8 = AtomicU8::new(0);
 
+/// 自动滚动闸门:默认关闭,会话线程在控制窗就绪且方向选择落定后开闸
+/// (见 `scroll::auto_scroll_start_allowed`)。关闸时定时器不发送任何滚轮
+/// 消息,首个内容变化不会在用户能选方向之前发生。
+static AUTO_SCROLL_ARMED: AtomicBool = AtomicBool::new(false);
+
+/// 打开自动滚动闸门:首个 nudge 前的方向选择宽限结束(或用户已点选方向)。
+pub(crate) fn arm_auto_scroll() {
+    AUTO_SCROLL_ARMED.store(true, Ordering::SeqCst);
+}
+
+/// 自动滚动是否已开闸(仅测试与闸门实现使用)。
+#[cfg(test)]
+fn auto_scroll_armed() -> bool {
+    AUTO_SCROLL_ARMED.load(Ordering::SeqCst)
+}
+
 /// 滚动轴基准长度:纵向用高度、横向用宽度,范围框标签按它显示增量。
 fn base_length(axis: CaptureAxis, region: &RegionSelection) -> u32 {
     match axis {
@@ -65,6 +81,8 @@ impl Guard {
         axis: CaptureAxis,
     ) -> Option<Self> {
         AXIS.store(axis.as_u8(), Ordering::SeqCst);
+        // 新会话先关闸:首个 nudge 由会话线程在方向选择落定后开闸。
+        AUTO_SCROLL_ARMED.store(false, Ordering::SeqCst);
         let width = monitor.physical_width.max(1);
         let height = monitor.physical_height.max(1);
         let origin_x = monitor.physical_x;
@@ -167,7 +185,8 @@ fn ui_thread(
         let _ = ready.send(None);
         return;
     };
-    // 约每 400ms 给框中心下面的窗口发一次向下滚轮。不抢焦点，编辑光标就不会闪。
+    // 每 400ms 由定时器尝试一次自动滚动(未开闸时为空操作)。不抢焦点,
+    // 编辑光标就不会闪。
     unsafe {
         let _ = SetTimer(Some(hwnd), 1, 400, None);
     }
@@ -422,7 +441,11 @@ fn nudge_message(axis: CaptureAxis) -> (u32, i32) {
 }
 
 /// 给框中心下面的窗口发一格滚动指令。不移动鼠标，也不抢焦点。
+/// 只有会话线程开闸后才发送:首个内容变化前必须留给用户选方向的机会。
 fn nudge_scroll() {
+    if !AUTO_SCROLL_ARMED.load(Ordering::SeqCst) {
+        return;
+    }
     let x = SCROLL_X.load(Ordering::SeqCst);
     let y = SCROLL_Y.load(Ordering::SeqCst);
     let point = POINT { x, y };
@@ -586,6 +609,23 @@ mod tests {
     fn auto_scroll_uses_the_horizontal_wheel_for_the_horizontal_axis() {
         assert_eq!(nudge_message(CaptureAxis::Vertical), (WM_MOUSEWHEEL, -120));
         assert_eq!(nudge_message(CaptureAxis::Horizontal), (WM_MOUSEHWHEEL, 120));
+    }
+
+    /// 自动滚动闸门(P1 回归):关闸时定时器不发送任何滚轮消息;会话线程
+    /// 在控制窗就绪且方向落定后开闸,开闸前首个内容变化不可能被制造。
+    #[test]
+    fn auto_scroll_nudges_only_after_the_session_opens_the_gate() {
+        AUTO_SCROLL_ARMED.store(false, Ordering::SeqCst);
+        // 万一闸门失效,落点也挪到屏幕外,避免测试真的滚到桌面窗口。
+        let previous_x = SCROLL_X.swap(-100_000, Ordering::SeqCst);
+        let previous_y = SCROLL_Y.swap(-100_000, Ordering::SeqCst);
+        assert!(!auto_scroll_armed());
+        nudge_scroll();
+        arm_auto_scroll();
+        assert!(auto_scroll_armed());
+        AUTO_SCROLL_ARMED.store(false, Ordering::SeqCst);
+        SCROLL_X.store(previous_x, Ordering::SeqCst);
+        SCROLL_Y.store(previous_y, Ordering::SeqCst);
     }
 }
 
@@ -827,6 +867,21 @@ mod live_target {
             "wheel target must live under the target window"
         );
 
+        // P1 回归(真机):会话线程开闸前,定时器与 nudge 都不得发出滚轮,
+        // 否则首个内容变化发生在用户能选方向之前,横向不可达。
+        nudge_scroll();
+        std::thread::sleep(Duration::from_millis(900));
+        assert!(
+            !lines
+                .lock()
+                .expect("lines")
+                .iter()
+                .any(|line| line.starts_with("wheel ")),
+            "no wheel may reach the target before the session opens the gate"
+        );
+
+        // 会话在控制窗就绪且方向落定后开闸:滚轮必须落到目标进程。
+        arm_auto_scroll();
         nudge_scroll();
         let mut reported = None;
         for _ in 0..80 {

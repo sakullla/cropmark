@@ -105,6 +105,9 @@ export function mountScroll(root: HTMLElement): () => void {
   let actionBusy = false;
   // 方向切换请求进行中:期间方向按钮禁用,避免连点覆盖。
   let axisBusy = false;
+  // 控制窗就绪信号每次会话只发一次;Rust 侧据此才开始 Windows 自动滚动计时,
+  // 保证首个自动 nudge 不会在方向按钮可交互前制造首个内容变化(横向被锁死)。
+  let readySent = false;
 
   const axisOf = (payload: ScrollStatus | null): CaptureAxis => payload?.axis ?? "vertical";
   /** 首个内容变化后方向锁定(Rust 侧同样拒绝切换)。 */
@@ -150,14 +153,25 @@ export function mountScroll(root: HTMLElement): () => void {
     cancel.disabled = busy;
   };
 
+  /** 已有状态可渲染即视为可交互:方向按钮此时才启用,通知 Rust 开始自动滚动计时。 */
+  const signalReady = (): void => {
+    if (readySent || last === null) {
+      return;
+    }
+    readySent = true;
+    void invoke("scroll_control_ready").catch(() => undefined);
+  };
+
   const apply = (payload: ScrollStatus | null): void => {
     last = payload;
     render();
+    signalReady();
   };
 
   const reset = (): void => {
     actionBusy = false;
     axisBusy = false;
+    readySent = false;
     finish.disabled = false;
     cancel.disabled = false;
     apply(null);

@@ -369,6 +369,7 @@ pub fn run() {
             capture::scroll::cancel_scroll_capture,
             capture::scroll::get_scroll_status,
             capture::scroll::set_scroll_axis,
+            capture::scroll::scroll_control_ready,
             export::copy_preview_png,
             export::save_preview_png,
             ocr::recognize_preview,
