@@ -32,7 +32,8 @@ use crate::settings;
 
 pub use encoder::RecordFormat;
 pub use save::{
-    discard_recording, move_output_atomic, save_recording_with_dialog, RecordSaveResult,
+    discard_recording, keep_pending_recording, move_output_atomic, pending_recordings,
+    save_recording_with_dialog, take_pending_recordings, RecordSaveResult,
 };
 
 /// 默认目标帧率:固定帧率抓帧,与现有平台单帧抓取 API 的能力一致。

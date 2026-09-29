@@ -579,6 +579,10 @@
     "zh-CN": "录制已达 30 分钟上限，已自动停止并保留已完成内容。",
     "en": "Recording reached the 30-minute limit and stopped automatically with the completed content kept."
   },
+  "toast.recording_discarded": {
+    "zh-CN": "已取消保存，本次录制已丢弃。需要时请重新录制。",
+    "en": "Save cancelled; this recording was discarded. Record again if needed."
+  },
   "toast.pinned": {
     "zh-CN": "已贴到屏幕。",
     "en": "Pinned to the screen."
@@ -680,8 +684,8 @@
     "en": "The recording thread could not start or exited unexpectedly."
   },
   "error.record.save_to_path": {
-    "zh-CN": "无法保存录制文件到 {path}：{error}",
-    "en": "Could not save the recording to {path}: {error}"
+    "zh-CN": "无法保存录制文件到 {path}：{error}。本次录制已保留在 {temp}，不会自动删除；可复制该文件保存，也可稍后重试保存。",
+    "en": "Could not save the recording to {path}: {error}. The recording was kept at {temp} and will not be deleted; copy the file to save it or retry the save later."
   },
   "error.hotkey.invalid": {
     "zh-CN": "无法识别该热键。",

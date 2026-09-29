@@ -2,9 +2,13 @@
 //!
 //! 录制过程只写临时文件;停止后按当前格式弹出保存对话框,确认后把临时文件
 //! 复制到目标目录的临时名再改名(跨盘安全),成功后删除临时文件。取消或失败
-//! 都保留临时文件,由调用方决定重试或丢弃;失败返回本地化文案,应用继续可用。
+//! 都不删除临时文件,由调用方决定重试或丢弃;失败返回的本地化文案说明保留
+//! 位置与后续重试方式。暂无重试入口的调用方用 `keep_pending_recording` 登记
+//! 待处理产物,后续录制 HUD 可经 `pending_recordings`/`take_pending_recordings`
+//! 接入重试与清理。
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use serde::Serialize;
 use tauri::AppHandle;
@@ -15,6 +19,43 @@ use crate::i18n;
 use crate::settings;
 
 use super::{RecordFormat, RecordingOutput};
+
+/// 保存失败时登记的待处理产物(按失败顺序):对应的临时文件保留在磁盘上,
+/// 由后续录制 HUD 重试保存或显式丢弃;应用运行期内不自动删除。
+static PENDING_SAVES: Mutex<Vec<RecordingOutput>> = Mutex::new(Vec::new());
+
+/// 保存失败:登记待处理产物,临时文件保持不删除。同一临时文件重复登记
+/// (例如重试再次失败)保持单条,重试入口不会看到重复项。
+pub fn keep_pending_recording(output: RecordingOutput) {
+    let mut pending = PENDING_SAVES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if pending
+        .iter()
+        .any(|item| item.temp_path == output.temp_path)
+    {
+        return;
+    }
+    pending.push(output);
+}
+
+/// 当前待处理的保存失败产物(按失败顺序,克隆快照);供后续 HUD 展示与重试。
+pub fn pending_recordings() -> Vec<RecordingOutput> {
+    PENDING_SAVES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+}
+
+/// 取出全部待处理产物:重试成功或用户放弃后由调用方按需丢弃
+/// (见 `discard_recording`),避免临时文件永久残留。
+pub fn take_pending_recordings() -> Vec<RecordingOutput> {
+    std::mem::take(
+        &mut *PENDING_SAVES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    )
+}
 
 /// 保存结果:取消时 `saved=false` 且 `path=None`,临时文件保留。
 #[derive(Debug, Clone, Serialize)]
@@ -55,19 +96,19 @@ pub fn resolve_recording_target(path: PathBuf, format: RecordFormat) -> PathBuf 
     adjusted
 }
 
-/// 原子写盘:复制到同目录临时文件再改名;任一步失败都清理临时文件并保留
-/// 录制临时文件。成功后删除录制临时文件。
+/// 原子写盘:复制到同目录临时文件再改名;任一步失败都清理目标目录的半成品
+/// 并保留录制临时文件。成功后删除录制临时文件。
 pub fn move_output_atomic(output: &RecordingOutput, path: &Path) -> Result<(), String> {
     let partial = partial_path(path);
     if let Err(error) = std::fs::copy(&output.temp_path, &partial) {
         let _ = std::fs::remove_file(&partial);
         log::warn!("record save failed kind=io");
-        return Err(save_error(path, &error));
+        return Err(save_error(path, &output.temp_path, &error));
     }
     if let Err(error) = std::fs::rename(&partial, path) {
         let _ = std::fs::remove_file(&partial);
         log::warn!("record save failed kind=io");
-        return Err(save_error(path, &error));
+        return Err(save_error(path, &output.temp_path, &error));
     }
     let _ = std::fs::remove_file(&output.temp_path);
     log::info!(
@@ -79,11 +120,12 @@ pub fn move_output_atomic(output: &RecordingOutput, path: &Path) -> Result<(), S
     Ok(())
 }
 
-fn save_error(path: &Path, error: &std::io::Error) -> String {
+fn save_error(path: &Path, temp_path: &Path, error: &std::io::Error) -> String {
     i18n::tp(
         "error.record.save_to_path",
         &[
             ("path", &path.display().to_string()),
+            ("temp", &temp_path.display().to_string()),
             ("error", &error.to_string()),
         ],
     )
@@ -198,6 +240,11 @@ mod tests {
         assert!(error.contains("无法保存"), "got {error}");
         assert!(error.contains("missing-subdir"), "got {error}");
         assert!(
+            error.contains(&output.temp_path.display().to_string()),
+            "error must point to the kept recording: {error}"
+        );
+        assert!(error.contains("不会自动删除"), "got {error}");
+        assert!(
             output.temp_path.exists(),
             "failed save must keep the recording temp file"
         );
@@ -213,6 +260,39 @@ mod tests {
         let output = sample_output(&dir, RecordFormat::Webp);
         discard_recording(&output);
         assert!(!output.temp_path.exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 保存失败的产物登记后:临时文件保持不删除、可被列出与取出,只有显式
+    /// 丢弃才删除。该接口供后续录制 HUD 提供重试与清理。
+    #[test]
+    fn pending_recordings_stay_listed_and_on_disk_until_discarded() {
+        let dir =
+            std::env::temp_dir().join(format!("cropmark-record-pending-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let output = sample_output(&dir, RecordFormat::Gif);
+        keep_pending_recording(output.clone());
+        keep_pending_recording(output.clone());
+        assert_eq!(
+            pending_recordings()
+                .iter()
+                .filter(|item| item.temp_path == output.temp_path)
+                .count(),
+            1,
+            "re-registering the same temp file must keep a single pending entry"
+        );
+        assert!(output.temp_path.exists(), "kept file must remain on disk");
+        let taken = take_pending_recordings();
+        assert!(
+            taken.iter().any(|item| item.temp_path == output.temp_path),
+            "take must hand the kept recording to the retry/cleanup consumer"
+        );
+        discard_recording(&output);
+        assert!(
+            !output.temp_path.exists(),
+            "explicit discard must remove the kept file"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }

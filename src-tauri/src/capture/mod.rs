@@ -14,6 +14,7 @@ pub mod windows_list;
 use tauri::{AppHandle, Emitter};
 
 use crate::hotkeys::CaptureMode;
+use crate::record::{RecordSaveResult, RecordingOutput};
 use crate::settings;
 use buffer::Frame;
 use error::CaptureError;
@@ -46,7 +47,8 @@ pub fn dispatch_recording(app: &AppHandle) {
 }
 
 /// R3:停止活动录制并进入保存(托盘与后续录制 HUD 共用)。无活动录制时
-/// no-op;保存取消或失败都丢弃临时文件并给本地化说明,应用继续可用。
+/// no-op;保存取消时明确丢弃本次录制并使用录制专用文案;保存失败时保留
+/// 临时文件并登记待重试,错误文案给出保留位置,应用继续可用。
 pub fn stop_recording(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -79,27 +81,63 @@ async fn stop_recording_inner(app: AppHandle) {
     if let Some(interrupted) = output.interrupted.as_deref() {
         ui::show_toast(&app, interrupted);
     }
-    match crate::record::save_recording_with_dialog(&app, None, &output).await {
+    let result = crate::record::save_recording_with_dialog(&app, None, &output).await;
+    match conclude_recording_save(output, result) {
+        RecordingSaveNotice::Saved { name } => {
+            ui::show_toast_key_params(&app, "toast.saved", &[("name", &name)]);
+        }
+        RecordingSaveNotice::Discarded => {
+            ui::show_toast_key(&app, "toast.recording_discarded");
+        }
+        RecordingSaveNotice::Failed { message } => {
+            ui::show_toast(&app, &message);
+        }
+    }
+    session::refresh_tray_menu(&app);
+}
+
+/// 停止录制后的保存收尾:提示与实际文件去向必须一致,供托盘与后续录制
+/// HUD 共用。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RecordingSaveNotice {
+    /// 已保存:原子写盘已删除临时文件;`name` 为保存文件名。
+    Saved { name: String },
+    /// 用户取消保存:本次录制已丢弃。
+    Discarded,
+    /// 保存失败:临时文件已保留并登记待重试;`message` 为含保留位置的
+    /// 本地化错误。
+    Failed { message: String },
+}
+
+/// 保存对话框返回后的收尾。成功不重复删文件(写盘路径已删除);取消是
+/// 用户明确放弃,丢弃临时文件并使用录制专用文案——录制内容已不存在,
+/// 不能复用「截图仍在」的截图文案;失败保留临时文件并登记待处理,
+/// 由后续录制 HUD 提供重试与清理。
+pub(crate) fn conclude_recording_save(
+    output: RecordingOutput,
+    result: Result<RecordSaveResult, String>,
+) -> RecordingSaveNotice {
+    match result {
         Ok(result) if result.saved => {
             let name = result
                 .path
                 .as_deref()
                 .and_then(|path| std::path::Path::new(path).file_name())
                 .and_then(|name| name.to_str())
-                .unwrap_or("cropmark");
-            ui::show_toast_key_params(&app, "toast.saved", &[("name", name)]);
+                .unwrap_or("cropmark")
+                .to_string();
+            RecordingSaveNotice::Saved { name }
         }
         Ok(_) => {
-            // 取消保存:当前没有重试入口,丢弃临时文件。
             crate::record::discard_recording(&output);
-            ui::show_toast_key(&app, "overlay.notice.save_cancelled");
+            RecordingSaveNotice::Discarded
         }
         Err(message) => {
-            crate::record::discard_recording(&output);
-            ui::show_toast(&app, &message);
+            crate::record::keep_pending_recording(output);
+            log::warn!("record save failed kept_pending=true");
+            RecordingSaveNotice::Failed { message }
         }
     }
-    session::refresh_tray_menu(&app);
 }
 
 fn begin_with_target(
@@ -363,7 +401,80 @@ impl From<CaptureError> for String {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::annotate::Annotation;
+
+    /// 临时目录里的一份录制产物(模拟停止后的待保存文件)。
+    fn recording_output(name: &str) -> RecordingOutput {
+        let dir = std::env::temp_dir().join(format!(
+            "cropmark-recording-entry-{}-{name}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let temp_path = dir.join(name);
+        std::fs::write(&temp_path, b"recorded-bytes").expect("temp file");
+        RecordingOutput {
+            format: crate::record::RecordFormat::Gif,
+            temp_path,
+            width: 320,
+            height: 200,
+            frame_count: 12,
+            duration_ms: 1200,
+            auto_stopped: false,
+            interrupted: None,
+        }
+    }
+
+    /// P1 回归:取消保存时丢弃唯一录制临时文件,并使用录制专用文案——
+    /// 不得复用「截图仍在,可继续复制、贴图或再试」的截图取消文案。
+    #[test]
+    fn cancelled_recording_save_discards_file_with_recording_specific_notice() {
+        let output = recording_output("cancel.gif");
+        let notice = conclude_recording_save(
+            output.clone(),
+            Ok(RecordSaveResult {
+                saved: false,
+                format: crate::record::RecordFormat::Gif,
+                path: None,
+            }),
+        );
+        assert!(matches!(notice, RecordingSaveNotice::Discarded));
+        assert!(
+            !output.temp_path.exists(),
+            "cancelled recording must be discarded, matching the notice"
+        );
+        let message = crate::i18n::t("toast.recording_discarded");
+        assert!(message.contains("丢弃"), "got {message}");
+        assert_ne!(
+            message,
+            crate::i18n::t("overlay.notice.save_cancelled"),
+            "recording cancellation must not reuse the screenshot notice"
+        );
+    }
+
+    /// P1 回归:写盘失败时保留录制产物,本地化错误必须给出保留位置。
+    #[test]
+    fn failed_recording_save_keeps_file_and_points_to_its_location() {
+        let output = recording_output("failed.gif");
+        let target = output
+            .temp_path
+            .with_file_name("missing-subdir")
+            .join("kept.gif");
+        let error = crate::record::move_output_atomic(&output, &target).expect_err("write failure");
+        let notice = conclude_recording_save(output.clone(), Err(error));
+        let RecordingSaveNotice::Failed { message } = notice else {
+            panic!("expected a failure notice, got {notice:?}");
+        };
+        assert!(
+            message.contains(&output.temp_path.display().to_string()),
+            "message must point to the kept recording: {message}"
+        );
+        assert!(
+            output.temp_path.exists(),
+            "failed save must keep the recording temp file"
+        );
+        let _ = std::fs::remove_file(&output.temp_path);
+    }
 
     /// R21:Wayland 覆盖层确认请求携带的标注 JSON(共享标注层 `exportList`
     /// 的序列化形状)必须能被命令参数解析;`null` 线宽与省略的样式字段回退
