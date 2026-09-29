@@ -40,6 +40,52 @@ html[data-view="scroll"] #app {
   background: var(--panel);
 }
 
+/* R5 方向选择:默认纵向,首个内容变化后锁定(禁用并给出提示)。 */
+.scroll-axis {
+  display: flex;
+  flex-shrink: 0;
+  gap: 6px;
+}
+
+.scroll-axis-option {
+  flex: 1 1 0;
+  height: 26px;
+  min-width: 0;
+  color: var(--ink);
+  font-size: 12px;
+  background: var(--control-fill);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control-sm);
+  cursor: pointer;
+  transition: var(--control-transition);
+}
+
+.scroll-axis-option:hover:not(:disabled) {
+  background: var(--control-hover-bg);
+  border-color: var(--control-hover-border);
+}
+
+.scroll-axis-option:active:not(:disabled) {
+  filter: var(--control-pressed-filter);
+}
+
+.scroll-axis-option.is-active {
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.scroll-axis-option.is-active:hover:not(:disabled) {
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+  filter: var(--control-hover-filter);
+}
+
+.scroll-axis-option:disabled {
+  cursor: default;
+}
+
 .scroll-title {
   font-size: 13px;
   font-weight: 600;

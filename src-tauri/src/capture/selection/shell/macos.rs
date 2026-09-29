@@ -64,6 +64,7 @@ use crate::annotate::Annotation;
 use crate::capture::buffer::Frame;
 use crate::capture::error::CaptureError;
 use crate::capture::geometry::{self, MonitorGeom, PhysicalRect};
+use crate::capture::scroll::CaptureAxis;
 use crate::capture::selection::composer::{self, Composer};
 use crate::capture::selection::{
     AnnotationOptions, AnnotationTool, CursorHint, EngineOutcome, EngineState, FeatureFlags,
@@ -116,8 +117,9 @@ pub enum RegionOutcome {
     Qr(PhysicalRect, Vec<Annotation>),
     /// 操作条/菜单的 copy/save/pin 动作:rect 走 Quiet 完成路径并执行动作。
     Quiet(PhysicalRect, QuietAction, Vec<Annotation>),
-    /// R1 操作条/菜单的长截图动作:rect 交给会话层开始滚动会话。
-    LongCapture(PhysicalRect, Vec<Annotation>),
+    /// R1/R5 操作条/菜单的长截图动作:rect 交给会话层开始滚动会话;轴为
+    /// 初始方向(默认纵向,控制窗在首个内容变化前可切换)。
+    LongCapture(PhysicalRect, Vec<Annotation>, CaptureAxis),
     /// R3 操作条/菜单的录屏动作:rect 交给会话层开始录制会话(设置开关门控)。
     Recording(PhysicalRect, Vec<Annotation>),
     /// Esc 或菜单「取消」:整个会话取消。
@@ -1340,12 +1342,13 @@ fn feed_event(state: &mut ShellState, event: InputEvent, view: &SelectionView) {
             SelectionAction::CopyColor => {
                 copy_color_value(state);
             }
-            // R1:以当前选区开始长截图滚动会话。
+            // R1/R5:以当前选区开始长截图滚动会话,初始方向纵向。
             SelectionAction::LongCapture => {
                 if let Some(rect) = state.canvas.engine.selection() {
                     state.outcome = Some(RegionOutcome::LongCapture(
                         rect,
                         state.canvas.engine.annotations().to_vec(),
+                        CaptureAxis::default(),
                     ));
                 }
             }

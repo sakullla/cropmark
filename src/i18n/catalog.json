@@ -503,6 +503,10 @@
     "zh-CN": "长截图需要在选区外留出控制条空间。请缩小选区，或把要截取的内容移到另一台显示器后重试。",
     "en": "Scrolling capture needs room outside the selection for its controls. Shrink the selection, or move the content to another display and try again."
   },
+  "error.capture.scroll_axis_locked": {
+    "zh-CN": "已经开始拼接内容，滚动方向已锁定。",
+    "en": "Stitching has started, so the scroll direction is locked."
+  },
   "error.capture.pin_busy": {
     "zh-CN": "正在截取，无法进入贴图再标注。",
     "en": "A capture is in progress; cannot enter pin re-annotation."
@@ -563,9 +567,17 @@
     "zh-CN": "蓝色框内的 {width}×{height} 没有滚动，未生成长截图。请在框内向下滚动后再点完成。",
     "en": "Nothing inside the blue frame ({width}×{height}) scrolled, so no long screenshot was saved. Scroll down inside the frame, then finish."
   },
+  "toast.scroll_no_change.horizontal": {
+    "zh-CN": "蓝色框内的 {width}×{height} 没有滚动，未生成长截图。请在框内向右滚动后再点完成。",
+    "en": "Nothing inside the blue frame ({width}×{height}) scrolled, so no long screenshot was saved. Scroll right inside the frame, then finish."
+  },
   "toast.scroll_limit": {
     "zh-CN": "已达到长截图高度上限，自动完成。",
     "en": "Reached the scrolling capture height limit; finishing automatically."
+  },
+  "toast.scroll_limit.horizontal": {
+    "zh-CN": "已达到长截图宽度上限，自动完成。",
+    "en": "Reached the scrolling capture width limit; finishing automatically."
   },
   "toast.cancel_in_progress": {
     "zh-CN": "正在取消上一次截取，请稍后重试。",
@@ -2303,9 +2315,29 @@
     "zh-CN": "长截图",
     "en": "Scrolling capture"
   },
+  "scroll.axis.label": {
+    "zh-CN": "滚动方向",
+    "en": "Scroll direction"
+  },
+  "scroll.axis.vertical": {
+    "zh-CN": "纵向",
+    "en": "Vertical"
+  },
+  "scroll.axis.horizontal": {
+    "zh-CN": "横向",
+    "en": "Horizontal"
+  },
+  "scroll.axis.locked": {
+    "zh-CN": "已开始拼接，方向已锁定",
+    "en": "Direction locked once stitching starts"
+  },
   "scroll.hint": {
     "zh-CN": "蓝色框会自己向下滚，也可以自己用滚轮滚。数字是加长的像素，不是段数。框外不会进图。",
     "en": "The blue frame scrolls down on its own; you can also use the wheel. The number is added pixels, not strips. Outside the frame is not captured."
+  },
+  "scroll.hint.horizontal": {
+    "zh-CN": "蓝色框会自己向右滚，也可以自己用滚轮滚。数字是加宽的像素，不是段数。框外不会进图。",
+    "en": "The blue frame scrolls right on its own; you can also use the wheel. The number is added pixels, not strips. Outside the frame is not captured."
   },
   "scroll.finish": {
     "zh-CN": "完成",
@@ -2327,9 +2359,17 @@
     "zh-CN": "正在让蓝色框里的内容向下滚。",
     "en": "Scrolling the content inside the blue frame."
   },
+  "scroll.status.running.horizontal": {
+    "zh-CN": "正在让蓝色框里的内容向右滚。",
+    "en": "Scrolling the content inside the blue frame to the right."
+  },
   "scroll.status.unchanged": {
     "zh-CN": "蓝色框里的画面还没动。把鼠标放进框内再向下滚动。",
     "en": "The picture inside the blue frame has not moved. Put the pointer inside the frame and scroll down."
+  },
+  "scroll.status.unchanged.horizontal": {
+    "zh-CN": "蓝色框里的画面还没动。把鼠标放进框内再向右滚动。",
+    "en": "The picture inside the blue frame has not moved. Put the pointer inside the frame and scroll right."
   },
   "scroll.status.fast": {
     "zh-CN": "滚动过快，可能有内容缺失；请放慢速度。",
@@ -2343,6 +2383,10 @@
     "zh-CN": "已达到高度上限，正在自动完成…",
     "en": "Height limit reached; finishing automatically…"
   },
+  "scroll.status.limit.horizontal": {
+    "zh-CN": "已达到宽度上限，正在自动完成…",
+    "en": "Width limit reached; finishing automatically…"
+  },
   "scroll.status.finishing": {
     "zh-CN": "正在合成…",
     "en": "Stitching…"
@@ -2353,6 +2397,10 @@
   },
   "scroll.appended": {
     "zh-CN": "已加长 {count} px",
+    "en": "{count} px added"
+  },
+  "scroll.appended.horizontal": {
+    "zh-CN": "已加宽 {count} px",
     "en": "{count} px added"
   },
   "scroll.action.canceling": {
@@ -2366,6 +2414,10 @@
   "scroll.action.finish_failed": {
     "zh-CN": "完成失败，请重试。",
     "en": "Finish failed. Try again."
+  },
+  "scroll.action.axis_failed": {
+    "zh-CN": "切换方向失败，请重试。",
+    "en": "Could not change direction. Try again."
   },
   "error.title": {
     "zh-CN": "无法截取",

@@ -4,9 +4,10 @@
 //! 区域,用整段模板的亮度差找唯一垂直位移再拼接。对不上或有两个差不多
 //! 的候选时不追加,避免相似文本行被拼错行。
 //! Web 控制窗(`index.html?view=scroll`,置顶非模态、位于选区旁)承载状态
-//! 提示与「完成/取消」。只支持垂直滚动:内容未变化连续若干次、匹配失败、
-//! 滚动过快都给出可理解的状态提示并允许继续或取消;拼接高度设上限,达到
-//! 上限自动完成并提示。
+//! 提示、方向选择与「完成/取消」。默认纵向(R5 前行为);横向在控制窗选择,
+//! 首个内容变化后锁定。内容未变化连续若干次、匹配失败、滚动过快都给出可
+//! 理解的状态提示并允许继续或取消;沿滚动轴的拼接长度设上限,达到上限自动
+//! 完成并提示。
 //!
 //! 控制窗永不与采集区域相交(四侧放不下时改用其他显示器、收缩贴边,仍无
 //! 合法位置则明确失败不开会话),并在支持排除抓取的平台(Windows/macOS)
@@ -20,7 +21,7 @@ use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{
     AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, Position, WebviewUrl,
     WebviewWindow, WebviewWindowBuilder,
@@ -43,13 +44,15 @@ pub const WINDOW: &str = "scroll";
 /// 周期抓取间隔。约 100ms,正常滚动时相邻帧仍有大段重叠。
 pub(crate) const CAPTURE_INTERVAL: Duration = Duration::from_millis(100);
 
-/// 对齐模板的最大高度。取区域高度的 1/3,保证单帧还能识别超过半屏的位移。
-pub(crate) const STRIP_HEIGHT: u32 = 48;
-/// 条带最多占区域高度的比例分母。
+/// 对齐模板沿滚动轴的最大长度。取区域沿轴长度的 1/3,保证单帧还能识别
+/// 超过半屏的位移。
+pub(crate) const STRIP_LENGTH: u32 = 48;
+/// 条带最多占区域沿轴长度的比例分母。
 const STRIP_DIVISOR: u32 = 3;
-/// 横向采样步长。调试构建里逐像素对齐会拖过抓取周期。
-const SAMPLE_STEP_X: u32 = 4;
-/// 右侧滚动条不参与对齐:它不随内容移动,会把位移判成 0 或判歪。
+/// 沿滚动轴的采样步长。调试构建里逐像素对齐会拖过抓取周期。
+const SAMPLE_STEP: u32 = 4;
+/// 滚动条不参与对齐:它不随内容移动,会把位移判成 0 或判歪。
+/// 纵向滚动条在右侧,横向滚动条在底部。
 const SCROLLBAR_GUTTER: u32 = 16;
 /// 平均绝对亮度差上限(0–255)。超过则该候选不可信。
 const MATCH_MAX_MEAN_DIFF: u64 = 18;
@@ -61,14 +64,14 @@ const RESYNC_AFTER: u32 = 3;
 const MIN_APPEND_DELTA: u32 = 4;
 /// 内容未变化连续达到该次数后给出提示(提示不终止会话)。
 pub(crate) const UNCHANGED_HINT_AFTER: u32 = 12;
-/// 拼接高度上限(物理像素):达到后自动完成并提示。
-pub(crate) const MAX_STITCH_HEIGHT: u32 = 12_000;
-/// 拼接像素总量上限:限制超宽区域的内存占用(高度上限随之收紧)。
+/// 沿滚动轴的拼接长度上限(物理像素):达到后自动完成并提示。
+pub(crate) const MAX_STITCH_LENGTH: u32 = 12_000;
+/// 拼接像素总量上限:限制超长区域的内存占用(长度上限随之收紧)。
 pub(crate) const MAX_STITCH_PIXELS: u64 = 40_000_000;
 
-/// 控制窗期望逻辑尺寸。
+/// 控制窗期望逻辑尺寸(含 R5 方向选择一行)。
 const CONTROL_WIDTH: f64 = 320.0;
-const CONTROL_HEIGHT: f64 = 150.0;
+const CONTROL_HEIGHT: f64 = 200.0;
 /// 收缩放置允许的最小可用逻辑尺寸(再小则改用其他显示器或明确失败)。
 const MIN_CONTROL_WIDTH: f64 = 160.0;
 const MIN_CONTROL_HEIGHT: f64 = 80.0;
@@ -85,22 +88,54 @@ const STATE_CANCEL: u8 = 4;
 static SCROLL_STATE: AtomicU8 = AtomicU8::new(STATE_IDLE);
 static SCROLL_GENERATION: AtomicU64 = AtomicU64::new(0);
 static LAST_STATUS: Mutex<Option<ScrollStatus>> = Mutex::new(None);
+/// 控制窗请求的滚动轴:会话线程在下一次循环应用到拼接器;首个内容变化后
+/// 请求被拒绝(见 `set_scroll_axis`/`Stitcher::set_axis`)。
+static SCROLL_AXIS_REQUEST: AtomicU8 = AtomicU8::new(0);
 
-/// 控制窗状态载荷:前端按 `state` 映射词条,`height` 为当前拼接高度。
+/// R5:长截图滚动轴。默认纵向;控制窗在首个内容变化前可切换为横向。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CaptureAxis {
+    #[default]
+    Vertical,
+    Horizontal,
+}
+
+impl CaptureAxis {
+    fn as_u8(self) -> u8 {
+        match self {
+            Self::Vertical => 0,
+            Self::Horizontal => 1,
+        }
+    }
+
+    fn from_u8(value: u8) -> Self {
+        if value == 1 {
+            Self::Horizontal
+        } else {
+            Self::Vertical
+        }
+    }
+}
+
+/// 控制窗状态载荷:前端按 `state` 映射词条,`axis` 显示方向与锁定状态,
+/// `width`/`height` 为当前拼接结果尺寸(横向时宽度增长)。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScrollStatus {
     pub state: String,
+    pub axis: CaptureAxis,
     pub width: u32,
     pub height: u32,
-    /// 已追加的行数(不含初始区域)。
+    /// 已追加的像素数(不含初始区域)。
     pub appended: u32,
 }
 
 impl ScrollStatus {
-    fn new(state: &str, width: u32, height: u32, appended: u32) -> Self {
+    fn new(state: &str, axis: CaptureAxis, width: u32, height: u32, appended: u32) -> Self {
         Self {
             state: state.to_string(),
+            axis,
             width,
             height,
             appended,
@@ -113,7 +148,7 @@ impl ScrollStatus {
 pub(crate) enum ScrollTick {
     /// 内容未变化;`hint` 表示连续未变化已达提示阈值。
     Unchanged { hint: bool },
-    /// 已追加新内容;`fast` 表示位移超过区域高度一半(滚动过快提示)。
+    /// 已追加新内容;`fast` 表示位移超过区域沿轴长度一半(滚动过快提示)。
     Appended { fast: bool },
     /// 条带在当前帧中找不到可靠匹配:给出提示并允许继续/取消。
     NoMatch,
@@ -121,65 +156,128 @@ pub(crate) enum ScrollTick {
     LimitReached,
 }
 
-/// 条带高度:不超过 `STRIP_HEIGHT` 且不超过区域高度的 1/3。
-pub(crate) fn strip_height(frame_height: u32) -> u32 {
-    (frame_height / STRIP_DIVISOR).clamp(1, STRIP_HEIGHT)
+/// 条带长度:不超过 `STRIP_LENGTH` 且不超过区域沿轴长度的 1/3。
+pub(crate) fn strip_length(frame_length: u32) -> u32 {
+    (frame_length / STRIP_DIVISOR).clamp(1, STRIP_LENGTH)
 }
 
-/// 按宽度收紧后的拼接高度上限。
-pub(crate) fn stitch_cap_height(width: u32) -> u32 {
-    let width = u64::from(width.max(1));
-    let by_pixels = (MAX_STITCH_PIXELS / width).min(u64::from(MAX_STITCH_HEIGHT));
+/// 采样/匹配使用的区域长度(纵向为高度,横向为宽度)。
+fn axis_length(frame: &Frame, axis: CaptureAxis) -> u32 {
+    match axis {
+        CaptureAxis::Vertical => frame.height,
+        CaptureAxis::Horizontal => frame.width,
+    }
+}
+
+/// 按另一条轴收紧后的拼接长度上限:纵向由宽度收紧,横向由高度收紧,
+/// 两条轴共用同一像素预算。
+fn stitch_cap_length(cross: u32) -> u32 {
+    let cross = u64::from(cross.max(1));
+    let by_pixels = (MAX_STITCH_PIXELS / cross).min(u64::from(MAX_STITCH_LENGTH));
     (by_pixels as u32).max(1)
+}
+
+/// 纵向滚动(垂直拼接)的高度上限。
+pub(crate) fn stitch_cap_height(width: u32) -> u32 {
+    stitch_cap_length(width)
+}
+
+/// 横向滚动(水平拼接)的宽度上限。
+pub(crate) fn stitch_cap_width(height: u32) -> u32 {
+    stitch_cap_length(height)
+}
+
+/// 按轴选择拼接长度上限。
+pub(crate) fn stitch_cap(axis: CaptureAxis, initial: &Frame) -> u32 {
+    match axis {
+        CaptureAxis::Vertical => stitch_cap_height(initial.width),
+        CaptureAxis::Horizontal => stitch_cap_width(initial.height),
+    }
 }
 
 fn luma(px: &[u8]) -> u32 {
     (u32::from(px[0]) * 299 + u32::from(px[1]) * 587 + u32::from(px[2]) * 114) / 1000
 }
 
-/// 每行按步长采样的亮度。对齐只比较这些样本,避免逐像素拖慢调试构建。
-struct RowSamples {
+/// 沿滚动轴逐线按步长采样的亮度。对齐只比较这些样本,避免逐像素拖慢
+/// 调试构建。纵向一线 = 一行(跨 x 采样,忽略右侧滚动条);横向一线 =
+/// 一列(跨 y 采样,忽略底部滚动条)。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AxisSamples {
     n: usize,
-    rows: Vec<u8>,
+    lines: Vec<u8>,
 }
 
-fn row_samples(frame: &Frame) -> RowSamples {
-    let gutter = if frame.width > SCROLLBAR_GUTTER + 8 {
-        SCROLLBAR_GUTTER
-    } else {
-        0
-    };
-    let usable = frame.width - gutter;
-    let step = SAMPLE_STEP_X.max(1);
-    let n = ((usable + step - 1) / step).max(1) as usize;
-    let mut rows = vec![0u8; frame.height as usize * n];
-    let stride = frame.width as usize * 4;
-    for y in 0..frame.height as usize {
-        let src = y * stride;
-        let dest = y * n;
-        let mut i = 0usize;
-        let mut x = 0u32;
-        while x < usable && i < n {
-            let p = src + x as usize * 4;
-            rows[dest + i] = luma(&frame.rgba[p..p + 4]) as u8;
-            i += 1;
-            x += step;
+fn axis_samples(frame: &Frame, axis: CaptureAxis) -> AxisSamples {
+    let step = SAMPLE_STEP.max(1);
+    match axis {
+        CaptureAxis::Vertical => {
+            let gutter = if frame.width > SCROLLBAR_GUTTER + 8 {
+                SCROLLBAR_GUTTER
+            } else {
+                0
+            };
+            let usable = frame.width - gutter;
+            let n = usable.div_ceil(step).max(1) as usize;
+            let mut lines = vec![0u8; frame.height as usize * n];
+            let stride = frame.width as usize * 4;
+            for y in 0..frame.height as usize {
+                let src = y * stride;
+                let dest = y * n;
+                let mut i = 0usize;
+                let mut x = 0u32;
+                while x < usable && i < n {
+                    let p = src + x as usize * 4;
+                    lines[dest + i] = luma(&frame.rgba[p..p + 4]) as u8;
+                    i += 1;
+                    x += step;
+                }
+            }
+            AxisSamples { n, lines }
+        }
+        CaptureAxis::Horizontal => {
+            let gutter = if frame.height > SCROLLBAR_GUTTER + 8 {
+                SCROLLBAR_GUTTER
+            } else {
+                0
+            };
+            let usable = frame.height - gutter;
+            let n = usable.div_ceil(step).max(1) as usize;
+            let mut lines = vec![0u8; frame.width as usize * n];
+            let stride = frame.width as usize * 4;
+            for x in 0..frame.width as usize {
+                let dest = x * n;
+                let mut i = 0usize;
+                let mut y = 0u32;
+                while y < usable && i < n {
+                    let p = y as usize * stride + x * 4;
+                    lines[dest + i] = luma(&frame.rgba[p..p + 4]) as u8;
+                    i += 1;
+                    y += step;
+                }
+            }
+            AxisSamples { n, lines }
         }
     }
-    RowSamples { n, rows }
 }
 
-fn band_mean(prev: &RowSamples, next: &RowSamples, prev_y: u32, next_y: u32, rows: u32) -> u64 {
+fn band_mean(
+    prev: &AxisSamples,
+    next: &AxisSamples,
+    prev_line: u32,
+    next_line: u32,
+    lines: u32,
+) -> u64 {
     let n = prev.n;
     let mut sum = 0u64;
-    for dy in 0..rows as usize {
-        let a = (prev_y as usize + dy) * n;
-        let b = (next_y as usize + dy) * n;
+    for dl in 0..lines as usize {
+        let a = (prev_line as usize + dl) * n;
+        let b = (next_line as usize + dl) * n;
         for i in 0..n {
-            sum += u64::from(prev.rows[a + i].abs_diff(next.rows[b + i]));
+            sum += u64::from(prev.lines[a + i].abs_diff(next.lines[b + i]));
         }
     }
-    let count = (rows as u64) * (n as u64);
+    let count = (lines as u64) * (n as u64);
     sum / count.max(1)
 }
 
@@ -200,32 +298,37 @@ fn match_is_distinct(costs: &[u64], best_at: usize) -> bool {
     gap >= MATCH_AMBIGUITY_GAP || (second > best && gap.saturating_mul(4) >= best.max(1))
 }
 
-/// 在 `next` 中寻找 `prev` 底部模板的垂直位置(只允许向上/不动,即只支持
-/// 向下滚动):返回模板顶边 y。没有足够好、且唯一的候选时返回 None,
-/// 调用方不得按猜测的位移拼接。
+/// 在 `next` 中寻找 `prev` 末尾模板(纵向为底部条带、横向为右侧条带)的
+/// 位置(只允许向滚动方向移动,即只支持向右/向下滚动):返回模板沿滚动轴
+/// 的起点。没有足够好、且唯一的候选时返回 None,调用方不得按猜测的位移
+/// 拼接。
 ///
 /// 纯色或静止画面的零位移已经够好、又没有明显更优的别的位移时,直接判为
 /// 没滚动。相似文本行会在多个位移上得到接近的分数,这种情况拒绝拼接。
-pub(crate) fn match_strip_offset(prev: &Frame, next: &Frame) -> Option<u32> {
-    if prev.width == 0 || prev.height < 2 || next.width != prev.width || next.height != prev.height
+pub(crate) fn match_strip_offset(prev: &Frame, next: &Frame, axis: CaptureAxis) -> Option<u32> {
+    if prev.width == 0 || prev.height == 0 || next.width != prev.width || next.height != prev.height
     {
         return None;
     }
-    let template = strip_height(prev.height);
-    let strip_y = prev.height - template;
-    let prev_samples = row_samples(prev);
-    let next_samples = row_samples(next);
-    let mut costs = Vec::with_capacity(strip_y as usize + 1);
-    for candidate in 0..=strip_y {
+    let prev_length = axis_length(prev, axis);
+    if prev_length < 2 {
+        return None;
+    }
+    let template = strip_length(prev_length);
+    let strip_start = prev_length - template;
+    let prev_samples = axis_samples(prev, axis);
+    let next_samples = axis_samples(next, axis);
+    let mut costs = Vec::with_capacity(strip_start as usize + 1);
+    for candidate in 0..=strip_start {
         costs.push(band_mean(
             &prev_samples,
             &next_samples,
-            strip_y,
+            strip_start,
             candidate,
             template,
         ));
     }
-    let zero_at = strip_y as usize;
+    let zero_at = strip_start as usize;
     let zero = costs[zero_at];
     let mut best_at = 0usize;
     let mut best = u64::MAX;
@@ -236,7 +339,7 @@ pub(crate) fn match_strip_offset(prev: &Frame, next: &Frame) -> Option<u32> {
         }
     }
     if zero <= MATCH_MAX_MEAN_DIFF && best + MATCH_AMBIGUITY_GAP >= zero {
-        return Some(strip_y);
+        return Some(strip_start);
     }
     if best > MATCH_MAX_MEAN_DIFF || !match_is_distinct(&costs, best_at) {
         return None;
@@ -246,12 +349,14 @@ pub(crate) fn match_strip_offset(prev: &Frame, next: &Frame) -> Option<u32> {
 
 /// 垂直拼接器:持有初始区域与最近一帧,按位移追加新内容。
 pub(crate) struct Stitcher {
+    axis: CaptureAxis,
     width: u32,
     scale: f64,
     rgba: Vec<u8>,
     height: u32,
     prev: Frame,
-    cap_height: u32,
+    /// 沿滚动轴的拼接长度上限(纵向 = 高度,横向 = 宽度)。
+    cap_length: u32,
     appended: u32,
     unchanged_ticks: u32,
     no_match_ticks: u32,
@@ -260,18 +365,19 @@ pub(crate) struct Stitcher {
 }
 
 impl Stitcher {
-    pub(crate) fn new(initial: Frame, cap_height: u32) -> Self {
+    pub(crate) fn new(initial: Frame, axis: CaptureAxis, cap_length: u32) -> Self {
         let width = initial.width;
         let scale = initial.scale;
         let height = initial.height;
         let rgba = initial.rgba.clone();
         Self {
+            axis,
             width,
             scale,
             rgba,
             height,
             prev: initial,
-            cap_height: cap_height.max(1),
+            cap_length: cap_length.max(1),
             appended: 0,
             unchanged_ticks: 0,
             no_match_ticks: 0,
@@ -286,6 +392,32 @@ impl Stitcher {
 
     pub(crate) fn width(&self) -> u32 {
         self.width
+    }
+
+    pub(crate) fn axis(&self) -> CaptureAxis {
+        self.axis
+    }
+
+    /// 沿滚动轴的当前拼接长度。
+    fn axis_length(&self) -> u32 {
+        match self.axis {
+            CaptureAxis::Vertical => self.height,
+            CaptureAxis::Horizontal => self.width,
+        }
+    }
+
+    /// 切换滚动轴:只在还没有任何内容拼入时允许(首个内容变化后锁定);
+    /// 成功时按新轴重算长度上限(纵横两轴共用同一像素预算)。
+    pub(crate) fn set_axis(&mut self, axis: CaptureAxis) -> bool {
+        if self.axis == axis {
+            return true;
+        }
+        if self.appended != 0 || self.scrolled {
+            return false;
+        }
+        self.axis = axis;
+        self.cap_length = stitch_cap(axis, &self.prev);
+        true
     }
 
     pub(crate) fn appended(&self) -> u32 {
@@ -303,13 +435,13 @@ impl Stitcher {
 
     /// 处理一帧新抓取的区域画面。
     pub(crate) fn tick(&mut self, next: Frame) -> ScrollTick {
-        if self.height >= self.cap_height {
+        if self.axis_length() >= self.cap_length {
             self.limit_reached = true;
             return ScrollTick::LimitReached;
         }
-        let prev_height = self.prev.height;
-        let strip_y = prev_height - strip_height(prev_height);
-        let Some(y) = match_strip_offset(&self.prev, &next) else {
+        let prev_length = axis_length(&self.prev, self.axis);
+        let strip_start = prev_length - strip_length(prev_length);
+        let Some(position) = match_strip_offset(&self.prev, &next, self.axis) else {
             // 对不齐时先留着上一帧。用户放慢后仍能接上;连续失败才改锚点,不把错行写进去。
             self.no_match_ticks += 1;
             if self.no_match_ticks >= RESYNC_AFTER {
@@ -319,7 +451,7 @@ impl Stitcher {
             return ScrollTick::NoMatch;
         };
         self.no_match_ticks = 0;
-        let delta = strip_y.saturating_sub(y);
+        let delta = strip_start.saturating_sub(position);
         // 1–3px 多半是光标闪烁或抓屏抖动。记成一段会把「段数」打到几百，图也会错行。
         if delta < MIN_APPEND_DELTA {
             self.unchanged_ticks += 1;
@@ -332,29 +464,52 @@ impl Stitcher {
         }
         self.unchanged_ticks = 0;
         self.scrolled = true;
-        let remaining = self.cap_height.saturating_sub(self.height);
+        let remaining = self.cap_length.saturating_sub(self.axis_length());
         let append = delta.min(remaining);
-        self.append_rows(&next, append);
-        let fast = delta > prev_height / 2;
+        self.append_axis(&next, append);
+        let fast = delta > prev_length / 2;
         self.prev = next;
-        if append < delta || self.height >= self.cap_height {
+        if append < delta || self.axis_length() >= self.cap_length {
             self.limit_reached = true;
             return ScrollTick::LimitReached;
         }
         ScrollTick::Appended { fast }
     }
 
-    /// 追加 `next` 的末尾 `rows` 行(滚动 `rows` 像素后新增的内容)。
-    fn append_rows(&mut self, next: &Frame, rows: u32) {
-        if rows == 0 {
+    /// 沿滚动轴追加 `next` 的末尾 `amount` 像素(滚动 `amount` 像素后新增
+    /// 的内容):纵向追加底部若干行,横向追加右侧若干列。
+    fn append_axis(&mut self, next: &Frame, amount: u32) {
+        if amount == 0 {
             return;
         }
-        let stride = self.width as usize * 4;
-        let start = (next.height - rows) as usize * stride;
-        self.rgba
-            .extend_from_slice(&next.rgba[start..start + rows as usize * stride]);
-        self.height += rows;
-        self.appended += rows;
+        match self.axis {
+            CaptureAxis::Vertical => {
+                let stride = self.width as usize * 4;
+                let start = (next.height - amount) as usize * stride;
+                self.rgba
+                    .extend_from_slice(&next.rgba[start..start + amount as usize * stride]);
+                self.height += amount;
+            }
+            CaptureAxis::Horizontal => {
+                let old_stride = self.width as usize * 4;
+                let new_width = self.width + amount;
+                let new_stride = new_width as usize * 4;
+                let frame_stride = next.width as usize * 4;
+                let take = amount as usize * 4;
+                let mut rgba = vec![0u8; new_stride * self.height as usize];
+                for y in 0..self.height as usize {
+                    let dest = y * new_stride;
+                    rgba[dest..dest + old_stride]
+                        .copy_from_slice(&self.rgba[y * old_stride..(y + 1) * old_stride]);
+                    let src = y * frame_stride + (next.width - amount) as usize * 4;
+                    rgba[dest + old_stride..dest + new_stride]
+                        .copy_from_slice(&next.rgba[src..src + take]);
+                }
+                self.rgba = rgba;
+                self.width = new_width;
+            }
+        }
+        self.appended += amount;
     }
 
     pub(crate) fn into_frame(self) -> Frame {
@@ -571,13 +726,15 @@ fn clear_status() {
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
 }
 
-/// R1:开始一次滚动会话。冻结帧与显示器几何从会话槽位读取;平台不支持时
-/// 返回明确失败文案(不进入选区、不产出)。
+/// R1:开始一次滚动会话。冻结帧与显示器几何从会话槽位读取;`axis` 为初始
+/// 滚动方向(选区壳动作结果,默认纵向;控制窗可在首个内容变化前切换)。
+/// 平台不支持时返回明确失败文案(不进入选区、不产出)。
 pub(crate) fn start(
     app: &AppHandle,
     generation: u64,
     region: RegionSelection,
     annotations: Vec<Annotation>,
+    axis: CaptureAxis,
 ) -> Result<(), CaptureError> {
     if !platform::scroll_capture_supported() {
         return Err(CaptureError::unavailable(
@@ -598,6 +755,7 @@ pub(crate) fn start(
         return Err(CaptureError::api("error.capture.scroll_busy"));
     }
     SCROLL_GENERATION.store(generation, Ordering::SeqCst);
+    SCROLL_AXIS_REQUEST.store(axis.as_u8(), Ordering::SeqCst);
     let (freeze, monitor) = match session::scroll_source(app, generation) {
         Ok(source) => source,
         Err(error) => {
@@ -612,7 +770,6 @@ pub(crate) fn start(
             return Err(error);
         }
     };
-    let cap_height = stitch_cap_height(initial.width);
     // 其他显示器用于控制窗兜底放置;枚举失败时退化为只考虑选区显示器,
     // 保证"放不下就明确失败"的不相交契约不变。
     let monitors = match session::tauri_monitors(app) {
@@ -626,7 +783,7 @@ pub(crate) fn start(
     }
     emit_status(
         app,
-        ScrollStatus::new("running", initial.width, initial.height, 0),
+        ScrollStatus::new("running", axis, initial.width, initial.height, 0),
     );
     let handle = app.clone();
     let spawn = std::thread::Builder::new()
@@ -638,7 +795,7 @@ pub(crate) fn start(
                 region,
                 annotations,
                 initial,
-                cap_height,
+                axis,
                 generation,
             );
         });
@@ -770,15 +927,16 @@ fn run_session(
     region: RegionSelection,
     annotations: Vec<Annotation>,
     initial: Frame,
-    cap_height: u32,
+    axis: CaptureAxis,
     generation: u64,
 ) {
-    let mut stitcher = Stitcher::new(initial, cap_height);
+    let cap = stitch_cap(axis, &initial);
+    let mut stitcher = Stitcher::new(initial, axis, cap);
     // 选区壳已经关掉。留一层点击穿透的范围框，让人看见正在截哪一块。
     #[cfg(windows)]
-    let highlight = highlight::Guard::open(&monitor, &region);
+    let highlight = highlight::Guard::open(&monitor, &region, axis);
     #[cfg(windows)]
-    let mut painted_height = region.height;
+    let mut painted_length = stitcher.axis_length();
     loop {
         match SCROLL_STATE.load(Ordering::SeqCst) {
             STATE_FINISH => break,
@@ -795,6 +953,20 @@ fn run_session(
             release_state(generation);
             return;
         }
+        // R5:控制窗的方向选择只在首个内容变化前生效。锁定后把请求回退到
+        // 实际方向,并用状态事件把控制窗的选择回正。
+        let requested = CaptureAxis::from_u8(SCROLL_AXIS_REQUEST.load(Ordering::SeqCst));
+        if requested != stitcher.axis() {
+            if stitcher.set_axis(requested) {
+                #[cfg(windows)]
+                if let Some(frame) = highlight.as_ref() {
+                    frame.set_axis(requested);
+                }
+            } else {
+                SCROLL_AXIS_REQUEST.store(stitcher.axis().as_u8(), Ordering::SeqCst);
+            }
+            emit_status(&app, status_from(&stitcher, "running"));
+        }
         std::thread::sleep(CAPTURE_INTERVAL);
         if SCROLL_STATE.load(Ordering::SeqCst) != STATE_RUNNING {
             continue;
@@ -802,99 +974,60 @@ fn run_session(
         let full = match platform::capture_monitor(&monitor) {
             Ok(frame) => frame,
             Err(_) => {
-                emit_status(
-                    &app,
-                    ScrollStatus::new(
-                        "failed",
-                        region.width,
-                        stitcher.height(),
-                        stitcher.appended(),
-                    ),
-                );
+                emit_status(&app, status_from(&stitcher, "failed"));
                 continue;
             }
         };
         let next = match crop_rgba(&full, region.x, region.y, region.width, region.height) {
             Ok(frame) => frame,
             Err(_) => {
-                emit_status(
-                    &app,
-                    ScrollStatus::new(
-                        "failed",
-                        region.width,
-                        stitcher.height(),
-                        stitcher.appended(),
-                    ),
-                );
+                emit_status(&app, status_from(&stitcher, "failed"));
                 continue;
             }
         };
         match stitcher.tick(next) {
             ScrollTick::Unchanged { hint } => emit_status(
                 &app,
-                ScrollStatus::new(
-                    if hint { "unchanged" } else { "running" },
-                    region.width,
-                    stitcher.height(),
-                    stitcher.appended(),
-                ),
+                status_from(&stitcher, if hint { "unchanged" } else { "running" }),
             ),
             ScrollTick::Appended { fast } => emit_status(
                 &app,
-                ScrollStatus::new(
-                    if fast { "fast" } else { "running" },
-                    region.width,
-                    stitcher.height(),
-                    stitcher.appended(),
-                ),
+                status_from(&stitcher, if fast { "fast" } else { "running" }),
             ),
-            ScrollTick::NoMatch => emit_status(
-                &app,
-                ScrollStatus::new(
-                    "no_match",
-                    region.width,
-                    stitcher.height(),
-                    stitcher.appended(),
-                ),
-            ),
+            ScrollTick::NoMatch => emit_status(&app, status_from(&stitcher, "no_match")),
             ScrollTick::LimitReached => {
-                emit_status(
-                    &app,
-                    ScrollStatus::new(
-                        "limit",
-                        region.width,
-                        stitcher.height(),
-                        stitcher.appended(),
-                    ),
-                );
+                emit_status(&app, status_from(&stitcher, "limit"));
                 break;
             }
         }
         #[cfg(windows)]
         if let Some(frame) = highlight.as_ref() {
-            let stitched = stitcher.height();
-            if stitched != painted_height {
+            let stitched = stitcher.axis_length();
+            if stitched != painted_length {
                 frame.update(stitched);
-                painted_height = stitched;
+                painted_length = stitched;
             }
         }
     }
     SCROLL_STATE.store(STATE_FINISHING, Ordering::SeqCst);
-    emit_status(
-        &app,
-        ScrollStatus::new(
-            "finishing",
-            stitcher.width(),
-            stitcher.height(),
-            stitcher.appended(),
-        ),
-    );
+    emit_status(&app, status_from(&stitcher, "finishing"));
     finish_session(&app, stitcher, &annotations, &region, generation);
+}
+
+/// 由拼接器当前状态构造控制窗状态载荷(方向与尺寸都以拼接器为准)。
+fn status_from(stitcher: &Stitcher, state: &str) -> ScrollStatus {
+    ScrollStatus::new(
+        state,
+        stitcher.axis(),
+        stitcher.width(),
+        stitcher.height(),
+        stitcher.appended(),
+    )
 }
 
 /// 完成会话:先置回 IDLE 再收起控制窗(窗口销毁事件在 IDLE 状态下不触发
 /// 取消),未产生滚动内容时按「内容未变化」路径提示且不产出;达到上限时
-/// 附加提示。结果走现有预览完成路径。
+/// 附加提示(按滚动方向给出高度/宽度文案)。结果走现有预览完成路径。
 fn finish_session(
     app: &AppHandle,
     stitcher: Stitcher,
@@ -902,6 +1035,7 @@ fn finish_session(
     region: &RegionSelection,
     generation: u64,
 ) {
+    let axis = stitcher.axis();
     let scrolled = stitcher.scrolled();
     let limit = stitcher.limit_reached();
     let watched_width = stitcher.width().to_string();
@@ -911,9 +1045,13 @@ fn finish_session(
     dismiss_control_window(app, generation);
     if !scrolled {
         session::cancel_scroll_session(app, generation);
+        let key = match axis {
+            CaptureAxis::Vertical => "toast.scroll_no_change",
+            CaptureAxis::Horizontal => "toast.scroll_no_change.horizontal",
+        };
         super::ui::show_toast_key_params(
             app,
-            "toast.scroll_no_change",
+            key,
             &[("width", &watched_width), ("height", &watched_height)],
         );
         return;
@@ -921,7 +1059,11 @@ fn finish_session(
     match session::finish_scroll_frame(app, frame, annotations.to_vec(), region, generation) {
         Ok(()) => {
             if limit {
-                super::ui::show_toast_key(app, "toast.scroll_limit");
+                let key = match axis {
+                    CaptureAxis::Vertical => "toast.scroll_limit",
+                    CaptureAxis::Horizontal => "toast.scroll_limit.horizontal",
+                };
+                super::ui::show_toast_key(app, key);
             }
         }
         Err(error) if !error.is_cancelled() => {
@@ -941,7 +1083,8 @@ pub fn finish_scroll_capture(app: AppHandle) -> Result<(), CaptureError> {
         Ordering::SeqCst,
     ) {
         Ok(_) => {
-            let last = get_scroll_status().unwrap_or_else(|| ScrollStatus::new("running", 0, 0, 0));
+            let last = get_scroll_status()
+                .unwrap_or_else(|| ScrollStatus::new("running", CaptureAxis::default(), 0, 0, 0));
             emit_status(
                 &app,
                 ScrollStatus {
@@ -954,6 +1097,27 @@ pub fn finish_scroll_capture(app: AppHandle) -> Result<(), CaptureError> {
         Err(STATE_FINISH) | Err(STATE_FINISHING) => Ok(()),
         Err(_) => Err(CaptureError::api("error.capture.scroll_missing")),
     }
+}
+
+/// 控制窗前端消息:在首个内容变化前切换滚动方向;已经开始拼接后拒绝
+/// (控制窗同时按状态事件里的 `axis` 锁定选择)。
+#[tauri::command]
+pub fn set_scroll_axis(axis: CaptureAxis) -> Result<(), CaptureError> {
+    let appended = LAST_STATUS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .map_or(0, |status| status.appended);
+    if !axis_switch_allowed(SCROLL_STATE.load(Ordering::SeqCst), appended) {
+        return Err(CaptureError::api("error.capture.scroll_axis_locked"));
+    }
+    SCROLL_AXIS_REQUEST.store(axis.as_u8(), Ordering::SeqCst);
+    Ok(())
+}
+
+/// 方向切换窗口:会话运行中且还没有任何内容拼入。
+fn axis_switch_allowed(state: u8, appended: u32) -> bool {
+    state == STATE_RUNNING && appended == 0
 }
 
 /// 控制窗前端消息:取消滚动会话,不写剪贴板、历史或磁盘。
@@ -1056,15 +1220,42 @@ mod tests {
         }
     }
 
+    /// 列主频图案:相邻列亮度差远大于容忍上限,保证横向匹配唯一。
+    fn wide_page(width: u32, height: u32, seed: u32) -> Frame {
+        let mut rgba = vec![0u8; width as usize * height as usize * 4];
+        for x in 0..width {
+            let value = ((x * 53 + seed) % 251) as u8;
+            for y in 0..height {
+                let i = (y as usize * width as usize + x as usize) * 4;
+                let jitter = (y % 3) as u8;
+                rgba[i] = value.saturating_add(jitter);
+                rgba[i + 1] = value;
+                rgba[i + 2] = value.wrapping_sub(jitter);
+                rgba[i + 3] = 255;
+            }
+        }
+        Frame {
+            width,
+            height,
+            rgba,
+            scale: 1.0,
+        }
+    }
+
+    /// 横向视口:从页面 `left` 起截取 `width` 列(1:1 像素切片)。
+    fn horizontal_viewport(page: &Frame, left: u32, width: u32) -> Frame {
+        crop_rgba(page, left, 0, width, page.height).unwrap()
+    }
+
     #[test]
     fn bottom_strip_matching_estimates_scroll_delta() {
         let page = page(96, 240, 0);
         let prev = viewport(&page, 0, 120);
         for delta in [1u32, 8, 37, 56] {
             let next = viewport(&page, delta, 120);
-            let y = match_strip_offset(&prev, &next)
+            let y = match_strip_offset(&prev, &next, CaptureAxis::Vertical)
                 .unwrap_or_else(|| panic!("delta {delta} must match"));
-            let strip_y = 120 - strip_height(120);
+            let strip_y = 120 - strip_length(120);
             assert_eq!(strip_y - y, delta, "delta {delta}");
         }
     }
@@ -1073,25 +1264,36 @@ mod tests {
     fn unchanged_viewport_matches_at_rest_with_zero_delta() {
         let page = page(64, 160, 7);
         let prev = viewport(&page, 0, 120);
-        let y = match_strip_offset(&prev, &prev.clone()).expect("identical frames match");
-        assert_eq!(y, 120 - strip_height(120));
+        let y = match_strip_offset(&prev, &prev.clone(), CaptureAxis::Vertical)
+            .expect("identical frames match");
+        assert_eq!(y, 120 - strip_length(120));
     }
 
     #[test]
     fn matching_fails_when_content_has_no_shared_band() {
         let prev = page(64, 120, 0);
         let next = flat(64, 120, 120);
-        assert_eq!(match_strip_offset(&prev, &next), None);
+        assert_eq!(
+            match_strip_offset(&prev, &next, CaptureAxis::Vertical),
+            None
+        );
+        assert_eq!(
+            match_strip_offset(&prev, &next, CaptureAxis::Horizontal),
+            None
+        );
     }
 
     #[test]
     fn solid_static_frame_is_not_mistaken_for_a_scroll() {
         // 整区纯色:所有候选都精确命中,修复前取首个匹配(y=0)会伪造大幅位移。
         let frame = flat(64, 120, 200);
-        let strip_y = 120 - strip_height(120);
-        assert_eq!(match_strip_offset(&frame, &frame.clone()), Some(strip_y));
+        let strip_y = 120 - strip_length(120);
+        assert_eq!(
+            match_strip_offset(&frame, &frame.clone(), CaptureAxis::Vertical),
+            Some(strip_y)
+        );
 
-        let mut stitcher = Stitcher::new(frame.clone(), 1000);
+        let mut stitcher = Stitcher::new(frame.clone(), CaptureAxis::Vertical, 1000);
         for tick in 0..(UNCHANGED_HINT_AFTER + 2) {
             let expected = ScrollTick::Unchanged {
                 hint: tick + 1 >= UNCHANGED_HINT_AFTER,
@@ -1109,10 +1311,13 @@ mod tests {
         // 底部纯色带比条带高:修复前首个精确匹配在 y=40,会追加 40 行伪内容。
         let page = page_with_solid_bottom(96, 200, 160, 230);
         let prev = viewport(&page, 0, 120);
-        let strip_y = 120 - strip_height(120);
-        assert_eq!(match_strip_offset(&prev, &prev.clone()), Some(strip_y));
+        let strip_y = 120 - strip_length(120);
+        assert_eq!(
+            match_strip_offset(&prev, &prev.clone(), CaptureAxis::Vertical),
+            Some(strip_y)
+        );
 
-        let mut stitcher = Stitcher::new(prev.clone(), 1000);
+        let mut stitcher = Stitcher::new(prev.clone(), CaptureAxis::Vertical, 1000);
         assert_eq!(stitcher.tick(prev), ScrollTick::Unchanged { hint: false });
         assert!(!stitcher.scrolled());
         assert_eq!(stitcher.appended(), 0);
@@ -1125,8 +1330,9 @@ mod tests {
         let page = page_with_solid_bottom(96, 400, 160, 230);
         let prev = viewport(&page, 0, 120);
         let next = viewport(&page, 30, 120);
-        let y = match_strip_offset(&prev, &next).expect("scrolled texture must match");
-        assert_eq!(120 - strip_height(120) - y, 30);
+        let y = match_strip_offset(&prev, &next, CaptureAxis::Vertical)
+            .expect("scrolled texture must match");
+        assert_eq!(120 - strip_length(120) - y, 30);
     }
 
     #[test]
@@ -1135,10 +1341,10 @@ mod tests {
         // 位移,而不是偏 1px 的合成结果。
         let page = coarse_page(96, 240, 5);
         let prev = viewport(&page, 0, 120);
-        let strip_y = 120 - strip_height(120);
+        let strip_y = 120 - strip_length(120);
         for delta in [2u32, 9, 21] {
             let next = viewport(&page, delta, 120);
-            let y = match_strip_offset(&prev, &next)
+            let y = match_strip_offset(&prev, &next, CaptureAxis::Vertical)
                 .unwrap_or_else(|| panic!("delta {delta} must match"));
             assert_eq!(strip_y - y, delta, "delta {delta}");
         }
@@ -1148,7 +1354,7 @@ mod tests {
     fn stitcher_appends_exactly_the_new_rows_after_a_scroll() {
         let page = page(80, 300, 3);
         let initial = viewport(&page, 0, 120);
-        let mut stitcher = Stitcher::new(initial, stitch_cap_height(80));
+        let mut stitcher = Stitcher::new(initial, CaptureAxis::Vertical, stitch_cap_height(80));
         let delta = 45;
         let tick = stitcher.tick(viewport(&page, delta, 120));
         assert_eq!(tick, ScrollTick::Appended { fast: false });
@@ -1166,7 +1372,7 @@ mod tests {
     #[test]
     fn stitcher_joins_multiple_scroll_steps_without_gaps() {
         let page = page(72, 400, 11);
-        let mut stitcher = Stitcher::new(viewport(&page, 0, 100), 1000);
+        let mut stitcher = Stitcher::new(viewport(&page, 0, 100), CaptureAxis::Vertical, 1000);
         let mut top = 0u32;
         for delta in [20u32, 7, 33, 12] {
             top += delta;
@@ -1184,7 +1390,7 @@ mod tests {
     fn unchanged_ticks_report_no_motion_and_hint_after_threshold() {
         let page = page(64, 200, 5);
         let initial = viewport(&page, 0, 100);
-        let mut stitcher = Stitcher::new(initial.clone(), 1000);
+        let mut stitcher = Stitcher::new(initial.clone(), CaptureAxis::Vertical, 1000);
         for _ in 1..UNCHANGED_HINT_AFTER {
             assert_eq!(
                 stitcher.tick(initial.clone()),
@@ -1202,7 +1408,7 @@ mod tests {
     #[test]
     fn fast_scroll_is_flagged_but_still_appended() {
         let page = page(64, 400, 17);
-        let mut stitcher = Stitcher::new(viewport(&page, 0, 100), 4000);
+        let mut stitcher = Stitcher::new(viewport(&page, 0, 100), CaptureAxis::Vertical, 4000);
         let delta = 60;
         assert_eq!(
             stitcher.tick(viewport(&page, delta, 100)),
@@ -1214,7 +1420,8 @@ mod tests {
     #[test]
     fn match_failure_keeps_the_anchor_so_the_next_good_frame_still_joins() {
         let page_frame = page(64, 260, 0);
-        let mut stitcher = Stitcher::new(viewport(&page_frame, 0, 120), 5000);
+        let mut stitcher =
+            Stitcher::new(viewport(&page_frame, 0, 120), CaptureAxis::Vertical, 5000);
         let other = flat(64, 120, 200);
         assert_eq!(stitcher.tick(other.clone()), ScrollTick::NoMatch);
         assert_eq!(stitcher.appended(), 0);
@@ -1226,7 +1433,7 @@ mod tests {
         );
         assert_eq!(stitcher.height(), 140);
         // 连续对不齐才改锚点,并且仍然不追加。
-        let mut stuck = Stitcher::new(viewport(&page_frame, 0, 120), 5000);
+        let mut stuck = Stitcher::new(viewport(&page_frame, 0, 120), CaptureAxis::Vertical, 5000);
         for _ in 0..RESYNC_AFTER {
             assert_eq!(stuck.tick(other.clone()), ScrollTick::NoMatch);
         }
@@ -1268,7 +1475,7 @@ mod tests {
             rgba,
             scale: 1.0,
         };
-        let mut stitcher = Stitcher::new(viewport(&document, 0, 96), 4000);
+        let mut stitcher = Stitcher::new(viewport(&document, 0, 96), CaptureAxis::Vertical, 4000);
         let mut top = 0u32;
         for step in [line, line * 2, line, line * 3] {
             top += step;
@@ -1285,7 +1492,7 @@ mod tests {
         let page = page(48, 400, 9);
         let initial = viewport(&page, 0, 100);
         let cap = 100 + 30;
-        let mut stitcher = Stitcher::new(initial, cap);
+        let mut stitcher = Stitcher::new(initial, CaptureAxis::Vertical, cap);
         let tick = stitcher.tick(viewport(&page, 50, 100));
         assert_eq!(tick, ScrollTick::LimitReached);
         assert!(stitcher.limit_reached());
@@ -1298,13 +1505,245 @@ mod tests {
     }
 
     #[test]
-    fn stitch_cap_shrinks_with_width_and_never_reaches_zero() {
-        assert_eq!(stitch_cap_height(100), MAX_STITCH_HEIGHT);
+    fn horizontal_strip_matching_estimates_scroll_delta() {
+        let page = wide_page(400, 96, 0);
+        let prev = horizontal_viewport(&page, 0, 120);
+        for delta in [1u32, 8, 37, 56] {
+            let next = horizontal_viewport(&page, delta, 120);
+            let x = match_strip_offset(&prev, &next, CaptureAxis::Horizontal)
+                .unwrap_or_else(|| panic!("delta {delta} must match"));
+            let strip_x = 120 - strip_length(120);
+            assert_eq!(strip_x - x, delta, "delta {delta}");
+        }
+    }
+
+    #[test]
+    fn horizontal_stitcher_appends_exactly_the_new_columns() {
+        let page = wide_page(300, 80, 3);
+        let initial = horizontal_viewport(&page, 0, 120);
+        let mut stitcher = Stitcher::new(initial, CaptureAxis::Horizontal, 10_000);
+        let delta = 45;
+        let tick = stitcher.tick(horizontal_viewport(&page, delta, 120));
+        assert_eq!(tick, ScrollTick::Appended { fast: false });
+        assert_eq!(stitcher.width(), 120 + delta);
+        assert_eq!(stitcher.height(), 80);
+        assert_eq!(stitcher.appended(), delta);
+        assert!(stitcher.scrolled());
+
+        let stitched = stitcher.into_frame();
+        let expected = crop_rgba(&page, 0, 0, 120 + delta, 80).unwrap();
+        assert_eq!(stitched.width, expected.width);
+        assert_eq!(stitched.height, expected.height);
+        assert_eq!(stitched.rgba, expected.rgba);
+    }
+
+    #[test]
+    fn horizontal_stitcher_joins_multiple_scroll_steps_without_gaps() {
+        let page = wide_page(400, 72, 11);
+        let mut stitcher = Stitcher::new(
+            horizontal_viewport(&page, 0, 100),
+            CaptureAxis::Horizontal,
+            1000,
+        );
+        let mut left = 0u32;
+        for delta in [20u32, 7, 33, 12] {
+            left += delta;
+            assert_eq!(
+                stitcher.tick(horizontal_viewport(&page, left, 100)),
+                ScrollTick::Appended { fast: false }
+            );
+        }
+        let stitched = stitcher.into_frame();
+        let expected = crop_rgba(&page, 0, 0, 100 + left, 72).unwrap();
+        assert_eq!(stitched.rgba, expected.rgba);
+    }
+
+    #[test]
+    fn horizontal_unchanged_ticks_report_no_motion_and_hint_after_threshold() {
+        let page = wide_page(300, 64, 5);
+        let initial = horizontal_viewport(&page, 0, 100);
+        assert_eq!(
+            match_strip_offset(&initial, &initial, CaptureAxis::Horizontal),
+            Some(100 - strip_length(100))
+        );
+        let mut stitcher = Stitcher::new(initial.clone(), CaptureAxis::Horizontal, 1000);
+        for _ in 1..UNCHANGED_HINT_AFTER {
+            assert_eq!(
+                stitcher.tick(initial.clone()),
+                ScrollTick::Unchanged { hint: false }
+            );
+        }
+        assert_eq!(stitcher.tick(initial), ScrollTick::Unchanged { hint: true });
+        assert!(!stitcher.scrolled());
+        assert_eq!(stitcher.appended(), 0);
+        assert_eq!(stitcher.width(), 100);
+    }
+
+    #[test]
+    fn horizontal_fast_scroll_is_flagged_but_still_appended() {
+        let page = wide_page(400, 64, 17);
+        let mut stitcher = Stitcher::new(
+            horizontal_viewport(&page, 0, 100),
+            CaptureAxis::Horizontal,
+            4000,
+        );
+        let delta = 60;
+        assert_eq!(
+            stitcher.tick(horizontal_viewport(&page, delta, 100)),
+            ScrollTick::Appended { fast: true }
+        );
+        assert_eq!(stitcher.appended(), delta);
+    }
+
+    #[test]
+    fn horizontal_reaching_the_cap_appends_remaining_columns_then_stops() {
+        let page = wide_page(400, 48, 9);
+        let initial = horizontal_viewport(&page, 0, 100);
+        let cap = 100 + 30;
+        let mut stitcher = Stitcher::new(initial, CaptureAxis::Horizontal, cap);
+        let tick = stitcher.tick(horizontal_viewport(&page, 50, 100));
+        assert_eq!(tick, ScrollTick::LimitReached);
+        assert!(stitcher.limit_reached());
+        assert_eq!(stitcher.width(), cap);
+        assert_eq!(stitcher.appended(), 30);
+        assert_eq!(
+            stitcher.tick(horizontal_viewport(&page, 60, 100)),
+            ScrollTick::LimitReached
+        );
+    }
+
+    /// 每一列都像文本:共享横向节奏,但列与列的内容不同。错一列时亮度差
+    /// 必须明显大于真正对齐,结果要和原页面逐像素一致(对齐按列而非按行)。
+    #[test]
+    fn horizontal_similar_bands_stitch_on_the_true_column_not_a_neighbor() {
+        let band = 16u32;
+        let width = 320u32;
+        let height = 96u32;
+        let mut rgba = vec![0u8; width as usize * height as usize * 4];
+        for x in 0..width {
+            let band_i = x / band;
+            let local = x % band;
+            for y in 0..height {
+                let stem = y % 8 < 2;
+                let unique = ((band_i.wrapping_mul(31).wrapping_add(y.wrapping_mul(3))) % 160) as u8;
+                let value = if local < 3 {
+                    if stem { 36 } else { 214 }
+                } else if local + 3 >= band {
+                    228
+                } else {
+                    unique
+                };
+                let i = (y as usize * width as usize + x as usize) * 4;
+                rgba[i] = value;
+                rgba[i + 1] = value;
+                rgba[i + 2] = value;
+                rgba[i + 3] = 255;
+            }
+        }
+        let document = Frame {
+            width,
+            height,
+            rgba,
+            scale: 1.0,
+        };
+        let mut stitcher = Stitcher::new(
+            horizontal_viewport(&document, 0, 96),
+            CaptureAxis::Horizontal,
+            4000,
+        );
+        let mut left = 0u32;
+        for step in [band, band * 2, band, band * 3] {
+            left += step;
+            let tick = stitcher.tick(horizontal_viewport(&document, left, 96));
+            assert_eq!(tick, ScrollTick::Appended { fast: false }, "left {left}");
+        }
+        let stitched = stitcher.into_frame();
+        let expected = crop_rgba(&document, 0, 0, 96 + left, height).unwrap();
+        assert_eq!(stitched.rgba, expected.rgba);
+    }
+
+    #[test]
+    fn alignment_samples_ignore_the_scrollbar_gutter_on_each_axis() {
+        let frame = wide_page(160, 120, 9);
+        let horizontal = axis_samples(&frame, CaptureAxis::Horizontal);
+        assert_eq!(
+            horizontal.n,
+            (frame.height - SCROLLBAR_GUTTER).div_ceil(SAMPLE_STEP) as usize
+        );
+        let mut bottom_bar = frame.clone();
+        for y in (frame.height - SCROLLBAR_GUTTER)..frame.height {
+            for x in 0..frame.width {
+                let i = (y as usize * frame.width as usize + x as usize) * 4;
+                bottom_bar.rgba[i..i + 4].copy_from_slice(&[20, 200, 90, 255]);
+            }
+        }
+        assert_eq!(
+            axis_samples(&bottom_bar, CaptureAxis::Horizontal),
+            horizontal
+        );
+
+        let vertical = axis_samples(&frame, CaptureAxis::Vertical);
+        assert_eq!(
+            vertical.n,
+            (frame.width - SCROLLBAR_GUTTER).div_ceil(SAMPLE_STEP) as usize
+        );
+        let mut right_bar = frame.clone();
+        for y in 0..frame.height {
+            for x in (frame.width - SCROLLBAR_GUTTER)..frame.width {
+                let i = (y as usize * frame.width as usize + x as usize) * 4;
+                right_bar.rgba[i..i + 4].copy_from_slice(&[20, 200, 90, 255]);
+            }
+        }
+        assert_eq!(axis_samples(&right_bar, CaptureAxis::Vertical), vertical);
+
+        // 可用区域内的改动必须反映到样本上:忽略的只是滚动条。
+        let mut changed = frame.clone();
+        changed.rgba[0..4].copy_from_slice(&[250, 0, 0, 255]);
+        assert_ne!(axis_samples(&changed, CaptureAxis::Vertical), vertical);
+        assert_ne!(axis_samples(&changed, CaptureAxis::Horizontal), horizontal);
+    }
+
+    #[test]
+    fn axis_switch_is_locked_after_the_first_append() {
+        let page = page(64, 240, 3);
+        let mut stitcher = Stitcher::new(
+            viewport(&page, 0, 100),
+            CaptureAxis::Vertical,
+            stitch_cap_height(64),
+        );
+        assert!(stitcher.set_axis(CaptureAxis::Horizontal));
+        assert_eq!(stitcher.axis(), CaptureAxis::Horizontal);
+        assert!(stitcher.set_axis(CaptureAxis::Vertical));
+        assert_eq!(
+            stitcher.tick(viewport(&page, 20, 100)),
+            ScrollTick::Appended { fast: false }
+        );
+        assert!(!stitcher.set_axis(CaptureAxis::Horizontal));
+        assert_eq!(stitcher.axis(), CaptureAxis::Vertical);
+    }
+
+    #[test]
+    fn axis_switch_gate_requires_a_running_session_without_appends() {
+        assert!(axis_switch_allowed(STATE_RUNNING, 0));
+        assert!(!axis_switch_allowed(STATE_RUNNING, 1));
+        assert!(!axis_switch_allowed(STATE_FINISH, 0));
+        assert!(!axis_switch_allowed(STATE_IDLE, 0));
+    }
+
+    #[test]
+    fn stitch_cap_shrinks_with_the_cross_axis_and_never_reaches_zero() {
+        assert_eq!(stitch_cap_height(100), MAX_STITCH_LENGTH);
+        assert_eq!(stitch_cap_width(100), MAX_STITCH_LENGTH);
         assert_eq!(
             stitch_cap_height(u32::MAX),
             (MAX_STITCH_PIXELS / u64::from(u32::MAX)).max(1) as u32
         );
+        assert_eq!(
+            stitch_cap_width(u32::MAX),
+            (MAX_STITCH_PIXELS / u64::from(u32::MAX)).max(1) as u32
+        );
         assert!(stitch_cap_height(0) > 0);
+        assert!(stitch_cap_width(0) > 0);
     }
 
     fn placement(
@@ -1478,19 +1917,41 @@ mod tests {
     }
 
     #[test]
-    fn strip_height_caps_and_never_collapses() {
-        assert_eq!(strip_height(1000), STRIP_HEIGHT);
-        assert_eq!(strip_height(90), 30);
-        assert_eq!(strip_height(0), 1);
+    fn strip_length_caps_and_never_collapses() {
+        assert_eq!(strip_length(1000), STRIP_LENGTH);
+        assert_eq!(strip_length(90), 30);
+        assert_eq!(strip_length(0), 1);
     }
 
     #[test]
     fn scroll_status_serializes_for_the_control_window() {
-        let json = serde_json::to_value(ScrollStatus::new("unchanged", 640, 1200, 90)).unwrap();
+        let json = serde_json::to_value(ScrollStatus::new(
+            "unchanged",
+            CaptureAxis::Horizontal,
+            640,
+            1200,
+            90,
+        ))
+        .unwrap();
         assert_eq!(json["state"], "unchanged");
+        assert_eq!(json["axis"], "horizontal");
         assert_eq!(json["width"], 640);
         assert_eq!(json["height"], 1200);
         assert_eq!(json["appended"], 90);
+    }
+
+    #[test]
+    fn set_scroll_axis_arg_accepts_both_directions() {
+        // Tauri 命令参数按 serde 反序列化:前端用 "vertical"/"horizontal"。
+        assert_eq!(
+            serde_json::from_str::<CaptureAxis>("\"vertical\"").unwrap(),
+            CaptureAxis::Vertical
+        );
+        assert_eq!(
+            serde_json::from_str::<CaptureAxis>("\"horizontal\"").unwrap(),
+            CaptureAxis::Horizontal
+        );
+        assert_eq!(CaptureAxis::default(), CaptureAxis::Vertical);
     }
 
     #[test]
@@ -1687,7 +2148,7 @@ mod live_smoke {
             let _ = UpdateWindow(hwnd);
             pump();
 
-            let mut stitcher = Stitcher::new(grab_window(), 4000);
+            let mut stitcher = Stitcher::new(grab_window(), CaptureAxis::Vertical, 4000);
             for step in 0..STEPS {
                 let _ = SendMessageW(hwnd, WM_VSCROLL, Some(WPARAM(0)), Some(LPARAM(0)));
                 pump();

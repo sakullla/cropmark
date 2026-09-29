@@ -5,7 +5,7 @@
 //! 边框和压暗不会进到拼接结果里。
 
 use std::sync::OnceLock;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
@@ -21,16 +21,28 @@ use windows::Win32::UI::WindowsAndMessaging::{
     PostMessageW, PostThreadMessageW, RegisterClassExW, SetTimer, SetWindowDisplayAffinity,
     ShowWindow, TranslateMessage, UpdateLayeredWindow, WindowFromPoint, GA_ROOT, GWL_EXSTYLE,
     GW_HWNDNEXT, HCURSOR, HICON, MSG, SW_SHOWNOACTIVATE, ULW_ALPHA, WINDOW_DISPLAY_AFFINITY,
-    WM_MOUSEWHEEL, WM_NCHITTEST, WM_QUIT, WM_TIMER, WNDCLASSEXW, CS_HREDRAW, CS_VREDRAW,
-    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
-    HTTRANSPARENT,
+    WM_MOUSEHWHEEL, WM_MOUSEWHEEL, WM_NCHITTEST, WM_QUIT, WM_TIMER, WNDCLASSEXW, CS_HREDRAW,
+    CS_VREDRAW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+    WS_POPUP, HTTRANSPARENT,
 };
 
+use super::CaptureAxis;
 use crate::capture::geometry::MonitorGeom;
 use crate::capture::session::RegionSelection;
 
 const BORDER: i32 = 3;
 const DIM_ALPHA: u8 = 72;
+
+/// 自动滚动方向:定时器线程与拼接会话线程之间共享(首个内容变化前可切换)。
+static AXIS: AtomicU8 = AtomicU8::new(0);
+
+/// 滚动轴基准长度:纵向用高度、横向用宽度,范围框标签按它显示增量。
+fn base_length(axis: CaptureAxis, region: &RegionSelection) -> u32 {
+    match axis {
+        CaptureAxis::Vertical => region.height,
+        CaptureAxis::Horizontal => region.width,
+    }
+}
 
 pub(crate) struct Guard {
     hwnd: HWND,
@@ -47,7 +59,12 @@ pub(crate) struct Guard {
 }
 
 impl Guard {
-    pub(crate) fn open(monitor: &MonitorGeom, region: &RegionSelection) -> Option<Self> {
+    pub(crate) fn open(
+        monitor: &MonitorGeom,
+        region: &RegionSelection,
+        axis: CaptureAxis,
+    ) -> Option<Self> {
+        AXIS.store(axis.as_u8(), Ordering::SeqCst);
         let width = monitor.physical_width.max(1);
         let height = monitor.physical_height.max(1);
         let origin_x = monitor.physical_x;
@@ -81,21 +98,35 @@ impl Guard {
             region_w: region.width,
             region_h: region.height,
         };
-        guard.paint(region.height);
+        guard.paint(base_length(axis, region));
         Some(guard)
     }
 
-    pub(crate) fn update(&self, stitched_height: u32) {
-        self.paint(stitched_height);
+    /// 会话在首个内容变化前切换滚动轴:范围框标签与自动滚动方向同步切换。
+    pub(crate) fn set_axis(&self, axis: CaptureAxis) {
+        AXIS.store(axis.as_u8(), Ordering::SeqCst);
     }
 
-    fn paint(&self, stitched_height: u32) {
+    pub(crate) fn update(&self, stitched_length: u32) {
+        self.paint(stitched_length);
+    }
+
+    fn paint(&self, stitched_length: u32) {
         let pixels = (self.width as usize).saturating_mul(self.height as usize);
         let mut rgba = vec![0u8; pixels.saturating_mul(4)];
         let region = region_box(self.region_x, self.region_y, self.region_w, self.region_h);
         dim_outside(&mut rgba, self.width, self.height, &region);
         stroke_rect(&mut rgba, self.width, self.height, &region);
-        paint_label(&mut rgba, self.width, self.height, &region, stitched_height);
+        let axis = CaptureAxis::from_u8(AXIS.load(Ordering::SeqCst));
+        let base = base_length(axis, &region);
+        paint_label(
+            &mut rgba,
+            self.width,
+            self.height,
+            &region,
+            base,
+            stitched_length,
+        );
         premultiply(&mut rgba);
         unsafe {
             let _ = present(
@@ -196,10 +227,16 @@ fn paint_label(
     width: u32,
     height: u32,
     region: &RegionSelection,
-    stitched_height: u32,
+    base_length: u32,
+    stitched_length: u32,
 ) {
-    let label = if stitched_height > region.height {
-        format!("{}x{} +{}", region.width, region.height, stitched_height - region.height)
+    let label = if stitched_length > base_length {
+        format!(
+            "{}x{} +{}",
+            region.width,
+            region.height,
+            stitched_length - base_length
+        )
     } else {
         format!("{}x{}", region.width, region.height)
     };
@@ -375,7 +412,16 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
 static SCROLL_X: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 static SCROLL_Y: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
-/// 给框中心下面的窗口发一格向下滚轮。不移动鼠标，也不抢焦点。
+/// 自动滚动指令:纵向发 WM_MOUSEWHEEL 向下(负值),横向发 WM_MOUSEHWHEEL
+/// 向右(正值)。
+fn nudge_message(axis: CaptureAxis) -> (u32, i32) {
+    match axis {
+        CaptureAxis::Vertical => (WM_MOUSEWHEEL, -120),
+        CaptureAxis::Horizontal => (WM_MOUSEHWHEEL, 120),
+    }
+}
+
+/// 给框中心下面的窗口发一格滚动指令。不移动鼠标，也不抢焦点。
 fn nudge_scroll() {
     let x = SCROLL_X.load(Ordering::SeqCst);
     let y = SCROLL_Y.load(Ordering::SeqCst);
@@ -383,13 +429,13 @@ fn nudge_scroll() {
     let Some(hwnd) = scroll_target(point) else {
         return;
     };
-    // 负值表示向下。坐标是屏幕坐标。
-    let delta: i32 = -120;
+    let (message, delta) = nudge_message(CaptureAxis::from_u8(AXIS.load(Ordering::SeqCst)));
+    // 高字为有符号位移,低字保留;坐标是屏幕坐标。
     let packed = ((y as u32) << 16) | (x as u16 as u32);
     unsafe {
         let _ = PostMessageW(
             Some(hwnd),
-            WM_MOUSEWHEEL,
+            message,
             WPARAM(((delta as u32) << 16) as usize),
             LPARAM(packed as isize),
         );
@@ -529,6 +575,18 @@ unsafe fn present(
     ReleaseDC(None, screen);
     let _ = info;
     Ok(())
+}
+
+/// 自动滚动指令按方向选择消息:纵向向下滚、横向向右滚(R5)。
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_scroll_uses_the_horizontal_wheel_for_the_horizontal_axis() {
+        assert_eq!(nudge_message(CaptureAxis::Vertical), (WM_MOUSEWHEEL, -120));
+        assert_eq!(nudge_message(CaptureAxis::Horizontal), (WM_MOUSEHWHEEL, 120));
+    }
 }
 
 /// 真机回归（手动，`#[ignore]`）：范围框在屏幕上时，滚轮必须发到框内内容窗口。
@@ -742,7 +800,8 @@ mod live_target {
         let center_y = monitor.physical_y + region.y as i32 + region.height as i32 / 2;
         SCROLL_X.store(center_x, Ordering::SeqCst);
         SCROLL_Y.store(center_y, Ordering::SeqCst);
-        let guard = Guard::open(&monitor, &region).expect("scroll frame opens");
+        let guard =
+            Guard::open(&monitor, &region, CaptureAxis::Vertical).expect("scroll frame opens");
 
         let found = scroll_target(POINT {
             x: center_x,

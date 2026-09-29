@@ -883,13 +883,19 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
         {
             start_recording_from_shell(app, rect, annotations, generation)
         }
-        RegionOutcome::LongCapture(rect, annotations) => {
-            start_scroll_session(app, rect, annotations, generation)
+        RegionOutcome::LongCapture(rect, annotations, axis) => {
+            start_scroll_session(app, rect, annotations, axis, generation)
         }
         RegionOutcome::Preview(rect, annotations) | RegionOutcome::Annotate(rect, annotations)
             if long_mode =>
         {
-            start_scroll_session(app, rect, annotations, generation)
+            start_scroll_session(
+                app,
+                rect,
+                annotations,
+                super::scroll::CaptureAxis::default(),
+                generation,
+            )
         }
         RegionOutcome::Preview(rect, annotations) | RegionOutcome::Annotate(rect, annotations) => {
             commit_region_to_workspace(app, rect, annotations, false, false, generation).await
@@ -963,12 +969,13 @@ async fn commit_region_to_workspace(
     Ok(())
 }
 
-/// R1:选区确认后交给滚动会话(固定区域周期抓取 + 垂直拼接 + 控制窗)。
+/// R1:选区确认后交给滚动会话(固定区域周期抓取 + 按轴拼接 + 控制窗)。
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 fn start_scroll_session(
     app: &AppHandle,
     rect: super::geometry::PhysicalRect,
     annotations: Vec<Annotation>,
+    axis: super::scroll::CaptureAxis,
     generation: u64,
 ) -> Result<(), CaptureError> {
     super::scroll::start(
@@ -981,6 +988,7 @@ fn start_scroll_session(
             height: rect.height,
         },
         annotations,
+        axis,
     )
 }
 
