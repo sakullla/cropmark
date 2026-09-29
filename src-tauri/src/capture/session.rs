@@ -777,12 +777,34 @@ async fn wait_delay(app: &AppHandle, delay_ms: u64, generation: u64) -> Result<b
     Ok(true)
 }
 
-// 选区壳回调线程:壳与窗口消息泵在同一阻塞线程内同步运行,回调经此
-// thread-local 取回 AppHandle(壳保持平台/运行时无关)。
+// macOS 把壳派到主线程，说明回调不在设置 AppHandle 的阻塞线程上。
+// 用跨线程槽，Windows / X11 仍在原线程读到同一份句柄。
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
-thread_local! {
-    static SHELL_APP: std::cell::RefCell<Option<AppHandle>> =
-        const { std::cell::RefCell::new(None) };
+static SHELL_APP: std::sync::Mutex<Option<AppHandle>> = std::sync::Mutex::new(None);
+
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+fn shell_app_lock() -> std::sync::MutexGuard<'static, Option<AppHandle>> {
+    SHELL_APP.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+fn set_shell_app(app: Option<AppHandle>) {
+    *shell_app_lock() = app;
+}
+
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+struct ClearShellApp;
+
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+impl Drop for ClearShellApp {
+    fn drop(&mut self) {
+        set_shell_app(None);
+    }
+}
+
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+fn with_shell_app(f: impl FnOnce(Option<&AppHandle>)) {
+    f(shell_app_lock().as_ref());
 }
 
 /// C 键取色回调:复制 HEX+RGB 文本并 toast 反馈;剪贴板失败提示失败。
@@ -792,11 +814,11 @@ fn copy_color_feedback(text: &str, hex: &str) {
         eprintln!("Cropmark color copy: hook ran, hex={hex}");
     }
     let toast_key = |key: &str, params: &[(&str, &str)]| {
-        SHELL_APP.with(|slot| {
-            if let Some(app) = slot.borrow().as_ref() {
+        with_shell_app(|app| {
+            if let Some(app) = app {
                 ui::show_toast_key_params(app, key, params);
             } else if capture_timing_enabled() {
-                eprintln!("Cropmark color copy: no app in thread-local");
+                eprintln!("Cropmark color copy: no app in shell slot");
             }
         });
     };
@@ -809,8 +831,8 @@ fn copy_color_feedback(text: &str, hex: &str) {
 /// 选区壳还开着时的说明(录屏区域放不进格式)。不取消会话。
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 fn shell_notice(message: &str) {
-    SHELL_APP.with(|slot| {
-        if let Some(app) = slot.borrow().as_ref() {
+    with_shell_app(|app| {
+        if let Some(app) = app {
             ui::show_toast(app, message);
         }
     });
@@ -882,8 +904,8 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
             }
         }
         let annotation_options = annotation_options_from(&handle);
-        // 壳回调在同一线程内同步执行,经 thread-local 取回 AppHandle。
-        SHELL_APP.with(|slot| *slot.borrow_mut() = Some(handle.clone()));
+        set_shell_app(Some(handle.clone()));
+        let _clear_shell_app = ClearShellApp;
         let picked = super::native_overlay::pick_region(
             &frame,
             &monitor,
@@ -894,7 +916,6 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
                 notify: shell_notice,
             },
         );
-        SHELL_APP.with(|slot| *slot.borrow_mut() = None);
         picked
     })
     .await
