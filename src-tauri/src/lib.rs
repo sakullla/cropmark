@@ -487,8 +487,8 @@ mod tests {
         assert!(!should_prevent_exit(Some(0)));
     }
 
-    const PRODUCTION_CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self' ipc: http://ipc.localhost; font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
-    const DEV_CSP: &str = "default-src 'self'; script-src 'self' http://localhost:1420; style-src 'self' http://localhost:1420; img-src 'self' data: blob: http://localhost:1420; connect-src 'self' ipc: http://ipc.localhost http://localhost:1420 ws://localhost:1420 ws://localhost:1421; font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
+    const PRODUCTION_CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' ipc: http://ipc.localhost; font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
+    const DEV_CSP: &str = "default-src 'self'; script-src 'self' http://localhost:1420; style-src 'self' http://localhost:1420; img-src 'self' data: blob: http://localhost:1420; media-src 'self' blob: http://localhost:1420; connect-src 'self' ipc: http://ipc.localhost http://localhost:1420 ws://localhost:1420 ws://localhost:1421; font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
 
     const PRODUCTION_URLS: &[&str] = &["http://ipc.localhost"];
     const DEV_URLS: &[&str] = &[

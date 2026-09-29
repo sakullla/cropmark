@@ -300,7 +300,12 @@ export function mountRecordControl(root: HTMLElement): () => void {
       if (item.format === "mp4") {
         previewVideo.src = previewUrl;
         previewVideo.hidden = false;
-        void previewVideo.play().catch(() => undefined);
+        void previewVideo.play().catch(() => {
+          previewError = t("record.preview.failed");
+          notice.hidden = false;
+          notice.textContent = previewError;
+          notice.classList.add("is-error");
+        });
       } else {
         previewImage.src = previewUrl;
         previewImage.hidden = false;
