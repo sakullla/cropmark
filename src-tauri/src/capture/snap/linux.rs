@@ -1,7 +1,9 @@
 //! Linux 元素级命中 provider:X11 窗口级命中,控件级明确回退。
 //!
-//! 窗口级命中栈与窗口枚举(`capture::platform::linux`)同源:`_NET_CLIENT_LIST`
-//! 给出 WM 维护的受管顶层窗口(stacking 自底向上),`get_geometry` +
+//! 窗口级命中栈与窗口枚举(`capture::platform::linux`)同源:优先
+//! `_NET_CLIENT_LIST_STACKING`(EWMH 规定的窗口 z 序,自底向上),该属性缺失
+//! 时回退 `_NET_CLIENT_LIST`(EWMH 只保证它是初始映射顺序,不保证 stacking),
+//! 列数探测与命中栈共用同一来源;`get_geometry` +
 //! `translate_coordinates` + `_NET_FRAME_EXTENTS` 叠加窗口装饰得到屏幕物理
 //! 像素矩形;标题取 `_NET_WM_NAME`/`WM_NAME`,`_NET_WM_PID` 用于排除本进程
 //! 窗口(贴图等;选区壳自身是 override-redirect,不进受管列表)。
@@ -25,6 +27,10 @@ use super::{SnapCapability, SnapContext, SnapHit, SnapKind, SnapProvider, SnapRe
 const CONTROL_FALLBACK_KEY: &str = "error.capture.snap_control_unavailable";
 /// 检测不可用(自由框选)说明词条。
 const UNAVAILABLE_KEY: &str = "error.capture.snap_unavailable";
+/// EWMH 窗口 z 序属性(自底向上);命中栈按它排序。
+const STACKING_LIST_ATOM: &[u8] = b"_NET_CLIENT_LIST_STACKING";
+/// 回退属性:WM 不维护 stacking 时使用,但 EWMH 只保证它是初始映射顺序。
+const CLIENT_LIST_ATOM: &[u8] = b"_NET_CLIENT_LIST";
 
 /// 平台 provider 单例。窗口级一旦探测可用就缓存(WM 能力在进程生命周期内
 /// 稳定);负向结果(无 X/无窗口列表)不缓存,避免一次空桌面把降级状态粘死。
@@ -92,7 +98,8 @@ fn wayland_session() -> bool {
 }
 
 /// 当前受管窗口列表长度;X11 连接或属性读取失败按 0(不可用)处理——
-/// "列表不可读"与"列表为空"都不构成窗口级可用的依据。
+/// "列表不可读"与"列表为空"都不构成窗口级可用的依据。与命中栈共用
+/// `client_list` 的来源选择,能力位与栈不会出现"来源分裂"。
 fn listed_window_count() -> usize {
     let Ok((conn, screen_num)) = x11rb::connect(None) else {
         return 0;
@@ -101,8 +108,9 @@ fn listed_window_count() -> usize {
     client_list(&conn, root).map_or(0, |ids| ids.len())
 }
 
-/// X11 窗口级命中栈:受管窗口自底向上枚举,过滤未映射/零尺寸/本进程窗口,
-/// 返回屏幕物理像素矩形(由 `FrameSnap` 平移到帧坐标并裁进帧内)。
+/// X11 窗口级命中栈:受管窗口按 z 序自底向上枚举(见 `client_list`),
+/// 过滤未映射/零尺寸/本进程窗口,返回屏幕物理像素矩形(由 `FrameSnap`
+/// 平移到帧坐标并裁进帧内)。
 fn x11_hit_stack(screen_x: i32, screen_y: i32) -> Result<SnapStack, ()> {
     let (conn, screen_num) = x11rb::connect(None).map_err(|_| ())?;
     let root = conn.setup().roots[screen_num].root;
@@ -126,8 +134,9 @@ fn x11_hit_stack(screen_x: i32, screen_y: i32) -> Result<SnapStack, ()> {
     Ok(stack_from_windows_bottom_up(windows))
 }
 
-/// 组装窗口级命中栈(纯逻辑):入参按 `_NET_CLIENT_LIST` 的 stacking 自底
-/// 向上,输出自上层到下层的命中——栈首是最上层(指针所在)窗口,默认高亮它,
+/// 组装窗口级命中栈(纯逻辑):入参按 stacking z 序自底向上
+/// (`_NET_CLIENT_LIST_STACKING`;回退 `_NET_CLIENT_LIST` 时该顺序只是近似),
+/// 输出自上层到下层的命中——栈首是最上层(指针所在)窗口,默认高亮它,
 /// 滚轮 Parent 逐步切到被它遮住的窗口。
 fn stack_from_windows_bottom_up(windows: Vec<(SnapRect, Option<String>)>) -> SnapStack {
     SnapStack::new(
@@ -204,15 +213,49 @@ fn rect_contains(rect: SnapRect, x: i32, y: i32) -> bool {
     x >= left && x < right && y >= top && y < bottom
 }
 
-/// `_NET_CLIENT_LIST`(WM 维护的受管窗口,stacking 自底向上)。
+/// 受管窗口列表,命中栈与能力探测(列数)共用,保证两者来源一致:
+/// 优先 `_NET_CLIENT_LIST_STACKING`(EWMH 规定的 z 序,自底向上);
+/// 该属性缺失(WM 不维护)时回退 `_NET_CLIENT_LIST`——EWMH 只保证后者是
+/// 初始映射顺序,窗口重新置顶后不更新,回退顺序只是近似。两者都缺失时
+/// 按不可读处理;连接/请求失败由 `Err` 上抛。
 fn client_list(conn: &impl Connection, root: xproto::Window) -> Result<Vec<u32>, ()> {
-    let atom = intern(conn, b"_NET_CLIENT_LIST")?;
+    let stacking_atom = intern(conn, STACKING_LIST_ATOM)?;
+    let stacking = window_list_property(conn, root, stacking_atom)?;
+    let fallback = if stacking.is_none() {
+        let client_atom = intern(conn, CLIENT_LIST_ATOM)?;
+        window_list_property(conn, root, client_atom)?
+    } else {
+        None
+    };
+    resolve_client_list(stacking, fallback)
+}
+
+/// 来源选择(纯逻辑,便于单测):stacking 属性存在(即使为空列表)即采用,
+/// 不混入另一来源;缺失才回退 client list;两者都缺失按不可读处理。
+/// 属性存在但为空表示 WM 当前没有受管窗口,不能拿旧来源拼凑命中栈。
+fn resolve_client_list(
+    stacking: Option<Vec<u32>>,
+    client_list: Option<Vec<u32>>,
+) -> Result<Vec<u32>, ()> {
+    stacking.or(client_list).ok_or(())
+}
+
+/// 读取 WINDOW 列表属性:属性缺失(type NONE)返回 `None`,存在时返回其值
+/// (可能为空列表),请求失败返回 `Err`。
+fn window_list_property(
+    conn: &impl Connection,
+    root: xproto::Window,
+    atom: xproto::Atom,
+) -> Result<Option<Vec<u32>>, ()> {
     let reply = conn
         .get_property(false, root, atom, xproto::AtomEnum::WINDOW, 0, 4096)
         .map_err(|_| ())?
         .reply()
         .map_err(|_| ())?;
-    Ok(reply.value32().into_iter().flatten().collect())
+    if reply.type_ == xproto::AtomEnum::NONE.into() {
+        return Ok(None);
+    }
+    Ok(Some(reply.value32().into_iter().flatten().collect()))
 }
 
 fn frame_extents(conn: &impl Connection, id: u32) -> (i32, i32, i32, i32) {
@@ -327,6 +370,24 @@ mod tests {
         // 负原点 + 超大尺寸:i64 中间量不溢出。
         let huge = SnapRect::new(i32::MIN / 2, i32::MIN / 2, u32::MAX, u32::MAX);
         assert!(rect_contains(huge, 0, 0));
+    }
+
+    #[test]
+    fn client_list_source_prefers_stacking_and_falls_back_only_when_missing() {
+        // 来源属性名与 EWMH 一致:z 序在 stacking 属性,回退属性只保证初始映射顺序。
+        assert_eq!(STACKING_LIST_ATOM, b"_NET_CLIENT_LIST_STACKING".as_slice());
+        assert_eq!(CLIENT_LIST_ATOM, b"_NET_CLIENT_LIST".as_slice());
+
+        // stacking 属性存在(即使与 client list 不同或为空)一律采用,不混用来源。
+        assert_eq!(
+            resolve_client_list(Some(vec![7, 3]), Some(vec![7, 9])),
+            Ok(vec![7, 3])
+        );
+        assert_eq!(resolve_client_list(Some(vec![]), Some(vec![7])), Ok(vec![]));
+        // stacking 缺失(WM 不维护)才回退 client list。
+        assert_eq!(resolve_client_list(None, Some(vec![7, 9])), Ok(vec![7, 9]));
+        // 两者都缺失:不可读,能力探测按不可用处理。
+        assert_eq!(resolve_client_list(None, None), Err(()));
     }
 
     #[test]
