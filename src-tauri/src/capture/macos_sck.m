@@ -1,4 +1,5 @@
 #import <AppKit/AppKit.h>
+#import <ApplicationServices/ApplicationServices.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 #import <dispatch/dispatch.h>
@@ -596,6 +597,355 @@ int32_t cropmark_sck_list_windows(CropmarkSckWindow *out, int32_t cap, int32_t *
       strncpy(slot->title, utf8, sizeof(slot->title) - 1);
     }
     n += 1;
+  }
+  if (count) {
+    *count = n;
+  }
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
+// R7:元素级吸附。窗口级用 CGWindowListCopyWindowInfo,控件级用 Accessibility
+// API(AXUIElement);这里只做系统取值,帧像素 ↔ CG 全局点坐标的换算与命中栈
+// 组装在 Rust 侧完成。坐标契约:输入/输出矩形都是 CG 全局点坐标(y 向下,
+// 主屏左上为原点);返回矩形由 Rust 按 backingScale 换算为屏幕物理像素。
+// 所有调用失败返回非 0 状态,不抛出、不中止进程。
+// ---------------------------------------------------------------------------
+
+typedef struct CropmarkSnapDisplay {
+  int32_t logical_x;   // NSMinX(点,AppKit 底原点)
+  int32_t logical_y;   // NSMinY(点,AppKit 底原点)
+  uint32_t logical_w;  // NSWidth(点)
+  uint32_t logical_h;  // NSHeight(点)
+  int32_t primary_h;   // 主屏高度(点):CG(y 向下)/ AppKit(y 向上)翻转基准
+} CropmarkSnapDisplay;
+
+typedef struct CropmarkSnapWindow {
+  double x;         // CG 全局点坐标
+  double y;
+  double width;
+  double height;
+  int32_t pid;      // 属主进程(控件级查询与该进程窗口归属判定用)
+  char title[256];  // 窗口标题;缺失时用属主名
+} CropmarkSnapWindow;
+
+typedef struct CropmarkSnapAxItem {
+  double x;         // CG 全局点坐标
+  double y;
+  double width;
+  double height;
+  char role[64];    // AXRole
+  char label[256];  // AXTitle / AXDescription / AXValue 首个可用字符串
+} CropmarkSnapAxItem;
+
+static void cropmark_snap_copy_cfstring(CFTypeRef value, char *buffer, size_t cap) {
+  if (!buffer || cap == 0) {
+    return;
+  }
+  buffer[0] = 0;
+  if (!value || CFGetTypeID(value) != CFStringGetTypeID()) {
+    return;
+  }
+  if (!CFStringGetCString((CFStringRef)value, buffer, (CFIndex)cap, kCFStringEncodingUTF8)) {
+    buffer[0] = 0;
+  }
+}
+
+// CFNumber/CFBoolean 统一取整数值;类型不符或读取失败回退默认值。
+static int32_t cropmark_snap_int_value(CFTypeRef value, int32_t fallback) {
+  if (!value) {
+    return fallback;
+  }
+  if (CFGetTypeID(value) == CFBooleanGetTypeID()) {
+    return CFBooleanGetValue((CFBooleanRef)value) ? 1 : 0;
+  }
+  if (CFGetTypeID(value) != CFNumberGetTypeID()) {
+    return fallback;
+  }
+  int32_t result = fallback;
+  if (!CFNumberGetValue((CFNumberRef)value, kCFNumberIntType, &result)) {
+    return fallback;
+  }
+  return result;
+}
+
+static double cropmark_snap_double_value(CFTypeRef value, double fallback) {
+  if (!value || CFGetTypeID(value) != CFNumberGetTypeID()) {
+    return fallback;
+  }
+  double result = fallback;
+  if (!CFNumberGetValue((CFNumberRef)value, kCFNumberDoubleType, &result)) {
+    return fallback;
+  }
+  return result;
+}
+
+// 窗口级命中可用性:CGWindowList 给出的跨应用窗口信息依赖屏幕录制权限
+// (截取流程进入选区时已具备);缺失时按不可用回退自由框选。
+int32_t cropmark_snap_window_level_available(void) {
+  return CGPreflightScreenCaptureAccess() ? 1 : 0;
+}
+
+// 辅助功能授权预检(不弹窗)。
+int32_t cropmark_snap_ax_trusted(void) {
+  return AXIsProcessTrusted() ? 1 : 0;
+}
+
+// 未授权时每进程只发出一次系统授权提示(文案由系统本地化);已授权返回 1,
+// 已提示过或未授权返回 0,调用方据此降级窗口级。
+static atomic_bool g_snap_ax_prompted = false;
+
+int32_t cropmark_snap_ax_prompt_if_needed(void) {
+  if (AXIsProcessTrusted()) {
+    return 1;
+  }
+  if (atomic_exchange(&g_snap_ax_prompted, true)) {
+    return 0;
+  }
+  const void *keys[1] = {(const void *)kAXTrustedCheckOptionPrompt};
+  const void *values[1] = {(const void *)kCFBooleanTrue};
+  CFDictionaryRef options = CFDictionaryCreate(kCFAllocatorDefault, keys, values, 1,
+                                               &kCFTypeDictionaryKeyCallBacks,
+                                               &kCFTypeDictionaryValueCallBacks);
+  if (!options) {
+    return 0;
+  }
+  Boolean trusted = AXIsProcessTrustedWithOptions(options);
+  CFRelease(options);
+  return trusted ? 1 : 0;
+}
+
+// 按逻辑原点匹配显示器(帧像素换算到 CG 全局点的基准);找不到返回 -1。
+int32_t cropmark_snap_display(int32_t logical_x, int32_t logical_y, CropmarkSnapDisplay *out) {
+  if (!out) {
+    return -1;
+  }
+  memset(out, 0, sizeof(*out));
+  NSScreen *matched = nil;
+  for (NSScreen *screen in [NSScreen screens]) {
+    NSRect frame = screen.frame;
+    if ((int32_t)llround(NSMinX(frame)) == logical_x &&
+        (int32_t)llround(NSMinY(frame)) == logical_y) {
+      matched = screen;
+      break;
+    }
+  }
+  if (!matched) {
+    NSPoint probe = NSMakePoint((CGFloat)logical_x + 1.0, (CGFloat)logical_y + 1.0);
+    for (NSScreen *screen in [NSScreen screens]) {
+      if (NSPointInRect(probe, screen.frame)) {
+        matched = screen;
+        break;
+      }
+    }
+  }
+  if (!matched) {
+    return -1;
+  }
+  NSRect frame = matched.frame;
+  NSArray<NSScreen *> *screens = [NSScreen screens];
+  NSScreen *primary = screens.firstObject;
+  CGFloat primary_h = primary ? NSHeight(primary.frame) : NSHeight(frame);
+  out->logical_x = (int32_t)llround(NSMinX(frame));
+  out->logical_y = (int32_t)llround(NSMinY(frame));
+  out->logical_w = (uint32_t)llround(NSWidth(frame));
+  out->logical_h = (uint32_t)llround(NSHeight(frame));
+  out->primary_h = (int32_t)llround(primary_h);
+  return 0;
+}
+
+// 指针处自顶向下的在屏窗口列表(CGWindowList 前后序);本进程窗口(选区壳、
+// 贴图等)与桌面元素跳过。0 成功(count 可为 0),非 0 表示 API 不可用。
+int32_t cropmark_snap_windows_at(double px, double py, CropmarkSnapWindow *out, int32_t cap,
+                                 int32_t *count) {
+  if (count) {
+    *count = 0;
+  }
+  if (!out || cap <= 0) {
+    return -1;
+  }
+  CFArrayRef windows = CGWindowListCopyWindowInfo(
+      kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID);
+  if (!windows) {
+    return 2;
+  }
+  int32_t self_pid = (int32_t)[[NSRunningApplication currentApplication] processIdentifier];
+  CGPoint point = CGPointMake((CGFloat)px, (CGFloat)py);
+  int32_t n = 0;
+  CFIndex total = CFArrayGetCount(windows);
+  for (CFIndex i = 0; i < total && n < cap; i++) {
+    CFTypeRef item = CFArrayGetValueAtIndex(windows, i);
+    if (!item || CFGetTypeID(item) != CFDictionaryGetTypeID()) {
+      continue;
+    }
+    CFDictionaryRef info = (CFDictionaryRef)item;
+    CFTypeRef bounds_value = CFDictionaryGetValue(info, kCGWindowBounds);
+    CGRect bounds = CGRectNull;
+    if (!bounds_value || CFGetTypeID(bounds_value) != CFDictionaryGetTypeID() ||
+        !CGRectMakeWithDictionaryRepresentation((CFDictionaryRef)bounds_value, &bounds)) {
+      continue;
+    }
+    if (bounds.size.width < 1.0 || bounds.size.height < 1.0) {
+      continue;
+    }
+    if (!CGRectContainsPoint(bounds, point)) {
+      continue;
+    }
+    int32_t pid = cropmark_snap_int_value(CFDictionaryGetValue(info, kCGWindowOwnerPID), 0);
+    if (pid == self_pid) {
+      continue;
+    }
+    if (cropmark_snap_int_value(CFDictionaryGetValue(info, kCGWindowIsOnscreen), 1) == 0) {
+      continue;
+    }
+    if (cropmark_snap_double_value(CFDictionaryGetValue(info, kCGWindowAlpha), 1.0) <= 0.01) {
+      continue;
+    }
+    CropmarkSnapWindow *slot = &out[n];
+    memset(slot, 0, sizeof(*slot));
+    slot->x = (double)CGRectGetMinX(bounds);
+    slot->y = (double)CGRectGetMinY(bounds);
+    slot->width = (double)CGRectGetWidth(bounds);
+    slot->height = (double)CGRectGetHeight(bounds);
+    slot->pid = pid;
+    cropmark_snap_copy_cfstring(CFDictionaryGetValue(info, kCGWindowName), slot->title,
+                                sizeof(slot->title));
+    if (slot->title[0] == 0) {
+      cropmark_snap_copy_cfstring(CFDictionaryGetValue(info, kCGWindowOwnerName), slot->title,
+                                  sizeof(slot->title));
+    }
+    n++;
+  }
+  CFRelease(windows);
+  if (count) {
+    *count = n;
+  }
+  return 0;
+}
+
+// AX 属性字符串;缺失/类型不符留空。
+static void cropmark_snap_ax_attribute_string(AXUIElementRef element, CFStringRef attribute,
+                                              char *buffer, size_t cap) {
+  if (!buffer || cap == 0) {
+    return;
+  }
+  buffer[0] = 0;
+  CFTypeRef value = NULL;
+  if (AXUIElementCopyAttributeValue(element, attribute, &value) != kAXErrorSuccess || !value) {
+    return;
+  }
+  cropmark_snap_copy_cfstring(value, buffer, cap);
+  CFRelease(value);
+}
+
+// AX 元素帧(CG 全局点坐标);position/size 任一缺失返回 false。
+static bool cropmark_snap_ax_frame(AXUIElementRef element, CGRect *out) {
+  CFTypeRef position_value = NULL;
+  CFTypeRef size_value = NULL;
+  CGPoint position = CGPointZero;
+  CGSize size = CGSizeZero;
+  bool ok = false;
+  if (AXUIElementCopyAttributeValue(element, kAXPositionAttribute, &position_value) ==
+          kAXErrorSuccess &&
+      position_value &&
+      AXValueGetValue((AXValueRef)position_value, kAXValueCGPointType, &position)) {
+    if (AXUIElementCopyAttributeValue(element, kAXSizeAttribute, &size_value) == kAXErrorSuccess &&
+        size_value && AXValueGetValue((AXValueRef)size_value, kAXValueCGSizeType, &size)) {
+      out->origin = position;
+      out->size = size;
+      ok = true;
+    }
+  }
+  if (position_value) {
+    CFRelease(position_value);
+  }
+  if (size_value) {
+    CFRelease(size_value);
+  }
+  return ok;
+}
+
+// 控件可读名称:标题优先,其次描述,再次值(仅字符串)。
+static void cropmark_snap_ax_label(AXUIElementRef element, char *buffer, size_t cap) {
+  if (!buffer || cap == 0) {
+    return;
+  }
+  buffer[0] = 0;
+  CFStringRef attributes[3] = {kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute};
+  for (size_t i = 0; i < 3; i++) {
+    cropmark_snap_ax_attribute_string(element, attributes[i], buffer, cap);
+    if (buffer[0] != 0) {
+      return;
+    }
+  }
+}
+
+// 指定进程在指针处自最深控件到窗口的 AX 链(CG 全局点坐标)。AXWindow 不入栈
+// (顶层窗口由窗口级条目承担),零尺寸元素跳过,深度/数量有界。0 成功(可空链),
+// 1 无命中/进程无辅助功能元素,2 未授权或创建失败。
+int32_t cropmark_snap_ax_chain(int32_t pid, double px, double py, CropmarkSnapAxItem *out,
+                               int32_t cap, int32_t *count) {
+  if (count) {
+    *count = 0;
+  }
+  if (!out || cap <= 0 || pid <= 0) {
+    return -1;
+  }
+  if (!AXIsProcessTrusted()) {
+    return 2;
+  }
+  AXUIElementRef app = AXUIElementCreateApplication((pid_t)pid);
+  if (!app) {
+    return 2;
+  }
+  // 目标应用无响应时不拖住选区壳(壳在主线程泵事件):AX 默认消息超时可达
+  // 数秒,这里压到 250ms,超时返回失败按无命中降级窗口级。
+  (void)AXUIElementSetMessagingTimeout(app, 0.25f);
+  AXUIElementRef current = NULL;
+  AXError status = AXUIElementCopyElementAtPosition(app, (float)px, (float)py, &current);
+  CFRelease(app);
+  if (status != kAXErrorSuccess || !current) {
+    return 1;
+  }
+  pid_t element_pid = 0;
+  if (AXUIElementGetPid(current, &element_pid) == kAXErrorSuccess && element_pid != (pid_t)pid) {
+    CFRelease(current);
+    return 1;
+  }
+  int32_t n = 0;
+  for (int depth = 0; current && depth < 32 && n < cap; depth++) {
+    char role[64];
+    cropmark_snap_ax_attribute_string(current, kAXRoleAttribute, role, sizeof(role));
+    bool is_window = role[0] != 0 && strcmp(role, "AXWindow") == 0;
+    if (!is_window) {
+      CGRect frame = CGRectNull;
+      if (cropmark_snap_ax_frame(current, &frame) && frame.size.width >= 1.0 &&
+          frame.size.height >= 1.0) {
+        CropmarkSnapAxItem *slot = &out[n];
+        memset(slot, 0, sizeof(*slot));
+        slot->x = (double)frame.origin.x;
+        slot->y = (double)frame.origin.y;
+        slot->width = (double)frame.size.width;
+        slot->height = (double)frame.size.height;
+        memcpy(slot->role, role, sizeof(slot->role));
+        cropmark_snap_ax_label(current, slot->label, sizeof(slot->label));
+        n++;
+      }
+    }
+    if (is_window) {
+      CFRelease(current);
+      current = NULL;
+      break;
+    }
+    CFTypeRef parent = NULL;
+    if (AXUIElementCopyAttributeValue(current, kAXParentAttribute, &parent) != kAXErrorSuccess) {
+      parent = NULL;
+    }
+    CFRelease(current);
+    current = (AXUIElementRef)parent;
+  }
+  if (current) {
+    CFRelease(current);
   }
   if (count) {
     *count = n;
