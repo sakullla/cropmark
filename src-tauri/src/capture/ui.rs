@@ -147,6 +147,8 @@ pub struct OverlayPayload {
     pub pending_ocr: bool,
     /// 壳上的识别二维码动作:工作区打开后开始本地识别,不写剪贴板。
     pub pending_qr: bool,
+    /// 录屏且格式要求偶数宽高时,确认前的矩形按这个标记收边。
+    pub record_even: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -274,6 +276,7 @@ pub fn overlay_payload(
         annotations: Vec::new(),
         pending_ocr: false,
         pending_qr: false,
+        record_even: false,
     })
 }
 

@@ -14,6 +14,10 @@ use crate::i18n::{self, Language};
 /// 序号工具起始值允许范围；超出时钳制。
 pub const MIN_NUMBER_START: u32 = 1;
 pub const MAX_NUMBER_START: u32 = 999;
+/// 选区工具与录屏格式的一次性迁移修订号。写过之后不再猜测旧默认。
+pub const CHROME_REVISION: u32 = 1;
+/// 录屏帧率只允许这三档。`None` 表示还没单独选过。
+pub const RECORDING_FPS_CHOICES: [u32; 3] = [10, 15, 30];
 
 /// 标注样式默认值：color 为 #hex；width/text_size 为 None 时沿用现有自动推导；
 /// number_start 为序号工具第一次放置的编号，连续放置自动递增并跨会话保留。
@@ -264,22 +268,39 @@ pub struct PinSettings {
     pub restore: bool,
 }
 
-/// 录屏开关(R3/R9):配置精简后唯一保留的功能开关,默认关闭。
-/// 关闭时托盘与选区不出现录屏入口;录制引擎本身由入口按该值门控。
-/// `format` 为录制产物格式(GIF/WebP/MP4),默认 GIF,启动录制前读取。
+/// 录屏开关:默认关闭。关闭时托盘与选区不出现录屏入口。
+/// 新安装格式默认 MP4。`fps` 只接受 10/15/30;没选过时为 None,
+/// 由录制侧按格式取默认档。旧文件缺格式字段时仍按 GIF 读入,再由修订号迁移。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct RecordingSettings {
     pub enabled: bool,
+    #[serde(default = "legacy_recording_format")]
     pub format: crate::record::RecordFormat,
+    /// 用户选定的帧率。缺省或非法值按「未选过」处理,不另开第四档。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fps: Option<u32>,
+}
+
+fn legacy_recording_format() -> crate::record::RecordFormat {
+    crate::record::RecordFormat::Gif
 }
 
 impl Default for RecordingSettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            format: crate::record::RecordFormat::Gif,
+            format: crate::record::RecordFormat::Mp4,
+            fps: None,
         }
+    }
+}
+
+impl RecordingSettings {
+    /// 帧率只保留 10/15/30;其它数值丢掉,避免设置里出现第四档。
+    pub fn sanitized(self) -> Self {
+        let fps = self.fps.filter(|fps| RECORDING_FPS_CHOICES.contains(fps));
+        Self { fps, ..self }
     }
 }
 
@@ -369,8 +390,8 @@ pub struct StoredSettings {
     pub pin: PinSettings,
     #[serde(default)]
     pub recording: RecordingSettings,
-    /// 选区工具开关。旧配置没有该字段时用常用项默认值。
-    #[serde(default)]
+    /// 选区工具开关。缺字段时按升级前的「全部打开」读入,由修订号决定是否改成新默认。
+    #[serde(default = "legacy_region_tools")]
     pub region_tools: RegionTools,
     #[serde(default)]
     pub last_region: Option<LastRegion>,
@@ -381,6 +402,9 @@ pub struct StoredSettings {
     /// 旧配置缺少该字段时按未完成处理(R9:引导开关移除,只看该标记)。
     #[serde(default)]
     pub onboarding_done: bool,
+    /// 选区工具与录屏格式的一次性修订号。0 表示还没迁移过。
+    #[serde(default)]
+    pub chrome_revision: u32,
 }
 
 pub fn default_language_setting() -> String {
@@ -458,10 +482,13 @@ pub struct SessionState {
     pub tray: Mutex<TrayState>,
     pub language: Mutex<String>,
     pub onboarding_done: Mutex<bool>,
+    pub chrome_revision: Mutex<u32>,
 }
 
 impl SessionState {
-    pub fn from_stored(stored: StoredSettings) -> Self {
+    pub fn from_stored(mut stored: StoredSettings) -> Self {
+        migrate_chrome_defaults(&mut stored);
+        let recording = stored.recording.sanitized();
         Self {
             hotkeys: Mutex::new(stored.hotkeys),
             hotkey_errors: Mutex::new(HotkeyErrors::default()),
@@ -472,12 +499,13 @@ impl SessionState {
             history: Mutex::new(stored.history.sanitized()),
             export: Mutex::new(stored.export.sanitized()),
             pin: Mutex::new(stored.pin),
-            recording: Mutex::new(stored.recording),
+            recording: Mutex::new(recording),
             region_tools: Mutex::new(stored.region_tools),
             last_region: Mutex::new(stored.last_region.and_then(LastRegion::sanitized)),
             tray: Mutex::new(TrayState::available()),
             language: Mutex::new(sanitize_language(&stored.language)),
             onboarding_done: Mutex::new(stored.onboarding_done),
+            chrome_revision: Mutex::new(stored.chrome_revision),
         }
     }
 }
@@ -515,7 +543,9 @@ pub fn current_recording(app: &AppHandle) -> RecordingSettings {
 }
 
 /// 选区与预览里出现哪些标注工具。工具实现都保留;关闭的只是不放进工具条。
-/// 主行常用项和「更多」里的序号、聚光灯、放大镜、气泡、贴纸、擦除默认都打开。
+/// 新默认打开箭头、矩形、椭圆、荧光笔、马赛克、文字和取字。
+/// 直线/模糊/贴图不再是独立开关:旧 JSON 里的键仍能读入,但界面不展示,
+/// 直线跟随箭头、模糊跟随马赛克,贴图固定出现。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct RegionTools {
@@ -531,15 +561,15 @@ pub struct RegionTools {
     pub bubble: bool,
     pub sticker: bool,
     pub erase: bool,
-    /// 「更多」里的直线。
+    /// 旧配置里的直线开关。行为不再读取它。
     pub line: bool,
-    /// 「更多」里的模糊。
+    /// 旧配置里的模糊开关。行为不再读取它。
     pub blur: bool,
-    /// 「更多」里的贴图。
+    /// 旧配置里的贴图开关。行为不再读取它。
     pub pin: bool,
-    /// 「更多」里的取字。
+    /// 菜单里的取字。
     pub ocr: bool,
-    /// 「更多」里的识别二维码。
+    /// 菜单里的识别二维码。
     pub qr: bool,
 }
 
@@ -552,19 +582,79 @@ impl Default for RegionTools {
             highlighter: true,
             mosaic: true,
             text: true,
-            number: true,
-            spotlight: true,
-            magnifier: true,
-            bubble: true,
-            sticker: true,
-            erase: true,
-            line: true,
-            blur: true,
-            pin: true,
+            number: false,
+            spotlight: false,
+            magnifier: false,
+            bubble: false,
+            sticker: false,
+            erase: false,
+            line: false,
+            blur: false,
+            pin: false,
             ocr: true,
-            qr: true,
+            qr: false,
         }
     }
+}
+
+/// 升级前没有 `regionTools` 字段时,运行时等于全部打开。
+fn legacy_region_tools() -> RegionTools {
+    RegionTools {
+        arrow: true,
+        rect: true,
+        ellipse: true,
+        highlighter: true,
+        mosaic: true,
+        text: true,
+        number: true,
+        spotlight: true,
+        magnifier: true,
+        bubble: true,
+        sticker: true,
+        erase: true,
+        line: true,
+        blur: true,
+        pin: true,
+        ocr: true,
+        qr: true,
+    }
+}
+
+impl RegionTools {
+    /// 绘制工具、取字、二维码仍是升级前的全部打开。直线/模糊/贴图不参与判断。
+    fn is_legacy_all_enabled(self) -> bool {
+        self.arrow
+            && self.rect
+            && self.ellipse
+            && self.highlighter
+            && self.mosaic
+            && self.text
+            && self.number
+            && self.spotlight
+            && self.magnifier
+            && self.bubble
+            && self.sticker
+            && self.erase
+            && self.ocr
+            && self.qr
+    }
+}
+
+/// 没有修订号时迁移一次:全开的工具改成新默认,仍是 GIF 的格式改成 MP4。
+/// 已经不同的组合、以及 WebP/MP4 保持原样。修订号写过之后不再改写。
+/// 返回 true 表示这次写入了修订号。
+pub fn migrate_chrome_defaults(stored: &mut StoredSettings) -> bool {
+    if stored.chrome_revision >= CHROME_REVISION {
+        return false;
+    }
+    if stored.region_tools.is_legacy_all_enabled() {
+        stored.region_tools = RegionTools::default();
+    }
+    if stored.recording.format == crate::record::RecordFormat::Gif {
+        stored.recording.format = crate::record::RecordFormat::Mp4;
+    }
+    stored.chrome_revision = CHROME_REVISION;
+    true
 }
 
 pub fn current_region_tools(app: &AppHandle) -> RegionTools {
@@ -644,8 +734,19 @@ pub fn load_from_app(app: &AppHandle) -> StoredSettings {
 
 pub fn load_from_path(path: &std::path::Path) -> StoredSettings {
     match fs::read_to_string(path) {
-        Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
-        Err(_) => StoredSettings::default(),
+        Ok(text) => {
+            let mut stored: StoredSettings = serde_json::from_str(&text).unwrap_or_default();
+            stored.recording = stored.recording.sanitized();
+            if migrate_chrome_defaults(&mut stored) {
+                let _ = save_to_path(path, &stored);
+            }
+            stored
+        }
+        Err(_) => {
+            let mut stored = StoredSettings::default();
+            migrate_chrome_defaults(&mut stored);
+            stored
+        }
     }
 }
 
@@ -941,7 +1042,7 @@ pub fn set_region_tools(app: AppHandle, tools: RegionTools) -> UiSettings {
 /// 与录制启动在打开/开始时读取当前值与格式。
 #[tauri::command]
 pub fn set_recording_settings(app: AppHandle, settings: RecordingSettings) -> UiSettings {
-    *lock(&app.state::<SessionState>().recording) = settings;
+    *lock(&app.state::<SessionState>().recording) = settings.sanitized();
     let applied = i18n::t("notice.recording_applied");
     persist_settings(&app, &applied);
     crate::tray::refresh_menu(&app);
@@ -984,6 +1085,7 @@ fn stored_from_state(state: &SessionState) -> StoredSettings {
         last_region: *lock(&state.last_region),
         language: lock(&state.language).clone(),
         onboarding_done: *lock(&state.onboarding_done),
+        chrome_revision: *lock(&state.chrome_revision),
     }
 }
 
@@ -1078,6 +1180,7 @@ mod tests {
             recording: RecordingSettings {
                 enabled: true,
                 format: crate::record::RecordFormat::Mp4,
+                fps: None,
             },
             region_tools: RegionTools::default(),
             last_region: Some(LastRegion {
@@ -1088,6 +1191,7 @@ mod tests {
             }),
             language: "en".into(),
             onboarding_done: true,
+            chrome_revision: CHROME_REVISION,
         };
         save_to_path(&path, &stored).unwrap();
         let text = fs::read_to_string(&path).unwrap();
@@ -1251,20 +1355,22 @@ mod tests {
         assert!(!export.apply_beautify);
         assert!(!export.use_filename_template);
         assert!(!PinSettings::default().restore);
-        // R3/R9:录屏开关默认关闭,是配置精简后唯一保留的功能开关;录制格式默认 GIF。
+        // 录屏开关默认关闭。新安装格式是 MP4,帧率未单独选过。
         assert!(!RecordingSettings::default().enabled);
         assert_eq!(
             RecordingSettings::default().format,
-            crate::record::RecordFormat::Gif
+            crate::record::RecordFormat::Mp4
         );
+        assert_eq!(RecordingSettings::default().fps, None);
     }
 
     #[test]
     fn recording_setting_roundtrips_and_defaults_to_disabled() {
         let missing: StoredSettings = serde_json::from_str("{}").unwrap();
         assert!(!missing.recording.enabled);
-        assert_eq!(missing.recording.format, crate::record::RecordFormat::Gif);
-        // 旧文件只有 enabled(格式字段加入前):按默认 GIF 读取。
+        // 整段 recording 缺失时用新默认 MP4;启动迁移不会把它改回 GIF。
+        assert_eq!(missing.recording.format, crate::record::RecordFormat::Mp4);
+        // 旧文件只有 enabled(格式字段加入前):字段默认仍是 GIF,交给修订号迁移。
         let legacy: StoredSettings =
             serde_json::from_str(r#"{"recording":{"enabled":true}}"#).unwrap();
         assert!(legacy.recording.enabled);
@@ -1908,5 +2014,128 @@ mod tests {
             ..StoredSettings::default()
         });
         assert!(*lock(&state.onboarding_done));
+    }
+
+    fn legacy_all_region_tools() -> RegionTools {
+        RegionTools {
+            arrow: true,
+            rect: true,
+            ellipse: true,
+            highlighter: true,
+            mosaic: true,
+            text: true,
+            number: true,
+            spotlight: true,
+            magnifier: true,
+            bubble: true,
+            sticker: true,
+            erase: true,
+            line: true,
+            blur: true,
+            pin: true,
+            ocr: true,
+            qr: true,
+        }
+    }
+
+    #[test]
+    fn new_region_tools_default_to_common_tools_and_ocr() {
+        let tools = RegionTools::default();
+        assert!(
+            tools.arrow
+                && tools.rect
+                && tools.ellipse
+                && tools.highlighter
+                && tools.mosaic
+                && tools.text
+                && tools.ocr
+        );
+        assert!(
+            !tools.number
+                && !tools.spotlight
+                && !tools.magnifier
+                && !tools.bubble
+                && !tools.sticker
+                && !tools.erase
+                && !tools.qr
+        );
+    }
+
+    #[test]
+    fn missing_revision_migrates_all_on_tools_and_gif_once() {
+        let dir = std::env::temp_dir().join(format!(
+            "cropmark-settings-chrome-{}",
+            std::process::id()
+        ));
+        let path = dir.join("settings.json");
+        fs::create_dir_all(&dir).unwrap();
+        let legacy = serde_json::json!({
+            "regionTools": legacy_all_region_tools(),
+            "recording": { "enabled": false, "format": "gif" }
+        });
+        fs::write(&path, serde_json::to_string(&legacy).unwrap()).unwrap();
+        let loaded = load_from_path(&path);
+        assert_eq!(loaded.region_tools, RegionTools::default());
+        assert_eq!(loaded.recording.format, crate::record::RecordFormat::Mp4);
+        assert_eq!(loaded.chrome_revision, CHROME_REVISION);
+        // 再次读取不再改写:用户之后全开或改回 GIF 都保持。
+        let mut again = loaded.clone();
+        again.region_tools = legacy_all_region_tools();
+        again.recording.format = crate::record::RecordFormat::Gif;
+        assert!(!migrate_chrome_defaults(&mut again));
+        assert_eq!(again.region_tools, legacy_all_region_tools());
+        assert_eq!(again.recording.format, crate::record::RecordFormat::Gif);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_revision_keeps_a_custom_tool_mix_but_still_moves_gif() {
+        let mut stored: StoredSettings = serde_json::from_str(
+            r#"{"regionTools":{"arrow":true,"rect":false,"ellipse":true,"highlighter":true,"mosaic":true,"text":true,"number":true,"spotlight":true,"magnifier":true,"bubble":true,"sticker":true,"erase":true,"ocr":true,"qr":true},"recording":{"enabled":true,"format":"gif"}}"#,
+        )
+        .unwrap();
+        assert!(migrate_chrome_defaults(&mut stored));
+        assert!(!stored.region_tools.rect);
+        assert!(stored.region_tools.number);
+        assert_eq!(stored.recording.format, crate::record::RecordFormat::Mp4);
+        assert_eq!(stored.chrome_revision, CHROME_REVISION);
+    }
+
+    #[test]
+    fn missing_revision_keeps_webp_and_mp4() {
+        let mut webp: StoredSettings =
+            serde_json::from_str(r#"{"recording":{"enabled":false,"format":"webp"}}"#).unwrap();
+        assert!(migrate_chrome_defaults(&mut webp));
+        assert_eq!(webp.recording.format, crate::record::RecordFormat::Webp);
+        let mut mp4: StoredSettings =
+            serde_json::from_str(r#"{"recording":{"enabled":false,"format":"mp4"}}"#).unwrap();
+        // 缺 regionTools 时按旧的全开读入,所以工具会迁到新默认,格式保持 MP4。
+        assert!(migrate_chrome_defaults(&mut mp4));
+        assert_eq!(mp4.recording.format, crate::record::RecordFormat::Mp4);
+        assert_eq!(mp4.region_tools, RegionTools::default());
+    }
+
+    #[test]
+    fn recording_fps_only_keeps_the_three_steps() {
+        assert_eq!(
+            RecordingSettings {
+                enabled: true,
+                format: crate::record::RecordFormat::Mp4,
+                fps: Some(60),
+            }
+            .sanitized()
+            .fps,
+            None
+        );
+        assert_eq!(
+            RecordingSettings {
+                enabled: false,
+                format: crate::record::RecordFormat::Gif,
+                fps: Some(15),
+            }
+            .sanitized()
+            .fps,
+            Some(15)
+        );
     }
 }

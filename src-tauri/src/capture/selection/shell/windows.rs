@@ -335,6 +335,44 @@ fn run_shell(
         .unwrap_or(RegionOutcome::Cancelled))
 }
 
+/// 录屏延时大于 0 时,确认后先保持选区矩形并重绘,再结束壳。Esc 放弃这次确认。
+fn hold_recording_rect(state: &mut ShellState, hwnd: HWND) -> bool {
+    let delay = state.canvas.engine.confirm_delay_ms();
+    if delay == 0 || !state.canvas.engine.flags().recording {
+        return true;
+    }
+    let steps = (delay / 100).max(1);
+    for _ in 0..steps {
+        present(state.timing, hwnd, &mut state.canvas);
+        if consume_escape(hwnd) {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    present(state.timing, hwnd, &mut state.canvas);
+    true
+}
+
+fn consume_escape(hwnd: HWND) -> bool {
+    unsafe {
+        let mut msg = MSG::default();
+        while PeekMessageW(
+            &mut msg,
+            Some(hwnd),
+            WM_KEYDOWN,
+            WM_KEYDOWN,
+            PM_REMOVE,
+        )
+        .as_bool()
+        {
+            if msg.wParam.0 == VK_ESCAPE as usize {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// 把一次输入事件交给引擎并处理其输出;返回 true 表示会话已到终态。
 fn feed_event(state: &mut ShellState, event: InputEvent, hwnd: HWND) -> bool {
     let outcome = state.canvas.engine.handle_event(event);
@@ -344,6 +382,9 @@ fn feed_event(state: &mut ShellState, event: InputEvent, hwnd: HWND) -> bool {
             false
         }
         EngineOutcome::Confirmed(rect) => {
+            if !hold_recording_rect(state, hwnd) {
+                return false;
+            }
             let annotations = state.canvas.engine.annotations().to_vec();
             state.outcome = Some(RegionOutcome::Preview(rect, annotations));
             true
@@ -355,6 +396,9 @@ fn feed_event(state: &mut ShellState, event: InputEvent, hwnd: HWND) -> bool {
         EngineOutcome::Action(action) => match action {
             SelectionAction::Annotate => {
                 if let Some(outcome) = annotate_outcome(&state.canvas.engine) {
+                    if !hold_recording_rect(state, hwnd) {
+                        return false;
+                    }
                     state.outcome = Some(outcome);
                     return true;
                 }
@@ -385,6 +429,9 @@ fn feed_event(state: &mut ShellState, event: InputEvent, hwnd: HWND) -> bool {
             // R3:以当前选区开始录制会话。
             SelectionAction::Recording => {
                 if let Some(outcome) = recording_outcome(&state.canvas.engine) {
+                    if !hold_recording_rect(state, hwnd) {
+                        return false;
+                    }
                     state.outcome = Some(outcome);
                     return true;
                 }
@@ -1575,6 +1622,62 @@ mod tests {
         )
     }
 
+    fn activate_action(state: &mut ShellState, hwnd: HWND, action: SelectionAction) -> bool {
+        let toolbar = state
+            .canvas
+            .engine
+            .unified_toolbar()
+            .expect("toolbar");
+        let on_bar = toolbar
+            .buttons
+            .iter()
+            .find(|(candidate, _)| *candidate == action)
+            .map(|(_, rect)| *rect);
+        let menu_open = state.canvas.engine.scene().menu_open;
+        let in_menu = toolbar.menu.contains(&action);
+        if menu_open && on_bar.is_some() && !in_menu {
+            assert!(!feed_event(
+                state,
+                InputEvent::LeftDown { x: 1, y: 1 },
+                hwnd
+            ));
+            let _ = feed_event(state, InputEvent::LeftUp { x: 1, y: 1 }, hwnd);
+        }
+        let rect = if state.canvas.engine.scene().menu_open && in_menu {
+            let items = state.canvas.engine.unified_toolbar().unwrap().menu;
+            let metrics = state.canvas.engine.metrics();
+            let panel = composer::menu_panel(
+                metrics,
+                state.canvas.engine.menu_anchor(),
+                state.canvas.engine.size(),
+                &items,
+            );
+            composer::menu_item_rects(metrics, panel, &items)
+                .into_iter()
+                .find(|(candidate, _)| *candidate == action)
+                .unwrap_or_else(|| panic!("{action:?} missing from menu"))
+                .1
+        } else {
+            state
+                .canvas
+                .engine
+                .unified_toolbar()
+                .unwrap()
+                .buttons
+                .into_iter()
+                .find(|(candidate, _)| *candidate == action)
+                .unwrap_or_else(|| panic!("{action:?} missing from toolbar"))
+                .1
+        };
+        let (cx, cy) = rect.center();
+        assert!(!feed_event(
+            state,
+            InputEvent::LeftDown { x: cx, y: cy },
+            hwnd
+        ));
+        feed_event(state, InputEvent::LeftUp { x: cx, y: cy }, hwnd)
+    }
+
     fn test_state_with_flags(width: u32, height: u32, flags: FeatureFlags) -> ShellState {
         fn noop_copy_color(_text: &str, _hex: &str) {}
         let frame = accept_buffer(RawBuffer::ready(
@@ -1696,29 +1799,7 @@ mod tests {
         ] {
             assert!(!feed_event(&mut state, event, hwnd));
         }
-        let items = composer::menu_items(state.canvas.engine.flags());
-        let metrics = composer::ChromeMetrics::for_scale(1.0);
-        let panel = composer::menu_panel(
-            metrics,
-            state.canvas.engine.menu_anchor(),
-            (320, 200),
-            &items,
-        );
-        let (_, copy_rect) = composer::menu_item_rects(metrics, panel, &items)
-            .into_iter()
-            .find(|(action, _)| *action == SelectionAction::Copy)
-            .unwrap();
-        let (cx, cy) = copy_rect.center();
-        assert!(!feed_event(
-            &mut state,
-            InputEvent::LeftDown { x: cx, y: cy },
-            hwnd
-        ));
-        assert!(feed_event(
-            &mut state,
-            InputEvent::LeftUp { x: cx, y: cy },
-            hwnd
-        ));
+        assert!(activate_action(&mut state, hwnd, SelectionAction::Copy));
         assert_eq!(
             state.outcome,
             Some(RegionOutcome::Quiet(
@@ -1746,28 +1827,10 @@ mod tests {
         ] {
             assert!(!feed_event(&mut state, event, hwnd));
         }
-        let items = composer::menu_items(state.canvas.engine.flags());
-        let metrics = composer::ChromeMetrics::for_scale(1.0);
-        let panel = composer::menu_panel(
-            metrics,
-            state.canvas.engine.menu_anchor(),
-            (320, 200),
-            &items,
-        );
-        let (_, annotate_rect) = composer::menu_item_rects(metrics, panel, &items)
-            .into_iter()
-            .find(|(action, _)| *action == SelectionAction::Annotate)
-            .unwrap();
-        let (cx, cy) = annotate_rect.center();
-        assert!(!feed_event(
+        assert!(activate_action(
             &mut state,
-            InputEvent::LeftDown { x: cx, y: cy },
-            hwnd
-        ));
-        assert!(feed_event(
-            &mut state,
-            InputEvent::LeftUp { x: cx, y: cy },
-            hwnd
+            hwnd,
+            SelectionAction::Annotate
         ));
         // 「标注」必须与 Enter 确认区分:会话层据此强制打开预览编辑器。
         assert_eq!(
@@ -2131,29 +2194,7 @@ mod tests {
             InputEvent::RightDown { x: 600, y: 300 },
             hwnd
         ));
-        let items = composer::menu_items(state.canvas.engine.flags());
-        let metrics = state.canvas.engine.metrics();
-        let menu = composer::menu_panel(
-            metrics,
-            state.canvas.engine.menu_anchor(),
-            state.canvas.engine.size(),
-            &items,
-        );
-        let (_, copy_rect) = composer::menu_item_rects(metrics, menu, &items)
-            .into_iter()
-            .find(|(action, _)| *action == SelectionAction::Copy)
-            .unwrap();
-        let (cx, cy) = copy_rect.center();
-        assert!(!feed_event(
-            &mut state,
-            InputEvent::LeftDown { x: cx, y: cy },
-            hwnd
-        ));
-        assert!(feed_event(
-            &mut state,
-            InputEvent::LeftUp { x: cx, y: cy },
-            hwnd
-        ));
+        assert!(activate_action(&mut state, hwnd, SelectionAction::Copy));
         match &state.outcome {
             Some(RegionOutcome::Quiet(rect, QuietAction::Copy, annotations)) => {
                 assert_eq!(rect.width, 721);
@@ -2345,29 +2386,7 @@ mod tests {
         ] {
             assert!(!feed_event(&mut state, event, hwnd));
         }
-        let items = composer::menu_items(state.canvas.engine.flags());
-        let metrics = composer::ChromeMetrics::for_scale(1.0);
-        let panel = composer::menu_panel(
-            metrics,
-            state.canvas.engine.menu_anchor(),
-            (320, 200),
-            &items,
-        );
-        let (_, ocr_rect) = composer::menu_item_rects(metrics, panel, &items)
-            .into_iter()
-            .find(|(action, _)| *action == SelectionAction::Ocr)
-            .unwrap();
-        let (cx, cy) = ocr_rect.center();
-        assert!(!feed_event(
-            &mut state,
-            InputEvent::LeftDown { x: cx, y: cy },
-            hwnd
-        ));
-        assert!(feed_event(
-            &mut state,
-            InputEvent::LeftUp { x: cx, y: cy },
-            hwnd
-        ));
+        assert!(activate_action(&mut state, hwnd, SelectionAction::Ocr));
         // 取字与「标注」一样提交区域,但会话层据此置 pending_ocr 自动进入取字。
         assert_eq!(
             state.outcome,
@@ -2395,29 +2414,7 @@ mod tests {
         ] {
             assert!(!feed_event(&mut state, event, hwnd));
         }
-        let items = composer::menu_items(state.canvas.engine.flags());
-        let metrics = composer::ChromeMetrics::for_scale(1.0);
-        let panel = composer::menu_panel(
-            metrics,
-            state.canvas.engine.menu_anchor(),
-            (320, 200),
-            &items,
-        );
-        let (_, qr_rect) = composer::menu_item_rects(metrics, panel, &items)
-            .into_iter()
-            .find(|(action, _)| *action == SelectionAction::Qr)
-            .unwrap();
-        let (cx, cy) = qr_rect.center();
-        assert!(!feed_event(
-            &mut state,
-            InputEvent::LeftDown { x: cx, y: cy },
-            hwnd
-        ));
-        assert!(feed_event(
-            &mut state,
-            InputEvent::LeftUp { x: cx, y: cy },
-            hwnd
-        ));
+        assert!(activate_action(&mut state, hwnd, SelectionAction::Qr));
         // 二维码动作提交当前区域,由会话层置 pending_qr 打开识别面板。
         assert_eq!(
             state.outcome,
@@ -2450,28 +2447,10 @@ mod tests {
         ] {
             assert!(!feed_event(&mut state, event, hwnd));
         }
-        let items = composer::menu_items(state.canvas.engine.flags());
-        let metrics = composer::ChromeMetrics::for_scale(1.0);
-        let panel = composer::menu_panel(
-            metrics,
-            state.canvas.engine.menu_anchor(),
-            (320, 200),
-            &items,
-        );
-        let (_, recording_rect) = composer::menu_item_rects(metrics, panel, &items)
-            .into_iter()
-            .find(|(action, _)| *action == SelectionAction::Recording)
-            .unwrap();
-        let (cx, cy) = recording_rect.center();
-        assert!(!feed_event(
+        assert!(activate_action(
             &mut state,
-            InputEvent::LeftDown { x: cx, y: cy },
-            hwnd
-        ));
-        assert!(feed_event(
-            &mut state,
-            InputEvent::LeftUp { x: cx, y: cy },
-            hwnd
+            hwnd,
+            SelectionAction::Recording
         ));
         // 录屏动作把当前选区交给会话层启动录制会话。
         assert_eq!(

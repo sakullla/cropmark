@@ -68,12 +68,17 @@ const BADGE_MARGIN: i32 = 6;
 
 // ---- 统一横条、「更多」面板与右键菜单几何:与引擎 hitbox 共用;以下为
 // 1.0 基准(逻辑)尺寸,实际物理尺寸统一经 `ChromeMetrics::for_scale` 派生。----
-/// 统一横条按钮边长。40px 让图标有呼吸,又不会占满选区旁的空间。
+/// 统一横条按钮高度。40px 是下限;按钮变宽以放下图标和短名称,但不再变矮。
 const BAR_BUTTON: i32 = 40;
 /// 统一横条与选区间的间距。
 const BAR_MARGIN: i32 = 8;
 /// 统一横条按钮图标外接盒。24 是原稿像素网格,缩小到 20 会把描边平均成灰边。
 const BAR_ICON: i32 = 24;
+/// 横条短名称字号。和菜单同一阅读尺度,避免名称被裁进图标盒。
+const BAR_FONT: f32 = 13.0;
+/// 名称按钮左右内边距、图标与文字间距。
+const BAR_PAD_X: i32 = 10;
+const BAR_GAP: i32 = 6;
 
 const MENU_ITEM_W: i32 = 148;
 const MENU_ITEM_H: i32 = 34;
@@ -106,12 +111,17 @@ const _: () = assert!(BAR_BUTTON >= 40 && MENU_ITEM_H >= 34 && MENU_ITEM_W >= 14
 pub struct ChromeMetrics {
     /// 生效缩放(chrome 基准下限 1.0,上限 4.0)。
     pub scale: f32,
-    /// 统一横条按钮边长。
+    /// 统一横条按钮高度(不低于 40)。
     pub bar_button: i32,
     /// 统一横条与选区间距。
     pub bar_margin: i32,
     /// 统一横条按钮图标外接盒边长。
     pub bar_icon: i32,
+    /// 横条短名称字号。
+    pub bar_font: f32,
+    /// 名称按钮水平内边距与图标/文字间距。
+    pub bar_pad_x: i32,
+    pub bar_gap: i32,
     pub menu_item_w: i32,
     pub menu_item_h: i32,
     pub menu_pad: i32,
@@ -149,6 +159,9 @@ impl ChromeMetrics {
             bar_button: scaled(BAR_BUTTON),
             bar_margin: scaled(BAR_MARGIN),
             bar_icon: scaled(BAR_ICON),
+            bar_font: (BAR_FONT * scale).round(),
+            bar_pad_x: scaled(BAR_PAD_X),
+            bar_gap: scaled(BAR_GAP),
             menu_item_w: scaled(MENU_ITEM_W),
             menu_item_h: scaled(MENU_ITEM_H),
             menu_pad: scaled(MENU_PAD),
@@ -365,17 +378,14 @@ fn capture_actions(flags: FeatureFlags) -> Vec<SelectionAction> {
     actions
 }
 
-/// 统一横条主行动作集(R5 注册表驱动,与预览编辑器工具条同源):
-/// 即时标注开启时为注册表主行工具(开关允许 + 平台有文本输入通道时的文字)+
-/// 撤销/重做(成对,只出现在横条) + LongCapture←`long_capture`(R1) +
-/// Recording←`recording`(R3) + Copy←`toolbar_copy` + Save←`toolbar_save` +
-/// 取消 + 更多;关闭时为 标注 + LongCapture←`long_capture` +
-/// Recording←`recording` + Copy←`toolbar_copy` + Save←`toolbar_save` +
-/// 取消 + 更多。关闭复制/保存后主行不再含该项,其余顺序不变。
+/// 希望放在主行上的动作(还没按宽度溢出)。
+/// 即时标注:当前启用的绘制工具、撤销、重做,以及完成组(贴图、保存、复制、取消)。
+/// 取字、二维码、长截图、录屏不在这里,它们只进带名称的菜单。
+/// 直线/模糊不再占按钮。关闭即时标注时主行只留完成组里仍然允许的项和取消。
 pub fn toolbar_buttons(flags: FeatureFlags, text_input: bool) -> Vec<SelectionAction> {
-    let mut buttons = Vec::with_capacity(14);
+    let mut buttons = Vec::with_capacity(16);
     if flags.inline_annotation {
-        for tool in AnnotationTool::PRIMARY {
+        for tool in AnnotationTool::ALL {
             if !flags.tools.enabled(tool) {
                 continue;
             }
@@ -388,67 +398,128 @@ pub fn toolbar_buttons(flags: FeatureFlags, text_input: bool) -> Vec<SelectionAc
     } else {
         buttons.push(SelectionAction::Annotate);
     }
-    if flags.long_capture {
-        buttons.push(SelectionAction::LongCapture);
-    }
-    if flags.recording {
-        buttons.push(SelectionAction::Recording);
-    }
-    if flags.toolbar_copy {
-        buttons.push(SelectionAction::Copy);
+    if flags.toolbar_pin && flags.pin_entry {
+        buttons.push(SelectionAction::Pin);
     }
     if flags.toolbar_save {
         buttons.push(SelectionAction::Save);
     }
+    if flags.toolbar_copy {
+        buttons.push(SelectionAction::Copy);
+    }
     buttons.push(SelectionAction::Cancel);
-    buttons.push(SelectionAction::More);
     buttons
 }
 
-/// 「更多」只放横条上没有的命令。主行工具的默认模式(箭头/荧光笔/马赛克)
-/// 与撤销/重做不再列进来;直线/画笔/模糊这些主行没有的模式仍留在这里。
-pub fn more_panel_buttons(flags: FeatureFlags) -> Vec<SelectionAction> {
-    let mut buttons = Vec::with_capacity(12);
-    if flags.inline_annotation {
-        for tool in AnnotationTool::MORE {
-            if flags.tools.enabled(tool) {
-                buttons.push(SelectionAction::Tool(tool));
-            }
-        }
-        for mode in ToolMode::ALL {
-            let tool = mode.tool();
-            if !flags.tools.enabled(tool) {
-                continue;
-            }
-            // 默认模式就是横条上那个按钮,再列一次就是重复入口。
-            if AnnotationTool::PRIMARY.contains(&tool) && tool.default_mode() == Some(mode) {
-                continue;
-            }
-            if mode == ToolMode::Line && !flags.mode_line {
-                continue;
-            }
-            if mode == ToolMode::Blur && !flags.mode_blur {
-                continue;
-            }
-            buttons.push(SelectionAction::Mode(mode));
-        }
-        buttons.push(SelectionAction::Delete);
+/// 不随宽度变化、始终留在菜单里的动作。直线/模糊是父工具的模式,不进这份列表。
+fn pinned_menu_actions(flags: FeatureFlags) -> Vec<SelectionAction> {
+    let mut actions = Vec::with_capacity(5);
+    if flags.long_capture {
+        actions.push(SelectionAction::LongCapture);
     }
-    if flags.toolbar_pin && flags.pin_entry {
-        buttons.push(SelectionAction::Pin);
+    if flags.recording {
+        actions.push(SelectionAction::Recording);
     }
     if flags.ocr_entry {
-        buttons.push(SelectionAction::Ocr);
+        actions.push(SelectionAction::Ocr);
     }
     if flags.qr_entry {
-        buttons.push(SelectionAction::Qr);
+        actions.push(SelectionAction::Qr);
     }
-    buttons
+    if flags.inline_annotation {
+        actions.push(SelectionAction::Delete);
+    }
+    actions
 }
 
-/// 右键菜单动作集(保持现状,与统一横条无关)。
+/// 宽屏下放不下才溢出时,菜单就是固定项。供还没有选区几何的调用使用。
+pub fn more_panel_buttons(flags: FeatureFlags) -> Vec<SelectionAction> {
+    pinned_menu_actions(flags)
+}
+
+/// 右键菜单与「更多」是同一份:当前没放进主行的已启用动作。
 pub fn menu_items(flags: FeatureFlags) -> Vec<SelectionAction> {
-    capture_actions(flags)
+    more_panel_buttons(flags)
+}
+
+/// 名称按钮宽度。高度仍是 `bar_button`,不低于 40。
+pub fn toolbar_button_width(metrics: ChromeMetrics, action: SelectionAction) -> i32 {
+    let label = action_label(action);
+    let measured = text::measure_width(&label, metrics.bar_font)
+        .unwrap_or(metrics.bar_font * label.chars().count() as f32);
+    let text_w = measured.ceil() as i32;
+    (metrics.bar_pad_x + metrics.bar_icon + metrics.bar_gap + text_w + metrics.bar_pad_x)
+        .max(metrics.bar_button)
+}
+
+fn row_width(metrics: ChromeMetrics, actions: &[SelectionAction]) -> i32 {
+    actions
+        .iter()
+        .map(|action| toolbar_button_width(metrics, *action))
+        .sum()
+}
+
+fn is_draw_tool(action: SelectionAction) -> bool {
+    matches!(action, SelectionAction::Tool(_))
+}
+
+fn is_history(action: SelectionAction) -> bool {
+    matches!(action, SelectionAction::Undo | SelectionAction::Redo)
+}
+
+fn is_completion(action: SelectionAction) -> bool {
+    matches!(
+        action,
+        SelectionAction::Pin | SelectionAction::Save | SelectionAction::Copy
+    )
+}
+
+/// 把放不下的项从主行挪进菜单。优先挪走靠后的绘制工具,再挪撤销/重做,
+/// 最后才挪贴图/保存/复制。取消留到最后。菜单里绘制工具仍排在固定项前面。
+fn fit_toolbar_row(
+    metrics: ChromeMetrics,
+    mut shown: Vec<SelectionAction>,
+    menu: Vec<SelectionAction>,
+    limit: i32,
+) -> (Vec<SelectionAction>, Vec<SelectionAction>) {
+    let limit = limit.max(0);
+    let mut overflow_tools = Vec::new();
+    let mut overflow_rest = Vec::new();
+    loop {
+        let pending = !menu.is_empty() || !overflow_tools.is_empty() || !overflow_rest.is_empty();
+        let mut row = shown.clone();
+        if pending {
+            row.push(SelectionAction::More);
+        }
+        if row_width(metrics, &row) <= limit || shown.len() <= 1 {
+            let mut combined = overflow_tools;
+            combined.append(&mut overflow_rest);
+            combined.extend(menu);
+            if !combined.is_empty() && !row.contains(&SelectionAction::More) {
+                row.push(SelectionAction::More);
+            }
+            return (row, combined);
+        }
+        if let Some(index) = shown.iter().rposition(|action| is_draw_tool(*action)) {
+            overflow_tools.insert(0, shown.remove(index));
+            continue;
+        }
+        if let Some(index) = shown.iter().rposition(|action| is_history(*action)) {
+            overflow_rest.insert(0, shown.remove(index));
+            continue;
+        }
+        if let Some(index) = shown.iter().position(|action| is_completion(*action)) {
+            overflow_rest.insert(0, shown.remove(index));
+            continue;
+        }
+        let mut combined = overflow_tools;
+        combined.append(&mut overflow_rest);
+        combined.extend(menu);
+        if !combined.is_empty() && !shown.contains(&SelectionAction::More) {
+            shown.push(SelectionAction::More);
+        }
+        return (shown, combined);
+    }
 }
 
 /// 两个面板是否相交。
@@ -456,39 +527,26 @@ fn intersects(a: IntRect, b: IntRect) -> bool {
     a.x < b.right() && b.x < a.right() && a.y < b.bottom() && b.y < a.bottom()
 }
 
-/// 统一横条布局:面板矩形 + 逐按钮矩形(命中与绘制共用同一份几何)。
+/// 统一横条布局:面板矩形 + 逐按钮矩形 + 没放进这一行的菜单项。
 #[derive(Debug, Clone, PartialEq)]
 pub struct UnifiedToolbar {
     pub panel: IntRect,
     pub buttons: Vec<(SelectionAction, IntRect)>,
+    /// 带名称菜单里的项(溢出的主行项,加上取字/二维码/长截图/录屏/删除)。
+    pub menu: Vec<SelectionAction>,
 }
 
-/// 单行放得下时返回按钮数;单行宽于屏幕时返回每行能容纳的列数(至少 1)。
-fn toolbar_columns(button: i32, count: i32, screen_w: i32) -> i32 {
-    if count <= 1 {
-        return count.max(1);
-    }
-    let button = button.max(1);
-    if count.saturating_mul(button) <= screen_w.max(0) {
-        return count;
-    }
-    (screen_w.max(0) / button).clamp(1, count)
-}
-
-/// 给定列数的横条面板。`true` 表示面板在选区外且整块在屏内。
-fn place_toolbar_panel(
-    button: i32,
+/// 单行面板。`true` 表示整块在选区外且在屏内。高度永远是一行。
+fn place_toolbar_row(
+    panel_w: i32,
+    panel_h: i32,
     margin: i32,
-    count: i32,
-    columns: i32,
     sel: IntRect,
     sw: i32,
     sh: i32,
 ) -> (IntRect, bool) {
-    let columns = columns.max(1);
-    let rows = (count + columns - 1) / columns;
-    let panel_w = columns * button;
-    let panel_h = rows * button;
+    let panel_w = panel_w.max(1);
+    let panel_h = panel_h.max(1);
     let clamp_x = |x: i32| x.clamp(0, (sw - panel_w).max(0));
     let clamp_y = |y: i32| y.clamp(0, (sh - panel_h).max(0));
     let centered_x = || clamp_x(sel.x + (sel.width - panel_w) / 2);
@@ -528,6 +586,7 @@ fn place_toolbar_panel(
     };
     let free_right = sw - sel.right();
     let free_left = sel.x;
+    // 侧面只接受「一行高度」能放在选区旁边的候选,不再把按钮收成竖条。
     let candidates = [below, above, right, left];
     let usable: Vec<(usize, IntRect)> = candidates
         .iter()
@@ -552,23 +611,34 @@ fn place_toolbar_panel(
         return (*panel, true);
     }
     let fallback = candidates
-        .iter()
-        .copied()
+        .into_iter()
         .filter(|panel| fits(*panel))
         .min_by_key(|panel| overlap_area(*panel))
         .unwrap_or(below);
     (fallback, false)
 }
 
-/// 统一横条布局:宽屏单行,超出屏幕宽度时按原按钮尺寸换行。
-/// 换行后仍只能压进选区时,按侧面剩余宽度再减列。
-///
-/// 放置:候选须在选区外、屏幕内。下缘是强默认(人体工学:靠近拖选区结
-/// 束位置的光标);仅下缘放不下时翻上缘;竖直都不行再按「剩余空间大者
-/// 优先、平局保右侧」选水平侧;四面候选都与选区相交时选重叠最小者,
-/// 最后兜底下方钳制屏内(Snipaste/ShareX/macOS 通行行为:不是哪边空间
-/// 大就翻哪边,避免选区在屏幕中下部时工具栏频繁跳到远处上方)。
-/// 放不下的动作不收进「更多」。返回 None 表示无按钮。
+fn layout_buttons(metrics: ChromeMetrics, panel: IntRect, actions: &[SelectionAction]) -> Vec<(SelectionAction, IntRect)> {
+    let mut x = panel.x;
+    actions
+        .iter()
+        .map(|action| {
+            let width = toolbar_button_width(metrics, *action);
+            let rect = IntRect {
+                x,
+                y: panel.y,
+                width,
+                height: metrics.bar_button,
+            };
+            x += width;
+            (*action, rect)
+        })
+        .collect()
+}
+
+/// 统一横条:永远一行,优先贴选区下缘,放不下改上缘。
+/// 一行仍宽于可用宽度时,多出来的项进入 `menu`,不换行,也不收成侧面竖条。
+/// 上下都没有外侧空间时,才把这一行放到左右剩余宽度里(高度仍是一行)。
 pub fn unified_toolbar(
     metrics: ChromeMetrics,
     selection: PhysicalRect,
@@ -576,57 +646,46 @@ pub fn unified_toolbar(
     flags: FeatureFlags,
     text_input: bool,
 ) -> Option<UnifiedToolbar> {
-    let buttons = toolbar_buttons(flags, text_input);
-    if buttons.is_empty() {
+    let preferred = toolbar_buttons(flags, text_input);
+    if preferred.is_empty() && pinned_menu_actions(flags).is_empty() {
         return None;
     }
-    let count = buttons.len() as i32;
-    let button = metrics.bar_button;
-    let margin = metrics.bar_margin;
     let sw = screen.0 as i32;
     let sh = screen.1 as i32;
     let sel = IntRect::from(selection);
-    let max_columns = toolbar_columns(button, count, sw);
-    let (mut panel, outside) = place_toolbar_panel(button, margin, count, max_columns, sel, sw, sh);
-    let mut columns = max_columns;
-    // 已经因屏宽换行、且仍只能压进选区时,再按侧面剩余宽度减列。
-    // 单行放得进屏宽时保持原兜底,避免宽屏大选区被改成竖条。
-    if !outside && max_columns < count {
-        let unit = button.max(1);
-        let side_columns = [sw - sel.right(), sel.x]
-            .into_iter()
-            .map(|free| (free.max(0) / unit).min(max_columns))
-            .max()
-            .unwrap_or(0);
-        if (1..max_columns).contains(&side_columns) {
-            let (narrower, narrower_outside) =
-                place_toolbar_panel(button, margin, count, side_columns, sel, sw, sh);
-            if narrower_outside {
-                panel = narrower;
-                columns = side_columns;
-            }
-        }
+    let margin = metrics.bar_margin;
+    let height = metrics.bar_button;
+    let menu_seed = pinned_menu_actions(flags);
+    let (row, menu) = fit_toolbar_row(metrics, preferred, menu_seed, sw);
+    if row.is_empty() {
+        return None;
     }
-
-    let rects = buttons
-        .iter()
-        .enumerate()
-        .map(|(index, action)| {
-            let index = index as i32;
-            (
-                *action,
-                IntRect {
-                    x: panel.x + (index % columns) * button,
-                    y: panel.y + (index / columns) * button,
-                    width: button,
-                    height: button,
-                },
-            )
-        })
-        .collect();
+    let mut width = row_width(metrics, &row);
+    let (below_ok, above_ok) = {
+        let below_y = sel.bottom() + margin;
+        let above_y = sel.y - margin - height;
+        (
+            below_y >= 0 && below_y + height <= sh,
+            above_y >= 0 && above_y + height <= sh,
+        )
+    };
+    // 上下都贴不住时,按侧面剩余宽度再溢出,让这一行仍能放在选区外。
+    let (row, menu) = if !below_ok && !above_ok {
+        let side = (sw - sel.right()).max(sel.x).saturating_sub(margin);
+        if side > 0 && width > side {
+            fit_toolbar_row(metrics, row.into_iter().filter(|action| *action != SelectionAction::More).collect(), menu, side)
+        } else {
+            (row, menu)
+        }
+    } else {
+        (row, menu)
+    };
+    width = row_width(metrics, &row);
+    let (panel, _) = place_toolbar_row(width, height, margin, sel, sw, sh);
     Some(UnifiedToolbar {
         panel,
-        buttons: rects,
+        buttons: layout_buttons(metrics, panel, &row),
+        menu,
     })
 }
 
@@ -655,7 +714,9 @@ pub fn more_panel(
     items: &[SelectionAction],
 ) -> IntRect {
     let width = menu_row_width(metrics, items) + metrics.menu_pad * 2;
-    let height = items.len() as i32 * metrics.menu_item_h + metrics.menu_pad * 2;
+    let content_h = items.len() as i32 * metrics.menu_item_h + metrics.menu_pad * 2;
+    // 超出屏幕时面板停在屏内,列表内部再滚动;名称不被裁到面板外。
+    let height = content_h.min(screen.1 as i32).max(metrics.menu_item_h + metrics.menu_pad * 2);
     let mut panel = IntRect {
         x: (anchor.right() - width).clamp(0, (screen.0 as i32 - width).max(0)),
         y: (anchor.y - height).clamp(0, (screen.1 as i32 - height).max(0)),
@@ -676,21 +737,42 @@ pub fn more_item_rects(
     panel: IntRect,
     items: &[SelectionAction],
 ) -> Vec<(SelectionAction, IntRect)> {
+    scrolled_action_rects(metrics, panel, items, 0, false)
+}
+
+/// `scroll` 为列表内部滚动(像素,向下为正)。只返回完整落在面板内的行,名称不被裁切。
+pub fn scrolled_action_rects(
+    metrics: ChromeMetrics,
+    panel: IntRect,
+    items: &[SelectionAction],
+    scroll: i32,
+    separate_last: bool,
+) -> Vec<(SelectionAction, IntRect)> {
+    let last = items.len().saturating_sub(1);
+    let width = menu_row_width(metrics, items);
     items
         .iter()
         .enumerate()
-        .map(|(index, action)| {
-            (
-                *action,
-                IntRect {
-                    x: panel.x + metrics.menu_pad,
-                    y: panel.y + metrics.menu_pad + index as i32 * metrics.menu_item_h,
-                    width: menu_row_width(metrics, items),
-                    height: metrics.menu_item_h,
-                },
-            )
+        .filter_map(|(index, action)| {
+            let extra = if separate_last && index == last {
+                metrics.menu_separator_h
+            } else {
+                0
+            };
+            let rect = IntRect {
+                x: panel.x + metrics.menu_pad,
+                y: panel.y + metrics.menu_pad + index as i32 * metrics.menu_item_h + extra - scroll,
+                width,
+                height: metrics.menu_item_h,
+            };
+            (rect.y >= panel.y && rect.bottom() <= panel.bottom()).then_some((*action, rect))
         })
         .collect()
+}
+
+pub fn menu_scroll_max(metrics: ChromeMetrics, items: &[SelectionAction], panel: IntRect) -> i32 {
+    let content = items.len() as i32 * metrics.menu_item_h + metrics.menu_pad * 2;
+    (content - panel.height).max(0)
 }
 
 pub fn menu_panel(
@@ -700,9 +782,17 @@ pub fn menu_panel(
     items: &[SelectionAction],
 ) -> IntRect {
     let width = menu_row_width(metrics, items) + metrics.menu_pad * 2;
-    // 「取消」与其余动作之间预留分隔线。
-    let height =
-        items.len() as i32 * metrics.menu_item_h + metrics.menu_pad * 2 + metrics.menu_separator_h;
+    let separate = items.last() == Some(&SelectionAction::Cancel);
+    let content = items.len() as i32 * metrics.menu_item_h
+        + metrics.menu_pad * 2
+        + if separate {
+            metrics.menu_separator_h
+        } else {
+            0
+        };
+    let height = content
+        .min(screen.1 as i32)
+        .max(metrics.menu_item_h + metrics.menu_pad * 2);
     IntRect {
         x: anchor.0.clamp(0, (screen.0 as i32 - width).max(0)),
         y: anchor.1.clamp(0, (screen.1 as i32 - height).max(0)),
@@ -716,30 +806,8 @@ pub fn menu_item_rects(
     panel: IntRect,
     items: &[SelectionAction],
 ) -> Vec<(SelectionAction, IntRect)> {
-    let last = items.len().saturating_sub(1);
-    items
-        .iter()
-        .enumerate()
-        .map(|(index, action)| {
-            (
-                *action,
-                IntRect {
-                    x: panel.x + metrics.menu_pad,
-                    // 末项(取消)在分隔线之下,整体下移分隔线高度。
-                    y: panel.y
-                        + metrics.menu_pad
-                        + index as i32 * metrics.menu_item_h
-                        + if index == last {
-                            metrics.menu_separator_h
-                        } else {
-                            0
-                        },
-                    width: menu_row_width(metrics, items),
-                    height: metrics.menu_item_h,
-                },
-            )
-        })
-        .collect()
+    let separate = items.last() == Some(&SelectionAction::Cancel);
+    scrolled_action_rects(metrics, panel, items, 0, separate)
 }
 
 /// 「取消」分隔线的 y 坐标(菜单至少含取消项时才有意义)。
@@ -1080,6 +1148,203 @@ pub struct Composer {
     annotation_cache: RefCell<Option<AnnotationCache>>,
 }
 
+/// 跟当前工具走的样式控件。没选中工具时不出现。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum StyleChip {
+    Mode(ToolMode),
+    Color(&'static str),
+    Width(f64),
+    TextSize(f64),
+    /// 序号起始值步进(正负)。
+    NumberStep(i32),
+    Zoom(f64),
+    Dim(f64),
+    Sticker(&'static str),
+    Erase(Option<&'static str>),
+}
+
+const STYLE_COLORS: [&str; 5] = ["#e11d48", "#2563eb", "#f59e0b", "#10b981", "#111827"];
+const STYLE_WIDTHS: [f64; 3] = [2.0, 3.0, 5.0];
+const STYLE_TEXT_SIZES: [f64; 3] = [12.0, 16.0, 22.0];
+const STYLE_ZOOMS: [f64; 4] = [2.0, 3.0, 4.0, 6.0];
+const STYLE_DIMS: [f64; 3] = [0.35, 0.55, 0.75];
+
+/// 箭头要颜色和线宽,不要字号;文字才有字号;序号才有起始值。
+/// 倍率、暗度、贴纸、擦除只在对应工具上出现。
+pub fn style_chips(tool: AnnotationTool) -> Vec<StyleChip> {
+    let mut chips = Vec::new();
+    match tool {
+        AnnotationTool::Arrow => {
+            chips.push(StyleChip::Mode(ToolMode::Arrow));
+            chips.push(StyleChip::Mode(ToolMode::Line));
+            push_colors(&mut chips);
+            push_widths(&mut chips);
+        }
+        AnnotationTool::Rect | AnnotationTool::Ellipse => {
+            push_colors(&mut chips);
+            push_widths(&mut chips);
+        }
+        AnnotationTool::Highlighter => {
+            chips.push(StyleChip::Mode(ToolMode::Highlighter));
+            chips.push(StyleChip::Mode(ToolMode::Pen));
+            push_colors(&mut chips);
+            push_widths(&mut chips);
+        }
+        AnnotationTool::Mosaic => {
+            chips.push(StyleChip::Mode(ToolMode::Mosaic));
+            chips.push(StyleChip::Mode(ToolMode::Blur));
+        }
+        AnnotationTool::Text | AnnotationTool::Bubble => {
+            push_colors(&mut chips);
+            for size in STYLE_TEXT_SIZES {
+                chips.push(StyleChip::TextSize(size));
+            }
+        }
+        AnnotationTool::Number => {
+            push_colors(&mut chips);
+            chips.push(StyleChip::NumberStep(-1));
+            chips.push(StyleChip::NumberStep(1));
+        }
+        AnnotationTool::Spotlight => {
+            for dim in STYLE_DIMS {
+                chips.push(StyleChip::Dim(dim));
+            }
+        }
+        AnnotationTool::Magnifier => {
+            for zoom in STYLE_ZOOMS {
+                chips.push(StyleChip::Zoom(zoom));
+            }
+        }
+        AnnotationTool::Sticker => {
+            for (id, _) in crate::annotate::stickers::STICKERS {
+                chips.push(StyleChip::Sticker(id));
+            }
+        }
+        AnnotationTool::Erase => {
+            chips.push(StyleChip::Erase(None));
+            for color in STYLE_COLORS {
+                chips.push(StyleChip::Erase(Some(color)));
+            }
+        }
+    }
+    chips
+}
+
+fn push_colors(chips: &mut Vec<StyleChip>) {
+    for color in STYLE_COLORS {
+        chips.push(StyleChip::Color(color));
+    }
+}
+
+fn push_widths(chips: &mut Vec<StyleChip>) {
+    for width in STYLE_WIDTHS {
+        chips.push(StyleChip::Width(width));
+    }
+}
+
+fn style_chip_label(chip: StyleChip) -> String {
+    match chip {
+        StyleChip::Mode(mode) => action_label(SelectionAction::Mode(mode)),
+        StyleChip::Color(color) | StyleChip::Erase(Some(color)) => color.to_string(),
+        StyleChip::Erase(None) => i18n::t("selection.style.erase_auto"),
+        StyleChip::Width(width) => format!("{width:.0}"),
+        StyleChip::TextSize(size) => format!("{size:.0}"),
+        StyleChip::NumberStep(step) => {
+            if step < 0 {
+                "−".to_string()
+            } else {
+                "+".to_string()
+            }
+        }
+        StyleChip::Zoom(zoom) => format!("{zoom:.0}×"),
+        StyleChip::Dim(dim) => format!("{:.0}%", dim * 100.0),
+        StyleChip::Sticker(id) => id.to_string(),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StyleStrip {
+    pub panel: IntRect,
+    pub chips: Vec<(StyleChip, IntRect)>,
+}
+
+/// 样式条贴在工具条外侧,不压选区,也不压主行按钮。放不下的控件不画进选区里。
+pub fn style_strip(
+    metrics: ChromeMetrics,
+    toolbar: IntRect,
+    selection: PhysicalRect,
+    screen: (u32, u32),
+    tool: AnnotationTool,
+) -> Option<StyleStrip> {
+    let chips = style_chips(tool);
+    if chips.is_empty() {
+        return None;
+    }
+    let height = metrics.bar_button;
+    let widths: Vec<i32> = chips
+        .iter()
+        .map(|chip| {
+            let label = style_chip_label(*chip);
+            let measured = text::measure_width(&label, metrics.bar_font)
+                .unwrap_or(metrics.bar_font * label.chars().count() as f32);
+            (measured.ceil() as i32 + metrics.bar_pad_x * 2).max(height)
+        })
+        .collect();
+    let sw = screen.0 as i32;
+    let sh = screen.1 as i32;
+    let sel = IntRect::from(selection);
+    let mut count = chips.len();
+    while count > 0 {
+        let width: i32 = widths.iter().take(count).sum();
+        let mut panel = IntRect {
+            x: toolbar.x.clamp(0, (sw - width).max(0)),
+            y: 0,
+            width,
+            height,
+        };
+        let below = toolbar.bottom() + metrics.bar_margin;
+        let above = toolbar.y - metrics.bar_margin - height;
+        if below + height <= sh && !intersects(shift_y(panel, below), sel) {
+            panel.y = below;
+        } else if above >= 0 && !intersects(shift_y(panel, above), sel) {
+            panel.y = above;
+        } else {
+            count -= 1;
+            continue;
+        }
+        if intersects(panel, toolbar) || intersects(panel, sel) {
+            count -= 1;
+            continue;
+        }
+        let mut x = panel.x;
+        let placed = chips
+            .iter()
+            .zip(widths.iter())
+            .take(count)
+            .map(|(chip, chip_w)| {
+                let rect = IntRect {
+                    x,
+                    y: panel.y,
+                    width: *chip_w,
+                    height,
+                };
+                x += chip_w;
+                (*chip, rect)
+            })
+            .collect();
+        return Some(StyleStrip {
+            panel,
+            chips: placed,
+        });
+    }
+    None
+}
+
+fn shift_y(mut rect: IntRect, y: i32) -> IntRect {
+    rect.y = y;
+    rect
+}
+
 impl Composer {
     pub fn new(frame: &Frame) -> Result<Self, CaptureError> {
         validate_frame(frame)?;
@@ -1400,16 +1665,24 @@ impl Composer {
                 ) {
                     bounds = bounds.union(toolbar.panel);
                     if scene.more_open {
-                        let items = more_panel_buttons(scene.flags);
+                        let items = toolbar.menu.clone();
                         if !items.is_empty() {
+                            if let Some(more_rect) = toolbar
+                                .buttons
+                                .iter()
+                                .rev()
+                                .find(|(action, _)| *action == SelectionAction::More)
+                                .map(|(_, rect)| *rect)
+                            {
                             let panel = more_panel(
                                 self.metrics,
-                                toolbar.buttons.last().expect("more button").1,
+                                more_rect,
                                 Some(toolbar.panel),
                                 (self.width, self.height),
                                 &items,
                             );
                             bounds = bounds.union(panel);
+                            }
                         }
                     }
                 }
@@ -1594,7 +1867,48 @@ impl Composer {
         }
     }
 
-    /// 统一横条:浅蓝灰面板 + 位图图标。仅复制为实心强调填充(`--on-accent` 字形);
+    fn draw_style_strip(
+        &self,
+        rgba: &mut [u8],
+        w: u32,
+        h: u32,
+        toolbar: IntRect,
+        selection: PhysicalRect,
+        tool: AnnotationTool,
+    ) {
+        let Some(strip) = style_strip(self.metrics, toolbar, selection, (w, h), tool) else {
+            return;
+        };
+        draw_panel_chrome(rgba, w, h, strip.panel, self.metrics.panel_radius);
+        for (chip, rect) in strip.chips {
+            let label = style_chip_label(chip);
+            let color = match chip {
+                StyleChip::Color(color) | StyleChip::Erase(Some(color)) => {
+                    crate::annotate::parse_hex_color(color).unwrap_or(CHROME_TEXT)
+                }
+                _ => CHROME_TEXT,
+            };
+            if matches!(chip, StyleChip::Color(_) | StyleChip::Erase(Some(_))) {
+                fill_round(rgba, w, h, inset(rect, 6), 4, color);
+            }
+            text::draw_text(
+                rgba,
+                w,
+                h,
+                (rect.x + self.metrics.bar_pad_x) as f32,
+                text::y_for_center(rect.center().1 as f32, self.metrics.bar_font),
+                &label,
+                self.metrics.bar_font,
+                if matches!(chip, StyleChip::Color(_) | StyleChip::Erase(Some(_))) {
+                    [0, 0, 0, 0]
+                } else {
+                    CHROME_TEXT
+                },
+            );
+        }
+    }
+
+    /// 统一横条:浅蓝灰面板 + 图标和短名称。仅复制为实心强调填充;
     /// 当前工具保留浅底选中态,墨色与普通按钮相同;hover 软底;工具组与动作组之间画
     /// 1px 分隔线。「更多」展开时在其按钮上方弹出动作列表面板(图标+名称,
     /// 与右键菜单同构)。
@@ -1614,26 +1928,21 @@ impl Composer {
             return;
         };
         draw_panel_chrome(rgba, w, h, toolbar.panel, metrics.panel_radius);
-        // 工具组与动作组之间的分隔线位置(第一个非工具动作)。
-        let sep_index = toolbar
-            .buttons
-            .iter()
-            .position(|(action, _)| !matches!(action, SelectionAction::Tool(_)))
-            .filter(|index| *index > 0);
         let radius = (metrics.bar_button / 5).clamp(4, 8);
-        for (index, (action, rect)) in toolbar.buttons.iter().enumerate() {
-            let (cx, cy) = rect.center();
+        let mut previous: Option<SelectionAction> = None;
+        for (action, rect) in toolbar.buttons.iter() {
             let hover = rect.contains(scene.cursor.0, scene.cursor.1);
             let selected_tool = match (action, overlay) {
                 (SelectionAction::Tool(tool), Some(overlay)) => overlay.tool == Some(*tool),
-                // 模式入口:所属工具选中且当前模式一致时高亮。
                 (SelectionAction::Mode(mode), Some(overlay)) => {
                     overlay.tool == Some(mode.tool()) && overlay.mode == Some(*mode)
                 }
-                // 「更多」里的工具没有主行按钮,选中后点亮「更多」本身,否则像没点上。
-                (SelectionAction::More, Some(overlay)) => overlay
-                    .tool
-                    .is_some_and(|tool| AnnotationTool::MORE.contains(&tool)),
+                (SelectionAction::More, Some(overlay)) => overlay.tool.is_some_and(|tool| {
+                    toolbar
+                        .menu
+                        .iter()
+                        .any(|item| *item == SelectionAction::Tool(tool))
+                }),
                 (_, _) => false,
             };
             // 只有复制是实心主操作。当前工具用浅底,避免第二个实心强调。
@@ -1644,19 +1953,61 @@ impl Composer {
             } else if selected_tool || hover {
                 fill_round_blend(rgba, w, h, inset(*rect, 2), radius, ACTIVE_BG);
             }
-            self.draw_action_icon(rgba, w, h, *action, cx, cy, metrics.bar_icon, ink);
-            if sep_index == Some(index) {
+            let icon_cx = rect.x + metrics.bar_pad_x + metrics.bar_icon / 2;
+            let icon_cy = rect.y + rect.height / 2;
+            self.draw_action_icon(
+                rgba,
+                w,
+                h,
+                *action,
+                icon_cx,
+                icon_cy,
+                metrics.bar_icon,
+                ink,
+            );
+            let label = action_label(*action);
+            let text_x = rect.x + metrics.bar_pad_x + metrics.bar_icon + metrics.bar_gap;
+            text::draw_text(
+                rgba,
+                w,
+                h,
+                text_x as f32,
+                text::y_for_center(icon_cy as f32, metrics.bar_font),
+                &label,
+                metrics.bar_font,
+                ink,
+            );
+            let group_break = match (previous, *action) {
+                (Some(SelectionAction::Tool(_)), SelectionAction::Undo) => true,
+                (Some(SelectionAction::Undo | SelectionAction::Redo), SelectionAction::Pin)
+                | (Some(SelectionAction::Undo | SelectionAction::Redo), SelectionAction::Save)
+                | (Some(SelectionAction::Undo | SelectionAction::Redo), SelectionAction::Copy)
+                | (Some(SelectionAction::Undo | SelectionAction::Redo), SelectionAction::Cancel) => {
+                    true
+                }
+                _ => false,
+            };
+            if group_break {
                 for y in rect.y + rect.height / 4..rect.bottom() - rect.height / 4 {
                     blend(rgba, w, h, rect.x, y, CHROME_BORDER);
                 }
             }
+            previous = Some(*action);
         }
-        // 「更多」展开:动作列表面板(向上展开,底边对齐「更多」按钮)。
+        if let Some(tool) = overlay.and_then(|overlay| overlay.tool) {
+            self.draw_style_strip(rgba, w, h, toolbar.panel, selection, tool);
+        }
+        // 「更多」展开:带名称的列表,内容和右键菜单相同。
         if !scene.more_open {
             return;
         }
-        let items = more_panel_buttons(scene.flags);
-        let Some((_, more_rect)) = toolbar.buttons.last() else {
+        let items = toolbar.menu.clone();
+        let Some((_, more_rect)) = toolbar
+            .buttons
+            .iter()
+            .rev()
+            .find(|(action, _)| *action == SelectionAction::More)
+        else {
             return;
         };
         if items.is_empty() {
@@ -1664,7 +2015,8 @@ impl Composer {
         }
         let panel = more_panel(metrics, *more_rect, Some(toolbar.panel), (w, h), &items);
         draw_panel_chrome(rgba, w, h, panel, metrics.panel_radius);
-        for (action, rect) in more_item_rects(metrics, panel, &items) {
+        for (action, rect) in scrolled_action_rects(metrics, panel, &items, scene.menu_scroll, false)
+        {
             let hover = rect.contains(scene.cursor.0, scene.cursor.1);
             if hover {
                 fill_round_blend(rgba, w, h, rect, metrics.menu_hover_radius, ACTIVE_BG);
@@ -1888,11 +2240,23 @@ impl Composer {
         let text_input = overlay.map(|overlay| overlay.text_input).unwrap_or(false);
         let toolbar = unified_toolbar(self.metrics, selection, (w, h), scene.flags, text_input)?;
         if scene.more_open {
-            let items = more_panel_buttons(scene.flags);
+            let items = toolbar.menu.clone();
             if !items.is_empty() {
+                let Some(more_rect) = toolbar
+                    .buttons
+                    .iter()
+                    .rev()
+                    .find(|(action, _)| *action == SelectionAction::More)
+                    .map(|(_, rect)| rect)
+                else {
+                    return toolbar
+                        .buttons
+                        .into_iter()
+                        .find(|(_, rect)| rect.contains(scene.cursor.0, scene.cursor.1));
+                };
                 let panel = more_panel(
                     self.metrics,
-                    toolbar.buttons.last().expect("more button").1,
+                    *more_rect,
                     Some(toolbar.panel),
                     (w, h),
                     &items,
@@ -1959,7 +2323,10 @@ impl Composer {
                 blend(rgba, w, h, x, sep_y, CHROME_BORDER);
             }
         }
-        for (action, rect) in menu_item_rects(metrics, panel, &items) {
+        let separate = items.last() == Some(&SelectionAction::Cancel);
+        for (action, rect) in
+            scrolled_action_rects(metrics, panel, &items, scene.menu_scroll, separate)
+        {
             let hover = rect.contains(scene.cursor.0, scene.cursor.1);
             if hover {
                 fill_round_blend(rgba, w, h, rect, metrics.menu_hover_radius, ACTIVE_BG);
@@ -2614,6 +2981,7 @@ mod tests {
             menu_anchor: (0, 0),
             more_open: false,
             snap_highlight: None,
+            menu_scroll: 0,
         }
     }
 
@@ -2656,9 +3024,11 @@ mod tests {
             menu_anchor: (0, 0),
             more_open: false,
             snap_highlight: None,
+            menu_scroll: 0,
         };
         let hovered = Scene {
             snap_highlight: Some(highlight),
+            menu_scroll: 0,
             ..idle
         };
         let overlay = annotation_overlay(&[], None, None, 0);
@@ -2825,6 +3195,7 @@ mod tests {
             menu_anchor: (0, 0),
             more_open: false,
             snap_highlight: None,
+            menu_scroll: 0,
         };
         let composed = composer.compose_with_overlay(&scene, &overlay);
         let panel = magnifier_rect(cursor, (w, h), 1.0);
@@ -2848,6 +3219,7 @@ mod tests {
             menu_anchor: cursor,
             more_open: false,
             snap_highlight: None,
+            menu_scroll: 0,
         };
         let composed = composer.compose_with_overlay(&scene, &overlay);
         let items = menu_items(flags);
@@ -2903,8 +3275,8 @@ mod tests {
         let selection = PhysicalRect {
             x: 40,
             y: 30,
-            width: 720,
-            height: 530,
+            width: 420,
+            height: 180,
         };
         let enabled = FeatureFlags {
             magnifier: false,
@@ -2926,6 +3298,7 @@ mod tests {
             menu_anchor: (0, 0),
             more_open: more,
             snap_highlight: None,
+            menu_scroll: 0,
         };
         // 面板内深色图标像素计数(亮铬面板上的深墨图标)。
         let panel_ink = |bytes: &[u8], more: bool| {
@@ -2982,7 +3355,8 @@ mod tests {
         )
         .expect("toolbar");
         assert_eq!(toolbar.panel.height, metrics_1().bar_button);
-        assert_eq!(toolbar.buttons.len(), toolbar_buttons(enabled, true).len());
+        assert!(toolbar.buttons.iter().all(|(_, rect)| rect.height == metrics_1().bar_button));
+        assert!(toolbar.buttons.windows(2).all(|pair| pair[0].1.y == pair[1].1.y));
         // 展开「更多」:面板出现在「更多」按钮上方,图标像素增多。
         let expanded =
             composer.compose_with_overlay(&mode_scene(selection, enabled, true), &overlay(None));
@@ -2997,10 +3371,10 @@ mod tests {
             toolbar_buttons(disabled, true),
             vec![
                 SelectionAction::Annotate,
-                SelectionAction::Copy,
+                SelectionAction::Pin,
                 SelectionAction::Save,
+                SelectionAction::Copy,
                 SelectionAction::Cancel,
-                SelectionAction::More,
             ]
         );
         assert!(
@@ -3074,12 +3448,18 @@ mod tests {
                 SelectionAction::Tool(AnnotationTool::Highlighter),
                 SelectionAction::Tool(AnnotationTool::Mosaic),
                 SelectionAction::Tool(AnnotationTool::Text),
+                SelectionAction::Tool(AnnotationTool::Number),
+                SelectionAction::Tool(AnnotationTool::Spotlight),
+                SelectionAction::Tool(AnnotationTool::Magnifier),
+                SelectionAction::Tool(AnnotationTool::Bubble),
+                SelectionAction::Tool(AnnotationTool::Sticker),
+                SelectionAction::Tool(AnnotationTool::Erase),
                 SelectionAction::Undo,
                 SelectionAction::Redo,
-                SelectionAction::Copy,
+                SelectionAction::Pin,
                 SelectionAction::Save,
+                SelectionAction::Copy,
                 SelectionAction::Cancel,
-                SelectionAction::More,
             ]
         );
         // 平台无文本输入通道:主行不含文字工具,顺序不变。
@@ -3091,12 +3471,18 @@ mod tests {
                 SelectionAction::Tool(AnnotationTool::Ellipse),
                 SelectionAction::Tool(AnnotationTool::Highlighter),
                 SelectionAction::Tool(AnnotationTool::Mosaic),
+                SelectionAction::Tool(AnnotationTool::Number),
+                SelectionAction::Tool(AnnotationTool::Spotlight),
+                SelectionAction::Tool(AnnotationTool::Magnifier),
+                SelectionAction::Tool(AnnotationTool::Bubble),
+                SelectionAction::Tool(AnnotationTool::Sticker),
+                SelectionAction::Tool(AnnotationTool::Erase),
                 SelectionAction::Undo,
                 SelectionAction::Redo,
-                SelectionAction::Copy,
+                SelectionAction::Pin,
                 SelectionAction::Save,
+                SelectionAction::Copy,
                 SelectionAction::Cancel,
-                SelectionAction::More,
             ]
         );
         // 关闭复制/保存:主行与「更多」均无该项,其余顺序不变。
@@ -3116,64 +3502,38 @@ mod tests {
                 SelectionAction::Tool(AnnotationTool::Highlighter),
                 SelectionAction::Tool(AnnotationTool::Mosaic),
                 SelectionAction::Tool(AnnotationTool::Text),
+                SelectionAction::Tool(AnnotationTool::Number),
+                SelectionAction::Tool(AnnotationTool::Spotlight),
+                SelectionAction::Tool(AnnotationTool::Magnifier),
+                SelectionAction::Tool(AnnotationTool::Bubble),
+                SelectionAction::Tool(AnnotationTool::Sticker),
+                SelectionAction::Tool(AnnotationTool::Erase),
                 SelectionAction::Undo,
                 SelectionAction::Redo,
                 SelectionAction::Cancel,
-                SelectionAction::More,
             ]
         );
-        // 「更多」不含横条已有的默认模式和撤销/重做,只留直线/画笔/模糊、
-        // 收进的工具、删除,以及开关允许的贴图/取字。
+        // 取字、二维码、删除留在菜单。直线/模糊不再占菜单按钮。
         assert_eq!(
             more_panel_buttons(on),
             vec![
-                SelectionAction::Tool(AnnotationTool::Number),
-                SelectionAction::Tool(AnnotationTool::Spotlight),
-                SelectionAction::Tool(AnnotationTool::Magnifier),
-                SelectionAction::Tool(AnnotationTool::Bubble),
-                SelectionAction::Tool(AnnotationTool::Sticker),
-                SelectionAction::Tool(AnnotationTool::Erase),
-                SelectionAction::Mode(ToolMode::Line),
-                SelectionAction::Mode(ToolMode::Pen),
-                SelectionAction::Mode(ToolMode::Blur),
-                SelectionAction::Delete,
-                SelectionAction::Pin,
                 SelectionAction::Ocr,
                 SelectionAction::Qr,
+                SelectionAction::Delete,
             ]
         );
-        // 关闭贴图/取字后,「更多」仍含收进的工具、非默认模式、删除与二维码。
         assert_eq!(
             more_panel_buttons(off),
-            vec![
-                SelectionAction::Tool(AnnotationTool::Number),
-                SelectionAction::Tool(AnnotationTool::Spotlight),
-                SelectionAction::Tool(AnnotationTool::Magnifier),
-                SelectionAction::Tool(AnnotationTool::Bubble),
-                SelectionAction::Tool(AnnotationTool::Sticker),
-                SelectionAction::Tool(AnnotationTool::Erase),
-                SelectionAction::Mode(ToolMode::Line),
-                SelectionAction::Mode(ToolMode::Pen),
-                SelectionAction::Mode(ToolMode::Blur),
-                SelectionAction::Delete,
-                SelectionAction::Qr,
-            ]
+            vec![SelectionAction::Qr, SelectionAction::Delete]
         );
-        // 即时标注关闭:「更多」只含贴图/取字/二维码。
         let inline_off = FeatureFlags {
             inline_annotation: false,
             ..FeatureFlags::default()
         };
         assert_eq!(
             more_panel_buttons(inline_off),
-            vec![
-                SelectionAction::Pin,
-                SelectionAction::Ocr,
-                SelectionAction::Qr
-            ]
+            vec![SelectionAction::Ocr, SelectionAction::Qr]
         );
-        // R5:全量开启时「更多」含全部注册表收进工具(序号/聚光灯/放大镜/
-        // 对话气泡/贴纸/内容擦除)。
         let all_tools = FeatureFlags {
             tools: ToolToggles {
                 number: true,
@@ -3189,19 +3549,9 @@ mod tests {
         assert_eq!(
             more_panel_buttons(all_tools),
             vec![
-                SelectionAction::Tool(AnnotationTool::Number),
-                SelectionAction::Tool(AnnotationTool::Spotlight),
-                SelectionAction::Tool(AnnotationTool::Magnifier),
-                SelectionAction::Tool(AnnotationTool::Bubble),
-                SelectionAction::Tool(AnnotationTool::Sticker),
-                SelectionAction::Tool(AnnotationTool::Erase),
-                SelectionAction::Mode(ToolMode::Line),
-                SelectionAction::Mode(ToolMode::Pen),
-                SelectionAction::Mode(ToolMode::Blur),
-                SelectionAction::Delete,
-                SelectionAction::Pin,
                 SelectionAction::Ocr,
                 SelectionAction::Qr,
+                SelectionAction::Delete,
             ]
         );
         // R5/R19:逐项开关关闭工具后主行不再含该入口;关闭全部绘图工具后
@@ -3240,33 +3590,42 @@ mod tests {
             vec![
                 SelectionAction::Undo,
                 SelectionAction::Redo,
-                SelectionAction::Copy,
+                SelectionAction::Pin,
                 SelectionAction::Save,
+                SelectionAction::Copy,
                 SelectionAction::Cancel,
-                SelectionAction::More,
             ]
         );
         assert_eq!(
             more_panel_buttons(no_draw),
             vec![
-                SelectionAction::Delete,
-                SelectionAction::Pin,
                 SelectionAction::Ocr,
                 SelectionAction::Qr,
+                SelectionAction::Delete,
             ]
         );
-        // 合并工具的默认模式入口同样随所属工具开关裁剪:关闭马赛克后,
-        // 马赛克/模糊两个模式入口都不再出现。
-        let modes = more_panel_buttons(FeatureFlags {
-            tools: ToolToggles {
-                mosaic: false,
-                ..ToolToggles::default()
-            },
-            ..FeatureFlags::default()
-        });
-        assert!(!modes.contains(&SelectionAction::Mode(ToolMode::Mosaic)));
-        assert!(!modes.contains(&SelectionAction::Mode(ToolMode::Blur)));
-        assert!(modes.contains(&SelectionAction::Mode(ToolMode::Line)));
+        let arrow = style_chips(AnnotationTool::Arrow);
+        assert!(arrow.iter().any(|chip| matches!(chip, StyleChip::Width(_))));
+        assert!(arrow.iter().any(|chip| matches!(chip, StyleChip::Color(_))));
+        assert!(!arrow.iter().any(|chip| matches!(chip, StyleChip::TextSize(_))));
+        assert!(arrow
+            .iter()
+            .any(|chip| matches!(chip, StyleChip::Mode(ToolMode::Line))));
+        let text = style_chips(AnnotationTool::Text);
+        assert!(text.iter().any(|chip| matches!(chip, StyleChip::TextSize(_))));
+        assert!(!text.iter().any(|chip| matches!(chip, StyleChip::Width(_))));
+        assert!(style_chips(AnnotationTool::Number)
+            .iter()
+            .any(|chip| matches!(chip, StyleChip::NumberStep(_))));
+        assert!(style_chips(AnnotationTool::Magnifier)
+            .iter()
+            .all(|chip| matches!(chip, StyleChip::Zoom(_))));
+        assert!(style_chips(AnnotationTool::Spotlight)
+            .iter()
+            .all(|chip| matches!(chip, StyleChip::Dim(_))));
+        assert!(style_chips(AnnotationTool::Mosaic)
+            .iter()
+            .any(|chip| matches!(chip, StyleChip::Mode(ToolMode::Blur))));
     }
 
     /// 统一横条布局:下缘优先(水平居中)→ 上缘 → 侧面;恒为一行、在屏内、
@@ -3287,22 +3646,23 @@ mod tests {
         assert_eq!(toolbar.panel.height, metrics.bar_button, "必须为一行");
         assert_eq!(
             toolbar.panel.width,
-            toolbar.buttons.len() as i32 * metrics.bar_button
+            toolbar.buttons.iter().map(|(_, rect)| rect.width).sum::<i32>()
         );
         assert_eq!(
             toolbar.panel.y,
             selection.y as i32 + selection.height as i32 + BAR_MARGIN
         );
-        let row_center = toolbar.panel.x + toolbar.panel.width / 2;
-        assert!(
-            (row_center - (100 + 150)).abs() <= 1,
-            "横条应水平居中于选区"
-        );
+        let ideal = 100 + 150 - toolbar.panel.width / 2;
+        let clamped = ideal.clamp(0, 1280 - toolbar.panel.width);
+        assert_eq!(toolbar.panel.x, clamped, "横条在屏内尽量水平居中于选区");
         // 按钮不重叠、都在面板内。
-        for (index, (_, rect)) in toolbar.buttons.iter().enumerate() {
-            assert_eq!(rect.width, metrics.bar_button);
+        let mut cursor_x = toolbar.panel.x;
+        for (_, rect) in &toolbar.buttons {
+            assert!(rect.width >= metrics.bar_button);
             assert_eq!(rect.height, metrics.bar_button);
-            assert_eq!(rect.x, toolbar.panel.x + index as i32 * metrics.bar_button);
+            assert_eq!(rect.y, toolbar.panel.y);
+            assert_eq!(rect.x, cursor_x);
+            cursor_x += rect.width;
             assert!(toolbar.panel.contains(rect.x, rect.y));
         }
         // 贴屏幕底:下缘放不下 → 上缘。
@@ -3421,39 +3781,34 @@ mod tests {
         };
         let screen = (180u32, 600u32);
         let toolbar = unified_toolbar(metrics, selection, screen, flags, true).expect("toolbar");
-        let count = toolbar.buttons.len() as i32;
         let button = metrics.bar_button;
-        assert!(count * button > screen.0 as i32);
+        assert!(
+            toolbar_buttons(flags, true).len() > toolbar.buttons.len()
+                || !toolbar.menu.is_empty(),
+            "窄屏必须把放不下的项送进菜单"
+        );
         assert!(!toolbar
             .buttons
             .iter()
             .any(|(action, _)| *action == SelectionAction::Recording));
-        let columns = screen.0 as i32 / button;
-        let rows = (count + columns - 1) / columns;
-        assert!(rows > 1);
-        assert_eq!(toolbar.panel.width, columns * button);
-        assert_eq!(toolbar.panel.height, rows * button);
+        assert_eq!(toolbar.panel.height, button, "窄屏也不能换行或收成竖条");
+        assert!(toolbar.panel.width <= screen.0 as i32);
         assert_eq!(
             toolbar.panel.y,
             selection.y as i32 + selection.height as i32 + metrics.bar_margin
         );
-        for (index, (action, rect)) in toolbar.buttons.iter().enumerate() {
-            assert_eq!(rect.width, button, "{action:?}");
+        let mut cursor = toolbar.panel.x;
+        for (action, rect) in &toolbar.buttons {
+            assert!(rect.width >= button, "{action:?}");
             assert_eq!(rect.height, button, "{action:?}");
-            assert!(rect.x >= 0 && rect.y >= 0, "{action:?}");
+            assert_eq!(rect.y, toolbar.panel.y, "{action:?}");
+            assert_eq!(rect.x, cursor, "{action:?}");
+            cursor += rect.width;
             assert!(rect.right() <= screen.0 as i32 && rect.bottom() <= screen.1 as i32);
-            let slot = index as i32;
-            assert_eq!(rect.x, toolbar.panel.x + (slot % columns) * button);
-            assert_eq!(rect.y, toolbar.panel.y + (slot / columns) * button);
-            for (other_index, (_, other)) in toolbar.buttons.iter().enumerate() {
-                if other_index != index {
-                    assert!(!intersects(*rect, *other));
-                }
-            }
         }
-        let wide = unified_toolbar(metrics, selection, (1280, 800), flags, true).expect("wide");
+        let wide = unified_toolbar(metrics, selection, (2400, 800), flags, true).expect("wide");
         assert_eq!(wide.panel.height, button);
-        assert_eq!(wide.panel.width, wide.buttons.len() as i32 * button);
+        assert!(wide.buttons.iter().all(|(_, rect)| rect.y == wide.panel.y));
     }
 
     /// 选区贴住上下边且屏幕又窄又矮时,最大列数会压进选区;改按侧面剩余宽度减列后放到侧面。
@@ -3465,24 +3820,16 @@ mod tests {
         let selection = PhysicalRect {
             x: 0,
             y: 0,
-            width: 140,
+            width: 200,
             height: 520,
         };
-        let screen = (220u32, 520u32);
+        let screen = (640u32, 520u32);
         let toolbar = unified_toolbar(metrics, selection, screen, flags, true).expect("toolbar");
-        let count = toolbar.buttons.len() as i32;
-        let max_columns = toolbar_columns(button, count, screen.0 as i32);
-        let columns = toolbar.panel.width / button;
-        assert!(max_columns < count, "本场景必须先因屏宽换行");
-        assert!(max_columns > columns && columns >= 1);
-        assert_eq!(toolbar.panel.width, columns * button);
-        assert_eq!(
-            toolbar.panel.height,
-            ((count + columns - 1) / columns) * button
-        );
+        assert_eq!(toolbar.panel.height, button, "侧面也必须是一行,不能是竖条");
+        assert!(!toolbar.menu.is_empty(), "放不下的项进入菜单");
         let sel = IntRect::from(selection);
         assert!(!intersects(toolbar.panel, sel), "{:?}", toolbar.panel);
-        assert!(toolbar.panel.x >= sel.right());
+        assert!(toolbar.panel.x >= sel.right() || toolbar.panel.right() <= sel.x);
         assert!(toolbar.panel.right() <= screen.0 as i32);
         assert!(toolbar.panel.bottom() <= screen.1 as i32);
         for (action, rect) in &toolbar.buttons {
@@ -3656,11 +4003,7 @@ mod tests {
         };
         let items = menu_items(enabled);
         assert!(items.contains(&SelectionAction::LongCapture));
-        assert!(toolbar_buttons(enabled, true).contains(&SelectionAction::LongCapture));
-        let annotate = items
-            .iter()
-            .position(|action| *action == SelectionAction::Annotate)
-            .unwrap();
+        assert!(!toolbar_buttons(enabled, true).contains(&SelectionAction::LongCapture));
         let long = items
             .iter()
             .position(|action| *action == SelectionAction::LongCapture)
@@ -3669,7 +4012,7 @@ mod tests {
             .iter()
             .position(|action| *action == SelectionAction::Ocr)
             .unwrap();
-        assert!(annotate < long && long < ocr);
+        assert!(long < ocr);
 
         let disabled = FeatureFlags::default();
         assert!(!menu_items(disabled).contains(&SelectionAction::LongCapture));
@@ -3697,7 +4040,7 @@ mod tests {
         };
         let items = menu_items(enabled);
         assert!(items.contains(&SelectionAction::Recording));
-        assert!(toolbar_buttons(enabled, true).contains(&SelectionAction::Recording));
+        assert!(!toolbar_buttons(enabled, true).contains(&SelectionAction::Recording));
         let long = items
             .iter()
             .position(|action| *action == SelectionAction::LongCapture)
@@ -3822,6 +4165,7 @@ mod tests {
             menu_anchor: (0, 0),
             more_open: false,
             snap_highlight: None,
+            menu_scroll: 0,
         };
         let composed = composer.compose(&scene);
         let read = |x: i32, y: i32| {
@@ -4009,6 +4353,7 @@ mod tests {
             menu_anchor: (0, 0),
             more_open: false,
             snap_highlight: None,
+            menu_scroll: 0,
         };
         let composed = composer.compose(&scene);
         let panel = magnifier_rect((200, 150), (400, 300), 1.0);
@@ -4051,6 +4396,7 @@ mod tests {
             menu_anchor: (0, 0),
             more_open: false,
             snap_highlight: None,
+            menu_scroll: 0,
         };
         let composed = composer.compose(&scene);
         let panel = magnifier_rect((300, 200), (600, 400), 1.5);
@@ -4089,6 +4435,7 @@ mod tests {
             menu_anchor: (0, 0),
             more_open: false,
             snap_highlight: None,
+            menu_scroll: 0,
         };
         let full_selected = composer.compose_with_overlay(&selected, &overlay);
         let mut dirty_buf = composer.dimmed.clone();
@@ -4113,6 +4460,7 @@ mod tests {
             menu_anchor: (0, 0),
             more_open: false,
             snap_highlight: None,
+            menu_scroll: 0,
         };
         let idle_b = Scene {
             cursor: (100, 90),
@@ -4178,6 +4526,7 @@ mod tests {
             menu_anchor: (0, 0),
             more_open: false,
             snap_highlight: None,
+            menu_scroll: 0,
         };
         let scene_b = Scene {
             cursor: (320, 50),
@@ -4222,6 +4571,7 @@ mod tests {
             menu_anchor: (0, 0),
             more_open: false,
             snap_highlight: None,
+            menu_scroll: 0,
         };
         let panel = magnifier_rect(cursor, (400, 300), 1.0);
         let layout = mag_layout(1.0);
@@ -4257,6 +4607,7 @@ mod tests {
             menu_anchor: (0, 0),
             more_open: false,
             snap_highlight: None,
+            menu_scroll: 0,
         };
         let composed = composer.compose(&scene);
         let read = |x: i32, y: i32| {
@@ -4289,6 +4640,7 @@ mod tests {
             menu_anchor: (0, 0),
             more_open: false,
             snap_highlight: None,
+            menu_scroll: 0,
         };
         let composed = composer.compose(&scene);
         let read = |x: i32, y: i32| {
@@ -4306,88 +4658,49 @@ mod tests {
         );
     }
 
-    /// 右键菜单保持现状:动作集/过滤与菜单几何不变。
+    /// 右键菜单与「更多」相同:只放没进主行的已启用动作。
     #[test]
     fn menu_items_stay_on_capture_action_set() {
-        let default_items = vec![
-            SelectionAction::Copy,
-            SelectionAction::Save,
-            SelectionAction::Pin,
-            SelectionAction::Annotate,
-            SelectionAction::Ocr,
-            SelectionAction::Qr,
-            SelectionAction::Cancel,
-        ];
-        assert_eq!(menu_items(FeatureFlags::default()), default_items);
-        let flags = FeatureFlags {
-            ocr_entry: false,
-            pin_entry: false,
-            ..FeatureFlags::default()
-        };
-        let items = menu_items(flags);
-        assert!(!items.contains(&SelectionAction::Ocr));
-        assert!(!items.contains(&SelectionAction::Pin));
         assert_eq!(
-            items,
+            menu_items(FeatureFlags::default()),
             vec![
-                SelectionAction::Copy,
-                SelectionAction::Save,
-                SelectionAction::Annotate,
+                SelectionAction::Ocr,
                 SelectionAction::Qr,
-                SelectionAction::Cancel,
+                SelectionAction::Delete,
             ]
         );
-        // 关闭操作条复制/保存/贴图后,菜单不再出现对应项;标注、二维码与取消恒在。
-        let toolbar_off = FeatureFlags {
-            toolbar_copy: false,
-            toolbar_save: false,
-            toolbar_pin: false,
+        let flags = FeatureFlags {
             ocr_entry: false,
+            qr_entry: false,
             ..FeatureFlags::default()
         };
-        let filtered = vec![
-            SelectionAction::Annotate,
-            SelectionAction::Qr,
-            SelectionAction::Cancel,
-        ];
-        assert_eq!(menu_items(toolbar_off), filtered);
-        // 贴图需 toolbar_pin 与 pin_entry 同时开启。
-        let pin_entry_only = FeatureFlags {
-            toolbar_pin: false,
-            ..FeatureFlags::default()
-        };
-        assert!(!menu_items(pin_entry_only).contains(&SelectionAction::Pin));
-        let toolbar_pin_only = FeatureFlags {
-            pin_entry: false,
-            ..FeatureFlags::default()
-        };
-        assert!(!menu_items(toolbar_pin_only).contains(&SelectionAction::Pin));
+        assert_eq!(menu_items(flags), vec![SelectionAction::Delete]);
+        assert!(!menu_items(flags).contains(&SelectionAction::Ocr));
+        assert!(!menu_items(FeatureFlags::default()).contains(&SelectionAction::Copy));
+        assert!(!menu_items(FeatureFlags::default()).contains(&SelectionAction::Pin));
+        assert!(!menu_items(FeatureFlags::default()).contains(&SelectionAction::Cancel));
     }
 
     #[test]
     fn menu_geometry_has_touch_targets_and_cancel_separator() {
         let items = menu_items(FeatureFlags::default());
-        assert_eq!(items.len(), 7);
+        assert_eq!(items.len(), 3);
         let metrics = metrics_1();
         let row = menu_row_width(metrics, &items);
         let panel = menu_panel(metrics, (50, 50), (800, 600), &items);
-        assert!(row < MENU_ITEM_W);
         assert_eq!(panel.width, row + MENU_PAD * 2);
         assert_eq!(
             panel.height,
-            items.len() as i32 * MENU_ITEM_H + MENU_PAD * 2 + MENU_SEPARATOR_H
+            items.len() as i32 * MENU_ITEM_H + MENU_PAD * 2
         );
         let rects = menu_item_rects(metrics, panel, &items);
+        assert_eq!(rects.len(), items.len());
         for (_, rect) in &rects {
             assert_eq!(rect.width, row);
             assert_eq!(rect.height, MENU_ITEM_H);
             assert_eq!(rect.x, panel.x + MENU_PAD);
+            assert!(rect.bottom() <= panel.bottom());
         }
-        // 分隔线:紧贴倒数第二项底部,末项(取消)在线下 1px。
-        let last = rects.len() - 1;
-        let sep_y = menu_separator_y(metrics_1(), panel, &items);
-        assert_eq!(rects[last - 1].1.bottom(), sep_y);
-        assert_eq!(rects[last].1.y, sep_y + MENU_SEPARATOR_H);
         // 图标/文字内边距。
         assert_eq!(MENU_ICON_CX, 18);
         assert_eq!(MENU_TEXT_X, 38);
@@ -4431,7 +4744,7 @@ mod tests {
             inline_annotation: false,
             ..FeatureFlags::default()
         });
-        assert_eq!(short.len(), 3);
+        assert_eq!(short.len(), 2);
         let tight = IntRect {
             x: 4,
             y: 4,
@@ -4515,6 +4828,7 @@ mod tests {
             menu_anchor: (0, 0),
             more_open: false,
             snap_highlight: None,
+            menu_scroll: 0,
         };
         let composed = composer.compose(&scene);
         let read = |x: i32, y: i32| {
@@ -4600,6 +4914,7 @@ mod tests {
             menu_anchor: (0, 0),
             more_open: false,
             snap_highlight: None,
+            menu_scroll: 0,
         };
         let (action, anchor) = composer
             .hovered_icon(&scene, None, 320, 200)
@@ -4724,35 +5039,34 @@ mod tests {
                 true,
             )
             .expect("toolbar");
-            let count = toolbar.buttons.len() as i32;
-            let columns = toolbar_columns(metrics.bar_button, count, 800);
-            let rows = (count + columns - 1) / columns;
-            assert_eq!(
-                toolbar.panel.width,
-                columns * metrics.bar_button,
-                "scale {scale}"
-            );
-            assert_eq!(
-                toolbar.panel.height,
-                rows * metrics.bar_button,
-                "scale {scale}"
-            );
+            assert_eq!(toolbar.panel.height, metrics.bar_button, "scale {scale}");
+            let width = toolbar
+                .buttons
+                .iter()
+                .map(|(_, rect)| rect.width)
+                .sum::<i32>();
+            assert_eq!(toolbar.panel.width, width, "scale {scale}");
             assert!(toolbar.buttons.iter().all(|(_, rect)| {
-                rect.width == metrics.bar_button
-                    && rect.height == metrics.bar_button
+                rect.height == metrics.bar_button
+                    && rect.width >= metrics.bar_button
                     && rect.right() <= 800
                     && rect.bottom() <= 600
             }));
-            // 菜单几何按 metrics;分隔线与项底对齐。
+            // 菜单几何按 metrics。没有「取消」时不预留分隔线。
             let items = menu_items(FeatureFlags::default());
             let menu = menu_panel(metrics, (50, 50), (800, 600), &items);
             let row = menu_row_width(metrics, &items);
+            let separate = items.last() == Some(&SelectionAction::Cancel);
             assert_eq!(menu.width, row + metrics.menu_pad * 2);
             assert_eq!(
                 menu.height,
                 items.len() as i32 * metrics.menu_item_h
                     + metrics.menu_pad * 2
-                    + metrics.menu_separator_h
+                    + if separate {
+                        metrics.menu_separator_h
+                    } else {
+                        0
+                    }
             );
             let mrects = menu_item_rects(metrics, menu, &items);
             for (_, rect) in &mrects {
@@ -4760,10 +5074,12 @@ mod tests {
                 assert_eq!(rect.height, metrics.menu_item_h);
                 assert_eq!(rect.x, menu.x + metrics.menu_pad);
             }
-            let sep_y = menu_separator_y(metrics, menu, &items);
-            let last = mrects.len() - 1;
-            assert_eq!(mrects[last - 1].1.bottom(), sep_y);
-            assert_eq!(mrects[last].1.y, sep_y + metrics.menu_separator_h);
+            if separate {
+                let sep_y = menu_separator_y(metrics, menu, &items);
+                let last = mrects.len() - 1;
+                assert_eq!(mrects[last - 1].1.bottom(), sep_y);
+                assert_eq!(mrects[last].1.y, sep_y + metrics.menu_separator_h);
+            }
             // 「更多」面板几何随 metrics 派生。
             let more = more_panel_buttons(FeatureFlags::default());
             let m_panel = more_panel(
@@ -4828,6 +5144,7 @@ mod tests {
             menu_anchor: (0, 0),
             more_open: false,
             snap_highlight: None,
+            menu_scroll: 0,
         };
         let composed = composer.compose(&scene);
         let read = |x: i32, y: i32| {
@@ -4871,6 +5188,7 @@ mod tests {
             menu_anchor: (20, 20),
             more_open: false,
             snap_highlight: None,
+            menu_scroll: 0,
         };
         let composed = composer.compose(&scene);
         let read = |x: i32, y: i32| {

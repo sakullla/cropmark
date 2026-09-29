@@ -69,12 +69,14 @@ export interface PinSettings {
   restore: boolean;
 }
 
-/// R3:录屏开关与录制格式。开关默认关闭;格式默认 GIF。
+/// 录屏开关、格式与帧率。开关默认关闭;新安装格式默认 MP4。
 export type RecordingFormat = "gif" | "webp" | "mp4";
+export type RecordingFps = 10 | 15 | 30;
 
 export interface RecordingSettings {
   enabled: boolean;
   format: RecordingFormat;
+  fps?: RecordingFps | null;
 }
 
 /// 选区工具开关。关闭只是不放进工具条，工具本身还在。
@@ -113,9 +115,6 @@ export const REGION_TOOL_FIELDS: { id: RegionToolId; labelKey: CatalogKey }[] = 
   { id: "bubble", labelKey: "selection.tool.bubble" },
   { id: "sticker", labelKey: "selection.tool.sticker" },
   { id: "erase", labelKey: "selection.tool.erase" },
-  { id: "line", labelKey: "selection.tool.line" },
-  { id: "blur", labelKey: "selection.tool.blur" },
-  { id: "pin", labelKey: "selection.action.pin" },
   { id: "ocr", labelKey: "selection.action.ocr" },
   { id: "qr", labelKey: "selection.action.qr" },
 ];
@@ -178,7 +177,8 @@ const RECORDING_FORMATS: Array<{ value: RecordingFormat; labelKey: CatalogKey }>
   { value: "mp4", labelKey: "settings.recording.format.mp4" },
 ];
 
-const DEFAULT_RECORDING: RecordingSettings = { enabled: false, format: "gif" };
+const DEFAULT_RECORDING: RecordingSettings = { enabled: false, format: "mp4", fps: null };
+const RECORDING_FPS: RecordingFps[] = [10, 15, 30];
 
 const DEFAULT_BEAUTIFY: BeautifyOptions = {
   preset: "paper",
@@ -288,7 +288,7 @@ export function mountSettings(root: HTMLElement): () => void {
                   <div class="setting-row">
                     <div>
                       <div class="label" id="region-tools-title" data-i18n="settings.region_tools.title">选区工具</div>
-                      <p class="hint" data-i18n="settings.region_tools.hint">决定区域截图工具条和「更多」里显示哪些项。</p>
+                      <p class="hint" data-i18n="settings.region_tools.hint">决定绘制工具、取字和二维码是否出现。贴图、复制、保存和取消始终保留。直线跟着箭头，模糊跟着马赛克。</p>
                     </div>
                   </div>
                   <div class="choices" data-region-tools role="group" aria-labelledby="region-tools-title"></div>
@@ -309,6 +309,14 @@ export function mountSettings(root: HTMLElement): () => void {
                     </div>
                   </div>
                   <div class="choices" data-recording-formats role="radiogroup" aria-labelledby="recording-format-label"></div>
+                  <div class="setting-row">
+                    <div>
+                      <div class="label" id="recording-fps-label" data-i18n="settings.recording.fps_label">捕获帧率</div>
+                      <p class="hint" data-i18n="settings.recording.fps_hint">只能选 10、15 或 30。没单独选过时，MP4 用 30，GIF 和 WebP 用 15；选定后三种格式都用这一档。</p>
+                    </div>
+                  </div>
+                  <div class="choices" data-recording-fps role="radiogroup" aria-labelledby="recording-fps-label"></div>
+                  <p class="hint" data-recording-unavailable hidden data-i18n="settings.recording.unavailable">录屏关闭时没有录屏入口，格式和帧率不可用。</p>
                 </section>
               </section>
             </section>
@@ -516,6 +524,8 @@ export function mountSettings(root: HTMLElement): () => void {
   const pinRestoreEl = root.querySelector("[data-pin-option=restore]");
   const recordingEnabledEl = root.querySelector("[data-recording-option=enabled]");
   const recordingFormatsEl = root.querySelector("[data-recording-formats]");
+  const recordingFpsEl = root.querySelector("[data-recording-fps]");
+  const recordingUnavailableEl = root.querySelector("[data-recording-unavailable]");
   const regionToolsEl = root.querySelector("[data-region-tools]");
   const openGuideEl = root.querySelector("[data-action=open-guide]");
   const logPathEl = root.querySelector("[data-log-path]");
@@ -552,6 +562,8 @@ export function mountSettings(root: HTMLElement): () => void {
     !(pinRestoreEl instanceof HTMLButtonElement) ||
     !(recordingEnabledEl instanceof HTMLButtonElement) ||
     !(recordingFormatsEl instanceof HTMLElement) ||
+    !(recordingFpsEl instanceof HTMLElement) ||
+    !(recordingUnavailableEl instanceof HTMLElement) ||
     !(regionToolsEl instanceof HTMLElement) ||
     !(openGuideEl instanceof HTMLButtonElement) ||
     !(logPathEl instanceof HTMLElement) ||
@@ -602,17 +614,17 @@ export function mountSettings(root: HTMLElement): () => void {
     highlighter: true,
     mosaic: true,
     text: true,
-    number: true,
-    spotlight: true,
-    magnifier: true,
-    bubble: true,
-    sticker: true,
-    erase: true,
-    line: true,
-    blur: true,
-    pin: true,
+    number: false,
+    spotlight: false,
+    magnifier: false,
+    bubble: false,
+    sticker: false,
+    erase: false,
+    line: false,
+    blur: false,
+    pin: false,
     ocr: true,
-    qr: true,
+    qr: false,
   };
 
   const syncSwitch = (button: HTMLButtonElement, on: boolean): void => {
@@ -769,6 +781,32 @@ export function mountSettings(root: HTMLElement): () => void {
         .querySelector<HTMLButtonElement>(`[data-recording-format="${activeFormat}"]`)
         ?.focus();
     }
+    const activeFps =
+      document.activeElement instanceof HTMLButtonElement &&
+      recordingFpsEl.contains(document.activeElement)
+        ? (document.activeElement.dataset.recordingFps ?? null)
+        : null;
+    recordingFpsEl.replaceChildren();
+    for (const fps of RECORDING_FPS) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "choice";
+      button.dataset.recordingFps = String(fps);
+      button.setAttribute("role", "radio");
+      button.textContent = t("settings.recording.fps_option", { fps: String(fps) });
+      const selected = settings.fps === fps;
+      button.setAttribute("aria-checked", selected ? "true" : "false");
+      button.classList.toggle("selected", selected);
+      button.disabled = !settings.enabled;
+      button.tabIndex = selected ? 0 : -1;
+      recordingFpsEl.append(button);
+    }
+    if (activeFps) {
+      recordingFpsEl
+        .querySelector<HTMLButtonElement>(`[data-recording-fps="${activeFps}"]`)
+        ?.focus();
+    }
+    recordingUnavailableEl.hidden = settings.enabled;
   };
 
   const renderLanguage = (language: string): void => {
@@ -1249,6 +1287,25 @@ export function mountSettings(root: HTMLElement): () => void {
     void applyRecording({ ...recordingSettings, format });
   });
 
+  recordingFpsEl.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element) || applying || !recordingSettings.enabled) {
+      return;
+    }
+    const button = target.closest("[data-recording-fps]");
+    if (!(button instanceof HTMLButtonElement) || button.disabled) {
+      return;
+    }
+    const fps = Number(button.dataset.recordingFps);
+    if (fps !== 10 && fps !== 15 && fps !== 30) {
+      return;
+    }
+    if (fps === recordingSettings.fps) {
+      return;
+    }
+    void applyRecording({ ...recordingSettings, fps });
+  });
+
   let logDirectory = "";
   logPathEl.style.overflowWrap = "anywhere";
   logPathEl.style.userSelect = "text";
@@ -1460,6 +1517,13 @@ export function mountSettings(root: HTMLElement): () => void {
       return;
     }
     handleRadioGroupKeydown(event, recordingFormatsEl, "[data-recording-format]");
+  });
+
+  recordingFpsEl.addEventListener("keydown", (event) => {
+    if (!recordingSettings.enabled) {
+      return;
+    }
+    handleRadioGroupKeydown(event, recordingFpsEl, "[data-recording-fps]");
   });
 
   switchEl.addEventListener("click", () => {

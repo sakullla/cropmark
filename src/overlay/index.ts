@@ -58,6 +58,8 @@ interface OverlayFrame {
   annotations?: Annotation[];
   pendingOcr?: boolean;
   pendingQr?: boolean;
+  /** 录屏 MP4:确认前把宽高向下收成偶数,尺寸与将要录下的矩形一致。 */
+  recordEven?: boolean;
 }
 
 interface Selection {
@@ -213,7 +215,13 @@ export function mountOverlay(root: HTMLElement): () => void {
     const top = clamp(Math.round(selection.y), 0, frame.height);
     const right = clamp(Math.round(selection.x + selection.width), 0, frame.width);
     const bottom = clamp(Math.round(selection.y + selection.height), 0, frame.height);
-    return { x: left, y: top, width: right - left, height: bottom - top };
+    let width = right - left;
+    let height = bottom - top;
+    if (frame.recordEven) {
+      width -= width % 2;
+      height -= height % 2;
+    }
+    return { x: left, y: top, width, height };
   };
 
   const annotationActive = (): boolean =>

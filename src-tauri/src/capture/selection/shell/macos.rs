@@ -1337,6 +1337,20 @@ fn push_cursor(state: &mut ShellState) -> bool {
     changed
 }
 
+fn hold_recording_rect(state: &mut ShellState, view: &SelectionView) -> bool {
+    let delay = state.canvas.engine.confirm_delay_ms();
+    if delay == 0 || !state.canvas.engine.flags().recording {
+        return true;
+    }
+    let steps = (delay / 100).max(1);
+    for _ in 0..steps {
+        present(state, view);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    present(state, view);
+    true
+}
+
 /// 与 Windows 壳同构的 EngineOutcome 处理:Redraw→重呈现、
 /// Confirmed→Preview、Cancelled→取消、Action→会话侧完成或复制色值。
 fn feed_event(state: &mut ShellState, event: InputEvent, view: &SelectionView) {
@@ -1346,10 +1360,12 @@ fn feed_event(state: &mut ShellState, event: InputEvent, view: &SelectionView) {
             present(state, view);
         }
         EngineOutcome::Confirmed(rect) => {
-            state.outcome = Some(RegionOutcome::Preview(
-                rect,
-                state.canvas.engine.annotations().to_vec(),
-            ));
+            if hold_recording_rect(state, view) {
+                state.outcome = Some(RegionOutcome::Preview(
+                    rect,
+                    state.canvas.engine.annotations().to_vec(),
+                ));
+            }
         }
         EngineOutcome::Cancelled => {
             state.outcome = Some(RegionOutcome::Cancelled);
@@ -1357,7 +1373,9 @@ fn feed_event(state: &mut ShellState, event: InputEvent, view: &SelectionView) {
         EngineOutcome::Action(action) => match action {
             SelectionAction::Annotate => {
                 if let Some(outcome) = annotate_outcome(&state.canvas.engine) {
-                    state.outcome = Some(outcome);
+                    if hold_recording_rect(state, view) {
+                        state.outcome = Some(outcome);
+                    }
                 }
             }
             SelectionAction::Cancel => {
@@ -1380,7 +1398,9 @@ fn feed_event(state: &mut ShellState, event: InputEvent, view: &SelectionView) {
             // R3:以当前选区开始录制会话。
             SelectionAction::Recording => {
                 if let Some(outcome) = recording_outcome(&state.canvas.engine) {
-                    state.outcome = Some(outcome);
+                    if hold_recording_rect(state, view) {
+                        state.outcome = Some(outcome);
+                    }
                 }
             }
             // R2:取字提交区域,工作区覆盖层打开后自动进入取字。

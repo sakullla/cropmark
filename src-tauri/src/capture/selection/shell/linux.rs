@@ -1807,6 +1807,20 @@ fn sync_cursor(state: &mut ShellState, surface: &Surface<'_>) {
     );
 }
 
+fn hold_recording_rect(state: &mut ShellState, surface: &Surface<'_>) -> bool {
+    let delay = state.canvas.engine.confirm_delay_ms();
+    if delay == 0 || !state.canvas.engine.flags().recording {
+        return true;
+    }
+    let steps = (delay / 100).max(1);
+    for _ in 0..steps {
+        present(state, surface);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    present(state, surface);
+    true
+}
+
 /// 与 Windows 壳同构的 EngineOutcome 处理:Redraw→重呈现、
 /// Confirmed→Preview、Cancelled→取消、Action→会话侧完成或复制色值。
 fn feed_event(state: &mut ShellState, surface: &Surface<'_>, event: InputEvent) -> bool {
@@ -1818,6 +1832,9 @@ fn feed_event(state: &mut ShellState, surface: &Surface<'_>, event: InputEvent) 
             false
         }
         EngineOutcome::Confirmed(rect) => {
+            if !hold_recording_rect(state, surface) {
+                return false;
+            }
             state.outcome = Some(RegionOutcome::Preview(
                 rect,
                 state.canvas.engine.annotations().to_vec(),
@@ -1831,6 +1848,9 @@ fn feed_event(state: &mut ShellState, surface: &Surface<'_>, event: InputEvent) 
         EngineOutcome::Action(action) => match action {
             SelectionAction::Annotate => {
                 if let Some(outcome) = annotate_outcome(&state.canvas.engine) {
+                    if !hold_recording_rect(state, surface) {
+                        return false;
+                    }
                     state.outcome = Some(outcome);
                     return true;
                 }
@@ -1861,6 +1881,9 @@ fn feed_event(state: &mut ShellState, surface: &Surface<'_>, event: InputEvent) 
             // R3:以当前选区开始录制会话。
             SelectionAction::Recording => {
                 if let Some(outcome) = recording_outcome(&state.canvas.engine) {
+                    if !hold_recording_rect(state, surface) {
+                        return false;
+                    }
                     state.outcome = Some(outcome);
                     return true;
                 }

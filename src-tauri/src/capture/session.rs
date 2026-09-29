@@ -347,6 +347,10 @@ async fn wait_delay_before_capture(
     mode: CaptureMode,
     generation: u64,
 ) -> Result<(), CaptureError> {
+    // 录屏的倒计时发生在确认之后,矩形保持可见;截图仍按原计划先倒计时。
+    if mode == CaptureMode::Recording {
+        return Ok(());
+    }
     let plan = plan_delay(delay_ms);
     if plan.delay_ms > 0 && !plan.overlay_during_delay {
         show_delay(app, plan.delay_ms, mode)?;
@@ -844,11 +848,18 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
         let region_tools = crate::settings::current_region_tools(&handle);
         flags.tools = region_tools_from_settings(region_tools);
         flags.ocr_entry = region_tools.ocr;
-        flags.pin_entry = region_tools.pin;
-        flags.toolbar_pin = region_tools.pin;
-        flags.mode_line = region_tools.line;
-        flags.mode_blur = region_tools.blur;
         flags.qr_entry = region_tools.qr;
+        // 贴图固定出现(录屏/长截图壳自己关掉 toolbar_pin)。直线跟随箭头,模糊跟随马赛克。
+        if flags.toolbar_pin {
+            flags.pin_entry = true;
+        }
+        flags.mode_line = flags.tools.arrow;
+        flags.mode_blur = flags.tools.mosaic;
+        if mode == CaptureMode::Recording {
+            flags.record_even = crate::settings::current_recording(&handle).format
+                == crate::record::RecordFormat::Mp4;
+            flags.confirm_delay_ms = crate::settings::current_capture(&handle).delay_ms();
+        }
         // R7:元素检测完全不可用时按现有能力说明机制提示降级(自由框选或
         // 窗口截取模式);LongCapture/Recording 复用本壳但不需要该说明。
         if mode == CaptureMode::Region {
@@ -1708,7 +1719,7 @@ fn store_freeze(
     // R24:Web 覆盖层能力子集随冻结帧下发;前端忽略不认识的字段。
     // R19:旧入口开关移除后,可挂载浮层固定为全开能力集。
     let capabilities = ui::OverlayCapabilities::hosted();
-    let overlay = ui::overlay_payload(
+    let mut overlay = ui::overlay_payload(
         mode,
         &frame,
         &monitor,
@@ -1716,6 +1727,8 @@ fn store_freeze(
         overlay_reduced_capabilities(mode, region_native_shell()),
         capabilities,
     )?;
+    overlay.record_even = mode == CaptureMode::Recording
+        && crate::settings::current_recording(app).format == crate::record::RecordFormat::Mp4;
     with_session_mut(app, |session| {
         let session = session.as_mut().ok_or_else(CaptureError::cancelled)?;
         if session.cancelled || session.generation != generation {
@@ -1833,6 +1846,26 @@ pub fn writeback_target(app: &AppHandle) -> Option<String> {
     })
 }
 
+/// MP4 在确认前把宽高向下收成偶数;其它格式保持调用方看到的矩形。
+fn snap_recording_selection(
+    selection: RegionSelection,
+    format: crate::record::RecordFormat,
+) -> RegionSelection {
+    if format != crate::record::RecordFormat::Mp4 {
+        return selection;
+    }
+    let width = selection.width & !1;
+    let height = selection.height & !1;
+    if width < 2 || height < 2 {
+        return selection;
+    }
+    RegionSelection {
+        width,
+        height,
+        ..selection
+    }
+}
+
 /// 命令层区域确认:裁剪后把已定画面送进网页浮层,不打开预览、不写剪贴板。
 /// R3:录屏模式下同一确认路径转为启动录制会话(Web 覆盖层路径)。
 pub fn confirm_region(
@@ -1846,6 +1879,19 @@ pub fn confirm_region(
             .is_some_and(|current| current.mode == CaptureMode::Recording)
     });
     if recording {
+        let format = crate::settings::current_recording(app).format;
+        let selection = snap_recording_selection(selection, format);
+        let delay_ms = crate::settings::current_capture(app).delay_ms();
+        if delay_ms > 0 {
+            // Web 覆盖层要等这个命令返回才收起,倒计时期间选区矩形还在。
+            let steps = (delay_ms / 100).max(1);
+            for _ in 0..steps {
+                if is_cancelled(app) {
+                    return Err(CaptureError::cancelled());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
         return start_recording_from_selection(app, selection, annotations, None);
     }
     finish_selection(app, selection, annotations, None)

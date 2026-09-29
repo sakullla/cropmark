@@ -1019,9 +1019,13 @@
     "zh-CN": "选区工具",
     "en": "Region tools"
   },
+  "selection.style.erase_auto": {
+    "zh-CN": "自动",
+    "en": "Auto"
+  },
   "settings.region_tools.hint": {
-    "zh-CN": "决定区域截图工具条和「更多」里显示哪些项。",
-    "en": "Choose which items appear on the region toolbar and in More."
+    "zh-CN": "决定绘制工具、取字和二维码是否出现。贴图、复制、保存和取消始终保留。直线跟着箭头，模糊跟着马赛克。",
+    "en": "Choose which drawing tools, text recognition, and QR recognition appear. Pin, copy, save, and cancel always stay. Line follows arrow, and blur follows mosaic."
   },
   "notice.history_applied": {
     "zh-CN": "历史记录设置已应用",
@@ -1202,6 +1206,22 @@
   "settings.recording.format.mp4": {
     "zh-CN": "MP4",
     "en": "MP4"
+  },
+  "settings.recording.fps_label": {
+    "zh-CN": "捕获帧率",
+    "en": "Capture frame rate"
+  },
+  "settings.recording.fps_hint": {
+    "zh-CN": "只能选 10、15 或 30。没单独选过时，MP4 用 30，GIF 和 WebP 用 15；选定后三种格式都用这一档。",
+    "en": "Only 10, 15, or 30. Until you pick one, MP4 uses 30 and GIF or WebP uses 15; after you pick one, every format uses it."
+  },
+  "settings.recording.fps_option": {
+    "zh-CN": "{fps}",
+    "en": "{fps}"
+  },
+  "settings.recording.unavailable": {
+    "zh-CN": "录屏关闭时没有录屏入口，格式和帧率不可用。",
+    "en": "Recording is off, so there is no recording entry. Format and frame rate are unavailable."
   },
   "settings.history.title": {
     "zh-CN": "历史记录",
