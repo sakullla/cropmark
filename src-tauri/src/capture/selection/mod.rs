@@ -25,6 +25,10 @@ pub const KEY_STEP: i32 = 1;
 pub const KEY_STEP_LARGE: i32 = 10;
 /// 拖动式标注草稿的最小边长(物理像素),与预览编辑器 `MIN_DRAW_SIZE` 对齐。
 pub const MIN_DRAW_SIZE: i32 = 3;
+/// R7:点击吸附与自由拖选的判别阈值(物理像素):按下后任一分量位移**超过**
+/// 该值才放弃"点击确认高亮",阈值内的手抖仍按点击采纳高亮;与 Web 覆盖层
+/// `SNAP_DRAG_THRESHOLD` 语义一致。
+pub const SNAP_DRAG_THRESHOLD: i32 = 3;
 
 /// 选区即时标注工具(R5 注册表):与预览编辑器 `TOOL_REGISTRY` 同源;
 /// 直线/画笔/模糊已并入箭头/荧光笔/马赛克,由 `ToolMode` 提供等效模式。
@@ -985,8 +989,14 @@ impl SelectionEngine {
     fn update_drag(&mut self) {
         match self.state {
             EngineState::Dragging { anchor_x, anchor_y } => {
-                // R7:按下后发生拖动即放弃"点击确认高亮",改为自由拖选。
-                if (self.cursor.0, self.cursor.1) != (anchor_x, anchor_y) {
+                // R7:按下后任一分量位移越过点击抖动阈值才放弃"点击确认
+                // 高亮",改为自由拖选;阈值内手抖仍按点击处理(与 Web
+                // 覆盖层同阈值),越过阈值后不回退(拖动途中回到阈值内
+                // 也不恢复吸附)。
+                if self.snap_click.is_some()
+                    && ((self.cursor.0 - anchor_x).abs() > SNAP_DRAG_THRESHOLD
+                        || (self.cursor.1 - anchor_y).abs() > SNAP_DRAG_THRESHOLD)
+                {
                     self.snap_click = None;
                 }
                 self.selection = Some(Self::drag_rect(
@@ -2415,6 +2425,62 @@ mod tests {
         assert_eq!(engine.snap_highlight(), Some(control));
         engine.handle_event(InputEvent::Wheel { delta: -1 });
         assert_eq!(engine.snap_highlight(), Some(control));
+    }
+
+    #[test]
+    fn click_jitter_within_threshold_still_adopts_the_highlight() {
+        let control = PhysicalRect {
+            x: 20,
+            y: 20,
+            width: 40,
+            height: 30,
+        };
+        // 1–2px 手抖(含对角)不改变点击语义:松开仍采纳高亮控件。
+        let mut engine = snap_engine();
+        engine.handle_event(InputEvent::PointerMove { x: 50, y: 50 });
+        assert_eq!(engine.snap_highlight(), Some(control));
+        engine.handle_event(InputEvent::LeftDown { x: 50, y: 50 });
+        engine.handle_event(InputEvent::PointerMove { x: 51, y: 52 });
+        assert_eq!(
+            engine.handle_event(InputEvent::LeftUp { x: 51, y: 52 }),
+            EngineOutcome::Redraw
+        );
+        assert_eq!(engine.selection(), Some(control));
+        assert_eq!(engine.state(), &EngineState::Selected);
+
+        // 阈值边界(任一分量 = 3px)仍按点击处理,与 Web 覆盖层 ">3" 判定一致。
+        let mut engine = snap_engine();
+        engine.handle_event(InputEvent::PointerMove { x: 50, y: 50 });
+        engine.handle_event(InputEvent::LeftDown { x: 50, y: 50 });
+        engine.handle_event(InputEvent::PointerMove { x: 53, y: 47 });
+        engine.handle_event(InputEvent::LeftUp { x: 53, y: 47 });
+        assert_eq!(engine.selection(), Some(control));
+        assert_eq!(engine.state(), &EngineState::Selected);
+    }
+
+    #[test]
+    fn drag_beyond_threshold_becomes_free_selection_without_snap_fallback() {
+        // 超过阈值(4px)即放弃点击吸附;拖动越过阈值后回到阈值内也不回退,
+        // 自由框选始终自按下点起算。
+        let mut engine = snap_engine();
+        engine.handle_event(InputEvent::PointerMove { x: 50, y: 50 });
+        engine.handle_event(InputEvent::LeftDown { x: 50, y: 50 });
+        engine.handle_event(InputEvent::PointerMove { x: 54, y: 50 });
+        engine.handle_event(InputEvent::PointerMove { x: 51, y: 51 });
+        assert_eq!(
+            engine.handle_event(InputEvent::LeftUp { x: 51, y: 51 }),
+            EngineOutcome::Redraw
+        );
+        assert_eq!(
+            engine.selection(),
+            Some(PhysicalRect {
+                x: 50,
+                y: 50,
+                width: 2,
+                height: 2,
+            })
+        );
+        assert_eq!(engine.state(), &EngineState::Selected);
     }
 
     #[test]

@@ -238,10 +238,11 @@ pub fn overlay_payload(
     reduced_capabilities: bool,
     capabilities: OverlayCapabilities,
 ) -> Result<OverlayPayload, CaptureError> {
-    // R7:元素吸附能力随冻结帧下发;窗口列表本身即可支撑窗口级吸附
-    // (Web 覆盖层在无原生壳时的命中栈来源)。
+    // R7:Web 覆盖层的窗口级吸附唯一数据源是随载荷下发的窗口列表,能力位
+    // 只由列表是否非空决定,不混合平台 provider 声明;否则检测可用但列表
+    // 为空时(如 Wayland)会宣称窗口级吸附可用却无窗口可悬停/吸附。
+    let snap_window_level = !windows.is_empty();
     let snap = super::snap::platform_capability();
-    let snap_window_level = snap.window_level() || !windows.is_empty();
     let snap_control_level = snap.control_level();
     let windows = windows
         .into_iter()
@@ -1052,8 +1053,9 @@ mod tests {
             serde_json::json!(true)
         );
         assert_eq!(json["fixed"], serde_json::json!(false));
-        // R7:吸附能力字段为 camelCase;无窗口列表时窗口级也不可用
-        // (与平台检测不可用一致),控件级按平台能力(核心任务为降级态)。
+        // R7:吸附能力字段为 camelCase;Web 路径的窗口级吸附仅由窗口列表
+        // 决定,列表为空时即使平台 provider 声明窗口级可用也为 false;
+        // 控件级按平台能力(核心任务为降级态)。
         assert_eq!(json["snapWindowLevel"], serde_json::json!(false));
         assert_eq!(json["snapControlLevel"], serde_json::json!(false));
         assert!(!reduced.snap_window_level);
