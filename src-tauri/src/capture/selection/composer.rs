@@ -4,7 +4,7 @@
 //! 跟随系统明暗的强调色描边、白芯蓝环手柄、尺寸徽标、放大镜(原始帧全分辨率采样 +
 //! 十字准星 + 单行色值读数)、统一横条(主行工具/动作,超出屏幕宽度时换行 +
 //! 「更多」展开面板)与右键菜单。浮层用冷灰表面和与选区描边同一的蓝,只有复制是实心强调。
-//! 尺寸徽标放在离光标更远、且仍在画面内的角上。布局/hitbox 函数是纯几何,状态机与绘制共用
+//! 尺寸徽标优先落在不压光标、不与横条重叠、且仍在画面内的最远角上。布局/hitbox 函数是纯几何,状态机与绘制共用
 //! 同一份,保证命中判定与合成输出一致。不含窗口代码;系统明暗只决定选区描边。
 
 use std::cell::RefCell;
@@ -466,36 +466,20 @@ fn toolbar_columns(button: i32, count: i32, screen_w: i32) -> i32 {
     (screen_w.max(0) / button).clamp(1, count)
 }
 
-/// 统一横条布局:宽屏单行,超出屏幕宽度时按原按钮尺寸换行。
-///
-/// 放置:候选须在选区外、屏幕内。下缘是强默认(人体工学:靠近拖选区结
-/// 束位置的光标);仅下缘放不下时翻上缘;竖直都不行再按「剩余空间大者
-/// 优先、平局保右侧」选水平侧;四面候选都与选区相交时选重叠最小者,
-/// 最后兜底下方钳制屏内(Snipaste/ShareX/macOS 通行行为:不是哪边空间
-/// 大就翻哪边,避免选区在屏幕中下部时工具栏频繁跳到远处上方)。
-/// 放不下的动作不收进「更多」。返回 None 表示无按钮。
-pub fn unified_toolbar(
-    metrics: ChromeMetrics,
-    selection: PhysicalRect,
-    screen: (u32, u32),
-    flags: FeatureFlags,
-    text_input: bool,
-) -> Option<UnifiedToolbar> {
-    let buttons = toolbar_buttons(flags, text_input);
-    if buttons.is_empty() {
-        return None;
-    }
-    let count = buttons.len() as i32;
-    let button = metrics.bar_button;
-    let margin = metrics.bar_margin;
-    let sw = screen.0 as i32;
-    let sh = screen.1 as i32;
-    let columns = toolbar_columns(button, count, sw);
+/// 给定列数的横条面板。`true` 表示面板在选区外且整块在屏内。
+fn place_toolbar_panel(
+    button: i32,
+    margin: i32,
+    count: i32,
+    columns: i32,
+    sel: IntRect,
+    sw: i32,
+    sh: i32,
+) -> (IntRect, bool) {
+    let columns = columns.max(1);
     let rows = (count + columns - 1) / columns;
     let panel_w = columns * button;
     let panel_h = rows * button;
-
-    let sel = IntRect::from(selection);
     let clamp_x = |x: i32| x.clamp(0, (sw - panel_w).max(0));
     let clamp_y = |y: i32| y.clamp(0, (sh - panel_h).max(0));
     let centered_x = || clamp_x(sel.x + (sel.width - panel_w) / 2);
@@ -528,13 +512,11 @@ pub fn unified_toolbar(
         panel.x >= 0 && panel.y >= 0 && panel.right() <= sw && panel.bottom() <= sh
     };
     let clear = |panel: IntRect| !intersects(panel, sel);
-    // 交集面积:候选与选区的重叠,重叠最小者优先(尽量少遮挡选区内容)。
     let overlap_area = |panel: IntRect| -> i64 {
         let x = (panel.right().min(sel.right()) - panel.x.max(sel.x)).max(0);
         let y = (panel.bottom().min(sel.bottom()) - panel.y.max(sel.y)).max(0);
         i64::from(x) * i64::from(y)
     };
-    // 候选在该侧方向上的剩余空间(选区边到屏幕边)。
     let free_right = sw - sel.right();
     let free_left = sel.x;
     let candidates = [below, above, right, left];
@@ -544,11 +526,7 @@ pub fn unified_toolbar(
         .enumerate()
         .filter(|(_, panel)| fits(*panel) && clear(*panel))
         .collect();
-    // 人体工学:下缘是强默认(靠近拖选区结束位置的光标,阅读流下方);
-    // 仅当下缘放不下时才翻上缘;竖直都不行再按剩余空间大者优先选水平侧
-    // (Snipaste/ShareX/macOS 通行行为——不是哪边空间大都翻,避免选区在
-    // 屏幕中下部时工具栏频繁跳到远处上方)。
-    let panel = usable
+    if let Some((_, panel)) = usable
         .iter()
         .find(|(index, _)| *index == 0)
         .or_else(|| usable.iter().find(|(index, _)| *index == 1))
@@ -561,15 +539,65 @@ pub fn unified_toolbar(
                     (free, -(*index as i64))
                 })
         })
-        .map(|(_, panel)| *panel)
-        .or_else(|| {
-            candidates
-                .iter()
-                .copied()
-                .filter(|panel| fits(*panel))
-                .min_by_key(|panel| overlap_area(*panel))
-        })
+    {
+        return (*panel, true);
+    }
+    let fallback = candidates
+        .iter()
+        .copied()
+        .filter(|panel| fits(*panel))
+        .min_by_key(|panel| overlap_area(*panel))
         .unwrap_or(below);
+    (fallback, false)
+}
+
+/// 统一横条布局:宽屏单行,超出屏幕宽度时按原按钮尺寸换行。
+/// 换行后仍只能压进选区时,按侧面剩余宽度再减列。
+///
+/// 放置:候选须在选区外、屏幕内。下缘是强默认(人体工学:靠近拖选区结
+/// 束位置的光标);仅下缘放不下时翻上缘;竖直都不行再按「剩余空间大者
+/// 优先、平局保右侧」选水平侧;四面候选都与选区相交时选重叠最小者,
+/// 最后兜底下方钳制屏内(Snipaste/ShareX/macOS 通行行为:不是哪边空间
+/// 大就翻哪边,避免选区在屏幕中下部时工具栏频繁跳到远处上方)。
+/// 放不下的动作不收进「更多」。返回 None 表示无按钮。
+pub fn unified_toolbar(
+    metrics: ChromeMetrics,
+    selection: PhysicalRect,
+    screen: (u32, u32),
+    flags: FeatureFlags,
+    text_input: bool,
+) -> Option<UnifiedToolbar> {
+    let buttons = toolbar_buttons(flags, text_input);
+    if buttons.is_empty() {
+        return None;
+    }
+    let count = buttons.len() as i32;
+    let button = metrics.bar_button;
+    let margin = metrics.bar_margin;
+    let sw = screen.0 as i32;
+    let sh = screen.1 as i32;
+    let sel = IntRect::from(selection);
+    let max_columns = toolbar_columns(button, count, sw);
+    let (mut panel, outside) = place_toolbar_panel(button, margin, count, max_columns, sel, sw, sh);
+    let mut columns = max_columns;
+    // 已经因屏宽换行、且仍只能压进选区时,再按侧面剩余宽度减列。
+    // 单行放得进屏宽时保持原兜底,避免宽屏大选区被改成竖条。
+    if !outside && max_columns < count {
+        let unit = button.max(1);
+        let side_columns = [sw - sel.right(), sel.x]
+            .into_iter()
+            .map(|free| (free.max(0) / unit).min(max_columns))
+            .max()
+            .unwrap_or(0);
+        if (1..max_columns).contains(&side_columns) {
+            let (narrower, narrower_outside) =
+                place_toolbar_panel(button, margin, count, side_columns, sel, sw, sh);
+            if narrower_outside {
+                panel = narrower;
+                columns = side_columns;
+            }
+        }
+    }
 
     let rects = buttons
         .iter()
@@ -868,7 +896,10 @@ pub fn size_readout(rect: PhysicalRect) -> String {
 }
 
 /// 尺寸徽标放在目标矩形的哪一只角外侧:离光标热点最远,且整块仍在画面内。
-/// 四角都放不下时,把最远角的候选钳进画面。距离相同优先左上,与原先默认一致。
+/// `avoid` 是不透明横条。不压光标且仍在屏内的角里,先排除与横条相交的候选,
+/// 再取离光标最远的角。没有横条时与原先一致。四角都放不下时,把最远角钳进画面。
+/// 距离相同优先左上。
+#[allow(clippy::too_many_arguments)]
 pub fn place_size_badge(
     target: PhysicalRect,
     cursor: (i32, i32),
@@ -876,6 +907,7 @@ pub fn place_size_badge(
     width: i32,
     height: i32,
     margin: i32,
+    avoid: Option<IntRect>,
 ) -> IntRect {
     let sel = IntRect::from(target);
     let sw = screen.0 as i32;
@@ -932,10 +964,14 @@ pub fn place_size_badge(
             && panel.right() <= sw
             && panel.bottom() <= sh
     };
-    let pick = |avoid_cursor: bool| {
+    let blocked = |panel: IntRect| avoid.is_some_and(|bar| intersects(panel, bar));
+    let pick = |avoid_cursor: bool, avoid_bar: bool| {
         let mut best: Option<(i64, usize, IntRect)> = None;
         for (rank, (point, panel)) in anchors.iter().copied().enumerate() {
             if !inside(panel) || (avoid_cursor && panel.contains(cursor.0, cursor.1)) {
+                continue;
+            }
+            if avoid_bar && blocked(panel) {
                 continue;
             }
             let dist = distance(point);
@@ -951,7 +987,10 @@ pub fn place_size_badge(
         }
         best
     };
-    if let Some((_, _, panel)) = pick(true).or_else(|| pick(false)) {
+    if let Some((_, _, panel)) = pick(true, true)
+        .or_else(|| pick(true, false))
+        .or_else(|| pick(false, false))
+    {
         return panel;
     }
     let mut farthest = 0usize;
@@ -1150,7 +1189,14 @@ impl Composer {
                 if !chrome.intersect(dirty).is_empty() {
                     outline_selection(out, self.width, self.height, selection);
                     self.draw_handles(out, self.width, self.height, selection);
-                    self.draw_size_badge(out, self.width, self.height, selection, scene.cursor);
+                    self.draw_size_badge(
+                        out,
+                        self.width,
+                        self.height,
+                        selection,
+                        scene.cursor,
+                        self.size_badge_obstacle(scene, selection, overlay.text_input),
+                    );
                     if scene.toolbar_visible {
                         self.draw_unified_toolbar(
                             out,
@@ -1208,7 +1254,15 @@ impl Composer {
             }
             outline_selection(out, w, h, selection);
             self.draw_handles(out, w, h, selection);
-            self.draw_size_badge(out, w, h, selection, scene.cursor);
+            let text_input = overlay.map(|overlay| overlay.text_input).unwrap_or(false);
+            self.draw_size_badge(
+                out,
+                w,
+                h,
+                selection,
+                scene.cursor,
+                self.size_badge_obstacle(scene, selection, text_input),
+            );
             if scene.toolbar_visible {
                 self.draw_unified_toolbar(out, w, h, selection, scene, overlay);
             }
@@ -1284,14 +1338,16 @@ impl Composer {
             .union(self.hover_bounds(prev, overlay, screen))
             .union(self.hover_bounds(scene, overlay, screen));
         if prev.cursor != scene.cursor {
-            for (rect, cursor) in [
-                (scene.selection.or(scene.snap_highlight), scene.cursor),
-                (prev.selection.or(prev.snap_highlight), prev.cursor),
-            ] {
-                if let Some(rect) = rect {
-                    if let Some(badge) = self.size_badge_rect(rect, cursor) {
-                        dirty = dirty.union(badge);
-                    }
+            let text_input = overlay.map(|overlay| overlay.text_input).unwrap_or(false);
+            for scene_ref in [scene, prev] {
+                let Some(rect) = scene_ref.selection.or(scene_ref.snap_highlight) else {
+                    continue;
+                };
+                let avoid = scene_ref.selection.and_then(|selection| {
+                    self.size_badge_obstacle(scene_ref, selection, text_input)
+                });
+                if let Some(badge) = self.size_badge_rect(rect, scene_ref.cursor, avoid) {
+                    dirty = dirty.union(badge);
                 }
             }
         }
@@ -1320,7 +1376,9 @@ impl Composer {
                 .max(self.metrics.bar_button + self.metrics.bar_margin)
                 .max(self.metrics.badge_margin + 36);
             bounds = bounds.union(IntRect::from(selection).inflate(pad));
-            if let Some(badge) = self.size_badge_rect(selection, scene.cursor) {
+            let text_input = overlay.map(|overlay| overlay.text_input).unwrap_or(false);
+            let avoid = self.size_badge_obstacle(scene, selection, text_input);
+            if let Some(badge) = self.size_badge_rect(selection, scene.cursor, avoid) {
                 bounds = bounds.union(badge);
             }
             if scene.toolbar_visible {
@@ -1329,7 +1387,7 @@ impl Composer {
                     selection,
                     (self.width, self.height),
                     scene.flags,
-                    overlay.map(|overlay| overlay.text_input).unwrap_or(false),
+                    text_input,
                 ) {
                     bounds = bounds.union(toolbar.panel);
                     if scene.more_open {
@@ -1351,7 +1409,7 @@ impl Composer {
             // R7:悬停高亮本身 + 其尺寸徽标(徽标在矩形上方/下方,留出余量)。
             let pad = self.metrics.badge_margin + 40;
             bounds = bounds.union(IntRect::from(rect).inflate(pad));
-            if let Some(badge) = self.size_badge_rect(rect, scene.cursor) {
+            if let Some(badge) = self.size_badge_rect(rect, scene.cursor, None) {
                 bounds = bounds.union(badge);
             }
         }
@@ -1638,15 +1696,42 @@ impl Composer {
         }
     }
 
+    /// 可见横条的面板。横条关闭或没有按钮时,徽标不需要避开它。
+    fn size_badge_obstacle(
+        &self,
+        scene: &Scene,
+        selection: PhysicalRect,
+        text_input: bool,
+    ) -> Option<IntRect> {
+        if !scene.toolbar_visible {
+            return None;
+        }
+        unified_toolbar(
+            self.metrics,
+            selection,
+            (self.width, self.height),
+            scene.flags,
+            text_input,
+        )
+        .map(|toolbar| toolbar.panel)
+    }
+
     /// 徽标尺寸与落点。文字量不到时不画。
-    fn size_badge_rect(&self, rect: PhysicalRect, cursor: (i32, i32)) -> Option<IntRect> {
-        self.size_badge_layout(rect, cursor).map(|(_, panel)| panel)
+    fn size_badge_rect(
+        &self,
+        rect: PhysicalRect,
+        cursor: (i32, i32),
+        avoid: Option<IntRect>,
+    ) -> Option<IntRect> {
+        self.size_badge_layout(rect, cursor, avoid)
+            .map(|(_, panel)| panel)
     }
 
     fn size_badge_layout(
         &self,
         rect: PhysicalRect,
         cursor: (i32, i32),
+        avoid: Option<IntRect>,
     ) -> Option<(String, IntRect)> {
         let metrics = self.metrics;
         let font = metrics.badge_font;
@@ -1663,11 +1748,12 @@ impl Composer {
             width,
             height,
             metrics.badge_margin,
+            avoid,
         );
         Some((label, panel))
     }
 
-    /// 亮底 pill 深字加粗徽标,落在离光标更远且仍在画面内的角外侧。
+    /// 亮底 pill 深字加粗徽标,落在不压光标、不与横条重叠且仍在画面内的最远角外侧。
     fn draw_size_badge(
         &self,
         rgba: &mut [u8],
@@ -1675,10 +1761,11 @@ impl Composer {
         h: u32,
         rect: PhysicalRect,
         cursor: (i32, i32),
+        avoid: Option<IntRect>,
     ) {
         let metrics = self.metrics;
         let font = metrics.badge_font;
-        let Some((label, panel)) = self.size_badge_layout(rect, cursor) else {
+        let Some((label, panel)) = self.size_badge_layout(rect, cursor, avoid) else {
             return;
         };
         draw_panel_chrome(rgba, w, h, panel, panel.height / 2);
@@ -1746,7 +1833,7 @@ impl Composer {
             2,
             accent,
         );
-        self.draw_size_badge(rgba, w, h, rect, cursor);
+        self.draw_size_badge(rgba, w, h, rect, cursor, None);
     }
 
     /// 动作图标:长截图与录屏没有位图资产,用几何笔画(长截图=竖框+箭头、
@@ -3070,7 +3157,11 @@ mod tests {
         };
         assert_eq!(
             more_panel_buttons(inline_off),
-            vec![SelectionAction::Pin, SelectionAction::Ocr, SelectionAction::Qr]
+            vec![
+                SelectionAction::Pin,
+                SelectionAction::Ocr,
+                SelectionAction::Qr
+            ]
         );
         // R5:全量开启时「更多」含全部注册表收进工具(序号/聚光灯/放大镜/
         // 对话气泡/贴纸/内容擦除)。
@@ -3355,6 +3446,42 @@ mod tests {
         assert_eq!(wide.panel.width, wide.buttons.len() as i32 * button);
     }
 
+    /// 选区贴住上下边且屏幕又窄又矮时,最大列数会压进选区;改按侧面剩余宽度减列后放到侧面。
+    #[test]
+    fn unified_toolbar_narrows_columns_to_fit_beside_a_full_height_selection() {
+        let metrics = metrics_1();
+        let flags = FeatureFlags::default();
+        let button = metrics.bar_button;
+        let selection = PhysicalRect {
+            x: 0,
+            y: 0,
+            width: 140,
+            height: 520,
+        };
+        let screen = (220u32, 520u32);
+        let toolbar = unified_toolbar(metrics, selection, screen, flags, true).expect("toolbar");
+        let count = toolbar.buttons.len() as i32;
+        let max_columns = toolbar_columns(button, count, screen.0 as i32);
+        let columns = toolbar.panel.width / button;
+        assert!(max_columns < count, "本场景必须先因屏宽换行");
+        assert!(max_columns > columns && columns >= 1);
+        assert_eq!(toolbar.panel.width, columns * button);
+        assert_eq!(
+            toolbar.panel.height,
+            ((count + columns - 1) / columns) * button
+        );
+        let sel = IntRect::from(selection);
+        assert!(!intersects(toolbar.panel, sel), "{:?}", toolbar.panel);
+        assert!(toolbar.panel.x >= sel.right());
+        assert!(toolbar.panel.right() <= screen.0 as i32);
+        assert!(toolbar.panel.bottom() <= screen.1 as i32);
+        for (action, rect) in &toolbar.buttons {
+            assert!(rect.x >= 0 && rect.y >= 0, "{action:?}");
+            assert!(rect.right() <= screen.0 as i32 && rect.bottom() <= screen.1 as i32);
+            assert!(!intersects(*rect, sel), "{action:?}");
+        }
+    }
+
     /// 尺寸徽标选离光标更远、且整块仍在画面内的角;贴顶时改用放得下的远角。
     #[test]
     fn size_badge_prefers_the_corner_farthest_from_the_cursor() {
@@ -3366,7 +3493,7 @@ mod tests {
         };
         let screen = (640u32, 400u32);
         let near_se = (270, 170);
-        let badge = place_size_badge(target, near_se, screen, 70, 24, 6);
+        let badge = place_size_badge(target, near_se, screen, 70, 24, 6, None);
         assert_eq!(
             badge,
             IntRect {
@@ -3378,7 +3505,7 @@ mod tests {
         );
         assert!(!badge.contains(near_se.0, near_se.1));
         let near_nw = (80, 60);
-        let badge = place_size_badge(target, near_nw, screen, 70, 24, 6);
+        let badge = place_size_badge(target, near_nw, screen, 70, 24, 6, None);
         assert_eq!(
             badge,
             IntRect {
@@ -3390,7 +3517,7 @@ mod tests {
         );
         assert!(!badge.contains(near_nw.0, near_nw.1));
         let center = (180, 120);
-        let badge = place_size_badge(target, center, screen, 70, 24, 6);
+        let badge = place_size_badge(target, center, screen, 70, 24, 6, None);
         assert_eq!(badge.x, 80);
         assert_eq!(badge.y, 30);
         let top = PhysicalRect {
@@ -3399,10 +3526,65 @@ mod tests {
             width: 200,
             height: 120,
         };
-        let badge = place_size_badge(top, (80, 120), screen, 70, 24, 6);
+        let badge = place_size_badge(top, (80, 120), screen, 70, 24, 6, None);
         assert_eq!(badge.x, 210);
         assert_eq!(badge.y, 126);
         assert!(badge.y >= 0 && badge.bottom() <= screen.1 as i32);
+    }
+
+    /// 下沿徽标与横条相交时,在不压光标且仍在屏内的角里改选不与横条相交的最远角。
+    /// 没有横条时仍落在最远角,吸附高亮走这条路径。
+    #[test]
+    fn size_badge_avoids_the_toolbar_before_the_farthest_corner() {
+        let target = PhysicalRect {
+            x: 80,
+            y: 60,
+            width: 200,
+            height: 120,
+        };
+        let screen = (640u32, 400u32);
+        let toolbar = IntRect {
+            x: 70,
+            y: 180,
+            width: 220,
+            height: 40,
+        };
+        let near_top = (180, 62);
+        let badge = place_size_badge(target, near_top, screen, 70, 24, 6, Some(toolbar));
+        assert_eq!(
+            badge,
+            IntRect {
+                x: 80,
+                y: 30,
+                width: 70,
+                height: 24,
+            }
+        );
+        assert!(!intersects(badge, toolbar));
+        assert!(!badge.contains(near_top.0, near_top.1));
+        let near_nw = (80, 60);
+        let badge = place_size_badge(target, near_nw, screen, 70, 24, 6, Some(toolbar));
+        assert_eq!(
+            badge,
+            IntRect {
+                x: 210,
+                y: 30,
+                width: 70,
+                height: 24,
+            }
+        );
+        assert!(!intersects(badge, toolbar));
+        let uncovered = place_size_badge(target, near_nw, screen, 70, 24, 6, None);
+        assert_eq!(
+            uncovered,
+            IntRect {
+                x: 210,
+                y: 186,
+                width: 70,
+                height: 24,
+            }
+        );
+        assert!(intersects(uncovered, toolbar));
     }
 
     #[test]

@@ -524,7 +524,9 @@ pub enum InputEvent {
     /// R7 滚轮:在命中栈的父子层级间切换高亮。`delta > 0` 为向上滚
     /// (父级方向,更外层窗口),`delta < 0` 为向下滚(子级方向,更深控件);
     /// 无命中栈/非悬停态时忽略。
-    Wheel { delta: i32 },
+    Wheel {
+        delta: i32,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1650,7 +1652,14 @@ impl SelectionEngine {
             return;
         };
         // 对话气泡单击就放下一块默认大小,不必拖出矩形。拖得够大则沿用拖出的框。
-        if let Annotation::Bubble { x, y, width, height, .. } = &mut op {
+        if let Annotation::Bubble {
+            x,
+            y,
+            width,
+            height,
+            ..
+        } = &mut op
+        {
             if width.abs() < f64::from(MIN_DRAW_SIZE) || height.abs() < f64::from(MIN_DRAW_SIZE) {
                 let scale = f64::from(self.scale.max(1.0));
                 let w = (168.0 * scale).round();
@@ -2372,8 +2381,17 @@ mod tests {
 
         // 点击(按下/松开无拖动)确认当前高亮区域为选区。
         engine.handle_event(InputEvent::LeftDown { x: 50, y: 50 });
-        assert_eq!(engine.state(), &EngineState::Dragging { anchor_x: 50, anchor_y: 50 });
-        assert_eq!(engine.handle_event(InputEvent::LeftUp { x: 50, y: 50 }), EngineOutcome::Redraw);
+        assert_eq!(
+            engine.state(),
+            &EngineState::Dragging {
+                anchor_x: 50,
+                anchor_y: 50
+            }
+        );
+        assert_eq!(
+            engine.handle_event(InputEvent::LeftUp { x: 50, y: 50 }),
+            EngineOutcome::Redraw
+        );
         assert_eq!(engine.selection(), Some(expected));
         assert_eq!(engine.state(), &EngineState::Selected);
         assert_eq!(engine.snap_highlight(), None);
@@ -2416,7 +2434,10 @@ mod tests {
             height: 200,
         };
         // 向上滚 = 父级方向(顶层窗口),到顶后钳制。
-        assert_eq!(engine.handle_event(InputEvent::Wheel { delta: 1 }), EngineOutcome::Redraw);
+        assert_eq!(
+            engine.handle_event(InputEvent::Wheel { delta: 1 }),
+            EngineOutcome::Redraw
+        );
         assert_eq!(engine.snap_highlight(), Some(window));
         engine.handle_event(InputEvent::Wheel { delta: 1 });
         assert_eq!(engine.snap_highlight(), Some(window));
@@ -2506,7 +2527,8 @@ mod tests {
 
     #[test]
     fn unavailable_detection_falls_back_to_free_selection_with_capability_reason() {
-        let mut engine = new_engine().with_snap(&UNAVAILABLE_SNAP, SnapContext::new((0, 0), (0, 0), 1.0));
+        let mut engine =
+            new_engine().with_snap(&UNAVAILABLE_SNAP, SnapContext::new((0, 0), (0, 0), 1.0));
         engine.handle_event(InputEvent::PointerMove { x: 50, y: 50 });
         assert_eq!(engine.snap_highlight(), None);
         assert_eq!(
@@ -2516,7 +2538,10 @@ mod tests {
             })
         );
         // 检测不可用时滚轮不产生高亮,自由框选照常工作。
-        assert_eq!(engine.handle_event(InputEvent::Wheel { delta: 1 }), EngineOutcome::Redraw);
+        assert_eq!(
+            engine.handle_event(InputEvent::Wheel { delta: 1 }),
+            EngineOutcome::Redraw
+        );
         assert_eq!(engine.snap_highlight(), None);
         drag(&mut engine, (40, 30), (200, 120));
         assert_eq!(
@@ -2536,7 +2561,10 @@ mod tests {
         // 光标在无命中区域:滚轮不产生高亮,也不改变选择状态。
         engine.handle_event(InputEvent::PointerMove { x: 2, y: 2 });
         assert_eq!(engine.snap_highlight(), None);
-        assert_eq!(engine.handle_event(InputEvent::Wheel { delta: 1 }), EngineOutcome::Redraw);
+        assert_eq!(
+            engine.handle_event(InputEvent::Wheel { delta: 1 }),
+            EngineOutcome::Redraw
+        );
         assert_eq!(engine.snap_highlight(), None);
         assert_eq!(engine.selection(), None);
     }
@@ -3730,7 +3758,10 @@ mod tests {
             key: LogicalKey::Escape,
             shift: false,
         });
-        click_action(&mut engine, SelectionAction::Tool(AnnotationTool::Highlighter));
+        click_action(
+            &mut engine,
+            SelectionAction::Tool(AnnotationTool::Highlighter),
+        );
         assert_eq!(engine.tool(), Some(AnnotationTool::Highlighter));
         engine.handle_event(InputEvent::LeftDown { x: 200, y: 400 });
         engine.handle_event(InputEvent::PointerMove { x: 320, y: 430 });
@@ -3975,7 +4006,12 @@ mod tests {
         engine.handle_event(InputEvent::LeftDown { x: 220, y: 180 });
         engine.handle_event(InputEvent::LeftUp { x: 220, y: 180 });
         match &engine.annotations()[0] {
-            Annotation::Bubble { width, height, text, .. } => {
+            Annotation::Bubble {
+                width,
+                height,
+                text,
+                ..
+            } => {
                 assert!(*width >= 100.0, "width {width}");
                 assert!(*height >= 40.0, "height {height}");
                 assert!(text.is_empty());
