@@ -150,7 +150,15 @@ export function mountRecordControl(root: HTMLElement): () => void {
       if (!(node instanceof HTMLElement) || node.hidden) {
         continue;
       }
+      // 工具行带横向滚动时,被压扁后 offsetHeight 会变成 0,要用内容高度把窗口撑开。
       let height = node.offsetHeight;
+      if (
+        node.classList.contains("record-annotate") ||
+        node.classList.contains("record-row") ||
+        node.classList.contains("record-notice")
+      ) {
+        height = Math.max(height, node.scrollHeight);
+      }
       if (node.classList.contains("record-pending")) {
         const list = node.querySelector(".record-pending-list");
         if (list instanceof HTMLElement) {

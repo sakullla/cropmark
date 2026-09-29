@@ -60,8 +60,9 @@ const CONTROL_HEIGHT_EXPANDED: f64 = 248.0;
 const CONTROL_MARGIN: f64 = 12.0;
 /// 区域边框厚度(逻辑像素)。画在捕获矩形之外,不进入成片。
 const BORDER_LOGICAL: f64 = 4.0;
-/// 让给控制条的高度:紧凑条再加一行说明,跟不上的提示不用挤进捕获矩形。
-const CONTROL_RESERVED_LOGICAL: f64 = CONTROL_HEIGHT + 40.0;
+/// 让给控制条的高度:紧凑条、一行说明,再加录制标注那一行。
+/// 工具行约 28px,连同卡片间距后按 72 计入,避免全屏带子把按钮夹没。
+const CONTROL_RESERVED_LOGICAL: f64 = CONTROL_HEIGHT + 40.0 + 72.0;
 /// 预览分片读取上限,避免一次 IPC 塞进整段 30 分钟成片。
 const PREVIEW_CHUNK_BYTES: usize = 192 * 1024;
 const BORDER_LABELS: [&str; 4] = [

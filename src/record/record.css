@@ -328,10 +328,12 @@ html[data-chrome="border"] #app {
    选择器限定在标注层,避免命中控制条里同名的标注按钮。 */
 .record-annotate {
   display: flex;
+  flex: 0 0 auto;
   flex-wrap: nowrap;
   gap: 4px;
   max-width: 100%;
   min-width: 0;
+  min-height: 28px;
   overflow-x: auto;
 }
 
