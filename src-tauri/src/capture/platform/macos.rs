@@ -169,7 +169,10 @@ pub fn capture_display(
     Ok((frame, outcome))
 }
 
-fn capture_pointer_display(monitor: &MonitorGeom, shows_cursor: bool) -> Result<Frame, CaptureError> {
+fn capture_pointer_display(
+    monitor: &MonitorGeom,
+    shows_cursor: bool,
+) -> Result<Frame, CaptureError> {
     let mut px = monitor.logical_x + (monitor.logical_width as i32 / 2);
     let mut py = monitor.logical_y + (monitor.logical_height as i32 / 2);
     unsafe {

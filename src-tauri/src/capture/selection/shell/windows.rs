@@ -20,15 +20,15 @@ use windows::Win32::Graphics::Gdi::{
     BITMAPINFOHEADER, BI_RGB, COLORONCOLOR, DIB_RGB_COLORS, RGBQUAD, SRCCOPY,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Threading::{
+    AttachThreadInput, GetCurrentProcessId, GetCurrentThreadId,
+};
 use windows::Win32::UI::HiDpi::{
     GetAwarenessFromDpiAwarenessContext, GetThreadDpiAwarenessContext,
 };
 use windows::Win32::UI::Input::Ime::{
     ImmGetCompositionStringW, ImmGetContext, ImmReleaseContext, ImmSetCompositionWindow, CFS_POINT,
     COMPOSITIONFORM, GCS_COMPSTR, GCS_RESULTSTR, HIMC, IME_COMPOSITION_STRING,
-};
-use windows::Win32::System::Threading::{
-    AttachThreadInput, GetCurrentProcessId, GetCurrentThreadId,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -38,12 +38,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
     PostQuitMessage, RegisterClassExW, SetCursor, SetForegroundWindow, SetWindowPos, ShowWindow,
     TranslateMessage, CS_HREDRAW, CS_VREDRAW, HCURSOR, HWND_TOPMOST, ICONINFO, IDC_ARROW, IDC_HAND,
     IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, MSG, PM_NOREMOVE, PM_REMOVE,
-    SM_CXCURSOR, SM_CYCURSOR, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
-    SW_SHOW, SW_SHOWNOACTIVATE, WM_CHAR, WM_CLOSE, WM_DESTROY,
-    WM_ERASEBKGND, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN,
-    WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT,
-    WM_QUIT, WM_RBUTTONDOWN, WM_SETCURSOR, WM_SETFOCUS, WNDCLASSEXW, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_POPUP,
+    SM_CXCURSOR, SM_CYCURSOR, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_SHOW,
+    SW_SHOWNOACTIVATE, WM_CHAR, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND, WM_IME_COMPOSITION,
+    WM_IME_ENDCOMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_QUIT, WM_RBUTTONDOWN,
+    WM_SETCURSOR, WM_SETFOCUS, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 use crate::annotate::Annotation;

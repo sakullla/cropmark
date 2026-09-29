@@ -3,9 +3,7 @@ use std::time::{Duration, Instant};
 use super::error::CaptureError;
 
 #[allow(dead_code)]
-pub const PRODUCT_SURFACES: [&str; 5] = [
-    "preview", "settings", "history", "guide", "tray-popup",
-];
+pub const PRODUCT_SURFACES: [&str; 5] = ["preview", "settings", "history", "guide", "tray-popup"];
 #[allow(dead_code)]
 pub const SESSION_SURFACES: [&str; 3] = ["overlay", "capture-delay", "capture-error"];
 

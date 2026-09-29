@@ -7,8 +7,8 @@ pub mod native_overlay;
 pub mod platform;
 pub mod scroll;
 pub mod selection;
-pub mod snap;
 pub mod session;
+pub mod snap;
 pub mod ui;
 pub mod windows_list;
 

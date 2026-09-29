@@ -483,7 +483,11 @@ pub fn primary_points_height(monitors: &[MonitorGeom]) -> i32 {
     }
     monitors
         .iter()
-        .map(|monitor| monitor.logical_y.saturating_add(monitor.logical_height as i32))
+        .map(|monitor| {
+            monitor
+                .logical_y
+                .saturating_add(monitor.logical_height as i32)
+        })
         .max()
         .unwrap_or(0)
 }
@@ -520,9 +524,7 @@ pub fn match_sck_display(
     let same_size: Vec<usize> = displays
         .iter()
         .enumerate()
-        .filter(|(_, display)| {
-            display.width == logical.width && display.height == logical.height
-        })
+        .filter(|(_, display)| display.width == logical.width && display.height == logical.height)
         .map(|(index, _)| index)
         .collect();
     if same_size.len() == 1 {
@@ -580,7 +582,10 @@ pub fn parse_xfixes_cursor_image(bytes: &[u8]) -> Option<(XFixesCursorImage, &[u
         argb.push(u32::from_ne_bytes(chunk.try_into().ok()?));
     }
     let consumed = 32usize.saturating_add((length as usize).saturating_mul(4));
-    let rest = bytes.get(consumed).map(|_| &bytes[consumed..]).unwrap_or(&[]);
+    let rest = bytes
+        .get(consumed)
+        .map(|_| &bytes[consumed..])
+        .unwrap_or(&[]);
     Some((
         XFixesCursorImage {
             x,

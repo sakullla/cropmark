@@ -263,15 +263,21 @@ unsafe fn capture_dc(
         Some((x, y, cursor_w, cursor_h)) => paint_cursor(hdc_mem, x, y, cursor_w, cursor_h),
         None => CursorOutcome::NotRequested,
     };
-    let result = dibits_to_frame(hdc_mem, bitmap, width, height, scale)
-        .map(|frame| (frame, cursor_outcome));
+    let result =
+        dibits_to_frame(hdc_mem, bitmap, width, height, scale).map(|frame| (frame, cursor_outcome));
     SelectObject(hdc_mem, old);
     let _ = DeleteObject(bitmap.into());
     let _ = DeleteDC(hdc_mem);
     result
 }
 
-fn cursor_rect(mode: CursorMode, x: i32, y: i32, width: u32, height: u32) -> Option<(i32, i32, u32, u32)> {
+fn cursor_rect(
+    mode: CursorMode,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Option<(i32, i32, u32, u32)> {
     match mode {
         CursorMode::Off => None,
         CursorMode::WhenInside => Some((x, y, width, height)),
@@ -280,7 +286,13 @@ fn cursor_rect(mode: CursorMode, x: i32, y: i32, width: u32, height: u32) -> Opt
 
 /// GetCursorInfo + CopyIcon/DrawIconEx。热点不在矩形内则不画。
 /// 绘制失败只降级为不含指针,不让已经抓到的画面作废。
-unsafe fn paint_cursor(hdc: HDC, origin_x: i32, origin_y: i32, width: u32, height: u32) -> CursorOutcome {
+unsafe fn paint_cursor(
+    hdc: HDC,
+    origin_x: i32,
+    origin_y: i32,
+    width: u32,
+    height: u32,
+) -> CursorOutcome {
     if width == 0 || height == 0 {
         return CursorOutcome::Outside;
     }
@@ -372,7 +384,10 @@ unsafe fn dibits_to_frame(
     Ok(frame)
 }
 
-unsafe fn capture_hwnd(hwnd: HWND, mode: CursorMode) -> Result<(Frame, CursorOutcome), CaptureError> {
+unsafe fn capture_hwnd(
+    hwnd: HWND,
+    mode: CursorMode,
+) -> Result<(Frame, CursorOutcome), CaptureError> {
     if hwnd.is_invalid() {
         return Err(CaptureError::api("error.capture.window_gone"));
     }

@@ -19,11 +19,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetAncestor, GetMessageW,
     GetWindow, GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId, IsWindowVisible,
     PostMessageW, PostThreadMessageW, RegisterClassExW, SetTimer, SetWindowDisplayAffinity,
-    ShowWindow, TranslateMessage, UpdateLayeredWindow, WindowFromPoint, GA_ROOT, GWL_EXSTYLE,
-    GW_HWNDNEXT, HCURSOR, HICON, MSG, SW_SHOWNOACTIVATE, ULW_ALPHA, WINDOW_DISPLAY_AFFINITY,
-    WM_MOUSEHWHEEL, WM_MOUSEWHEEL, WM_NCHITTEST, WM_QUIT, WM_TIMER, WNDCLASSEXW, CS_HREDRAW,
-    CS_VREDRAW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
-    WS_POPUP, HTTRANSPARENT,
+    ShowWindow, TranslateMessage, UpdateLayeredWindow, WindowFromPoint, CS_HREDRAW, CS_VREDRAW,
+    GA_ROOT, GWL_EXSTYLE, GW_HWNDNEXT, HCURSOR, HICON, HTTRANSPARENT, MSG, SW_SHOWNOACTIVATE,
+    ULW_ALPHA, WINDOW_DISPLAY_AFFINITY, WM_MOUSEHWHEEL, WM_MOUSEWHEEL, WM_NCHITTEST, WM_QUIT,
+    WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 use super::CaptureAxis;
@@ -208,7 +208,12 @@ fn ui_thread(
 }
 
 fn region_box(x: u32, y: u32, width: u32, height: u32) -> RegionSelection {
-    RegionSelection { x, y, width, height }
+    RegionSelection {
+        x,
+        y,
+        width,
+        height,
+    }
 }
 
 fn dim_outside(rgba: &mut [u8], width: u32, height: u32, region: &RegionSelection) {
@@ -269,8 +274,25 @@ fn paint_label(
     } else {
         (region.y as i32 + 8).min((height as i32 - box_h - 8).max(8))
     };
-    fill_rect(rgba, width, height, x, y, box_w, box_h, [0x1C, 0x21, 0x28, 230]);
-    draw_label(rgba, width, height, x + 4 * scale, y + 4 * scale, &label, scale);
+    fill_rect(
+        rgba,
+        width,
+        height,
+        x,
+        y,
+        box_w,
+        box_h,
+        [0x1C, 0x21, 0x28, 230],
+    );
+    draw_label(
+        rgba,
+        width,
+        height,
+        x + 4 * scale,
+        y + 4 * scale,
+        &label,
+        scale,
+    );
 }
 
 fn draw_label(rgba: &mut [u8], width: u32, height: u32, x: i32, y: i32, text: &str, scale: i32) {
@@ -303,23 +325,56 @@ fn blit_glyph(rgba: &mut [u8], width: u32, height: u32, x: i32, y: i32, rows: [u
 
 fn glyph(ch: char) -> [u8; 7] {
     match ch {
-        '0' => [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
-        '1' => [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
-        '2' => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111],
-        '3' => [0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110],
-        '4' => [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
-        '5' => [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110],
-        '6' => [0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110],
-        '7' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
-        '8' => [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
-        '9' => [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100],
-        'x' => [0b00000, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b00000],
-        '+' => [0b00000, 0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0b00000],
+        '0' => [
+            0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110,
+        ],
+        '1' => [
+            0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
+        ],
+        '2' => [
+            0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111,
+        ],
+        '3' => [
+            0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110,
+        ],
+        '4' => [
+            0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010,
+        ],
+        '5' => [
+            0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110,
+        ],
+        '6' => [
+            0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110,
+        ],
+        '7' => [
+            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000,
+        ],
+        '8' => [
+            0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110,
+        ],
+        '9' => [
+            0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100,
+        ],
+        'x' => [
+            0b00000, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b00000,
+        ],
+        '+' => [
+            0b00000, 0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0b00000,
+        ],
         _ => [0, 0, 0, 0, 0, 0, 0],
     }
 }
 
-fn fill_rect(rgba: &mut [u8], width: u32, height: u32, x: i32, y: i32, w: i32, h: i32, color: [u8; 4]) {
+fn fill_rect(
+    rgba: &mut [u8],
+    width: u32,
+    height: u32,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    color: [u8; 4],
+) {
     for py in y..y + h {
         hline(rgba, width, height, x, x + w - 1, py, color);
     }
@@ -416,7 +471,12 @@ fn class_name() -> &'static [u16] {
     })
 }
 
-unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+unsafe extern "system" fn wnd_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
     // 框本身不接鼠标。点中测试若落到这里，也要穿透，否则下面的窗口滚不动。
     if msg == WM_NCHITTEST {
         return LRESULT(HTTRANSPARENT as isize);
@@ -608,7 +668,10 @@ mod tests {
     #[test]
     fn auto_scroll_uses_the_horizontal_wheel_for_the_horizontal_axis() {
         assert_eq!(nudge_message(CaptureAxis::Vertical), (WM_MOUSEWHEEL, -120));
-        assert_eq!(nudge_message(CaptureAxis::Horizontal), (WM_MOUSEHWHEEL, 120));
+        assert_eq!(
+            nudge_message(CaptureAxis::Horizontal),
+            (WM_MOUSEHWHEEL, 120)
+        );
     }
 
     /// 自动滚动闸门(P1 回归):关闸时定时器不发送任何滚轮消息;会话线程

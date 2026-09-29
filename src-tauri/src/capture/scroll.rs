@@ -1474,10 +1474,7 @@ mod tests {
                 ScrollTick::Unchanged { hint: false }
             );
         }
-        assert_eq!(
-            stitcher.tick(initial),
-            ScrollTick::Unchanged { hint: true }
-        );
+        assert_eq!(stitcher.tick(initial), ScrollTick::Unchanged { hint: true });
         assert!(!stitcher.scrolled());
         assert_eq!(stitcher.appended(), 0);
     }
@@ -1531,9 +1528,14 @@ mod tests {
             let local = y % line;
             for x in 0..width {
                 let stem = x % 8 < 2;
-                let unique = ((line_i.wrapping_mul(31).wrapping_add(x.wrapping_mul(3))) % 160) as u8;
+                let unique =
+                    ((line_i.wrapping_mul(31).wrapping_add(x.wrapping_mul(3))) % 160) as u8;
                 let value = if local < 3 {
-                    if stem { 36 } else { 214 }
+                    if stem {
+                        36
+                    } else {
+                        214
+                    }
                 } else if local + 3 >= line {
                     228
                 } else {
@@ -1702,9 +1704,14 @@ mod tests {
             let local = x % band;
             for y in 0..height {
                 let stem = y % 8 < 2;
-                let unique = ((band_i.wrapping_mul(31).wrapping_add(y.wrapping_mul(3))) % 160) as u8;
+                let unique =
+                    ((band_i.wrapping_mul(31).wrapping_add(y.wrapping_mul(3))) % 160) as u8;
                 let value = if local < 3 {
-                    if stem { 36 } else { 214 }
+                    if stem {
+                        36
+                    } else {
+                        214
+                    }
                 } else if local + 3 >= band {
                     228
                 } else {
