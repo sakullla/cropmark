@@ -1,0 +1,356 @@
+/* R3 录制 HUD:控制条(record-control)与标注层(record-overlay)。
+   两个窗口都是无系统边框的覆盖层;控制条在透明窗内画一张卡片,
+   标注层整窗透明,只有工具条与提示自带实底。 */
+
+html[data-view="record-control"],
+html[data-view="record-control"] body,
+html[data-view="record-control"] #app,
+html[data-view="record-overlay"],
+html[data-view="record-overlay"] body,
+html[data-view="record-overlay"] #app {
+  background: transparent;
+  overflow: hidden;
+}
+
+/* ---------- 控制条 ---------- */
+
+.record-root {
+  height: 100%;
+  padding: 6px;
+  color: var(--ink);
+  font-family: inherit;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.record-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  height: 100%;
+  min-height: 0;
+  padding: 8px 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.record-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.record-pulse {
+  width: 10px;
+  height: 10px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--danger);
+  box-shadow: 0 0 0 3px var(--danger-soft);
+}
+
+.record-root.is-paused .record-pulse {
+  background: var(--muted);
+  box-shadow: 0 0 0 3px var(--line);
+}
+
+.record-root.is-stopped .record-pulse {
+  background: var(--ok);
+  box-shadow: 0 0 0 3px var(--ok-soft);
+}
+
+.record-root.is-failed .record-pulse {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px var(--danger-soft);
+}
+
+.record-time {
+  flex-shrink: 0;
+  font-size: 15px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+.record-phase {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.record-spacer {
+  flex: 1 1 auto;
+  min-width: 4px;
+}
+
+.record-btn {
+  flex-shrink: 0;
+  height: 30px;
+  min-height: 30px;
+  padding: 0 10px;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  background: var(--control-fill);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control-sm);
+  cursor: pointer;
+  transition: var(--control-transition);
+}
+
+.record-btn:hover:not(:disabled) {
+  background: var(--control-hover-bg);
+  border-color: var(--control-hover-border);
+}
+
+.record-btn:active:not(:disabled) {
+  filter: var(--control-pressed-filter);
+}
+
+.record-btn:disabled {
+  cursor: default;
+  opacity: var(--control-disabled-opacity);
+}
+
+.record-btn[hidden] {
+  display: none;
+}
+
+.record-primary {
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.record-primary:hover:not(:disabled) {
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+  filter: var(--control-hover-filter);
+}
+
+.record-draw.is-active {
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.record-notice {
+  flex-shrink: 0;
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.record-notice.is-error {
+  color: var(--danger);
+}
+
+.record-notice[hidden] {
+  display: none;
+}
+
+.record-pending {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  flex: 1 1 auto;
+  border-top: 1px solid var(--line);
+  padding-top: 6px;
+}
+
+.record-pending[hidden] {
+  display: none;
+}
+
+.record-pending-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.record-pending-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.record-pending-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  min-height: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.record-pending-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control-sm);
+}
+
+.record-pending-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.record-pending-name {
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.record-pending-detail {
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.record-pending-item .record-btn {
+  height: 26px;
+  min-height: 26px;
+  padding: 0 8px;
+  font-size: 11px;
+}
+
+/* ---------- 标注层 ---------- */
+
+.record-overlay-root {
+  position: relative;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  color: var(--ink);
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.record-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+}
+
+.record-draw[hidden] {
+  display: none;
+}
+
+/* 工具条贴区域顶部居中:控制条固定在区域底边(或区域外),两者不互相遮挡;
+   样式面板与提示向下展开,避免越出窗口。 */
+.record-tools {
+  position: absolute;
+  top: 20px;
+  left: 0;
+  right: 0;
+  width: fit-content;
+  margin-inline: auto;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  max-width: calc(100% - 32px);
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-window);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  pointer-events: auto;
+}
+
+.record-tools [data-tooltip]::after {
+  top: calc(100% + 6px);
+  bottom: auto;
+}
+
+.record-draw-actions {
+  position: absolute;
+  top: 68px;
+  left: 0;
+  right: 0;
+  width: fit-content;
+  margin-inline: auto;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100% - 32px);
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-window);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  pointer-events: auto;
+}
+
+.record-draw-hint {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.record-draw-done {
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.record-draw-done:hover:not(:disabled) {
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+  filter: var(--control-hover-filter);
+}
+
+.record-overlay-notice {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  margin: 0;
+  max-width: calc(100% - 32px);
+  padding: 6px 10px;
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control-sm);
+  box-shadow: var(--shadow);
+}
+
+.record-overlay-notice[hidden] {
+  display: none;
+}

@@ -12,6 +12,7 @@
 //! - 录制产物只写临时文件,不经过 `history::record_capture`,不进入截图历史。
 
 mod encoder;
+pub mod hud;
 mod save;
 
 use std::path::PathBuf;
@@ -353,6 +354,11 @@ impl RecordingSession {
     /// 更新实时标注:下一帧起合并进录制画面。
     pub fn set_annotations(&self, annotations: Vec<Annotation>) {
         self.shared.lock().annotations = annotations;
+    }
+
+    /// 当前实时标注:HUD 打开时同步给标注层作为初始状态(含选区壳上的标注)。
+    pub fn annotations(&self) -> Vec<Annotation> {
+        self.shared.lock().annotations.clone()
     }
 
     /// 暂停:停止产帧,录制时间不推进。已暂停时幂等返回。

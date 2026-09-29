@@ -1050,7 +1050,7 @@ fn start_recording_from_selection(
     let recording = match crate::record::RecordingSession::start(
         region,
         config,
-        crate::record::MonitorSource::new(monitor),
+        crate::record::MonitorSource::new(monitor.clone()),
     ) {
         Ok(recording) => recording,
         Err(error) => {
@@ -1066,6 +1066,8 @@ fn start_recording_from_selection(
     // 选区会话正常结束(不是取消):隐藏会话窗、恢复产品表面并释放槽位,
     // 录制在后台独立继续;不广播 capture-cancelled。
     release_capture_for_recording(app, expected);
+    // R3:录制开始即打开控制条与标注层(位置/内容由 record/hud 决定)。
+    crate::record::hud::open(app, region, monitor);
     ui::show_toast_key(app, "toast.recording_started");
     refresh_tray_menu(app);
     Ok(())
@@ -1113,10 +1115,26 @@ pub fn recording_active(app: &AppHandle) -> bool {
 }
 
 /// R3:取出活动录制会话(停止/保存路径消费);同一时间最多一个。
+/// 会话一离开运行时即复位 HUD 绘制交互,避免标注层继续挡鼠标。
 pub fn take_recording_session(app: &AppHandle) -> Option<crate::record::RecordingSession> {
     let runtime = app.state::<CaptureRuntime>();
     let taken = lock(&runtime.recording).take();
+    if taken.is_some() {
+        crate::record::hud::reset_after_session_end(app);
+    }
     taken
+}
+
+/// R3 recording-hud:把 HUD 在无活动会话时新启动的录制装入运行时。
+/// 已有会话时不覆盖,返回 false(新会话由调用方丢弃,其 Drop 会停止线程)。
+pub fn install_recording(app: &AppHandle, recording: crate::record::RecordingSession) -> bool {
+    let runtime = app.state::<CaptureRuntime>();
+    let mut slot = lock(&runtime.recording);
+    if slot.is_some() {
+        return false;
+    }
+    *slot = Some(recording);
+    true
 }
 
 /// R3:录制会话的 HUD 面(后续 recording-hud 消费):状态查询、暂停/继续与

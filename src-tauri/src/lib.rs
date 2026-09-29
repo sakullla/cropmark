@@ -287,6 +287,9 @@ pub fn run() {
             };
             hotkeys::apply_to_app(app.handle(), &hotkeys);
             capture::precreate_windows(app.handle());
+            // R3:录制控制条与标注层预创建(隐藏),录制开始后立即出现且避免
+            // 运行期重建 webview 的偶发导航失败。
+            record::hud::precreate(app.handle());
             // R9:贴图增强常开,启动恢复只由「重启后恢复」普通选项决定
             // (默认关闭);已关闭的贴图不重现。
             pin::restore_persisted(app.handle());
@@ -346,6 +349,18 @@ pub fn run() {
             capture::close_capture_error,
             capture::get_delay_state,
             capture::get_capture_error,
+            record::hud::get_recording_hud_state,
+            record::hud::recording_control,
+            record::hud::stop_recording_from_hud,
+            record::hud::retry_recording_save,
+            record::hud::discard_pending_recording,
+            record::hud::set_recording_annotations,
+            record::hud::get_recording_annotations,
+            record::hud::set_recording_hud_interactive,
+            record::hud::set_recording_hud_overlay_visible,
+            record::hud::set_recording_hud_expanded,
+            record::hud::get_recording_hud_snapshot,
+            record::hud::close_recording_hud,
             capture::scroll::finish_scroll_capture,
             capture::scroll::cancel_scroll_capture,
             capture::scroll::get_scroll_status,
@@ -408,6 +423,12 @@ pub fn run() {
                 // R1:长截图控制窗被外部关闭(Alt+F4 等)按取消处理,不产出。
                 if window.label() == capture::scroll::WINDOW {
                     capture::scroll::handle_window_destroyed(window.app_handle());
+                }
+                // R3:录制控制条/标注层被外部关闭时恢复正常状态(绘制降级引入的
+                // 暂停必须恢复),录制本身继续由托盘接管。
+                if window.label() == record::hud::CONTROL || window.label() == record::hud::OVERLAY
+                {
+                    record::hud::handle_window_destroyed(window.app_handle());
                 }
                 // 引导中途关闭同样记为已看过,且不拦截销毁,避免挡住托盘与热键。
                 if window.label() == front::GUIDE {

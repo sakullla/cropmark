@@ -7,6 +7,8 @@ import { mountCaptureError } from "./overlay/error";
 import { mountOverlay } from "./overlay/index";
 import { mountPin } from "./pin";
 import { mountPreview } from "./preview";
+import { mountRecordControl } from "./record/control";
+import { mountRecordOverlay } from "./record/overlay";
 import { mountScroll } from "./scroll";
 import { mountSettings } from "./settings";
 import { mountToast } from "./toast";
@@ -49,6 +51,10 @@ void (async () => {
     applyLanguage = mountHistory(root);
   } else if (view === "scroll") {
     applyLanguage = mountScroll(root);
+  } else if (view === "record-control") {
+    applyLanguage = mountRecordControl(root);
+  } else if (view === "record-overlay") {
+    applyLanguage = mountRecordOverlay(root);
   } else if (view === "guide") {
     applyLanguage = mountOnboarding(root);
   }

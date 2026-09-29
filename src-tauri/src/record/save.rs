@@ -57,6 +57,18 @@ pub fn take_pending_recordings() -> Vec<RecordingOutput> {
     )
 }
 
+/// 按临时文件路径取出单个待处理产物(HUD 的重试保存/丢弃入口):
+/// 重试取消或再次失败时由调用方用 `keep_pending_recording` 放回。
+pub fn remove_pending_recording(temp_path: &Path) -> Option<RecordingOutput> {
+    let mut pending = PENDING_SAVES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let index = pending
+        .iter()
+        .position(|item| item.temp_path == temp_path)?;
+    Some(pending.remove(index))
+}
+
 /// 保存结果:取消时 `saved=false` 且 `path=None`,临时文件保留。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -293,6 +305,33 @@ mod tests {
             !output.temp_path.exists(),
             "explicit discard must remove the kept file"
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// HUD 的重试入口按临时文件路径取单个待处理项:取到后可重试;
+    /// 取消/再次失败时放回、成功后不再出现;未知路径明确返回 None。
+    #[test]
+    fn remove_pending_recording_takes_by_exact_path_and_returns_it_again() {
+        let dir =
+            std::env::temp_dir().join(format!("cropmark-record-remove-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let output = sample_output(&dir, RecordFormat::Mp4);
+        assert!(
+            remove_pending_recording(&output.temp_path).is_none(),
+            "unregistered path must miss"
+        );
+        keep_pending_recording(output.clone());
+        let taken = remove_pending_recording(&output.temp_path)
+            .expect("registered path must be handed to the retry consumer");
+        assert_eq!(taken.temp_path, output.temp_path);
+        assert!(
+            remove_pending_recording(&output.temp_path).is_none(),
+            "a taken entry must not be handed out twice"
+        );
+        // 重试取消/失败路径放回后仍可再次取出。
+        keep_pending_recording(output.clone());
+        assert!(remove_pending_recording(&output.temp_path).is_some());
         let _ = fs::remove_dir_all(&dir);
     }
 }

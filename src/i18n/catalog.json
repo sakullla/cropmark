@@ -568,8 +568,8 @@
     "en": "Saved {name}."
   },
   "toast.recording_started": {
-    "zh-CN": "录制已开始；可从托盘停止并保存，录制内容不会进入截图历史。",
-    "en": "Recording started. Stop and save from the tray; recordings never enter screenshot history."
+    "zh-CN": "录制已开始；可用控制条或托盘停止并保存，录制内容不会进入截图历史。",
+    "en": "Recording started. Stop and save from the control bar or the tray; recordings never enter screenshot history."
   },
   "toast.recording_busy": {
     "zh-CN": "已有录制在进行中，请先停止并保存后再开始新录制。",
@@ -582,6 +582,90 @@
   "toast.recording_discarded": {
     "zh-CN": "已取消保存，本次录制已丢弃。需要时请重新录制。",
     "en": "Save cancelled; this recording was discarded. Record again if needed."
+  },
+  "record.status.recording": {
+    "zh-CN": "录制中",
+    "en": "Recording"
+  },
+  "record.status.paused": {
+    "zh-CN": "已暂停",
+    "en": "Paused"
+  },
+  "record.status.finished": {
+    "zh-CN": "已自动停止",
+    "en": "Stopped automatically"
+  },
+  "record.status.failed": {
+    "zh-CN": "录制中断",
+    "en": "Recording failed"
+  },
+  "record.bar.time_title": {
+    "zh-CN": "已录时长 / 单次上限",
+    "en": "Elapsed / recording limit"
+  },
+  "record.bar.pause": {
+    "zh-CN": "暂停",
+    "en": "Pause"
+  },
+  "record.bar.resume": {
+    "zh-CN": "继续",
+    "en": "Resume"
+  },
+  "record.bar.stop": {
+    "zh-CN": "停止并保存",
+    "en": "Stop and save"
+  },
+  "record.bar.save": {
+    "zh-CN": "保存",
+    "en": "Save"
+  },
+  "record.bar.start": {
+    "zh-CN": "重新录制",
+    "en": "Record again"
+  },
+  "record.bar.draw": {
+    "zh-CN": "标注",
+    "en": "Annotate"
+  },
+  "record.bar.draw_done": {
+    "zh-CN": "完成标注",
+    "en": "Finish annotating"
+  },
+  "record.bar.close": {
+    "zh-CN": "关闭",
+    "en": "Close"
+  },
+  "record.pending.title": {
+    "zh-CN": "待保存录制 {count} 项",
+    "en": "{count} recording(s) awaiting save"
+  },
+  "record.pending.retry": {
+    "zh-CN": "重试保存",
+    "en": "Retry save"
+  },
+  "record.pending.discard": {
+    "zh-CN": "丢弃",
+    "en": "Discard"
+  },
+  "record.pending.kept": {
+    "zh-CN": "保存失败，录制已保留；可重试保存或丢弃。",
+    "en": "Saving failed; the recording is kept. Retry the save or discard it."
+  },
+  "record.overlay.hint": {
+    "zh-CN": "拖动鼠标放置标注；标注实时进入录制结果。",
+    "en": "Drag to place annotations; annotations enter the recording live."
+  },
+  "record.overlay.snapshot_failed": {
+    "zh-CN": "无法获取定格画面，已退出标注模式；录制继续进行。",
+    "en": "Could not capture a still frame; annotation mode was closed and recording continues."
+  },
+  "record.hud.degraded": {
+    "zh-CN": "当前环境不支持透明实时标注层：标注在定格画面上进行，绘制期间自动暂停录制，控制条可能出现在录制画面中。",
+    "en": "This environment does not support a transparent live annotation layer: annotate on a still frame; recording pauses while drawing, and the control bar may appear in the recording."
+  },
+  "record.error.action": {
+    "zh-CN": "操作未能完成：{detail}",
+    "en": "The action could not be completed: {detail}"
   },
   "toast.pinned": {
     "zh-CN": "已贴到屏幕。",
@@ -686,6 +770,18 @@
   "error.record.save_to_path": {
     "zh-CN": "无法保存录制文件到 {path}：{error}。本次录制已保留在 {temp}，不会自动删除；可复制该文件保存，也可稍后重试保存。",
     "en": "Could not save the recording to {path}: {error}. The recording was kept at {temp} and will not be deleted; copy the file to save it or retry the save later."
+  },
+  "error.record.pending_missing": {
+    "zh-CN": "这项待保存的录制不存在或已被处理。",
+    "en": "This pending recording no longer exists or was already handled."
+  },
+  "error.record.unknown_action": {
+    "zh-CN": "未知的录制操作：{action}",
+    "en": "Unknown recording action: {action}"
+  },
+  "error.record.disabled": {
+    "zh-CN": "录屏开关已关闭，无法开始录制。",
+    "en": "Recording is disabled in settings; cannot start."
   },
   "error.hotkey.invalid": {
     "zh-CN": "无法识别该热键。",

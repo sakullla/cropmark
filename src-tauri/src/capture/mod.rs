@@ -91,6 +91,9 @@ async fn stop_recording_inner(app: AppHandle) {
         }
         RecordingSaveNotice::Failed { message } => {
             ui::show_toast(&app, &message);
+            // 托盘路径的保存对话框期间控制条可能已按「无会话」自动收起:
+            // 重新呼出以兑现错误文案承诺的重试保存/丢弃入口。
+            crate::record::hud::show_pending(&app);
         }
     }
     session::refresh_tray_menu(&app);
