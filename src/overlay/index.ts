@@ -14,7 +14,12 @@ import { mountQrModel, type QrModel } from "../qr";
 import { canvasGeometry } from "./geometry";
 import "./overlay.css";
 
-type CaptureMode = "region" | "window" | "fullscreen";
+type CaptureMode = "region" | "window" | "fullscreen" | "recording";
+
+/// 区域截图与 Wayland 录屏共用拖选、尺寸和确认。窗口/全屏不走这条路径。
+function isRegionSelectionMode(mode: CaptureMode): boolean {
+  return mode === "region" || mode === "recording";
+}
 
 interface ListedWindow {
   id: string;
@@ -949,7 +954,8 @@ export function mountOverlay(root: HTMLElement): () => void {
   };
 
   const finishRegion = async (): Promise<void> => {
-    if (finishing || !frame || frame.mode !== "region") {
+    // 录屏与区域截图都走 confirm_region。选区太小只留说明,不收起覆盖层。
+    if (finishing || !frame || !isRegionSelectionMode(frame.mode)) {
       return;
     }
     const crop = roundedRect();
@@ -1209,7 +1215,7 @@ export function mountOverlay(root: HTMLElement): () => void {
     if (qrModel?.active === true) {
       return;
     }
-    if (frame.fixed || frame.mode !== "region" || event.button !== 0) {
+    if (frame.fixed || !isRegionSelectionMode(frame.mode) || event.button !== 0) {
       return;
     }
     if (annotationActive()) {
@@ -1575,7 +1581,7 @@ export function mountOverlay(root: HTMLElement): () => void {
       void finishRegion();
       return;
     }
-    if (!frame || !frame.reducedCapabilities || frame.mode !== "region") {
+    if (!frame || !frame.reducedCapabilities || !isRegionSelectionMode(frame.mode)) {
       return;
     }
     // 原生壳的可用快捷键在 Wayland 覆盖层缺失:触发时给出说明与替代。

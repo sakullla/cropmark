@@ -362,6 +362,11 @@ pub struct FeatureFlags {
     pub record_even: bool,
     /// 录屏确认后、壳关闭前要保持矩形可见的延时。0 表示确认后直接开始。
     pub confirm_delay_ms: u64,
+    /// 录屏确认要用的格式。有值时,开始录制前用 `RecordRegion::for_format` 校验。
+    pub record_format: Option<crate::record::RecordFormat>,
+    /// 整个壳是录屏入口:Enter 与「标注」也按录制区域校验。
+    /// 普通区域里只是多一个录屏按钮时为 false。
+    pub recording_entry: bool,
 }
 
 impl Default for FeatureFlags {
@@ -385,6 +390,8 @@ impl Default for FeatureFlags {
             tools: ToolToggles::default(),
             record_even: false,
             confirm_delay_ms: 0,
+            record_format: None,
+            recording_entry: false,
         }
     }
 }
@@ -631,6 +638,8 @@ pub struct SelectionEngine {
     /// R7:按下左键时记录的高亮区域;松开前未拖动则采纳为选区(点击确认)。
     snap_click: Option<PhysicalRect>,
     menu_scroll: i32,
+    /// 录屏区域放不进格式时的说明。壳取走后提示用户,不结束选区。
+    notice: Option<String>,
     magnifier_zoom: f64,
     spotlight_dim: f64,
     sticker_id: String,
@@ -704,6 +713,7 @@ impl SelectionEngine {
             snap_index: 0,
             snap_click: None,
             menu_scroll: 0,
+            notice: None,
             magnifier_zoom: crate::annotate::DEFAULT_MAGNIFIER_ZOOM,
             spotlight_dim: crate::annotate::DEFAULT_SPOTLIGHT_DIM,
             sticker_id: crate::annotate::stickers::STICKERS
@@ -1252,6 +1262,8 @@ impl SelectionEngine {
                 if still {
                     if action == SelectionAction::Cancel {
                         EngineOutcome::Cancelled
+                    } else if let Some(outcome) = self.recording_confirm_outcome(action) {
+                        outcome
                     } else {
                         EngineOutcome::Action(action)
                     }
@@ -1317,10 +1329,21 @@ impl SelectionEngine {
                     EngineOutcome::Cancelled
                 }
             }
-            LogicalKey::Enter => match self.selection {
-                Some(rect) => EngineOutcome::Confirmed(rect),
-                None => EngineOutcome::Redraw,
-            },
+            LogicalKey::Enter => {
+                if self.flags.recording_entry && self.flags.record_format.is_some() {
+                    if self.selection.is_none() {
+                        return EngineOutcome::Redraw;
+                    }
+                    return match self.gate_recording_rect() {
+                        Ok(rect) => EngineOutcome::Confirmed(rect),
+                        Err(message) => self.hold_rejected_recording(message),
+                    };
+                }
+                match self.selection {
+                    Some(rect) => EngineOutcome::Confirmed(rect),
+                    None => EngineOutcome::Redraw,
+                }
+            }
             LogicalKey::Tool(tool) => {
                 // 工具快捷键:选中态按下即选中该工具(再按取消选中);其余状态
                 // (Idle/拖动中/无选区)与关闭即时标注时忽略。
@@ -1402,9 +1425,17 @@ impl SelectionEngine {
     }
 
     fn current_menu_items(&self) -> Vec<SelectionAction> {
-        self.unified_toolbar()
-            .map(|toolbar| toolbar.menu)
-            .unwrap_or_else(|| composer::menu_items(self.flags))
+        composer::current_menu_items(
+            self.metrics(),
+            self.selection,
+            self.size(),
+            self.flags,
+            self.options.text_input,
+        )
+    }
+
+    pub(crate) fn take_notice(&mut self) -> Option<String> {
+        self.notice.take()
     }
 
     fn hit_menu(&self, x: i32, y: i32) -> Option<SelectionAction> {
@@ -2054,6 +2085,69 @@ impl SelectionEngine {
         });
     }
 
+    /// 录屏按钮,或录屏入口里的「标注」,在交给壳之前先按格式校验。
+    /// 不是录屏确认时返回 None,调用方按原动作继续。
+    fn recording_confirm_outcome(&mut self, action: SelectionAction) -> Option<EngineOutcome> {
+        let gated = match action {
+            SelectionAction::Recording => self.flags.record_format.is_some(),
+            SelectionAction::Annotate => {
+                self.flags.recording_entry && self.flags.record_format.is_some()
+            }
+            _ => false,
+        };
+        if !gated {
+            return None;
+        }
+        Some(match self.gate_recording_rect() {
+            Ok(_) => EngineOutcome::Action(action),
+            Err(message) => self.hold_rejected_recording(message),
+        })
+    }
+
+    /// 格式放不下:说明原因,选区留在调整后的矩形,不向壳交出终态。
+    fn hold_rejected_recording(&mut self, message: String) -> EngineOutcome {
+        self.notice = Some(message);
+        self.more_open = false;
+        self.state = if self.selection.is_some() {
+            EngineState::Selected
+        } else {
+            EngineState::Idle
+        };
+        EngineOutcome::Redraw
+    }
+
+    /// 按格式收成偶数(若需要)并校验。失败时选区已经是调整后的矩形。
+    fn gate_recording_rect(&mut self) -> Result<PhysicalRect, String> {
+        let Some(rect) = self.selection else {
+            return Err(crate::i18n::t("error.record.region"));
+        };
+        let Some(format) = self.flags.record_format else {
+            return Ok(rect);
+        };
+        let adjusted = crate::record::RecordRegion::new(rect.x, rect.y, rect.width, rect.height)
+            .adjusted_for_format(format);
+        if adjusted.width >= MIN_SELECTION_SIZE && adjusted.height >= MIN_SELECTION_SIZE {
+            self.selection = Some(PhysicalRect {
+                x: adjusted.x,
+                y: adjusted.y,
+                width: adjusted.width,
+                height: adjusted.height,
+            });
+        }
+        let stayed = self.selection.unwrap_or(rect);
+        match crate::record::RecordRegion::new(stayed.x, stayed.y, stayed.width, stayed.height)
+            .for_format(format)
+        {
+            Ok(region) => Ok(PhysicalRect {
+                x: region.x,
+                y: region.y,
+                width: region.width,
+                height: region.height,
+            }),
+            Err(error) => Err(error.user_message()),
+        }
+    }
+
     /// 录屏 MP4 把宽高向下收成偶数;收不成至少 2px 时不保留这块选区。
     fn snap_record_rect(&self, rect: PhysicalRect) -> Option<PhysicalRect> {
         if !self.flags.record_even {
@@ -2426,6 +2520,85 @@ mod tests {
         drag(&mut plain, (10, 12), (110, 62));
         let raw = plain.selection().unwrap();
         assert!(selection.width <= raw.width && selection.height <= raw.height);
+    }
+
+    #[test]
+    fn overflow_menu_hit_matches_the_toolbar_menu() {
+        let mut engine = inline_engine(180, 700);
+        drag_selection(&mut engine, (8, 40), (70, 110));
+        let toolbar = engine.unified_toolbar().expect("toolbar");
+        let pinned = composer::menu_items(engine.flags());
+        engine.handle_event(InputEvent::RightDown { x: 40, y: 70 });
+        let items = engine.current_menu_items();
+        assert_eq!(items, toolbar.menu, "命中列表必须与横条 menu 相同");
+        let overflow = items
+            .iter()
+            .copied()
+            .find(|action| matches!(action, SelectionAction::Tool(_)))
+            .expect("窄屏菜单应含溢出的绘制工具");
+        assert!(!pinned.contains(&overflow));
+        let metrics = engine.metrics();
+        let panel = composer::menu_panel(metrics, engine.menu_anchor(), engine.size(), &items);
+        let (action, rect) = composer::menu_item_rects(metrics, panel, &items)
+            .into_iter()
+            .find(|(action, _)| *action == overflow)
+            .expect("溢出工具有命中矩形");
+        let (cx, cy) = rect.center();
+        assert_eq!(engine.hit_menu(cx, cy), Some(action));
+        assert_eq!(composer::action_label(action), composer::action_label(overflow));
+    }
+
+    #[test]
+    fn rejected_recording_region_stays_on_the_adjusted_selection() {
+        let mut engine = SelectionEngine::new(
+            4000,
+            80,
+            FeatureFlags {
+                inline_annotation: false,
+                recording: true,
+                recording_entry: true,
+                record_format: Some(crate::record::RecordFormat::Mp4),
+                ..FeatureFlags::default()
+            },
+        );
+        drag(&mut engine, (0, 10), (3999, 70));
+        let before = engine.selection().expect("selection");
+        assert!(before.width > 3840, "用例必须超出 MP4 长边");
+        assert_eq!(
+            engine.handle_event(InputEvent::Key {
+                key: LogicalKey::Enter,
+                shift: false,
+            }),
+            EngineOutcome::Redraw
+        );
+        assert_eq!(engine.state(), &EngineState::Selected);
+        let stayed = engine.selection().expect("调整后的选区还在");
+        assert_eq!(stayed.width % 2, 0);
+        assert_eq!(stayed.height % 2, 0);
+        assert!(stayed.width <= before.width && stayed.height <= before.height);
+        let notice = engine.take_notice().expect("应说明放不下的原因");
+        assert!(!notice.is_empty());
+        assert!(engine.take_notice().is_none());
+
+        // 普通区域里的 Enter 仍是截图,不因录屏格式校验收起选区。
+        let mut region = SelectionEngine::new(
+            4000,
+            80,
+            FeatureFlags {
+                inline_annotation: false,
+                recording: true,
+                record_format: Some(crate::record::RecordFormat::Mp4),
+                ..FeatureFlags::default()
+            },
+        );
+        drag(&mut region, (0, 10), (3999, 70));
+        assert!(matches!(
+            region.handle_event(InputEvent::Key {
+                key: LogicalKey::Enter,
+                shift: false,
+            }),
+            EngineOutcome::Confirmed(_)
+        ));
     }
 
     #[test]
@@ -3249,7 +3422,7 @@ mod tests {
         let (bx, by) = toolbar_rect.center();
         assert_eq!(off.cursor_for(bx, by), CursorHint::Crosshair);
         off.handle_event(InputEvent::RightDown { x: 200, y: 120 });
-        let items = composer::menu_items(off.flags());
+        let items = off.current_menu_items();
         let menu = composer::menu_panel(off.metrics(), off.menu_anchor(), off.size(), &items);
         let (_, item_rect) = composer::menu_item_rects(off.metrics(), menu, &items)[0];
         let (mx, my) = item_rect.center();

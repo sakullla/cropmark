@@ -61,17 +61,22 @@ impl RecordRegion {
         }
     }
 
-    /// MP4/H.264 要求宽高为偶数:向下取整到偶数,其余格式保持原样。
-    /// 校验失败返回 `RecordError::Region`。
-    pub fn for_format(self, format: RecordFormat) -> Result<Self, RecordError> {
-        let region = match format {
+    /// MP4/H.264 把宽高向下收成偶数,其余格式保持原样。不做尺寸上限校验。
+    pub fn adjusted_for_format(self, format: RecordFormat) -> Self {
+        match format {
             RecordFormat::Mp4 => Self {
                 width: self.width & !1,
                 height: self.height & !1,
                 ..self
             },
             _ => self,
-        };
+        }
+    }
+
+    /// MP4/H.264 要求宽高为偶数:向下取整到偶数,其余格式保持原样。
+    /// 校验失败返回 `RecordError::Region`。
+    pub fn for_format(self, format: RecordFormat) -> Result<Self, RecordError> {
+        let region = self.adjusted_for_format(format);
         encoder::validate_region(format, region)?;
         Ok(region)
     }

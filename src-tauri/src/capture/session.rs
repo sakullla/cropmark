@@ -806,6 +806,16 @@ fn copy_color_feedback(text: &str, hex: &str) {
     }
 }
 
+/// 选区壳还开着时的说明(录屏区域放不进格式)。不取消会话。
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+fn shell_notice(message: &str) {
+    SHELL_APP.with(|slot| {
+        if let Some(app) = slot.borrow().as_ref() {
+            ui::show_toast(app, message);
+        }
+    });
+}
+
 /// R21:选区即时标注的样式与文本输入能力。样式沿用 `AnnotationDefaults`
 /// (R8 记忆);三平台原生壳都具备文本输入通道(Windows WM_CHAR/IME、
 /// macOS NSTextInputClient、Linux X11 XIM+直输回退),工具条含文字工具。
@@ -855,10 +865,14 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
         }
         flags.mode_line = flags.tools.arrow;
         flags.mode_blur = flags.tools.mosaic;
+        let recording_format = crate::settings::current_recording(&handle).format;
         if mode == CaptureMode::Recording {
-            flags.record_even = crate::settings::current_recording(&handle).format
-                == crate::record::RecordFormat::Mp4;
+            flags.record_even = recording_format == crate::record::RecordFormat::Mp4;
             flags.confirm_delay_ms = crate::settings::current_capture(&handle).delay_ms();
+            flags.recording_entry = true;
+        }
+        if flags.recording {
+            flags.record_format = Some(recording_format);
         }
         // R7:元素检测完全不可用时按现有能力说明机制提示降级(自由框选或
         // 窗口截取模式);LongCapture/Recording 复用本壳但不需要该说明。
@@ -877,6 +891,7 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
             annotation_options,
             super::native_overlay::ShellHooks {
                 copy_color: copy_color_feedback,
+                notify: shell_notice,
             },
         );
         SHELL_APP.with(|slot| *slot.borrow_mut() = None);
@@ -1080,13 +1095,16 @@ fn start_recording_from_selection(
     let Some(monitor) = monitor else {
         return cancel_recording_entry(app, expected);
     };
-    let region = crate::record::RecordRegion::new(
-        selection.x,
-        selection.y,
-        selection.width,
-        selection.height,
-    );
     let config = crate::record::RecordConfig::from_settings(app, recording_settings.format);
+    // 壳关闭前(Web 覆盖层则是收起前)按格式校验。放不下就说明原因并留在选区,
+    // 不走取消把壳关掉。
+    let region = match prepare_recording_region(&selection, config.format) {
+        Ok(region) => region,
+        Err(message) => {
+            ui::show_toast(app, &message);
+            return Err(CaptureError::api("error.record.region"));
+        }
+    };
     // 壳上已确认的标注跟着选区平移到录制区域坐标系,首次抓帧即合并进画面;
     // 录制中的实时标注由后续 HUD 经 `with_recording` 同步。
     let translated =
@@ -1099,6 +1117,9 @@ fn start_recording_from_selection(
         Ok(recording) => recording,
         Err(error) => {
             ui::show_toast(app, &error.user_message());
+            if matches!(error, crate::record::RecordError::Region) {
+                return Err(CaptureError::api("error.record.region"));
+            }
             return cancel_recording_entry(app, expected);
         }
     };
@@ -1117,8 +1138,19 @@ fn start_recording_from_selection(
     Ok(())
 }
 
+/// 格式校验与 `RecordingSession::start` 用的是同一次 `for_format`。
+/// 失败返回说明,调用方留在选区,不取消会话。
+fn prepare_recording_region(
+    selection: &RegionSelection,
+    format: crate::record::RecordFormat,
+) -> Result<crate::record::RecordRegion, String> {
+    crate::record::RecordRegion::new(selection.x, selection.y, selection.width, selection.height)
+        .for_format(format)
+        .map_err(|error| error.user_message())
+}
+
 /// 不进入录制时的收尾(开关关闭/已有录制/启动失败):按取消语义释放选区
-/// 会话并恢复产品表面。
+/// 会话并恢复产品表面。格式放不下不走这里。
 fn cancel_recording_entry(app: &AppHandle, expected: Option<u64>) -> Result<(), CaptureError> {
     if let Some((generation, restore)) = accept_cancel(app, expected) {
         finish_cancel(app, generation, restore, false);
@@ -3432,6 +3464,36 @@ mod tests {
             Some(SessionStep::ShowOverlayOnFreeze)
         );
         assert!(!CaptureMode::ALL.contains(&CaptureMode::Recording));
+    }
+
+    #[test]
+    fn format_overflow_rejects_recording_region_without_dropping_it() {
+        let too_wide = RegionSelection {
+            x: 4,
+            y: 6,
+            width: 4000,
+            height: 100,
+        };
+        let rejected = prepare_recording_region(&too_wide, crate::record::RecordFormat::Mp4);
+        let message = rejected.expect_err("MP4 长边 3840 放不下");
+        assert!(!message.is_empty());
+        assert_eq!(too_wide.width, 4000, "校验失败不改调用方手里的选区");
+
+        let odd = RegionSelection {
+            x: 4,
+            y: 6,
+            width: 101,
+            height: 80,
+        };
+        let adjusted = prepare_recording_region(&odd, crate::record::RecordFormat::Mp4)
+            .expect("奇数宽高应收成偶数后通过");
+        assert_eq!(adjusted.width, 100);
+        assert_eq!(adjusted.height, 80);
+        assert_eq!(adjusted.x, odd.x);
+        assert_eq!(adjusted.y, odd.y);
+
+        let gif = prepare_recording_region(&odd, crate::record::RecordFormat::Gif).expect("gif");
+        assert_eq!((gif.width, gif.height), (odd.width, odd.height));
     }
 
     #[test]

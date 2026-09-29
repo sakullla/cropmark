@@ -437,9 +437,26 @@ pub fn more_panel_buttons(flags: FeatureFlags) -> Vec<SelectionAction> {
     pinned_menu_actions(flags)
 }
 
-/// 右键菜单与「更多」是同一份:当前没放进主行的已启用动作。
+/// 没有选区几何时的右键菜单:固定项,不含随宽度溢出的主行按钮。
 pub fn menu_items(flags: FeatureFlags) -> Vec<SelectionAction> {
     more_panel_buttons(flags)
+}
+
+/// 右键菜单的绘制、脏区和命中必须用这一份。
+/// 有选区时取统一横条的 `menu`(含溢出项);没有选区几何时才退回固定项。
+pub fn current_menu_items(
+    metrics: ChromeMetrics,
+    selection: Option<PhysicalRect>,
+    screen: (u32, u32),
+    flags: FeatureFlags,
+    text_input: bool,
+) -> Vec<SelectionAction> {
+    if let Some(selection) = selection {
+        if let Some(toolbar) = unified_toolbar(metrics, selection, screen, flags, text_input) {
+            return toolbar.menu;
+        }
+    }
+    menu_items(flags)
 }
 
 /// 名称按钮宽度。高度仍是 `bar_button`,不低于 40。
@@ -1487,7 +1504,7 @@ impl Composer {
                 self.draw_snap_highlight(out, self.width, self.height, rect, scene.cursor);
             }
             if scene.menu_open {
-                self.draw_menu(out, self.width, self.height, scene);
+                self.draw_menu(out, self.width, self.height, scene, overlay.text_input);
             }
             if scene.flags.magnifier {
                 self.draw_magnifier(out, self.width, self.height, scene.cursor);
@@ -1545,7 +1562,8 @@ impl Composer {
             self.draw_snap_highlight(out, w, h, rect, scene.cursor);
         }
         if scene.menu_open {
-            self.draw_menu(out, w, h, scene);
+            let text_input = overlay.map(|overlay| overlay.text_input).unwrap_or(false);
+            self.draw_menu(out, w, h, scene, text_input);
         }
         if scene.flags.magnifier {
             self.draw_magnifier(out, w, h, scene.cursor);
@@ -1643,6 +1661,7 @@ impl Composer {
             width: 0,
             height: 0,
         };
+        let text_input = overlay.map(|overlay| overlay.text_input).unwrap_or(false);
         if let Some(selection) = scene.selection {
             let pad = self
                 .metrics
@@ -1650,7 +1669,6 @@ impl Composer {
                 .max(self.metrics.bar_button + self.metrics.bar_margin)
                 .max(self.metrics.badge_margin + 36);
             bounds = bounds.union(IntRect::from(selection).inflate(pad));
-            let text_input = overlay.map(|overlay| overlay.text_input).unwrap_or(false);
             let avoid = self.size_badge_obstacle(scene, selection, text_input);
             if let Some(badge) = self.size_badge_rect(selection, scene.cursor, avoid) {
                 bounds = bounds.union(badge);
@@ -1696,7 +1714,13 @@ impl Composer {
             }
         }
         if scene.menu_open {
-            let items = menu_items(scene.flags);
+            let items = current_menu_items(
+                self.metrics,
+                scene.selection,
+                (self.width, self.height),
+                scene.flags,
+                text_input,
+            );
             bounds = bounds.union(menu_panel(
                 self.metrics,
                 scene.menu_anchor,
@@ -2312,9 +2336,9 @@ impl Composer {
 
     /// 右键菜单:左图标 + 右文字;悬停项用蓝色软底和更深的蓝字。
     /// 「取消」与其余动作之间画分隔线(14% 墨)。全部几何经 metrics 派生。
-    fn draw_menu(&self, rgba: &mut [u8], w: u32, h: u32, scene: &Scene) {
+    fn draw_menu(&self, rgba: &mut [u8], w: u32, h: u32, scene: &Scene, text_input: bool) {
         let metrics = self.metrics;
-        let items = menu_items(scene.flags);
+        let items = current_menu_items(metrics, scene.selection, (w, h), scene.flags, text_input);
         let panel = menu_panel(metrics, scene.menu_anchor, (w, h), &items);
         draw_panel_chrome(rgba, w, h, panel, metrics.panel_radius);
         if items.len() > 1 {
@@ -3222,7 +3246,7 @@ mod tests {
             menu_scroll: 0,
         };
         let composed = composer.compose_with_overlay(&scene, &overlay);
-        let items = menu_items(flags);
+        let items = current_menu_items(metrics_1(), Some(selection), (w, h), flags, true);
         let menu = menu_panel(metrics_1(), cursor, (w, h), &items);
         let probe = read(&composed, menu.x + 10, menu.y + 8);
         assert!(
@@ -4681,6 +4705,84 @@ mod tests {
         assert!(!menu_items(FeatureFlags::default()).contains(&SelectionAction::Cancel));
     }
 
+    /// 有选区时右键绘制和脏区用统一横条的 menu(含溢出工具);
+    /// 没有选区几何时才退回固定项。点到的行和画出的名称是同一份列表。
+    #[test]
+    fn right_click_menu_draw_and_dirty_use_the_toolbar_menu() {
+        let (w, h) = (160u32, 900u32);
+        let composer = Composer::new(&solid_frame(w, h, [24, 24, 24, 255])).unwrap();
+        let metrics = composer.metrics;
+        let flags = no_magnifier_flags();
+        let selection = PhysicalRect {
+            x: 20,
+            y: 760,
+            width: 80,
+            height: 50,
+        };
+        let shared = current_menu_items(metrics, Some(selection), (w, h), flags, true);
+        let pinned = menu_items(flags);
+        assert_eq!(
+            current_menu_items(metrics, None, (w, h), flags, true),
+            pinned,
+            "没有选区时才用固定项"
+        );
+        let overflow = shared
+            .iter()
+            .copied()
+            .find(|action| matches!(action, SelectionAction::Tool(_)))
+            .expect("窄屏应把绘制工具溢出到菜单");
+        assert!(
+            !pinned.contains(&overflow),
+            "固定项不应含溢出的绘制工具 {overflow:?}"
+        );
+        let toolbar = unified_toolbar(metrics, selection, (w, h), flags, true).expect("toolbar");
+        assert_eq!(shared, toolbar.menu);
+        let anchor = (8, 8);
+        let long_panel = menu_panel(metrics, anchor, (w, h), &shared);
+        let short_panel = menu_panel(metrics, anchor, (w, h), &pinned);
+        let probe = (long_panel.x + long_panel.width / 2, long_panel.bottom() - 2);
+        assert!(
+            long_panel.contains(probe.0, probe.1) && !short_panel.contains(probe.0, probe.1),
+            "探针应落在溢出菜单里、固定项面板外: long {long_panel:?} short {short_panel:?}"
+        );
+        let closed = Scene {
+            selection: Some(selection),
+            cursor: (12, 12),
+            flags,
+            toolbar_visible: true,
+            menu_open: false,
+            menu_anchor: anchor,
+            more_open: false,
+            snap_highlight: None,
+            menu_scroll: 0,
+        };
+        let open = Scene {
+            menu_open: true,
+            ..closed
+        };
+        let empty: Vec<Annotation> = Vec::new();
+        let overlay = annotation_overlay(&empty, None, None, 0);
+        let mut out = composer.compose_with_overlay(&closed, &overlay);
+        let dirty = composer.compose_into_dirty(&open, &overlay, &mut out, Some(&closed));
+        assert!(
+            dirty.contains(probe.0, probe.1),
+            "脏区必须盖住溢出菜单,而不是只盖住固定项: dirty {dirty:?} probe {probe:?}"
+        );
+        let pixel = {
+            let i = ((probe.1 as u32 * w + probe.0 as u32) * 4) as usize;
+            [out[i], out[i + 1], out[i + 2]]
+        };
+        assert!(
+            near_chrome(pixel),
+            "溢出菜单行应画成铬底,探针 {probe:?} 得到 {pixel:?}"
+        );
+        let row = menu_item_rects(metrics, long_panel, &shared)
+            .into_iter()
+            .find(|(action, _)| *action == overflow)
+            .expect("溢出工具应在画出的菜单里");
+        assert_eq!(action_label(row.0), action_label(overflow));
+    }
+
     #[test]
     fn menu_geometry_has_touch_targets_and_cancel_separator() {
         let items = menu_items(FeatureFlags::default());
@@ -5177,8 +5279,8 @@ mod tests {
         let (hx, hy) = handle_anchor(selection, HandleKind::SouthEast);
         assert_eq!(read(hx, hy), [255, 255, 255]);
         assert_eq!(read(hx + 7, hy), [ACCENT[0], ACCENT[1], ACCENT[2]]);
-        // 菜单:scale 派生的面板矩形上能看到亮铬底。
-        let menu_items = menu_items(flags);
+        // 菜单:scale 派生的面板矩形上能看到亮铬底。有选区时与横条 menu 同一份。
+        let menu_items = current_menu_items(metrics, Some(selection), (640, 400), flags, false);
         let scene = Scene {
             selection: Some(selection),
             cursor: (600, 390),

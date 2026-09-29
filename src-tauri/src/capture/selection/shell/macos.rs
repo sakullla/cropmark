@@ -145,6 +145,8 @@ struct Canvas {
 pub struct ShellHooks {
     /// 复制色值文本并给出反馈;参数为完整文本与 HEX 简写。
     pub copy_color: fn(text: &str, hex: &str),
+    /// 录屏区域放不进格式时的说明。壳保持打开,由会话层提示。
+    pub notify: fn(message: &str),
 }
 
 struct ShellState {
@@ -1353,8 +1355,15 @@ fn hold_recording_rect(state: &mut ShellState, view: &SelectionView) -> bool {
 
 /// 与 Windows 壳同构的 EngineOutcome 处理:Redraw→重呈现、
 /// Confirmed→Preview、Cancelled→取消、Action→会话侧完成或复制色值。
+fn publish_notice(state: &mut ShellState) {
+    if let Some(message) = state.canvas.engine.take_notice() {
+        (state.hooks.notify)(&message);
+    }
+}
+
 fn feed_event(state: &mut ShellState, event: InputEvent, view: &SelectionView) {
     let outcome = state.canvas.engine.handle_event(event);
+    publish_notice(state);
     match outcome {
         EngineOutcome::Redraw => {
             present(state, view);

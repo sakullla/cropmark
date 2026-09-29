@@ -345,6 +345,8 @@ pub enum RegionOutcome {
 pub struct ShellHooks {
     /// 复制色值文本并给出反馈;参数为完整文本与 HEX 简写。
     pub copy_color: fn(text: &str, hex: &str),
+    /// 录屏区域放不进格式时的说明。壳保持打开,由会话层提示。
+    pub notify: fn(message: &str),
 }
 
 /// 单个颜色通道的掩码打包参数(shift + 有效位数)。
@@ -1823,8 +1825,15 @@ fn hold_recording_rect(state: &mut ShellState, surface: &Surface<'_>) -> bool {
 
 /// 与 Windows 壳同构的 EngineOutcome 处理:Redraw→重呈现、
 /// Confirmed→Preview、Cancelled→取消、Action→会话侧完成或复制色值。
+fn publish_notice(state: &mut ShellState) {
+    if let Some(message) = state.canvas.engine.take_notice() {
+        (state.hooks.notify)(&message);
+    }
+}
+
 fn feed_event(state: &mut ShellState, surface: &Surface<'_>, event: InputEvent) -> bool {
     let outcome = state.canvas.engine.handle_event(event);
+    publish_notice(state);
     sync_cursor(state, surface);
     match outcome {
         EngineOutcome::Redraw => {

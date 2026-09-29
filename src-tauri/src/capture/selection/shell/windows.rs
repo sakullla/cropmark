@@ -143,6 +143,8 @@ struct Canvas {
 pub struct ShellHooks {
     /// 复制色值文本并给出反馈;参数为完整文本与 HEX 简写。
     pub copy_color: fn(text: &str, hex: &str),
+    /// 录屏区域放不进格式时的说明。壳保持打开,由会话层提示。
+    pub notify: fn(message: &str),
 }
 
 struct ShellState {
@@ -373,9 +375,16 @@ fn consume_escape(hwnd: HWND) -> bool {
     false
 }
 
+fn publish_notice(state: &mut ShellState) {
+    if let Some(message) = state.canvas.engine.take_notice() {
+        (state.hooks.notify)(&message);
+    }
+}
+
 /// 把一次输入事件交给引擎并处理其输出;返回 true 表示会话已到终态。
 fn feed_event(state: &mut ShellState, event: InputEvent, hwnd: HWND) -> bool {
     let outcome = state.canvas.engine.handle_event(event);
+    publish_notice(state);
     match outcome {
         EngineOutcome::Redraw => {
             present(state.timing, hwnd, &mut state.canvas);
@@ -1680,6 +1689,7 @@ mod tests {
 
     fn test_state_with_flags(width: u32, height: u32, flags: FeatureFlags) -> ShellState {
         fn noop_copy_color(_text: &str, _hex: &str) {}
+        fn noop_notice(_message: &str) {}
         let frame = accept_buffer(RawBuffer::ready(
             width,
             height,
@@ -1690,6 +1700,7 @@ mod tests {
         ShellState {
             hooks: ShellHooks {
                 copy_color: noop_copy_color,
+                notify: noop_notice,
             },
             canvas: Canvas {
                 engine: SelectionEngine::new(width, height, flags)
@@ -2465,6 +2476,54 @@ mod tests {
                 Vec::new()
             ))
         );
+    }
+
+    #[test]
+    fn oversized_recording_confirm_keeps_the_shell_open() {
+        thread_local! {
+            static NOTICES: std::cell::RefCell<Vec<String>> =
+                const { std::cell::RefCell::new(Vec::new()) };
+        }
+        fn record_notice(message: &str) {
+            NOTICES.with(|slot| slot.borrow_mut().push(message.to_string()));
+        }
+        NOTICES.with(|slot| slot.borrow_mut().clear());
+        let flags = FeatureFlags {
+            inline_annotation: false,
+            recording: true,
+            recording_entry: true,
+            record_format: Some(crate::record::RecordFormat::Mp4),
+            ..FeatureFlags::default()
+        };
+        let mut state = test_state_with_flags(4000, 80, flags);
+        state.hooks.notify = record_notice;
+        let hwnd = HWND::default();
+        for event in [
+            InputEvent::LeftDown { x: 0, y: 10 },
+            InputEvent::PointerMove { x: 3999, y: 70 },
+            InputEvent::LeftUp { x: 3999, y: 70 },
+        ] {
+            assert!(!feed_event(&mut state, event, hwnd));
+        }
+        assert!(
+            !feed_event(
+                &mut state,
+                InputEvent::Key {
+                    key: LogicalKey::Enter,
+                    shift: false,
+                },
+                hwnd
+            ),
+            "放不下的区域不能结束壳"
+        );
+        assert!(state.outcome.is_none());
+        let stayed = state.canvas.engine.selection().expect("留在调整后的选区");
+        assert_eq!(stayed.width % 2, 0);
+        assert_eq!(stayed.height % 2, 0);
+        assert!(stayed.width > 3840);
+        let notices = NOTICES.with(|slot| slot.borrow().clone());
+        assert_eq!(notices.len(), 1);
+        assert!(!notices[0].is_empty());
     }
 
     #[test]
