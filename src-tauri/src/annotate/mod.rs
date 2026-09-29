@@ -495,6 +495,279 @@ pub fn translated_all(ops: &[Annotation], dx: f64, dy: f64) -> Vec<Annotation> {
     ops.iter().map(|op| translated(op, dx, dy)).collect()
 }
 
+/// R6:预览旋转/裁剪的坐标映射,与 `capture::buffer` 的像素变换共用同一几何:
+/// 顺时针 (x, y) → (h - y, x),逆时针 (x, y) → (y, w - x),裁剪平移 (-x0, -y0)。
+/// 旋转按边界坐标计算,90° 时轴对齐矩形宽高互换;帧尺寸为变换前的值。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FrameTransform {
+    RotateCw { height: f64 },
+    RotateCcw { width: f64 },
+    Crop { dx: f64, dy: f64 },
+}
+
+impl FrameTransform {
+    pub fn map_point(self, x: f64, y: f64) -> (f64, f64) {
+        match self {
+            Self::RotateCw { height } => (height - y, x),
+            Self::RotateCcw { width } => (y, width - x),
+            Self::Crop { dx, dy } => (x + dx, y + dy),
+        }
+    }
+
+    /// 轴对齐矩形的重映射:取两角映射后的包围盒(90° 旋转宽高互换)。
+    pub fn map_bounds(self, x: f64, y: f64, width: f64, height: f64) -> (f64, f64, f64, f64) {
+        let (x0, y0) = self.map_point(x, y);
+        let (x1, y1) = self.map_point(x + width, y + height);
+        let left = x0.min(x1);
+        let top = y0.min(y1);
+        (left, top, (x1 - x0).abs(), (y1 - y0).abs())
+    }
+}
+
+/// 单个图元的重映射:包围盒类图元按 `map_bounds` 换位,折线/箭头按点映射,
+/// 文字与序号等定点图元映射锚点(不引入旋转属性,保持既有坐标 schema)。
+pub fn transformed(op: &Annotation, transform: FrameTransform) -> Annotation {
+    let point = |point: &Point| {
+        let (x, y) = transform.map_point(point.x, point.y);
+        Point { x, y }
+    };
+    let points = |points: &[Point]| points.iter().map(point).collect::<Vec<_>>();
+    let bounds =
+        |x: f64, y: f64, width: f64, height: f64| transform.map_bounds(x, y, width, height);
+    match op {
+        Annotation::Arrow {
+            from,
+            to,
+            color,
+            stroke_width,
+        } => Annotation::Arrow {
+            from: point(from),
+            to: point(to),
+            color: color.clone(),
+            stroke_width: *stroke_width,
+        },
+        Annotation::Rect {
+            x,
+            y,
+            width,
+            height,
+            color,
+            stroke_width,
+        } => {
+            let (x, y, width, height) = bounds(*x, *y, *width, *height);
+            Annotation::Rect {
+                x,
+                y,
+                width,
+                height,
+                color: color.clone(),
+                stroke_width: *stroke_width,
+            }
+        }
+        Annotation::Mosaic {
+            x,
+            y,
+            width,
+            height,
+            block,
+        } => {
+            let (x, y, width, height) = bounds(*x, *y, *width, *height);
+            Annotation::Mosaic {
+                x,
+                y,
+                width,
+                height,
+                block: *block,
+            }
+        }
+        Annotation::Text {
+            x,
+            y,
+            text,
+            size,
+            color,
+        } => {
+            let (x, y) = transform.map_point(*x, *y);
+            Annotation::Text {
+                x,
+                y,
+                text: text.clone(),
+                size: *size,
+                color: color.clone(),
+            }
+        }
+        Annotation::Ellipse {
+            x,
+            y,
+            width,
+            height,
+            color,
+            stroke_width,
+        } => {
+            let (x, y, width, height) = bounds(*x, *y, *width, *height);
+            Annotation::Ellipse {
+                x,
+                y,
+                width,
+                height,
+                color: color.clone(),
+                stroke_width: *stroke_width,
+            }
+        }
+        Annotation::Line {
+            from,
+            to,
+            color,
+            stroke_width,
+        } => Annotation::Line {
+            from: point(from),
+            to: point(to),
+            color: color.clone(),
+            stroke_width: *stroke_width,
+        },
+        Annotation::Number {
+            x,
+            y,
+            value,
+            size,
+            color,
+        } => {
+            let (x, y) = transform.map_point(*x, *y);
+            Annotation::Number {
+                x,
+                y,
+                value: *value,
+                size: *size,
+                color: color.clone(),
+            }
+        }
+        Annotation::Highlighter {
+            points: polyline,
+            color,
+            stroke_width,
+        } => Annotation::Highlighter {
+            points: points(polyline),
+            color: color.clone(),
+            stroke_width: *stroke_width,
+        },
+        Annotation::Pen {
+            points: polyline,
+            color,
+            stroke_width,
+        } => Annotation::Pen {
+            points: points(polyline),
+            color: color.clone(),
+            stroke_width: *stroke_width,
+        },
+        Annotation::Blur {
+            x,
+            y,
+            width,
+            height,
+            sigma,
+        } => {
+            let (x, y, width, height) = bounds(*x, *y, *width, *height);
+            Annotation::Blur {
+                x,
+                y,
+                width,
+                height,
+                sigma: *sigma,
+            }
+        }
+        Annotation::Spotlight {
+            x,
+            y,
+            width,
+            height,
+            dim,
+        } => {
+            let (x, y, width, height) = bounds(*x, *y, *width, *height);
+            Annotation::Spotlight {
+                x,
+                y,
+                width,
+                height,
+                dim: *dim,
+            }
+        }
+        Annotation::Magnifier {
+            x,
+            y,
+            width,
+            height,
+            zoom,
+            color,
+        } => {
+            let (x, y, width, height) = bounds(*x, *y, *width, *height);
+            Annotation::Magnifier {
+                x,
+                y,
+                width,
+                height,
+                zoom: *zoom,
+                color: color.clone(),
+            }
+        }
+        Annotation::Bubble {
+            x,
+            y,
+            width,
+            height,
+            text,
+            size,
+            color,
+        } => {
+            let (x, y, width, height) = bounds(*x, *y, *width, *height);
+            Annotation::Bubble {
+                x,
+                y,
+                width,
+                height,
+                text: text.clone(),
+                size: *size,
+                color: color.clone(),
+            }
+        }
+        Annotation::Sticker {
+            x,
+            y,
+            width,
+            height,
+            sticker,
+        } => {
+            let (x, y, width, height) = bounds(*x, *y, *width, *height);
+            Annotation::Sticker {
+                x,
+                y,
+                width,
+                height,
+                sticker: sticker.clone(),
+            }
+        }
+        Annotation::Erase {
+            x,
+            y,
+            width,
+            height,
+            color,
+        } => {
+            let (x, y, width, height) = bounds(*x, *y, *width, *height);
+            Annotation::Erase {
+                x,
+                y,
+                width,
+                height,
+                color: color.clone(),
+            }
+        }
+    }
+}
+
+pub fn transformed_all(ops: &[Annotation], transform: FrameTransform) -> Vec<Annotation> {
+    ops.iter().map(|op| transformed(op, transform)).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1015,5 +1288,113 @@ mod tests {
                 _ => panic!("variant changed shape after translation"),
             }
         }
+    }
+
+    #[test]
+    fn frame_transform_rotates_rect_bounds_and_swaps_axes() {
+        // 源帧 10x4:矩形 (2,1,3,2) 顺时针后 x = h - y - height = 1,y = x = 2,
+        // 宽高互换(边界坐标,与像素旋转 (h-1-y, x) 对齐)。
+        let cw = FrameTransform::RotateCw { height: 4.0 };
+        let (x, y, width, height) = cw.map_bounds(2.0, 1.0, 3.0, 2.0);
+        assert_eq!((x, y, width, height), (1.0, 2.0, 2.0, 3.0));
+
+        // 逆时针:矩形 (2,1,3,2) → x = y = 1,y = w - x - width = 5。
+        let ccw = FrameTransform::RotateCcw { width: 10.0 };
+        let (x, y, width, height) = ccw.map_bounds(2.0, 1.0, 3.0, 2.0);
+        assert_eq!((x, y, width, height), (1.0, 5.0, 2.0, 3.0));
+
+        // 裁剪只平移,不改变宽高。
+        let crop = FrameTransform::Crop { dx: -4.0, dy: -6.0 };
+        let (x, y, width, height) = crop.map_bounds(4.0, 6.0, 5.0, 7.0);
+        assert_eq!((x, y, width, height), (0.0, 0.0, 5.0, 7.0));
+    }
+
+    #[test]
+    fn frame_transform_maps_every_annotation_variant_consistently() {
+        let transform = FrameTransform::RotateCw { height: 20.0 };
+        let rect = Annotation::Rect {
+            x: 2.0,
+            y: 3.0,
+            width: 4.0,
+            height: 5.0,
+            color: default_color(),
+            stroke_width: None,
+        };
+        match transformed(&rect, transform) {
+            Annotation::Rect {
+                x,
+                y,
+                width,
+                height,
+                ..
+            } => assert_eq!((x, y, width, height), (20.0 - 3.0 - 5.0, 2.0, 5.0, 4.0)),
+            other => panic!("rect changed variant: {other:?}"),
+        }
+
+        let arrow = Annotation::Arrow {
+            from: Point { x: 1.0, y: 2.0 },
+            to: Point { x: 3.0, y: 4.0 },
+            color: default_color(),
+            stroke_width: Some(2.0),
+        };
+        match transformed(&arrow, transform) {
+            Annotation::Arrow { from, to, .. } => {
+                assert_eq!((from.x, from.y), (18.0, 1.0));
+                assert_eq!((to.x, to.y), (16.0, 3.0));
+            }
+            other => panic!("arrow changed variant: {other:?}"),
+        }
+
+        let polyline = Annotation::Pen {
+            points: vec![Point { x: 0.0, y: 0.0 }, Point { x: 20.0, y: 20.0 }],
+            color: default_color(),
+            stroke_width: None,
+        };
+        match transformed(&polyline, transform) {
+            Annotation::Pen { points, .. } => {
+                assert_eq!((points[0].x, points[0].y), (20.0, 0.0));
+                assert_eq!((points[1].x, points[1].y), (0.0, 20.0));
+            }
+            other => panic!("pen changed variant: {other:?}"),
+        }
+
+        // 文字锚点按同一仿射映射(不引入旋转属性,保持既有坐标 schema)。
+        let text = Annotation::Text {
+            x: 5.0,
+            y: 6.0,
+            text: "字".into(),
+            size: 20.0,
+            color: default_color(),
+        };
+        match transformed(&text, transform) {
+            Annotation::Text { x, y, text, .. } => {
+                assert_eq!((x, y, text), (14.0, 5.0, "字".to_string()));
+            }
+            other => panic!("text changed variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn frame_transform_crop_round_trips_with_translation() {
+        let ops = vec![
+            Annotation::Mosaic {
+                x: 3.0,
+                y: 4.0,
+                width: 5.0,
+                height: 6.0,
+                block: 12,
+            },
+            Annotation::Number {
+                x: 7.0,
+                y: 8.0,
+                value: 2,
+                size: 22.0,
+                color: default_color(),
+            },
+        ];
+        let crop = FrameTransform::Crop { dx: -3.0, dy: -4.0 };
+        let moved = transformed_all(&ops, crop);
+        let restored = transformed_all(&moved, FrameTransform::Crop { dx: 3.0, dy: 4.0 });
+        assert_eq!(restored, ops);
     }
 }

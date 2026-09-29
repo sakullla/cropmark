@@ -10,7 +10,7 @@ use tauri::{
 };
 
 use crate::annotate::{rasterize, Annotation};
-use crate::capture::buffer::{decode_png, encode_png, Frame};
+use crate::capture::buffer::{decode_png, encode_png, rotate_frame_cw, Frame};
 use crate::capture::error::CaptureError;
 use crate::capture::session;
 use crate::i18n;
@@ -212,28 +212,6 @@ fn fail(err: CaptureError) -> String {
 /// 角度归一化:只接受 90° 的整数倍,其余按整除取模(前端只发 0/90/180/270)。
 fn quarter_turns(rotation: u32) -> u32 {
     (rotation / 90) % 4
-}
-
-/// 顺时针旋转 90°:像素 (x, y) → (h-1-y, x),宽高互换。
-fn rotate_frame_cw(frame: &Frame) -> Frame {
-    let (width, height) = (frame.width as usize, frame.height as usize);
-    if width == 0 || height == 0 {
-        return frame.clone();
-    }
-    let mut rgba = vec![0u8; width * height * 4];
-    for y in 0..height {
-        for x in 0..width {
-            let src = (y * width + x) * 4;
-            let dst = (x * height + (height - 1 - y)) * 4;
-            rgba[dst..dst + 4].copy_from_slice(&frame.rgba[src..src + 4]);
-        }
-    }
-    Frame {
-        width: frame.height,
-        height: frame.width,
-        rgba,
-        scale: frame.scale,
-    }
 }
 
 /// 水平镜像:像素 (x, y) → (w-1-x, y)。

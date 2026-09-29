@@ -70,6 +70,13 @@ export const icons = {
   rotate: svg(
     `<path d="M19 11.2a7 7 0 1 1-2.1-5.1"/><path d="M19.2 3.6v4.8h-4.8"/>`,
   ),
+  rotateLeft: svg(
+    `<path d="M5 11.2a7 7 0 1 0 2.1-5.1"/><path d="M4.8 3.6v4.8h4.8"/>`,
+  ),
+  rotateRight: svg(
+    `<path d="M19 11.2a7 7 0 1 1-2.1-5.1"/><path d="M19.2 3.6v4.8h-4.8"/>`,
+  ),
+  crop: svg(`<path d="M6.4 3.6v14h14"/><path d="M3.6 6.4h14v14"/>`),
   more: svg(`<circle cx="5.2" cy="12" r="1.45" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.45" fill="currentColor" stroke="none"/><circle cx="18.8" cy="12" r="1.45" fill="currentColor" stroke="none"/>`),
   chevronDown: svg(`<path d="M6.4 9.2 12 14.6 17.6 9.2"/>`),
   close: svg(`<path d="M6.6 6.6 17.4 17.4M17.4 6.6 6.6 17.4"/>`),

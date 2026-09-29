@@ -158,8 +158,40 @@
   gap: 6px;
 }
 
+/* R6:裁剪确认条,悬浮在画布下缘;按钮与动作条共用同一套形状与状态语义。 */
+.preview-crop-bar {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100% - 24px);
+  padding: 6px 8px 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.preview-crop-bar[hidden] {
+  display: none;
+}
+
+.preview-crop-hint {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* 动作按钮只保留这一套基础规则:形状与尺寸,状态语义消费共享 token。 */
-.preview-actions button {
+.preview-actions button,
+.preview-crop-bar button {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -180,12 +212,15 @@
 }
 
 .preview-actions button:hover:not(.primary):not(:disabled),
-.preview-actions button:active:not(.primary):not(:disabled) {
+.preview-actions button:active:not(.primary):not(:disabled),
+.preview-crop-bar button:hover:not(.primary):not(:disabled),
+.preview-crop-bar button:active:not(.primary):not(:disabled) {
   border-color: var(--control-hover-border);
   background: var(--control-hover-bg);
 }
 
-.preview-actions button:active:not(.primary):not(:disabled) {
+.preview-actions button:active:not(.primary):not(:disabled),
+.preview-crop-bar button:active:not(.primary):not(:disabled) {
   filter: var(--control-pressed-filter);
 }
 
@@ -195,7 +230,8 @@
   color: var(--accent);
 }
 
-.preview-actions button:disabled {
+.preview-actions button:disabled,
+.preview-crop-bar button:disabled {
   opacity: var(--control-disabled-opacity);
   cursor: default;
 }
@@ -207,7 +243,8 @@
   flex: 0 0 auto;
 }
 
-.preview-actions .primary {
+.preview-actions .primary,
+.preview-crop-bar .primary {
   background: var(--accent);
   border-color: transparent;
   color: var(--on-accent);
@@ -215,11 +252,13 @@
   padding: 0 16px;
 }
 
-.preview-actions .primary:hover:not(:disabled) {
+.preview-actions .primary:hover:not(:disabled),
+.preview-crop-bar .primary:hover:not(:disabled) {
   filter: var(--control-hover-filter);
 }
 
-.preview-actions .primary:active:not(:disabled) {
+.preview-actions .primary:active:not(:disabled),
+.preview-crop-bar .primary:active:not(:disabled) {
   filter: var(--control-pressed-filter);
 }
 

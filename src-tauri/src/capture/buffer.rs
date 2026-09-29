@@ -109,6 +109,51 @@ pub fn crop_rgba(
     })
 }
 
+/// 顺时针旋转 90°:像素 (x, y) → (h-1-y, x),宽高互换。
+/// R6:预览旋转与贴图旋转共用同一原语,保证像素与坐标映射的几何一致。
+pub fn rotate_frame_cw(frame: &Frame) -> Frame {
+    let (width, height) = (frame.width as usize, frame.height as usize);
+    if width == 0 || height == 0 {
+        return frame.clone();
+    }
+    let mut rgba = vec![0u8; width * height * 4];
+    for y in 0..height {
+        for x in 0..width {
+            let src = (y * width + x) * 4;
+            let dst = (x * height + (height - 1 - y)) * 4;
+            rgba[dst..dst + 4].copy_from_slice(&frame.rgba[src..src + 4]);
+        }
+    }
+    Frame {
+        width: frame.height,
+        height: frame.width,
+        rgba,
+        scale: frame.scale,
+    }
+}
+
+/// 逆时针旋转 90°:像素 (x, y) → (y, w-1-x),宽高互换。
+pub fn rotate_frame_ccw(frame: &Frame) -> Frame {
+    let (width, height) = (frame.width as usize, frame.height as usize);
+    if width == 0 || height == 0 {
+        return frame.clone();
+    }
+    let mut rgba = vec![0u8; width * height * 4];
+    for y in 0..height {
+        for x in 0..width {
+            let src = (y * width + x) * 4;
+            let dst = ((width - 1 - x) * height + y) * 4;
+            rgba[dst..dst + 4].copy_from_slice(&frame.rgba[src..src + 4]);
+        }
+    }
+    Frame {
+        width: frame.height,
+        height: frame.width,
+        rgba,
+        scale: frame.scale,
+    }
+}
+
 #[cfg(any(target_os = "linux", test))]
 pub fn crop_desktop_to_monitor(
     frame: Frame,
@@ -376,6 +421,44 @@ mod tests {
         let frame = accept_buffer(RawBuffer::ready(4, 4, bytes)).unwrap();
         let cropped = crop_rgba(&frame, 1, 1, 1, 1).unwrap();
         assert_eq!(cropped.rgba, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn rotate_frame_cw_moves_left_pixel_up_and_swaps_dimensions() {
+        // 2x1 左红右蓝 → 顺时针 90° 后 1x2 上红下蓝。
+        let frame =
+            accept_buffer(RawBuffer::ready(2, 1, vec![255, 0, 0, 255, 0, 0, 255, 255])).unwrap();
+        let rotated = rotate_frame_cw(&frame);
+        assert_eq!((rotated.width, rotated.height), (1, 2));
+        assert_eq!(&rotated.rgba[0..4], &[255, 0, 0, 255]);
+        assert_eq!(&rotated.rgba[4..8], &[0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn rotate_frame_ccw_moves_left_pixel_down_and_swaps_dimensions() {
+        // 2x1 左红右蓝 → 逆时针 90° 后 1x2 上蓝下红。
+        let frame =
+            accept_buffer(RawBuffer::ready(2, 1, vec![255, 0, 0, 255, 0, 0, 255, 255])).unwrap();
+        let rotated = rotate_frame_ccw(&frame);
+        assert_eq!((rotated.width, rotated.height), (1, 2));
+        assert_eq!(&rotated.rgba[0..4], &[0, 0, 255, 255]);
+        assert_eq!(&rotated.rgba[4..8], &[255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn opposite_rotations_round_trip_and_four_quarters_are_identity() {
+        let mut frame = noisy(5, 3);
+        frame.scale = 1.75;
+        let round_trip = rotate_frame_ccw(&rotate_frame_cw(&frame));
+        assert_eq!((round_trip.width, round_trip.height), (5, 3));
+        assert_eq!(round_trip.rgba, frame.rgba);
+        assert_eq!(round_trip.scale, frame.scale);
+
+        let mut rotated = frame.clone();
+        for _ in 0..4 {
+            rotated = rotate_frame_cw(&rotated);
+        }
+        assert_eq!(rotated.rgba, frame.rgba);
     }
 
     #[test]

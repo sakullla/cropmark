@@ -471,6 +471,18 @@
     "zh-CN": "没有可预览的截图。",
     "en": "No preview screenshot is available."
   },
+  "error.preview.crop_too_small": {
+    "zh-CN": "裁剪区域小于最小尺寸（{detail}×{detail} 像素），未裁剪。",
+    "en": "The crop area is smaller than {detail}×{detail} pixels; nothing was cropped."
+  },
+  "error.preview.crop_out_of_bounds": {
+    "zh-CN": "裁剪区域超出当前画面范围，未裁剪。",
+    "en": "The crop area is outside the current image; nothing was cropped."
+  },
+  "error.preview.no_transform": {
+    "zh-CN": "没有可撤销或重做的预览变换。",
+    "en": "There is no preview transform to undo or redo."
+  },
   "error.capture.region_missing": {
     "zh-CN": "当前没有进行中的区域截取。",
     "en": "No region capture is in progress."
@@ -1783,6 +1795,42 @@
     "zh-CN": "复制",
     "en": "Copy"
   },
+  "preview.action.rotate_left": {
+    "zh-CN": "左旋 90°",
+    "en": "Rotate left 90°"
+  },
+  "preview.action.rotate_left_title": {
+    "zh-CN": "向左旋转 90°",
+    "en": "Rotate 90° to the left"
+  },
+  "preview.action.rotate_right": {
+    "zh-CN": "右旋 90°",
+    "en": "Rotate right 90°"
+  },
+  "preview.action.rotate_right_title": {
+    "zh-CN": "向右旋转 90°",
+    "en": "Rotate 90° to the right"
+  },
+  "preview.action.crop": {
+    "zh-CN": "裁剪",
+    "en": "Crop"
+  },
+  "preview.action.crop_title": {
+    "zh-CN": "裁剪：拖选要保留的区域后确认",
+    "en": "Crop: drag the area to keep, then confirm"
+  },
+  "preview.crop.hint": {
+    "zh-CN": "拖选要保留的区域 · Enter 确认 · Esc 取消",
+    "en": "Drag the area to keep · Enter confirms · Esc cancels"
+  },
+  "preview.crop.confirm": {
+    "zh-CN": "确认裁剪",
+    "en": "Crop"
+  },
+  "preview.crop.cancel": {
+    "zh-CN": "取消",
+    "en": "Cancel"
+  },
   "preview.action.delete_annotation": {
     "zh-CN": "删除标注",
     "en": "Delete annotation"
@@ -1983,6 +2031,30 @@
     "zh-CN": "无法显示预览图像。",
     "en": "Could not display the preview image."
   },
+  "preview.note.transforming": {
+    "zh-CN": "正在应用变换…",
+    "en": "Applying transform…"
+  },
+  "preview.note.rotated_left": {
+    "zh-CN": "已向左旋转 90°。",
+    "en": "Rotated 90° left."
+  },
+  "preview.note.rotated_right": {
+    "zh-CN": "已向右旋转 90°。",
+    "en": "Rotated 90° right."
+  },
+  "preview.note.cropped": {
+    "zh-CN": "已裁剪到所选区域。",
+    "en": "Cropped to the selected area."
+  },
+  "preview.note.transform_undone": {
+    "zh-CN": "已撤销上一次变换。",
+    "en": "Last transform undone."
+  },
+  "preview.note.transform_redone": {
+    "zh-CN": "已重做上一次变换。",
+    "en": "Last transform redone."
+  },
   "preview.error.ui": {
     "zh-CN": "界面错误：{message}",
     "en": "Interface error: {message}"
@@ -2034,6 +2106,10 @@
   "preview.error.preview_missing": {
     "zh-CN": "没有可预览的截图。",
     "en": "No preview screenshot is available."
+  },
+  "preview.error.transform_fallback": {
+    "zh-CN": "无法应用旋转或裁剪，画面保持原样。",
+    "en": "Could not apply the rotation or crop; the image is unchanged."
   },
   "overlay.capabilities": {
     "zh-CN": "能力说明",

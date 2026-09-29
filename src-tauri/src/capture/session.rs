@@ -2,10 +2,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
-use super::buffer::{crop_rgba, encode_png, Frame};
+use super::buffer::{crop_rgba, encode_png, rotate_frame_ccw, rotate_frame_cw, Frame};
 use super::error::CaptureError;
 use super::geometry::{
     crop_from_logical, monitor_at_physical, monitor_dest, monitor_key, stitch_views,
@@ -19,9 +19,10 @@ use super::hide::{
 use super::platform;
 use super::ui::{self, DelayPayload, OverlayPayload, PreviewPayload};
 use super::windows_list::ListedWindow;
-use crate::annotate::{rasterize_lenient, Annotation};
+use crate::annotate::{rasterize_lenient, transformed_all, Annotation, FrameTransform};
 use crate::clipboard::{self, ClipboardGuard};
 use crate::hotkeys::CaptureMode;
+use crate::ocr::OcrDocument;
 
 /// 全屏采集目标。热键与关闭多屏开关时保持指针所在屏。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,6 +88,8 @@ struct ActiveSession {
     pending_ocr: bool,
     /// 选区「识别二维码」打开工作区后由前端消费一次,自动开始识别。
     pending_qr: bool,
+    /// R6:预览会话级旋转/裁剪快照(帧由基准帧重放,标注与取字随步保存)。
+    preview_transforms: PreviewTransforms,
     /// 全屏目标;非全屏会话保持指针屏。
     fullscreen_target: FullscreenTarget,
     /// 本次采集请求了指针但平台拿不到图像。完成时提示,不阻断输出。
@@ -116,6 +119,7 @@ impl ActiveSession {
             writeback: None,
             pending_ocr: false,
             pending_qr: false,
+            preview_transforms: PreviewTransforms::default(),
             fullscreen_target: FullscreenTarget::Pointer,
             cursor_unavailable: false,
         }
@@ -2517,6 +2521,8 @@ fn finish_with_ttl(
             }
             current.freeze = Some(frame.clone());
             current.preview = Some(preview);
+            // R6:新预览载荷对应新坐标系,变换历史随之作废。
+            current.preview_transforms.reset();
             current.file_written = false;
         }
     });
@@ -2704,6 +2710,395 @@ pub fn close_error(app: &AppHandle) {
     // 仅隐藏:error 窗是预创建复用的 webview。
     ui::hide_window(app, ui::ERROR);
     crate::front::demote_if_idle(app);
+}
+
+/// R6:裁剪最小边长(物理像素):更小的选区分不出内容,直接拒绝而不是产出
+/// 一条像素级别的截图。
+pub const MIN_CROP_EDGE: u32 = 8;
+
+/// R6:预览旋转方向(前端命令参数)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RotationDirection {
+    Left,
+    Right,
+}
+
+/// R6:一次预览几何变换。帧变换复用共享原语,坐标重映射共用同一几何。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreviewTransformOp {
+    RotateCw,
+    RotateCcw,
+    Crop(PreviewCrop),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PreviewCrop {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+}
+
+impl PreviewTransformOp {
+    fn geometry(self, frame: &Frame) -> FrameTransform {
+        match self {
+            Self::RotateCw => FrameTransform::RotateCw {
+                height: frame.height as f64,
+            },
+            Self::RotateCcw => FrameTransform::RotateCcw {
+                width: frame.width as f64,
+            },
+            Self::Crop(crop) => FrameTransform::Crop {
+                dx: -(crop.x as f64),
+                dy: -(crop.y as f64),
+            },
+        }
+    }
+
+    fn apply_frame(self, frame: &Frame) -> Result<Frame, CaptureError> {
+        match self {
+            Self::RotateCw => Ok(rotate_frame_cw(frame)),
+            Self::RotateCcw => Ok(rotate_frame_ccw(frame)),
+            Self::Crop(crop) => crop_rgba(frame, crop.x, crop.y, crop.width, crop.height),
+        }
+    }
+}
+
+/// 裁剪拒绝边界:小于最小边长或越出当前帧时给出本地化说明且不产生副作用。
+fn validate_crop(frame: &Frame, crop: &PreviewCrop) -> Result<(), CaptureError> {
+    if crop.width < MIN_CROP_EDGE || crop.height < MIN_CROP_EDGE {
+        return Err(CaptureError::api_detail(
+            "error.preview.crop_too_small",
+            &MIN_CROP_EDGE.to_string(),
+        ));
+    }
+    let right = u64::from(crop.x) + u64::from(crop.width);
+    let bottom = u64::from(crop.y) + u64::from(crop.height);
+    if right > u64::from(frame.width) || bottom > u64::from(frame.height) {
+        return Err(CaptureError::api("error.preview.crop_out_of_bounds"));
+    }
+    Ok(())
+}
+
+/// R6:一次重基后的完整预览状态(帧 + 标注 + 取字 + 撤销/重做可用性)。
+#[derive(Debug, Clone)]
+struct PreviewRebase {
+    frame: Frame,
+    annotations: Vec<Annotation>,
+    ocr: Option<OcrDocument>,
+    can_undo: bool,
+    can_redo: bool,
+}
+
+impl PreviewRebase {
+    fn outcome(&self) -> PreviewTransformOutcome {
+        PreviewTransformOutcome {
+            width: self.frame.width,
+            height: self.frame.height,
+            annotations: self.annotations.clone(),
+            ocr: self.ocr.clone(),
+            can_undo: self.can_undo,
+            can_redo: self.can_redo,
+        }
+    }
+}
+
+/// R6:预览旋转/裁剪命令返回:重基后的帧尺寸、标注与取字结果,以及变换
+/// 历史的撤销/重做可用性。前端据此 `setAnnotations` + `setDocument` 并重拉像素。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewTransformOutcome {
+    pub width: u32,
+    pub height: u32,
+    pub annotations: Vec<Annotation>,
+    pub ocr: Option<OcrDocument>,
+    pub can_undo: bool,
+    pub can_redo: bool,
+}
+
+#[derive(Debug, Clone)]
+struct PreviewTransformEntry {
+    op: PreviewTransformOp,
+    /// 变换前的标注/取字状态:撤销到该位置时原样恢复(含用户此前编辑)。
+    annotations_before: Vec<Annotation>,
+    ocr_before: Option<OcrDocument>,
+    annotations_after: Vec<Annotation>,
+    ocr_after: Option<OcrDocument>,
+}
+
+/// R6:预览会话级变换快照。帧由基准帧依序重放(旋转/裁剪均无损),标注与
+/// 取字结果随每步保存;撤销/重做回放同一序列,前端标注栈按 `setAnnotations`
+/// 语义清空,两层历史拼成统一 LIFO(见 `rotate_preview`/`crop_preview` 等命令)。
+#[derive(Debug, Clone, Default)]
+struct PreviewTransforms {
+    base: Option<Frame>,
+    entries: Vec<PreviewTransformEntry>,
+    position: usize,
+}
+
+impl PreviewTransforms {
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    fn can_undo(&self) -> bool {
+        self.position > 0
+    }
+
+    fn can_redo(&self) -> bool {
+        self.position < self.entries.len()
+    }
+
+    fn frame_at(&self, position: usize) -> Result<Frame, CaptureError> {
+        let mut frame = self
+            .base
+            .clone()
+            .ok_or_else(|| CaptureError::api("error.capture.preview_missing"))?;
+        for entry in self.entries.iter().take(position) {
+            frame = entry.op.apply_frame(&frame)?;
+        }
+        Ok(frame)
+    }
+
+    /// 组装某一位置的重基结果:帧由重放得到,标注/取字由调用方按撤销或
+    /// 重做方向给出(两步之间的用户编辑只存在于下一步的 before 快照)。
+    fn rebase(
+        &self,
+        position: usize,
+        annotations: Vec<Annotation>,
+        ocr: Option<OcrDocument>,
+    ) -> Result<PreviewRebase, CaptureError> {
+        Ok(PreviewRebase {
+            frame: self.frame_at(position)?,
+            annotations,
+            ocr,
+            can_undo: position > 0,
+            can_redo: position < self.entries.len(),
+        })
+    }
+
+    /// 记录并应用一次变换:首次变换记录重放基准帧;撤销分支上的新变换丢弃
+    /// 之后的 redo 记录。拒绝(裁剪越界/过小)发生在写入历史之前。
+    fn push(
+        &mut self,
+        current: &Frame,
+        op: PreviewTransformOp,
+        annotations: Vec<Annotation>,
+        ocr: Option<OcrDocument>,
+    ) -> Result<PreviewRebase, CaptureError> {
+        let before = if self.base.is_some() {
+            self.frame_at(self.position)?
+        } else {
+            current.clone()
+        };
+        if let PreviewTransformOp::Crop(crop) = op {
+            validate_crop(&before, &crop)?;
+        }
+        if self.base.is_none() {
+            self.base = Some(current.clone());
+        }
+        let transform = op.geometry(&before);
+        let annotations_after = transformed_all(&annotations, transform);
+        let ocr_after = ocr
+            .as_ref()
+            .map(|doc| crate::ocr::remap_document(doc, transform));
+        self.entries.truncate(self.position);
+        self.entries.push(PreviewTransformEntry {
+            op,
+            annotations_before: annotations,
+            ocr_before: ocr,
+            annotations_after,
+            ocr_after,
+        });
+        self.position += 1;
+        self.rebase(
+            self.position,
+            self.entries[self.position - 1].annotations_after.clone(),
+            self.entries[self.position - 1].ocr_after.clone(),
+        )
+    }
+
+    /// 撤销第 `position` 步:回到该步应用前的标注/取字状态(含该步之前用户
+    /// 的编辑),帧回到重放 `position - 1` 步的结果。
+    fn undo(&mut self) -> Result<PreviewRebase, CaptureError> {
+        if !self.can_undo() {
+            return Err(CaptureError::api("error.preview.no_transform"));
+        }
+        self.position -= 1;
+        let entry = &self.entries[self.position];
+        self.rebase(
+            self.position,
+            entry.annotations_before.clone(),
+            entry.ocr_before.clone(),
+        )
+    }
+
+    /// 重做第 `position + 1` 步:恢复该步应用后的标注/取字状态。
+    fn redo(&mut self) -> Result<PreviewRebase, CaptureError> {
+        if !self.can_redo() {
+            return Err(CaptureError::api("error.preview.no_transform"));
+        }
+        let entry = &self.entries[self.position];
+        let annotations = entry.annotations_after.clone();
+        let ocr = entry.ocr_after.clone();
+        self.position += 1;
+        self.rebase(self.position, annotations, ocr)
+    }
+}
+
+/// 变换后的预览载荷与取字结果回写:仅当会话仍是此次变换的代际且未取消时
+/// 才替换预览载荷,避免旧变换污染新会话。
+fn commit_preview_rebase(
+    app: &AppHandle,
+    generation: u64,
+    rebase: &PreviewRebase,
+) -> Result<(), CaptureError> {
+    let png = encode_png(&rebase.frame)?;
+    crate::ocr::set_last_document(app, rebase.ocr.clone());
+    with_session_mut(app, |session| {
+        if let Some(current) = session.as_mut() {
+            if current.generation == generation && !current.cancelled {
+                current.preview = Some(ui::preview_payload(
+                    &rebase.frame,
+                    &png,
+                    ui::PreviewCopyState::Disabled,
+                    &[],
+                ));
+            }
+        }
+    });
+    Ok(())
+}
+
+/// R6:在当前预览会话上应用一次旋转/裁剪:重基帧、标注与取字结果,并写回
+/// 会话冻结帧与预览载荷。无预览会话时拒绝,不作用于其它窗口。
+fn apply_preview_transform(
+    app: &AppHandle,
+    op: PreviewTransformOp,
+    annotations: Vec<Annotation>,
+) -> Result<PreviewRebase, CaptureError> {
+    // 取字结果与帧同源:先取最近一次识别(进行中的识别持锁完成后返回),
+    // 变换后写回重映射结果,保证 copy_ocr_* 与图上高亮使用新帧坐标。
+    let ocr = crate::ocr::last_document(app);
+    let (rebase, generation) = with_session_mut(app, |session| {
+        let current = session
+            .as_mut()
+            .ok_or_else(|| CaptureError::api("error.capture.preview_missing"))?;
+        if current.cancelled || current.preview.is_none() {
+            return Err(CaptureError::api("error.capture.preview_missing"));
+        }
+        let frame = current
+            .freeze
+            .clone()
+            .ok_or_else(|| CaptureError::api("error.capture.preview_missing"))?;
+        let rebase = current
+            .preview_transforms
+            .push(&frame, op, annotations, ocr)?;
+        current.freeze = Some(rebase.frame.clone());
+        Ok((rebase, current.generation))
+    })?;
+    commit_preview_rebase(app, generation, &rebase)?;
+    Ok(rebase)
+}
+
+/// R6:撤销/重放一次预览变换;无预览会话或历史到头时拒绝。
+fn step_preview_transform(app: &AppHandle, forward: bool) -> Result<PreviewRebase, CaptureError> {
+    let (rebase, generation) = with_session_mut(app, |session| {
+        let current = session
+            .as_mut()
+            .ok_or_else(|| CaptureError::api("error.capture.preview_missing"))?;
+        if current.cancelled || current.preview.is_none() {
+            return Err(CaptureError::api("error.capture.preview_missing"));
+        }
+        let rebase = if forward {
+            current.preview_transforms.redo()?
+        } else {
+            current.preview_transforms.undo()?
+        };
+        current.freeze = Some(rebase.frame.clone());
+        Ok((rebase, current.generation))
+    })?;
+    commit_preview_rebase(app, generation, &rebase)?;
+    Ok(rebase)
+}
+
+/// 变换命令的公共异步外壳:PNG 编码与等待进行中的取字识别都不允许占用
+/// 主线程(与贴图/识别命令同一约定),统一放到阻塞线程池执行。
+async fn run_preview_transform(
+    app: AppHandle,
+    op: PreviewTransformOp,
+    annotations: Vec<Annotation>,
+) -> Result<PreviewTransformOutcome, CaptureError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        apply_preview_transform(&app, op, annotations).map(|rebase| rebase.outcome())
+    })
+    .await
+    .map_err(|_| CaptureError::api("error.capture.thread_failed"))?
+}
+
+async fn run_preview_history(
+    app: AppHandle,
+    forward: bool,
+) -> Result<PreviewTransformOutcome, CaptureError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        step_preview_transform(&app, forward).map(|rebase| rebase.outcome())
+    })
+    .await
+    .map_err(|_| CaptureError::api("error.capture.thread_failed"))?
+}
+
+/// R6:预览左/右旋转 90°(作用于当前冻结帧与已放置标注)。
+#[tauri::command]
+pub async fn rotate_preview(
+    app: AppHandle,
+    direction: RotationDirection,
+    annotations: Vec<Annotation>,
+) -> Result<PreviewTransformOutcome, CaptureError> {
+    let op = match direction {
+        RotationDirection::Left => PreviewTransformOp::RotateCcw,
+        RotationDirection::Right => PreviewTransformOp::RotateCw,
+    };
+    run_preview_transform(app, op, annotations).await
+}
+
+/// R6:裁剪当前预览帧到拖选区域;小于最小边长或越界拒绝且无副作用。
+#[tauri::command]
+pub async fn crop_preview(
+    app: AppHandle,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    annotations: Vec<Annotation>,
+) -> Result<PreviewTransformOutcome, CaptureError> {
+    run_preview_transform(
+        app,
+        PreviewTransformOp::Crop(PreviewCrop {
+            x,
+            y,
+            width,
+            height,
+        }),
+        annotations,
+    )
+    .await
+}
+
+/// R6:撤销上一次预览旋转/裁剪(前端标注栈为空时由 Ctrl+Z 触发)。
+#[tauri::command]
+pub async fn undo_preview_transform(
+    app: AppHandle,
+) -> Result<PreviewTransformOutcome, CaptureError> {
+    run_preview_history(app, false).await
+}
+
+/// R6:重做上一次被撤销的预览旋转/裁剪。
+#[tauri::command]
+pub async fn redo_preview_transform(
+    app: AppHandle,
+) -> Result<PreviewTransformOutcome, CaptureError> {
+    run_preview_history(app, true).await
 }
 
 fn with_session<R>(app: &AppHandle, f: impl FnOnce(&Option<ActiveSession>) -> R) -> R {
@@ -3610,5 +4005,274 @@ mod tests {
         let mut absent = None;
         mark_scroll_capture_mode(&mut absent, generation);
         assert!(absent.is_none());
+    }
+
+    fn pattern_frame(width: u32, height: u32) -> Frame {
+        let mut bytes = Vec::with_capacity((width * height * 4) as usize);
+        for y in 0..height {
+            for x in 0..width {
+                bytes.extend_from_slice(&[
+                    (x * 7) as u8,
+                    (y * 11) as u8,
+                    (x * 3 + y * 5) as u8,
+                    255,
+                ]);
+            }
+        }
+        Frame {
+            width,
+            height,
+            rgba: bytes,
+            scale: 1.0,
+        }
+    }
+
+    fn rect_annotation(x: f64, y: f64, width: f64, height: f64) -> Annotation {
+        Annotation::Rect {
+            x,
+            y,
+            width,
+            height,
+            color: "#e11d48".into(),
+            stroke_width: None,
+        }
+    }
+
+    fn ocr_document() -> OcrDocument {
+        OcrDocument {
+            spans: vec![crate::ocr::hit::TextSpan {
+                text: "甲".into(),
+                x: 1.0,
+                y: 0.5,
+                width: 3.0,
+                height: 1.0,
+            }],
+            full_text: "甲".into(),
+        }
+    }
+
+    #[test]
+    fn preview_rotation_rebases_frame_annotations_and_ocr() {
+        let base = pattern_frame(8, 4);
+        let mut history = PreviewTransforms::default();
+        let annotations = vec![rect_annotation(1.0, 1.0, 2.0, 2.0)];
+        let ocr = ocr_document();
+
+        let rotated = history
+            .push(
+                &base,
+                PreviewTransformOp::RotateCw,
+                annotations.clone(),
+                Some(ocr.clone()),
+            )
+            .unwrap();
+        assert_eq!((rotated.frame.width, rotated.frame.height), (4, 8));
+        assert_eq!(rotated.frame.rgba, rotate_frame_cw(&base).rgba);
+        assert!(rotated.can_undo && !rotated.can_redo);
+        match &rotated.annotations[0] {
+            Annotation::Rect {
+                x,
+                y,
+                width,
+                height,
+                ..
+            } => assert_eq!((*x, *y, *width, *height), (4.0 - 1.0 - 2.0, 1.0, 2.0, 2.0)),
+            other => panic!("expected rect, got {other:?}"),
+        }
+        let span = &rotated.ocr.as_ref().unwrap().spans[0];
+        // 源帧高 4:span (1, 0.5, 3, 1) → (4 - 0.5 - 1, 1, 1, 3)。
+        assert_eq!(
+            (span.x, span.y, span.width, span.height),
+            (2.5, 1.0, 1.0, 3.0)
+        );
+        assert_eq!(rotated.ocr.as_ref().unwrap().full_text, "甲");
+
+        // 逆时针把方向转回来:帧、标注与取字都回到基准。
+        let back = history
+            .push(
+                &rotated.frame,
+                PreviewTransformOp::RotateCcw,
+                rotated.annotations.clone(),
+                rotated.ocr.clone(),
+            )
+            .unwrap();
+        assert_eq!(back.frame.rgba, base.rgba);
+        assert_eq!(back.annotations, annotations);
+        assert_eq!(back.ocr, Some(ocr));
+    }
+
+    #[test]
+    fn preview_crop_rebases_and_undo_redo_round_trips_steps() {
+        let base = pattern_frame(12, 10);
+        let mut history = PreviewTransforms::default();
+        let first = vec![rect_annotation(0.0, 0.0, 2.0, 2.0)];
+        let ocr = ocr_document();
+
+        let rotated = history
+            .push(
+                &base,
+                PreviewTransformOp::RotateCw,
+                first.clone(),
+                Some(ocr.clone()),
+            )
+            .unwrap();
+        let crop = PreviewCrop {
+            x: 1,
+            y: 2,
+            width: MIN_CROP_EDGE,
+            height: MIN_CROP_EDGE,
+        };
+        let cropped = history
+            .push(
+                &rotated.frame,
+                PreviewTransformOp::Crop(crop),
+                rotated.annotations.clone(),
+                rotated.ocr.clone(),
+            )
+            .unwrap();
+        assert_eq!(
+            (cropped.frame.width, cropped.frame.height),
+            (MIN_CROP_EDGE, MIN_CROP_EDGE)
+        );
+        assert_eq!(
+            cropped.frame.rgba,
+            crop_rgba(&rotated.frame, 1, 2, MIN_CROP_EDGE, MIN_CROP_EDGE)
+                .unwrap()
+                .rgba
+        );
+        assert!(cropped.can_undo && !cropped.can_redo);
+
+        // 撤销裁剪回到旋转后的状态,再撤销回到基准;重做原样重放。
+        let undo_crop = history.undo().unwrap();
+        assert_eq!(undo_crop.frame.rgba, rotated.frame.rgba);
+        assert_eq!(undo_crop.annotations, rotated.annotations);
+        assert_eq!(undo_crop.ocr, rotated.ocr);
+        assert!(undo_crop.can_undo && undo_crop.can_redo);
+
+        let undo_rotate = history.undo().unwrap();
+        assert_eq!(undo_rotate.frame.rgba, base.rgba);
+        assert_eq!(undo_rotate.annotations, first);
+        assert_eq!(undo_rotate.ocr, Some(ocr.clone()));
+        assert!(!undo_rotate.can_undo && undo_rotate.can_redo);
+
+        let redo_rotate = history.redo().unwrap();
+        assert_eq!(redo_rotate.frame.rgba, rotated.frame.rgba);
+        assert_eq!(redo_rotate.ocr, rotated.ocr);
+        let redo_crop = history.redo().unwrap();
+        assert_eq!(redo_crop.frame.rgba, cropped.frame.rgba);
+        assert_eq!(redo_crop.annotations, cropped.annotations);
+        assert!(history.redo().is_err());
+        assert!(history.undo().is_ok());
+        assert!(history.undo().is_ok());
+        assert!(history.undo().is_err());
+    }
+
+    #[test]
+    fn preview_transforms_new_push_after_undo_drops_redo_branch() {
+        let base = pattern_frame(10, 10);
+        let mut history = PreviewTransforms::default();
+        let rotated = history
+            .push(&base, PreviewTransformOp::RotateCw, Vec::new(), None)
+            .unwrap();
+        let crop = PreviewCrop {
+            x: 0,
+            y: 0,
+            width: MIN_CROP_EDGE,
+            height: MIN_CROP_EDGE,
+        };
+        history
+            .push(
+                &rotated.frame,
+                PreviewTransformOp::Crop(crop),
+                Vec::new(),
+                None,
+            )
+            .unwrap();
+        assert!(!history.can_redo());
+        history.undo().unwrap();
+        assert!(history.can_redo());
+        // 撤销分支上的新变换丢弃旧 redo,形成新的前进路径。
+        let flipped = history
+            .push(
+                &rotated.frame,
+                PreviewTransformOp::RotateCcw,
+                Vec::new(),
+                None,
+            )
+            .unwrap();
+        assert!(!flipped.can_redo);
+        assert_eq!(flipped.frame.rgba, base.rgba);
+        assert!(history.redo().is_err());
+    }
+
+    #[test]
+    fn preview_transforms_keep_user_edits_between_steps_and_reject_bad_crops() {
+        let base = pattern_frame(8, 8);
+        let mut history = PreviewTransforms::default();
+        let a = vec![rect_annotation(0.0, 0.0, 2.0, 2.0)];
+        let first = history
+            .push(&base, PreviewTransformOp::RotateCw, a.clone(), None)
+            .unwrap();
+        // 用户在上一次变换之后新增标注,下一次变换前后的快照都要保留它。
+        let mut b = first.annotations.clone();
+        b.push(rect_annotation(3.0, 3.0, 2.0, 2.0));
+        history
+            .push(&first.frame, PreviewTransformOp::RotateCw, b.clone(), None)
+            .unwrap();
+        let back = history.undo().unwrap();
+        assert_eq!(back.annotations, b);
+        let back_to_base = history.undo().unwrap();
+        assert_eq!(back_to_base.annotations, a);
+
+        // 过小/越界裁剪被拒绝且不写入历史。
+        let mut rejecting = PreviewTransforms::default();
+        let too_small = rejecting.push(
+            &base,
+            PreviewTransformOp::Crop(PreviewCrop {
+                x: 0,
+                y: 0,
+                width: MIN_CROP_EDGE - 1,
+                height: MIN_CROP_EDGE,
+            }),
+            Vec::new(),
+            None,
+        );
+        assert!(too_small.is_err());
+        assert!(too_small.unwrap_err().message.contains("最小"));
+        let out_of_bounds = rejecting.push(
+            &base,
+            PreviewTransformOp::Crop(PreviewCrop {
+                x: 4,
+                y: 0,
+                width: MIN_CROP_EDGE,
+                height: MIN_CROP_EDGE,
+            }),
+            Vec::new(),
+            None,
+        );
+        assert!(out_of_bounds.is_err());
+        assert!(out_of_bounds.unwrap_err().message.contains("超出"));
+        assert!(!rejecting.can_undo() && !rejecting.can_redo());
+
+        // 恰好最小边长且贴边的裁剪是合法变换。
+        let accepted = rejecting.push(
+            &base,
+            PreviewTransformOp::Crop(PreviewCrop {
+                x: base.width - MIN_CROP_EDGE,
+                y: base.height - MIN_CROP_EDGE,
+                width: MIN_CROP_EDGE,
+                height: MIN_CROP_EDGE,
+            }),
+            Vec::new(),
+            None,
+        );
+        assert!(accepted.is_ok());
+        assert_eq!(
+            (
+                accepted.as_ref().unwrap().frame.width,
+                accepted.as_ref().unwrap().frame.height,
+            ),
+            (MIN_CROP_EDGE, MIN_CROP_EDGE)
+        );
     }
 }

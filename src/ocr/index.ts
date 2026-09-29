@@ -56,6 +56,11 @@ export interface OcrModel {
   readonly active: boolean;
   document: () => OcrDocument | null;
   isRunning: () => boolean;
+  /**
+   * R6:预览旋转/裁剪后由宿主替换识别结果(坐标已按同一变换重映射);传入
+   * null/空文本清空。进行中的识别作废,旧选择清除,面板按新坐标重绘。
+   */
+  setDocument: (doc: OcrDocument | null) => void;
   activate: () => void;
   deactivate: () => boolean;
   reset: () => void;
@@ -613,6 +618,28 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
     emitChange();
   };
 
+  // R6:用宿主重映射后的识别结果替换当前文档。进行中的识别作废(token 失效);
+  // 只清选择与拖选,面板保持原开关状态,搜索字符下标仍指向同一全文。
+  const setDocument = (next: OcrDocument | null): void => {
+    generation += 1;
+    running = false;
+    clearSelection();
+    clearDrag();
+    if (!next || !next.fullText.trim() || next.spans.length === 0) {
+      doc = null;
+      spanOffsets = [];
+      clearPanelView();
+      syncActions();
+      emitChange();
+      return;
+    }
+    doc = next;
+    spanOffsets = mapSpanOffsets(next);
+    renderPanel();
+    syncActions();
+    emitChange();
+  };
+
   const selectAll = (): void => {
     if (!active || !doc || doc.spans.length === 0) {
       return;
@@ -1003,6 +1030,7 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
     },
     document: () => doc,
     isRunning: () => running,
+    setDocument,
     activate,
     deactivate,
     reset,

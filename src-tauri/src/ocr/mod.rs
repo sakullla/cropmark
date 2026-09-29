@@ -43,11 +43,51 @@ impl OcrError {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OcrDocument {
     pub spans: Vec<TextSpan>,
     pub full_text: String,
+}
+
+/// R6:预览重基后最近一次识别结果的坐标映射:文本、顺序与全文不变,仅 `spans`
+/// 按帧变换重映射,保证图上高亮与实际像素位置一致。
+pub fn remap_document(
+    doc: &OcrDocument,
+    transform: crate::annotate::FrameTransform,
+) -> OcrDocument {
+    OcrDocument {
+        spans: doc
+            .spans
+            .iter()
+            .map(|span| {
+                let (x, y, width, height) =
+                    transform.map_bounds(span.x, span.y, span.width, span.height);
+                TextSpan {
+                    text: span.text.clone(),
+                    x,
+                    y,
+                    width,
+                    height,
+                }
+            })
+            .collect(),
+        full_text: doc.full_text.clone(),
+    }
+}
+
+/// 最近一次识别结果(预览变换快照与重映射共用)。
+pub fn last_document(app: &AppHandle) -> Option<OcrDocument> {
+    let runtime = app.state::<OcrRuntime>();
+    let inner = runtime.lock();
+    inner.last.clone()
+}
+
+/// 撤销/重做预览变换时恢复同一坐标基准下的识别结果。
+pub fn set_last_document(app: &AppHandle, doc: Option<OcrDocument>) {
+    let runtime = app.state::<OcrRuntime>();
+    let mut inner = runtime.lock();
+    inner.last = doc;
 }
 
 #[derive(Default)]
@@ -307,6 +347,59 @@ mod tests {
         };
         assert_eq!(recognized_text(&stored), "甲\n乙");
         assert!(!recognized_text(&stored).contains("甲乙"));
+    }
+
+    #[test]
+    fn remap_document_moves_spans_with_the_preview_transform() {
+        let doc = OcrDocument {
+            spans: vec![
+                TextSpan {
+                    text: "甲".into(),
+                    x: 1.0,
+                    y: 2.0,
+                    width: 3.0,
+                    height: 4.0,
+                },
+                TextSpan {
+                    text: "乙".into(),
+                    x: 5.0,
+                    y: 6.0,
+                    width: 2.0,
+                    height: 2.0,
+                },
+            ],
+            full_text: "甲乙".into(),
+        };
+        let rotated = remap_document(
+            &doc,
+            crate::annotate::FrameTransform::RotateCw { height: 20.0 },
+        );
+        assert_eq!(rotated.full_text, "甲乙");
+        assert_eq!(rotated.spans[0].text, "甲");
+        assert_eq!(
+            (
+                rotated.spans[0].x,
+                rotated.spans[0].y,
+                rotated.spans[0].width,
+                rotated.spans[0].height
+            ),
+            (20.0 - 2.0 - 4.0, 1.0, 4.0, 3.0)
+        );
+
+        let cropped = remap_document(
+            &doc,
+            crate::annotate::FrameTransform::Crop { dx: -1.0, dy: -2.0 },
+        );
+        assert_eq!((cropped.spans[0].x, cropped.spans[0].y), (0.0, 0.0));
+        assert_eq!(
+            (
+                cropped.spans[1].x,
+                cropped.spans[1].y,
+                cropped.spans[1].width,
+                cropped.spans[1].height
+            ),
+            (4.0, 4.0, 2.0, 2.0)
+        );
     }
 
     #[test]

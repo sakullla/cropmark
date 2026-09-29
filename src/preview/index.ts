@@ -6,12 +6,13 @@ import {
   clampFloatingPanel,
   mountAnnotationEditor,
   readAnnotationDefaults,
+  resolveCanvasColor,
   type Annotation,
   type AnnotationEditor,
 } from "../annotation";
 import { applyTranslations, t, type CatalogKey } from "../i18n";
 import { icons } from "../icons";
-import { mountOcrModel, type OcrModel } from "../ocr";
+import { mountOcrModel, type OcrDocument, type OcrModel } from "../ocr";
 import { mountQrModel, type QrModel } from "../qr";
 import "./preview.css";
 
@@ -20,6 +21,20 @@ interface PreviewFrame {
   height: number;
   scale: number;
 }
+
+/** R6:旋转/裁剪命令返回的重基结果;坐标已由 Rust 按同一变换重映射。 */
+interface PreviewTransformResult {
+  width: number;
+  height: number;
+  annotations: Annotation[];
+  ocr: OcrDocument | null;
+  canUndo: boolean;
+  canRedo: boolean;
+}
+
+/** R6:裁剪最小边长(物理像素),与 Rust `session::MIN_CROP_EDGE` 一致。 */
+const MIN_CROP_EDGE = 8;
+const FALLBACK_CROP_EDGE = "#0ea5e9";
 
 type NoteKind = "success" | "feedback" | "error";
 
@@ -55,6 +70,9 @@ export function mountPreview(root: HTMLElement): () => void {
       <div class="preview-actions" data-tauri-drag-region="false">
         <button type="button" class="icon-action" data-tool="ocr" data-i18n-title="preview.action.ocr_title" data-i18n-aria-label="preview.action.ocr" aria-label="取字" data-tauri-drag-region="false">${icons.ocr}</button>
         <button type="button" class="icon-action" data-tool="qr" data-i18n-title="preview.action.qr_title" data-i18n-aria-label="preview.action.qr" aria-label="识别二维码" data-tauri-drag-region="false">${icons.qr}</button>
+        <button type="button" class="icon-action" data-action="rotate-left" data-i18n-title="preview.action.rotate_left_title" data-i18n-aria-label="preview.action.rotate_left" aria-label="左旋 90°" data-tauri-drag-region="false">${icons.rotateLeft}</button>
+        <button type="button" class="icon-action" data-action="rotate-right" data-i18n-title="preview.action.rotate_right_title" data-i18n-aria-label="preview.action.rotate_right" aria-label="右旋 90°" data-tauri-drag-region="false">${icons.rotateRight}</button>
+        <button type="button" class="icon-action" data-action="crop" data-i18n-title="preview.action.crop_title" data-i18n-aria-label="preview.action.crop" aria-label="裁剪" data-tauri-drag-region="false">${icons.crop}</button>
         <button type="button" class="icon-action" data-action="copy-ocr-all" hidden data-i18n-title="preview.action.copy_all" data-i18n-aria-label="preview.action.copy_all" aria-label="复制全部" data-tauri-drag-region="false">${icons.copy}</button>
         <button type="button" class="icon-action" data-action="pin" data-i18n-title="preview.action.pin_title" data-i18n-aria-label="preview.action.pin" aria-label="贴图" data-tauri-drag-region="false">${icons.pin}</button>
         <button type="button" class="icon-action" data-action="update-pin" data-i18n-title="preview.action.update_pin_title" data-i18n-aria-label="preview.action.update_pin" aria-label="更新贴图" hidden data-tauri-drag-region="false">${icons.annotate}</button>
@@ -81,6 +99,11 @@ export function mountPreview(root: HTMLElement): () => void {
         <div class="preview-output" data-beautify-output>
           <canvas></canvas>
         </div>
+        <div class="preview-crop-bar" data-crop-bar hidden>
+          <span class="preview-crop-hint" data-i18n="preview.crop.hint">${t("preview.crop.hint")}</span>
+          <button type="button" class="primary" data-crop-action="confirm" data-i18n="preview.crop.confirm">${t("preview.crop.confirm")}</button>
+          <button type="button" data-crop-action="cancel" data-i18n="preview.crop.cancel">${t("preview.crop.cancel")}</button>
+        </div>
       </div>
     </div>
   `;
@@ -94,6 +117,11 @@ export function mountPreview(root: HTMLElement): () => void {
   const copyAllBtn = root.querySelector("[data-action=copy-ocr-all]");
   const ocrBtn = root.querySelector("[data-tool=ocr]");
   const qrBtn = root.querySelector("[data-tool=qr]");
+  const rotateLeftBtn = root.querySelector("[data-action=rotate-left]");
+  const rotateRightBtn = root.querySelector("[data-action=rotate-right]");
+  const cropBtn = root.querySelector("[data-action=crop]");
+  const cropBar = root.querySelector("[data-crop-bar]");
+  const cropConfirmBtn = root.querySelector("[data-crop-action=confirm]");
   const pinBtn = root.querySelector("[data-action=pin]");
   const updatePinBtn = root.querySelector("[data-action=update-pin]");
   const saveQualityRoot = root.querySelector("[data-save-quality-root]");
@@ -109,6 +137,11 @@ export function mountPreview(root: HTMLElement): () => void {
     !(copyAllBtn instanceof HTMLButtonElement) ||
     !(ocrBtn instanceof HTMLButtonElement) ||
     !(qrBtn instanceof HTMLButtonElement) ||
+    !(rotateLeftBtn instanceof HTMLButtonElement) ||
+    !(rotateRightBtn instanceof HTMLButtonElement) ||
+    !(cropBtn instanceof HTMLButtonElement) ||
+    !(cropBar instanceof HTMLElement) ||
+    !(cropConfirmBtn instanceof HTMLButtonElement) ||
     !(pinBtn instanceof HTMLButtonElement) ||
     !(updatePinBtn instanceof HTMLButtonElement) ||
     !(saveQualityRoot instanceof HTMLElement) ||
@@ -146,6 +179,66 @@ export function mountPreview(root: HTMLElement): () => void {
   // R9:美化只包在显示层外:画布位图保持冻帧尺寸,标注坐标不平移。
   let applyBeautify = false;
   let beautifyOptions: BeautifyOptions = { ...DEFAULT_BEAUTIFY };
+  // R6:预览旋转/裁剪。裁剪为画布拖选 + 确认/取消;变换由 Rust 按同一仿射
+  // 重基帧、标注与取字;撤销/重做在标注编辑器栈为空时回退会话级快照。
+  let cropping = false;
+  let cropStart: Point | null = null;
+  let cropCurrent: Point | null = null;
+  let transformUndo = false;
+  let transformRedo = false;
+  const cropEdgeColor = resolveCanvasColor(
+    getComputedStyle(root).getPropertyValue("--accent"),
+    FALLBACK_CROP_EDGE,
+  );
+
+  // 画布工具标记:裁剪 > 取字 > 二维码 > 标注当前工具(与按钮高亮一致)。
+  const syncToolDataset = (): void => {
+    root.dataset.tool = cropping
+      ? "crop"
+      : ocrModel?.active
+        ? "ocr"
+        : qrModel?.active
+          ? "qr"
+          : (editor?.tool() ?? "arrow");
+  };
+
+  // 裁剪框(Frame 物理像素):拖选两端点四舍五入并钳制在画面内;空拖选返回 null。
+  const cropRect = (): { x: number; y: number; width: number; height: number } | null => {
+    if (!cropStart || !cropCurrent || canvas.width === 0 || canvas.height === 0) {
+      return null;
+    }
+    const left = Math.round(clamp(Math.min(cropStart.x, cropCurrent.x), 0, canvas.width));
+    const top = Math.round(clamp(Math.min(cropStart.y, cropCurrent.y), 0, canvas.height));
+    const right = Math.round(clamp(Math.max(cropStart.x, cropCurrent.x), 0, canvas.width));
+    const bottom = Math.round(clamp(Math.max(cropStart.y, cropCurrent.y), 0, canvas.height));
+    if (right <= left || bottom <= top) {
+      return null;
+    }
+    return { x: left, y: top, width: right - left, height: bottom - top };
+  };
+
+  // 裁剪遮罩:未拖选时整幅压暗,拖选后仅保留选区明亮并描边。
+  const paintCropOverlay = (): void => {
+    if (!cropping) {
+      return;
+    }
+    ctx.save();
+    ctx.fillStyle = "rgba(2, 6, 23, 0.55)";
+    const rect = cropRect();
+    if (!rect) {
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    } else {
+      ctx.fillRect(0, 0, canvas.width, rect.y);
+      ctx.fillRect(0, rect.y, rect.x, rect.height);
+      ctx.fillRect(rect.x + rect.width, rect.y, canvas.width - rect.x - rect.width, rect.height);
+      ctx.fillRect(0, rect.y + rect.height, canvas.width, canvas.height - rect.y - rect.height);
+      const line = Math.max(1, canvas.width / 900);
+      ctx.strokeStyle = cropEdgeColor;
+      ctx.lineWidth = line;
+      ctx.strokeRect(rect.x + line / 2, rect.y + line / 2, rect.width - line, rect.height - line);
+    }
+    ctx.restore();
+  };
 
   const noteText = (source: {
     key: CatalogKey | null;
@@ -218,6 +311,7 @@ export function mountPreview(root: HTMLElement): () => void {
     editor?.paint(ctx);
     applyBeautifyChrome();
     ocrModel?.paint(ctx);
+    paintCropOverlay();
   };
 
   const physicalPoint = (event: MouseEvent): Point => {
@@ -250,7 +344,7 @@ export function mountPreview(root: HTMLElement): () => void {
     }
     ocrWasActive = ocrActive;
     qrWasActive = qrActive;
-    root.dataset.tool = ocrActive ? "ocr" : qrActive ? "qr" : (editor?.tool() ?? "arrow");
+    syncToolDataset();
     redraw();
   };
 
@@ -371,6 +465,13 @@ export function mountPreview(root: HTMLElement): () => void {
         setNoteKey(error.key, error.params, "error");
       }
     },
+    // R6:标注栈为空时把 Ctrl+Z/Y 与工具条撤销/重做交给预览变换快照。
+    // 新标注编辑使变换重做分支失效(与编辑器 pushAction 清 redo 同一语义):
+    // 编辑器仍有未撤销编辑时,不再提供变换重做。
+    onUndoFallback: () => (cropping ? false : undoTransform()),
+    onRedoFallback: () => (cropping ? false : redoTransform()),
+    canUndoFallback: () => !cropping && transformUndo,
+    canRedoFallback: () => !cropping && transformRedo && !(editor?.canUndo() ?? false),
   });
 
   // R2:共享取字模型(结果面板 + 图上三态 + 显式复制)。面板挂在预览舞台,
@@ -427,6 +528,47 @@ export function mountPreview(root: HTMLElement): () => void {
     editor?.deactivateTool();
     editor?.clearSelection();
     qrModel?.activate();
+  };
+
+  // R6:裁剪模式的界面状态(工具条按钮、裁剪条与确认可用性)。
+  const syncCropUi = (): void => {
+    cropBar.hidden = !cropping;
+    cropBtn.classList.toggle("active", cropping);
+    rotateLeftBtn.disabled = cropping;
+    rotateRightBtn.disabled = cropping;
+    cropConfirmBtn.disabled = !cropping || busy || cropRect() === null;
+    syncToolDataset();
+  };
+
+  const exitCrop = (): void => {
+    if (!cropping) {
+      return;
+    }
+    cropping = false;
+    cropStart = null;
+    cropCurrent = null;
+    // 恢复标注工具条高亮(enterCrop 为进入裁剪清掉了)。
+    editor?.setTool(editor.tool());
+    syncCropUi();
+    setNoteSource(copiedSource, copiedKind);
+    redraw();
+  };
+
+  const enterCrop = (): void => {
+    if (cropping || !frame || busy) {
+      return;
+    }
+    cropping = true;
+    cropStart = null;
+    cropCurrent = null;
+    ocrModel?.deactivate();
+    qrModel?.deactivate();
+    editor?.commitText();
+    editor?.deactivateTool();
+    editor?.clearSelection();
+    syncCropUi();
+    setNoteKey("preview.crop.hint");
+    redraw();
   };
 
   const copyBtn = root.querySelector<HTMLButtonElement>("[data-action=copy]");
@@ -514,8 +656,10 @@ export function mountPreview(root: HTMLElement): () => void {
 
   // 贴图:当前标注合成图钉成置顶小窗;预览保持打开,可继续标注/再贴。
   const pin = async (): Promise<void> => {
-    if (busy) {
-      setNoteKey("preview.note.busy");
+    if (busy || cropping) {
+      if (busy) {
+        setNoteKey("preview.note.busy");
+      }
       return;
     }
     editor?.commitText();
@@ -534,7 +678,7 @@ export function mountPreview(root: HTMLElement): () => void {
   // 再标注确认:把当前标注写回来源贴图,Rust 更新源图并通知贴图窗换图;
   // 成功后预览由 Rust 关闭。取消(直接关闭预览)不改动贴图内容。
   const updatePin = async (): Promise<void> => {
-    if (busy || writebackLabel === null) {
+    if (busy || cropping || writebackLabel === null) {
       return;
     }
     editor?.commitText();
@@ -555,9 +699,20 @@ export function mountPreview(root: HTMLElement): () => void {
     });
   };
 
-  // 取字/二维码识别期间交给共享模型;二维码面板只读,画布不接受输入。
+  // 裁剪拖选优先;取字/二维码识别期间交给共享模型,画布不接受标注输入。
   canvas.addEventListener("mousedown", (event) => {
-    if (event.button !== 0 || !frame || ocrModel?.active !== true) {
+    if (event.button !== 0 || !frame) {
+      return;
+    }
+    if (cropping) {
+      event.preventDefault();
+      cropStart = physicalPoint(event);
+      cropCurrent = cropStart;
+      syncCropUi();
+      redraw();
+      return;
+    }
+    if (ocrModel?.active !== true) {
       return;
     }
     event.preventDefault();
@@ -570,6 +725,15 @@ export function mountPreview(root: HTMLElement): () => void {
   });
 
   window.addEventListener("mousemove", (event) => {
+    if (cropping) {
+      if (!cropStart) {
+        return;
+      }
+      cropCurrent = physicalPoint(event);
+      syncCropUi();
+      redraw();
+      return;
+    }
     if (ocrModel?.active !== true) {
       return;
     }
@@ -577,15 +741,35 @@ export function mountPreview(root: HTMLElement): () => void {
   });
 
   window.addEventListener("mouseup", () => {
+    if (cropping) {
+      syncCropUi();
+      return;
+    }
     if (ocrModel?.active !== true) {
       return;
     }
     ocrModel.pointerUp();
   });
 
+  cropBar.addEventListener("click", (event) => {
+    const button = event.target instanceof Element ? event.target.closest("[data-crop-action]") : null;
+    if (!(button instanceof HTMLButtonElement) || button.disabled) {
+      return;
+    }
+    if (button.dataset.cropAction === "confirm") {
+      void confirmCrop();
+    } else if (button.dataset.cropAction === "cancel") {
+      exitCrop();
+    }
+  });
+
   root.addEventListener("click", (event) => {
     const button = event.target instanceof Element ? event.target.closest("button") : null;
     if (!(button instanceof HTMLButtonElement)) {
+      return;
+    }
+    // 裁剪中只受理裁剪条与关闭:其余动作先退出裁剪再执行会丢失当前选区语义。
+    if (cropping && button.dataset.action !== "crop" && button.dataset.action !== "close") {
       return;
     }
     if (button.dataset.tool === "ocr") {
@@ -594,6 +778,22 @@ export function mountPreview(root: HTMLElement): () => void {
     }
     if (button.dataset.tool === "qr") {
       activateQr();
+      return;
+    }
+    if (button.dataset.action === "rotate-left") {
+      void rotate("left");
+      return;
+    }
+    if (button.dataset.action === "rotate-right") {
+      void rotate("right");
+      return;
+    }
+    if (button.dataset.action === "crop") {
+      if (cropping) {
+        exitCrop();
+      } else {
+        enterCrop();
+      }
       return;
     }
     const nextQuality = button.dataset.saveQuality;
@@ -691,6 +891,20 @@ export function mountPreview(root: HTMLElement): () => void {
   // 这里保留取字(Esc 退出、Ctrl+A 全选、Ctrl+C 复制所选)、保存、复制与关闭。
   window.addEventListener("keydown", (event) => {
     if (event.defaultPrevented || event.isComposing || event.keyCode === 229) {
+      return;
+    }
+    // R6:裁剪模式只响应 Enter 确认与 Esc 取消,其它快捷键让位给选区调整。
+    if (cropping) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        exitCrop();
+        return;
+      }
+      if (event.key === "Enter") {
+        event.preventDefault();
+        void confirmCrop();
+        return;
+      }
       return;
     }
     if (event.key === "Escape") {
@@ -848,6 +1062,12 @@ export function mountPreview(root: HTMLElement): () => void {
   };
   const loadPreview = (): void => {
     const generation = ++previewLoad;
+    // R6:新帧对应新坐标系,变换历史与裁剪模式一并复位。
+    transformUndo = false;
+    transformRedo = false;
+    cropping = false;
+    cropStart = null;
+    cropCurrent = null;
     void (async () => {
       // 再标注模式由会话决定(与帧同源):先取回写目标,再取同一会话的帧,
       // 避免普通截取预览被误判为回写模式。
@@ -951,6 +1171,193 @@ export function mountPreview(root: HTMLElement): () => void {
     })();
   };
 
+  // R6:变换后只重拉像素(不重置标注/取字模型态与提示):帧尺寸已由命令
+  // 返回值更新,PNG 头与其一致。generation 与 loadPreview 共用同一序列。
+  const loadFramePixels = (generation: number): Promise<boolean> =>
+    new Promise((resolve) => {
+      void (async () => {
+        let bytes: ArrayBuffer;
+        try {
+          bytes = await invoke<ArrayBuffer>("get_preview_frame");
+        } catch (error) {
+          if (generation === previewLoad) {
+            setNote(invokeError(error, t("preview.error.preview_missing")), "error");
+          }
+          resolve(false);
+          return;
+        }
+        if (generation !== previewLoad) {
+          resolve(false);
+          return;
+        }
+        if (bytes.byteLength <= 24) {
+          setNoteKey("preview.note.image_incomplete", undefined, "error");
+          resolve(false);
+          return;
+        }
+        const header = new DataView(bytes);
+        const annotationsLength = header.getUint32(20, true);
+        const pngOffset = 24 + annotationsLength;
+        if (pngOffset > bytes.byteLength) {
+          setNoteKey("preview.note.image_incomplete", undefined, "error");
+          resolve(false);
+          return;
+        }
+        const image = new Image();
+        const imageUrl = URL.createObjectURL(
+          new Blob([bytes.slice(pngOffset)], { type: "image/png" }),
+        );
+        image.onload = () => {
+          URL.revokeObjectURL(imageUrl);
+          if (generation !== previewLoad) {
+            resolve(false);
+            return;
+          }
+          source = document.createElement("canvas");
+          source.width = canvas.width;
+          source.height = canvas.height;
+          const sourceCtx = source.getContext("2d");
+          if (!sourceCtx) {
+            setNoteKey("preview.note.image_failed", undefined, "error");
+            resolve(false);
+            return;
+          }
+          sourceCtx.drawImage(image, 0, 0, canvas.width, canvas.height);
+          redraw();
+          resolve(true);
+        };
+        image.onerror = () => {
+          URL.revokeObjectURL(imageUrl);
+          if (generation === previewLoad) {
+            setNoteKey("preview.note.image_failed", undefined, "error");
+          }
+          resolve(false);
+        };
+        image.src = imageUrl;
+      })();
+    });
+
+  // R6:应用重基结果:帧尺寸/标注/取字同一仿射变换;标注栈按 setAnnotations
+  // 语义清空,撤销/重做可用性随命令返回值更新。
+  const applyTransformResult = async (
+    result: PreviewTransformResult,
+    feedbackKey: CatalogKey,
+  ): Promise<void> => {
+    const generation = ++previewLoad;
+    transformUndo = result.canUndo;
+    transformRedo = result.canRedo;
+    frame = { width: result.width, height: result.height, scale: frame?.scale ?? 1 };
+    canvas.width = result.width;
+    canvas.height = result.height;
+    cropping = false;
+    cropStart = null;
+    cropCurrent = null;
+    editor?.setAnnotations(result.annotations);
+    ocrModel?.setDocument(result.ocr);
+    await loadFramePixels(generation);
+    if (generation !== previewLoad) {
+      return;
+    }
+    syncCropUi();
+    setNoteKey(feedbackKey, undefined, "success");
+    redraw();
+  };
+
+  const performTransform = async (
+    request: () => Promise<PreviewTransformResult>,
+    feedbackKey: CatalogKey,
+  ): Promise<void> => {
+    if (busy) {
+      setNoteKey("preview.note.busy");
+      return;
+    }
+    if (!frame) {
+      return;
+    }
+    editor?.commitText();
+    busy = true;
+    syncCropUi();
+    setNoteKey("preview.note.transforming");
+    try {
+      const result = await request();
+      await applyTransformResult(result, feedbackKey);
+    } catch (error) {
+      setNote(invokeError(error, t("preview.error.transform_fallback")), "error");
+    } finally {
+      busy = false;
+      syncCropUi();
+    }
+  };
+
+  const rotate = (direction: "left" | "right"): Promise<void> =>
+    performTransform(
+      () =>
+        invoke<PreviewTransformResult>("rotate_preview", {
+          direction,
+          annotations: editor?.annotations() ?? [],
+        }),
+      direction === "left" ? "preview.note.rotated_left" : "preview.note.rotated_right",
+    );
+
+  // R6:确认裁剪:前端先按同一最小边长提示,越界/过小由 Rust 拒绝并本地化说明;
+  // 失败保持裁剪模式与选区,取消(exitCrop)不产生任何副作用。
+  const confirmCrop = async (): Promise<void> => {
+    if (!cropping || busy) {
+      return;
+    }
+    const rect = cropRect();
+    if (!rect) {
+      return;
+    }
+    if (rect.width < MIN_CROP_EDGE || rect.height < MIN_CROP_EDGE) {
+      setNoteKey("error.preview.crop_too_small", { detail: MIN_CROP_EDGE }, "error");
+      return;
+    }
+    editor?.commitText();
+    busy = true;
+    syncCropUi();
+    setNoteKey("preview.note.transforming");
+    try {
+      const result = await invoke<PreviewTransformResult>("crop_preview", {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+        annotations: editor?.annotations() ?? [],
+      });
+      exitCrop();
+      await applyTransformResult(result, "preview.note.cropped");
+    } catch (error) {
+      setNote(invokeError(error, t("preview.error.transform_fallback")), "error");
+    } finally {
+      busy = false;
+      syncCropUi();
+    }
+  };
+
+  // R6:撤销/重做回退(标注编辑器栈为空时由 Ctrl+Z/Y 与工具条按钮触发)。
+  const undoTransform = (): boolean => {
+    if (!transformUndo || busy) {
+      return false;
+    }
+    void performTransform(
+      () => invoke<PreviewTransformResult>("undo_preview_transform"),
+      "preview.note.transform_undone",
+    );
+    return true;
+  };
+
+  const redoTransform = (): boolean => {
+    if (!transformRedo || busy || (editor?.canUndo() ?? false)) {
+      return false;
+    }
+    void performTransform(
+      () => invoke<PreviewTransformResult>("redo_preview_transform"),
+      "preview.note.transform_redone",
+    );
+    return true;
+  };
+
   void listen("export-appearance-changed", () => {
     reloadAppearance();
   });
@@ -961,12 +1368,19 @@ export function mountPreview(root: HTMLElement): () => void {
   chromeObserver.observe(frameEl);
 
   void listen("preview-reload", () => {
+    // R6:新帧的变换历史与裁剪模式随 loadPreview 复位;先退出裁剪界面态。
+    transformUndo = false;
+    transformRedo = false;
+    cropping = false;
+    cropStart = null;
+    cropCurrent = null;
     // 新帧可能带入选区即时标注(R21):列表随帧在 loadPreview 中恢复,
     // 这里先清空避免旧编辑态残留。取字/二维码模型也不保留上一帧的结果。
     ocrModel?.reset();
     qrModel?.reset();
     editor?.setAnnotations([]);
     editor?.cancelText();
+    syncCropUi();
     // 携带说明随新帧重算(image.onload);先清空,避免加载失败时残留旧前缀。
     carriedNoteSource = null;
     // R19:旧取字/贴图入口开关按常开语义移除;样式默认只在首次加载,

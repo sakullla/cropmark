@@ -149,6 +149,16 @@ export interface AnnotationEditorOptions {
   /** 右键未命中任何图元(无删除菜单可给)时回调;宿主可借此给出替代说明。 */
   onContextMenuMiss?: () => void;
   onError?: (error: AnnotationError) => void;
+  /**
+   * R6:编辑器撤销栈为空时的回退(预览会话级变换快照)。返回 true 表示宿主
+   * 已接管本次撤销;撤销完成后由宿主 `setAnnotations` 刷新按钮态。
+   */
+  onUndoFallback?: () => boolean;
+  /** R6:编辑器重做栈为空时的回退;语义同 `onUndoFallback`。 */
+  onRedoFallback?: () => boolean;
+  /** R6:宿主变换历史是否有可撤销/可重做步骤(同步工具条按钮启用态)。 */
+  canUndoFallback?: () => boolean;
+  canRedoFallback?: () => boolean;
 }
 
 export interface AnnotationEditor {
@@ -1620,9 +1630,12 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
   };
 
   const syncUndo = (): void => {
-    undoBtn.disabled = undoStack.length === 0 && !editorOpen();
+    // R6:编辑器栈空但宿主有变换历史时,撤销/重做按钮同样可用。
+    const undoEmpty = undoStack.length === 0 && !(options.canUndoFallback?.() ?? false);
+    const redoEmpty = redoStack.length === 0 && !(options.canRedoFallback?.() ?? false);
+    undoBtn.disabled = undoEmpty && !editorOpen();
     // 文字编辑中 redo/delete 本身是空操作,禁用与快捷键语义保持一致。
-    redoBtn.disabled = redoStack.length === 0 || editorOpen();
+    redoBtn.disabled = redoEmpty || editorOpen();
     deleteBtn.disabled = selected === null || editorOpen();
   };
 
@@ -1906,6 +1919,8 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     settleMove();
     const action = undoStack.pop();
     if (!action) {
+      // R6:标注历史为空时把撤销交给宿主(预览旋转/裁剪快照)。
+      options.onUndoFallback?.();
       return;
     }
     runAction(action, true);
@@ -1933,6 +1948,8 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     }
     const action = redoStack.pop();
     if (!action) {
+      // R6:标注历史为空时把重做交给宿主(预览旋转/裁剪快照)。
+      options.onRedoFallback?.();
       return;
     }
     runAction(action, false);
