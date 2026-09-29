@@ -444,7 +444,10 @@ export function mountPreview(root: HTMLElement): () => void {
     textHost: frameEl,
     frame: () => frame,
     redraw,
-    isEditable: () => ocrModel?.active !== true && qrModel?.active !== true,
+    // R2/R4/R6:取字、二维码与裁剪任一激活时画布输入只走对应宿主分支,
+    // 标注编辑暂停。裁剪拖选不得绘制/移动/放置标注,确认与取消保持列表不变。
+    isEditable: () =>
+      !cropping && ocrModel?.active !== true && qrModel?.active !== true,
     onToolHint: (hint) => {
       if (hint) {
         setNoteKey(hint.key, hint.params);
