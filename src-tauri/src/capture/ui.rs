@@ -134,6 +134,11 @@ pub struct OverlayPayload {
     /// R24:能力子集;旧前端忽略未知字段不受影响。
     pub capabilities: OverlayCapabilities,
     pub windows: Vec<ListedWindow>,
+    /// R7:窗口级元素吸附可用(平台窗口级检测可用或本会话可枚举窗口)。
+    /// Web 覆盖层在区域模式下据此提供悬停高亮、滚轮层级切换与点击吸附。
+    pub snap_window_level: bool,
+    /// R7:控件级元素吸附可用;不可用时按现有能力说明机制给出降级说明。
+    pub snap_control_level: bool,
     /// 画面已定:不再框选或点窗,浮层即工作区。
     pub fixed: bool,
     /// 进入工作区时已有的标注(相对当前画面)。
@@ -233,6 +238,11 @@ pub fn overlay_payload(
     reduced_capabilities: bool,
     capabilities: OverlayCapabilities,
 ) -> Result<OverlayPayload, CaptureError> {
+    // R7:元素吸附能力随冻结帧下发;窗口列表本身即可支撑窗口级吸附
+    // (Web 覆盖层在无原生壳时的命中栈来源)。
+    let snap = super::snap::platform_capability();
+    let snap_window_level = snap.window_level() || !windows.is_empty();
+    let snap_control_level = snap.control_level();
     let windows = windows
         .into_iter()
         .map(|mut window| {
@@ -257,6 +267,8 @@ pub fn overlay_payload(
         reduced_capabilities,
         capabilities,
         windows,
+        snap_window_level,
+        snap_control_level,
         fixed: false,
         annotations: Vec::new(),
         pending_ocr: false,
@@ -1040,6 +1052,36 @@ mod tests {
             serde_json::json!(true)
         );
         assert_eq!(json["fixed"], serde_json::json!(false));
+        // R7:吸附能力字段为 camelCase;无窗口列表时窗口级也不可用
+        // (与平台检测不可用一致),控件级按平台能力(核心任务为降级态)。
+        assert_eq!(json["snapWindowLevel"], serde_json::json!(false));
+        assert_eq!(json["snapControlLevel"], serde_json::json!(false));
+        assert!(!reduced.snap_window_level);
+        assert!(!reduced.snap_control_level);
+
+        // R7:会话能枚举窗口时,Web 覆盖层的窗口级吸附可用。
+        let listed = ListedWindow {
+            id: "w1".into(),
+            title: "Notes".into(),
+            pid: 11,
+            x: 0,
+            y: 0,
+            width: 400,
+            height: 300,
+            visible: true,
+            owner_is_self: false,
+        };
+        let with_windows = overlay_payload(
+            CaptureMode::Region,
+            &frame,
+            &monitor,
+            vec![listed],
+            true,
+            capabilities,
+        )
+        .expect("payload builds");
+        assert!(with_windows.snap_window_level);
+        assert_eq!(with_windows.windows[0].x, 0);
 
         let full = overlay_payload(
             CaptureMode::Window,

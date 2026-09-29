@@ -789,7 +789,17 @@ pub fn pick_region(
     let canvas = Canvas {
         engine: SelectionEngine::new(width as u32, height as u32, flags)
             .with_scale(frame.scale)
-            .with_annotation_options(annotation_options),
+            .with_annotation_options(annotation_options)
+            // R7:元素级吸附(窗口/控件命中栈);平台检测不可用时 provider
+            // 返回空栈,仅自由框选。
+            .with_snap(
+                crate::capture::snap::platform_provider(),
+                crate::capture::snap::SnapContext::new(
+                    (monitor.physical_x, monitor.physical_y),
+                    (monitor.logical_x, monitor.logical_y),
+                    frame.scale,
+                ),
+            ),
         composer,
         scratch: vec![0; bytes],
         present_buf: Vec::new(),
@@ -1176,6 +1186,10 @@ fn route_input(view: &SelectionView, event: &NSEvent) -> bool {
     } else if ty == NSEventType::RightMouseDown {
         forward_mouse(view, event, MouseInput::RightDown);
         true
+    } else if ty == NSEventType::ScrollWheel {
+        // R7:滚轮在命中栈父子层级间切换高亮;引擎在无高亮时忽略。
+        forward_mouse(view, event, MouseInput::Scroll);
+        true
     } else if ty == NSEventType::KeyDown {
         handle_key(view, event);
         true
@@ -1190,15 +1204,26 @@ enum MouseInput {
     LeftDown,
     LeftUp,
     RightDown,
+    /// R7:滚轮(层级切换);不携带指针位置,延迟到引擎当前光标消费。
+    Scroll,
 }
 
 fn forward_mouse(view: &SelectionView, event: &NSEvent, kind: MouseInput) {
-    let (x, y) = event_point(view, event);
     let input = match kind {
-        MouseInput::Move => InputEvent::PointerMove { x, y },
-        MouseInput::LeftDown => InputEvent::LeftDown { x, y },
-        MouseInput::LeftUp => InputEvent::LeftUp { x, y },
-        MouseInput::RightDown => InputEvent::RightDown { x, y },
+        // 向上滚(父级方向)为正,与 Windows WM_MOUSEWHEEL 语义一致。
+        MouseInput::Scroll => InputEvent::Wheel {
+            delta: event.scrollingDeltaY().round() as i32,
+        },
+        _ => {
+            let (x, y) = event_point(view, event);
+            match kind {
+                MouseInput::Move => InputEvent::PointerMove { x, y },
+                MouseInput::LeftDown => InputEvent::LeftDown { x, y },
+                MouseInput::LeftUp => InputEvent::LeftUp { x, y },
+                MouseInput::RightDown => InputEvent::RightDown { x, y },
+                MouseInput::Scroll => unreachable!("scroll handled above"),
+            }
+        }
     };
     dispatch_input(view, input);
 }

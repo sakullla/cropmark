@@ -835,6 +835,13 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
         .unwrap_or(CaptureMode::Region);
         let flags =
             recording_selection_flags(mode, crate::settings::current_recording(&handle).enabled);
+        // R7:元素检测完全不可用时按现有能力说明机制提示降级(自由框选或
+        // 窗口截取模式);LongCapture/Recording 复用本壳但不需要该说明。
+        if mode == CaptureMode::Region {
+            if let Some(key) = snap_fallback_notice_key(super::snap::platform_capability()) {
+                ui::show_toast_key(&handle, key);
+            }
+        }
         let annotation_options = annotation_options_from(&handle);
         // 壳回调在同一线程内同步执行,经 thread-local 取回 AppHandle。
         SHELL_APP.with(|slot| *slot.borrow_mut() = Some(handle.clone()));
@@ -1219,6 +1226,17 @@ fn region_native_shell() -> bool {
 /// 窗口模式的 Web 覆盖层不提供原生壳能力也不展示该说明,避免误导。
 fn overlay_reduced_capabilities(mode: CaptureMode, native_shell: bool) -> bool {
     mode == CaptureMode::Region && !native_shell
+}
+
+/// R7:元素检测完全不可用时的降级说明词条(自由框选/窗口模式替代路径);
+/// 窗口级仍可用(WindowOnly,如 macOS 未授权)不在此重复说明,授权与降级
+/// 提示由平台任务在自己的流程里给出。
+fn snap_fallback_notice_key(capability: super::snap::SnapCapability) -> Option<&'static str> {
+    if capability.window_level() {
+        None
+    } else {
+        capability.reason_key()
+    }
 }
 
 /// R3/R9:选区壳能力集。
@@ -3610,6 +3628,26 @@ mod tests {
             false
         ));
         assert!(!overlay_reduced_capabilities(CaptureMode::Fullscreen, true));
+    }
+
+    #[test]
+    fn snap_fallback_notice_covers_unavailable_but_not_window_only() {
+        use crate::capture::snap::SnapCapability;
+        // 完整能力与窗口级降级都无提示:后者由平台授权/降级流程说明。
+        assert_eq!(snap_fallback_notice_key(SnapCapability::Full), None);
+        assert_eq!(
+            snap_fallback_notice_key(SnapCapability::WindowOnly {
+                reason_key: "error.capture.snap_control_unavailable",
+            }),
+            None
+        );
+        // 完全不可用时沿用现有本地化能力说明机制。
+        assert_eq!(
+            snap_fallback_notice_key(SnapCapability::Unavailable {
+                reason_key: "error.capture.snap_unavailable",
+            }),
+            Some("error.capture.snap_unavailable")
+        );
     }
 
     #[test]

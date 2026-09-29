@@ -1310,7 +1310,17 @@ pub fn pick_region(
             // 注入冻结帧 DPI 缩放:chrome(放大镜面板)光标命中需要。
             engine: SelectionEngine::new(width as u32, height as u32, flags)
                 .with_scale(frame.scale)
-                .with_annotation_options(annotation_options),
+                .with_annotation_options(annotation_options)
+                // R7:元素级吸附(窗口/控件命中栈);平台检测不可用时
+                // provider 返回空栈,仅自由框选。
+                .with_snap(
+                    crate::capture::snap::platform_provider(),
+                    crate::capture::snap::SnapContext::new(
+                        (monitor.physical_x, monitor.physical_y),
+                        (monitor.logical_x, monitor.logical_y),
+                        frame.scale,
+                    ),
+                ),
             composer,
             scratch: vec![0; bytes],
             present: create_present_buffer(&conn, bytes),
@@ -1510,6 +1520,10 @@ fn pump_until_done(state: &mut ShellState, surface: &Surface<'_>, keyboard: &Key
                         y: e.event_y as i32,
                     },
                 ),
+                // R7:滚轮按钮 4/5 在命中栈父子层级间切换高亮(引擎在无高亮
+                // 时忽略)。
+                4 => feed_event(state, surface, InputEvent::Wheel { delta: 1 }),
+                5 => feed_event(state, surface, InputEvent::Wheel { delta: -1 }),
                 _ => false,
             },
             XEvent::ButtonRelease(e) if e.detail == 1 => feed_event(

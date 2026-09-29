@@ -49,6 +49,10 @@ interface OverlayFrame {
   logicalHeight: number;
   reducedCapabilities: boolean;
   capabilities?: OverlayCapabilities;
+  /** R7:窗口级元素吸附可用(平台窗口级检测或本会话可枚举窗口)。 */
+  snapWindowLevel?: boolean;
+  /** R7:控件级元素吸附可用。 */
+  snapControlLevel?: boolean;
   windows: ListedWindow[];
   fixed?: boolean;
   annotations?: Annotation[];
@@ -171,6 +175,16 @@ export function mountOverlay(root: HTMLElement): () => void {
   let finishing = false;
   let raf = 0;
   let noticeTimer = 0;
+  /// R7:命中栈(光标下重叠窗口,自顶层到底层)与当前高亮层级。
+  let snapStack: ListedWindow[] = [];
+  let snapLevel = 0;
+  /// R7:当前高亮窗口在帧坐标的矩形(悬停高亮/点击吸附/尺寸徽标同源)。
+  let snapRect: Selection | null = null;
+  /// R7:区域模式点击吸附:按下时记录,未拖动则松开即确认高亮窗口。
+  let snapPressPoint: { x: number; y: number } | null = null;
+  let snapClickPending = false;
+  /// R7:点击吸附与自由拖选的判别阈值(物理像素,容忍按下抖动)。
+  const SNAP_DRAG_THRESHOLD = 3;
   /// R21:即时标注会话阶段;"select" 拖选区,"annotate" 选区固定后可标注。
   let phase: "select" | "annotate" = "select";
   /// R24:关闭 inlineAnnotation 后覆盖层不提供标注层,保持原有的松开即完成。
@@ -330,7 +344,21 @@ export function mountOverlay(root: HTMLElement): () => void {
         : t("overlay.panel.annotate_unavailable")
     }`;
     const listEl = document.createElement("dl");
-    for (const item of REDUCED_CAPABILITIES) {
+    const items: Array<{ nameKey: CatalogKey; detailKey: CatalogKey }> = [
+      ...REDUCED_CAPABILITIES,
+    ];
+    // R7:控件级吸附不可用时,用同一能力说明机制给出降级说明(窗口级可用
+    // 时说明窗口级路径;完全不可用时给自由框选路径)。
+    if (frame?.snapControlLevel !== true) {
+      items.push({
+        nameKey: "overlay.caps.snap_name",
+        detailKey:
+          frame?.snapWindowLevel === true
+            ? "overlay.caps.snap_detail_window"
+            : "overlay.caps.snap_detail_none",
+      });
+    }
+    for (const item of items) {
       const name = document.createElement("dt");
       name.textContent = t(item.nameKey);
       const detail = document.createElement("dd");
@@ -370,9 +398,11 @@ export function mountOverlay(root: HTMLElement): () => void {
     hint.textContent =
       frame.mode === "window"
         ? t("overlay.hint.window")
-        : reduced
-          ? t("overlay.hint.reduced")
-          : t("overlay.hint.region");
+        : frame.snapWindowLevel === true
+          ? t("overlay.hint.snap")
+          : reduced
+            ? t("overlay.hint.reduced")
+            : t("overlay.hint.region");
   };
 
   // 画布几何由 `canvasGeometry` 唯一决定:fixed 工作区是帧的等比显示框,
@@ -418,6 +448,108 @@ export function mountOverlay(root: HTMLElement): () => void {
     };
   };
 
+  // ---- R7:元素级吸附(Web 覆盖层只枚举窗口级:命中栈即光标下重叠窗口)。----
+
+  /// 悬停吸附可用:窗口模式恒有(现有行为);区域模式由后端下发窗口级能力。
+  const snapHoverEnabled = (): boolean =>
+    frame !== null &&
+    frame.fixed !== true &&
+    (frame.mode === "window" || frame.snapWindowLevel === true);
+
+  /// 光标下重叠窗口,自顶层(Z 序最上)到底层;首个命中即用户实际看到的最上层窗口。
+  const snapStackAt = (x: number, y: number): ListedWindow[] => {
+    if (!frame) {
+      return [];
+    }
+    const view = frame;
+    return view.windows.filter((item) => {
+      const rect = windowRectOnFrame(item, view);
+      return (
+        rect !== null &&
+        x >= rect.x &&
+        y >= rect.y &&
+        x <= rect.x + rect.width &&
+        y <= rect.y + rect.height
+      );
+    });
+  };
+
+  const selectedSnapWindow = (): ListedWindow | null => snapStack[snapLevel] ?? null;
+
+  const refreshSnapRect = (): void => {
+    const picked = selectedSnapWindow();
+    snapRect = frame && picked ? windowRectOnFrame(picked, frame) : null;
+  };
+
+  const sameRect = (a: Selection | null, b: Selection | null): boolean =>
+    a === b ||
+    (a !== null &&
+      b !== null &&
+      a.x === b.x &&
+      a.y === b.y &&
+      a.width === b.width &&
+      a.height === b.height);
+
+  /// 刷新悬停命中栈(层级回到最顶层窗口);窗口模式同步窗口列表高亮。
+  /// 返回高亮是否变化,供调用方决定是否重绘。
+  const updateSnapHover = (x: number, y: number): boolean => {
+    if (!snapHoverEnabled()) {
+      const changed = snapStack.length > 0 || snapRect !== null;
+      snapStack = [];
+      snapLevel = 0;
+      snapRect = null;
+      return changed;
+    }
+    const beforeId = selectedSnapWindow()?.id ?? null;
+    const beforeRect = snapRect;
+    const next = snapStackAt(x, y);
+    const same =
+      next.length === snapStack.length && next.every((item, index) => item.id === snapStack[index].id);
+    if (!same) {
+      snapStack = next;
+      snapLevel = 0;
+    }
+    refreshSnapRect();
+    let changed = !sameRect(beforeRect, snapRect);
+    if (frame?.mode === "window") {
+      const id = selectedSnapWindow()?.id ?? null;
+      if (id !== hoverId) {
+        hoverId = id;
+        markActiveWindow(list, hoverId);
+        changed = changed || id !== beforeId;
+      }
+    }
+    return changed;
+  };
+
+  /// 滚轮在命中栈层级间切换:向下滚进入更底层重叠窗口,向上滚回到更上层
+  /// (与原生壳的父子层级方向一致)。栈内没有更多层级时不消费事件。
+  const cycleSnap = (delta: number): boolean => {
+    if (!snapHoverEnabled() || snapStack.length <= 1) {
+      return false;
+    }
+    const level = clamp(snapLevel + (delta > 0 ? 1 : -1), 0, snapStack.length - 1);
+    if (level === snapLevel) {
+      return false;
+    }
+    snapLevel = level;
+    refreshSnapRect();
+    if (frame?.mode === "window") {
+      hoverId = selectedSnapWindow()?.id ?? null;
+      markActiveWindow(list, hoverId);
+    }
+    scheduleDraw();
+    return true;
+  };
+
+  const clearSnap = (): void => {
+    snapStack = [];
+    snapLevel = 0;
+    snapRect = null;
+    snapClickPending = false;
+    snapPressPoint = null;
+  };
+
   // R2:取字三态由共享模型按帧物理坐标绘制。工作区画布是帧的等比显示框
   // (长图会小于帧),绘制前把画布变换到帧坐标空间,与图像、标注层共用同一
   // frame→画布映射;共享模型按当前变换还原帧空间线宽,视觉比例与预览一致。
@@ -436,6 +568,22 @@ export function mountOverlay(root: HTMLElement): () => void {
     );
     ocrModel.paint(ctx);
     ctx.restore();
+  };
+
+  /// R7:尺寸徽标位置——挂在宿主上,画布在工作区是居中的显示框:
+  /// 位置要加画布左上角偏移;四边钳制保证贴边时徽标完整可见。
+  const placeBadge = (crop: Selection): void => {
+    if (!frame) {
+      return;
+    }
+    badge.hidden = false;
+    badge.textContent = t("overlay.size_format", { width: crop.width, height: crop.height });
+    const host = root.getBoundingClientRect();
+    const rect = canvas.getBoundingClientRect();
+    const cssX = rect.left - host.left + (crop.x / frame.width) * rect.width;
+    const cssY = rect.top - host.top + (crop.y / frame.height) * rect.height;
+    badge.style.left = `${clamp(cssX + 8, 4, Math.max(4, host.width - 88))}px`;
+    badge.style.top = `${clamp(cssY - 28, 12, Math.max(12, host.height - 36))}px`;
   };
 
   const draw = (): void => {
@@ -492,11 +640,41 @@ export function mountOverlay(root: HTMLElement): () => void {
           );
         }
       }
+      // R7:窗口模式下尺寸显示随悬停高亮更新(点击/滚轮选中的窗口)。
+      const hoveredWin = selectedSnapWindow();
+      const hoveredRect = hoveredWin ? windowRectOnFrame(hoveredWin, frame) : null;
+      if (hoveredRect) {
+        placeBadge(hoveredRect);
+      } else {
+        badge.hidden = true;
+      }
       return;
     }
     const crop = roundedRect();
     if (!crop || crop.width < 1 || crop.height < 1) {
-      badge.hidden = true;
+      // R7:区域模式尚无选区时绘制悬停吸附高亮(窗口级)与尺寸徽标。
+      const snap = snapHoverEnabled() ? snapRect : null;
+      if (snap) {
+        const snapMapped = toCanvas(snap.x, snap.y, snap.width, snap.height);
+        ctx.save();
+        ctx.globalAlpha = 0.16;
+        ctx.fillStyle = selectionStroke;
+        ctx.fillRect(snapMapped.x, snapMapped.y, snapMapped.width, snapMapped.height);
+        ctx.restore();
+        strokeWithHalo(
+          ctx,
+          snapMapped.x + 1.25,
+          snapMapped.y + 1.25,
+          snapMapped.width - 2.5,
+          snapMapped.height - 2.5,
+          2.5,
+          selectionStroke,
+          selectionHalo,
+        );
+        placeBadge(snap);
+      } else {
+        badge.hidden = true;
+      }
       return;
     }
     const mapped = toCanvas(crop.x, crop.y, crop.width, crop.height);
@@ -549,16 +727,7 @@ export function mountOverlay(root: HTMLElement): () => void {
       selectionStroke,
       selectionHalo,
     );
-    badge.hidden = false;
-    badge.textContent = t("overlay.size_format", { width: crop.width, height: crop.height });
-    // 徽标挂在宿主上,画布在工作区是居中的显示框:位置要加画布左上角偏移。
-    const host = root.getBoundingClientRect();
-    const rect = canvas.getBoundingClientRect();
-    const cssX = rect.left - host.left + (crop.x / frame.width) * rect.width;
-    const cssY = rect.top - host.top + (crop.y / frame.height) * rect.height;
-    // 四边钳制:选区贴近屏幕任意边缘时徽标完整可见(常数沿用原右/上值)。
-    badge.style.left = `${clamp(cssX + 8, 4, Math.max(4, host.width - 88))}px`;
-    badge.style.top = `${clamp(cssY - 28, 12, Math.max(12, host.height - 36))}px`;
+    placeBadge(crop);
     // R2:取字三态画在最上层(已选 > 当前命中 > 搜索命中)。
     paintOcr();
   };
@@ -590,6 +759,8 @@ export function mountOverlay(root: HTMLElement): () => void {
         : null;
       hoverId = null;
       dragging = false;
+      // R7:上一会话的命中栈/高亮/点击吸附状态不跨会话。
+      clearSnap();
       setFinishing(false);
       // 旧帧位图先摘除,避免重置标注会话触发的重绘读到未加载的新图。
       image = null;
@@ -927,6 +1098,18 @@ export function mountOverlay(root: HTMLElement): () => void {
       resetAnnotationSession();
     }
     const point = physicalPoint(event);
+    // R7:悬停高亮时点击确认该高亮区域(松开前未拖动即采纳;越过阈值转为
+    // 自由框选,见 mousemove)。
+    if (snapRect && snapHoverEnabled()) {
+      snapClickPending = true;
+      snapPressPoint = point;
+      selection = { ...snapRect };
+      hideNotice();
+      scheduleDraw();
+      return;
+    }
+    // 自由拖选优先:清掉悬停高亮与点击吸附状态。
+    clearSnap();
     dragging = true;
     startX = point.x;
     startY = point.y;
@@ -947,14 +1130,29 @@ export function mountOverlay(root: HTMLElement): () => void {
     if (qrModel?.active === true) {
       return;
     }
+    // R7:悬停命中栈(窗口模式恒有;区域模式需窗口级吸附能力,无能力时
+    // 只清掉残留高亮)。
+    if (!dragging && !snapClickPending && updateSnapHover(point.x, point.y)) {
+      scheduleDraw();
+    }
     if (frame.mode === "window") {
-      const nextHover = hitWindow(frame, point.x, point.y);
-      if (nextHover !== hoverId) {
-        hoverId = nextHover;
-        markActiveWindow(list, hoverId);
-        scheduleDraw();
-      }
       return;
+    }
+    // R7:点击吸附中越过阈值 → 从按压点开始自由框选。
+    if (snapClickPending && snapPressPoint) {
+      const moved =
+        Math.abs(point.x - snapPressPoint.x) > SNAP_DRAG_THRESHOLD ||
+        Math.abs(point.y - snapPressPoint.y) > SNAP_DRAG_THRESHOLD;
+      if (moved) {
+        const anchor = snapPressPoint;
+        clearSnap();
+        dragging = true;
+        startX = anchor.x;
+        startY = anchor.y;
+        selection = { x: anchor.x, y: anchor.y, width: 0, height: 0 };
+      } else {
+        return;
+      }
     }
     if (!dragging) {
       return;
@@ -978,6 +1176,13 @@ export function mountOverlay(root: HTMLElement): () => void {
     if (qrModel?.active === true) {
       return;
     }
+    // R7:点击吸附——选区已由高亮矩形填充,松开即确认。
+    if (snapClickPending) {
+      clearSnap();
+      dragging = false;
+      void finishRegion();
+      return;
+    }
     if (!dragging || frame?.fixed) {
       dragging = false;
       return;
@@ -985,6 +1190,24 @@ export function mountOverlay(root: HTMLElement): () => void {
     dragging = false;
     void finishRegion();
   });
+
+  // R7:滚轮在命中栈层级间切换高亮;只监听画布(面板/列表上的滚动不被劫持),
+  // 栈内无更多层级时不消费事件。
+  canvas.addEventListener(
+    "wheel",
+    (event) => {
+      if (!frame || frame.fixed || dragging || snapClickPending) {
+        return;
+      }
+      if (ocrModel?.active === true || qrModel?.active === true) {
+        return;
+      }
+      if (event.deltaY !== 0 && cycleSnap(event.deltaY)) {
+        event.preventDefault();
+      }
+    },
+    { passive: false },
+  );
 
   canvas.addEventListener("click", (event) => {
     if (
@@ -997,7 +1220,8 @@ export function mountOverlay(root: HTMLElement): () => void {
       return;
     }
     const point = physicalPoint(event);
-    const id = hitWindow(frame, point.x, point.y);
+    // R7:确认当前高亮窗口(滚轮可能已切到更底层重叠窗口)。
+    const id = hoverId ?? hitWindow(frame, point.x, point.y);
     if (id) {
       void finishWindow(id);
     }

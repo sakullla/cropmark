@@ -41,9 +41,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SM_CXCURSOR, SM_CYCURSOR, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
     SW_SHOW, SW_SHOWNOACTIVATE, WM_CHAR, WM_CLOSE, WM_DESTROY,
     WM_ERASEBKGND, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN,
-    WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_QUIT,
-    WM_RBUTTONDOWN, WM_SETCURSOR, WM_SETFOCUS, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-    WS_POPUP,
+    WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT,
+    WM_QUIT, WM_RBUTTONDOWN, WM_SETCURSOR, WM_SETFOCUS, WNDCLASSEXW, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_POPUP,
 };
 
 use crate::annotate::Annotation;
@@ -57,6 +57,7 @@ use crate::capture::selection::{
     LogicalKey, Scene, SelectionAction, SelectionEngine, ToolMode,
 };
 use crate::capture::session::QuietAction;
+use crate::capture::snap;
 
 const CLASS: &str = "CropmarkRegionOverlay";
 static CLASS_SERIAL: AtomicU32 = AtomicU32::new(1);
@@ -277,7 +278,17 @@ fn run_shell(
                 // 注入冻结帧 DPI 缩放:chrome(放大镜面板)光标命中需要。
                 engine: SelectionEngine::new(width as u32, height as u32, flags)
                     .with_scale(frame.scale)
-                    .with_annotation_options(annotation_options),
+                    .with_annotation_options(annotation_options)
+                    // R7:元素级吸附(窗口/控件命中栈);平台检测不可用时
+                    // provider 返回空栈,仅自由框选。
+                    .with_snap(
+                        snap::platform_provider(),
+                        crate::capture::snap::SnapContext::new(
+                            (monitor.physical_x, monitor.physical_y),
+                            (monitor.logical_x, monitor.logical_y),
+                            frame.scale,
+                        ),
+                    ),
                 composer,
                 scratch: vec![0; bytes],
                 present_buf: vec![0; bytes],
@@ -1273,6 +1284,21 @@ unsafe extern "system" fn wnd_proc(
             });
             if done {
                 let _ = ReleaseCapture();
+                PostQuitMessage(0);
+            }
+            LRESULT(0)
+        }
+        // R7:滚轮在命中栈父子层级间切换高亮;引擎在无高亮时忽略。
+        WM_MOUSEWHEEL => {
+            let delta = ((wparam.0 >> 16) as i16) as i32;
+            let done = STATE.with(|slot| {
+                let mut guard = slot.borrow_mut();
+                let Some(state) = guard.as_mut() else {
+                    return false;
+                };
+                feed_event(state, InputEvent::Wheel { delta }, hwnd)
+            });
+            if done {
                 PostQuitMessage(0);
             }
             LRESULT(0)

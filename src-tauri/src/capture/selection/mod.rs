@@ -15,6 +15,7 @@ mod text;
 
 use crate::annotate::{Annotation, Point, DEFAULT_COLOR};
 use crate::capture::geometry::PhysicalRect;
+use crate::capture::snap::{FrameSnap, SnapCapability, SnapContext, SnapStack, SnapStep};
 use composer::{ChromeMetrics, IntRect};
 
 /// 选区最小可截尺寸(物理像素),对齐现 Windows 原生路径的 ≥2px。
@@ -516,6 +517,10 @@ pub enum InputEvent {
     Text(String),
     /// IME 组合串更新(未提交);空串表示组合结束。
     Composition(String),
+    /// R7 滚轮:在命中栈的父子层级间切换高亮。`delta > 0` 为向上滚
+    /// (父级方向,更外层窗口),`delta < 0` 为向下滚(子级方向,更深控件);
+    /// 无命中栈/非悬停态时忽略。
+    Wheel { delta: i32 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -558,6 +563,9 @@ pub struct Scene {
     pub menu_anchor: (i32, i32),
     /// 「更多」面板展开(收进的动作列表可见)。
     pub more_open: bool,
+    /// R7:当前悬停吸附高亮(冻结帧物理像素);仅尚无选区、悬停在窗口/控件
+    /// 边界上时存在。尺寸徽标随它更新,点击采纳为选区。
+    pub snap_highlight: Option<PhysicalRect>,
 }
 
 #[derive(Debug, Clone)]
@@ -592,6 +600,14 @@ pub struct SelectionEngine {
     text_edit: Option<TextEdit>,
     /// 已确认图元变更序号:合成器缓存以它 + 选区矩形为失效键。
     revision: u64,
+    /// R7:平台命中 provider 与冻结帧坐标适配器;未注入时无吸附。
+    snap: Option<FrameSnap>,
+    /// R7:当前光标处的命中栈(自最深控件到顶层窗口);悬停态之外为空。
+    snap_stack: SnapStack,
+    /// R7:当前高亮层级(0 = 最深控件;越大越外层),仅在栈非空时有意义。
+    snap_index: usize,
+    /// R7:按下左键时记录的高亮区域;松开前未拖动则采纳为选区(点击确认)。
+    snap_click: Option<PhysicalRect>,
 }
 
 /// 合并工具的当前模式;无模式工具的 `mode_for` 返回 None。
@@ -656,6 +672,10 @@ impl SelectionEngine {
             options: AnnotationOptions::default(),
             text_edit: None,
             revision: 0,
+            snap: None,
+            snap_stack: SnapStack::empty(),
+            snap_index: 0,
+            snap_click: None,
         }
     }
 
@@ -674,6 +694,35 @@ impl SelectionEngine {
     pub fn with_annotation_options(mut self, options: AnnotationOptions) -> Self {
         self.options = options;
         self
+    }
+
+    /// R7:注入平台命中 provider 与显示器几何(帧坐标适配)。未注入或
+    /// 平台检测不可用时,悬停高亮为空,自由框选与像素微调不受影响。
+    pub fn with_snap(
+        mut self,
+        provider: &'static dyn crate::capture::snap::SnapProvider,
+        context: SnapContext,
+    ) -> Self {
+        self.snap = Some(FrameSnap::new(provider, context, (self.width, self.height)));
+        self
+    }
+
+    /// R7:当前平台元素检测能力(壳/会话层可用于能力说明)。
+    pub fn snap_capability(&self) -> Option<SnapCapability> {
+        self.snap.map(FrameSnap::capability)
+    }
+
+    /// R7:当前命中栈(悬停态之外为空)。
+    pub fn snap_stack(&self) -> &SnapStack {
+        &self.snap_stack
+    }
+
+    /// R7:当前高亮区域(帧坐标);无高亮时为 None。
+    pub fn snap_highlight(&self) -> Option<PhysicalRect> {
+        if self.state != EngineState::Idle || self.snap.is_none() {
+            return None;
+        }
+        self.snap_stack.frame_rect(self.snap_index)
     }
 
     /// 已确认图元(相对冻结帧物理像素)。
@@ -843,6 +892,7 @@ impl SelectionEngine {
             menu_open: self.state == EngineState::Menu,
             menu_anchor: self.menu_anchor,
             more_open: self.more_open,
+            snap_highlight: self.snap_highlight(),
         }
     }
 
@@ -850,11 +900,13 @@ impl SelectionEngine {
         match event {
             InputEvent::PointerMove { x, y } => {
                 self.cursor = self.clamp_point(x, y);
+                self.refresh_snap();
                 self.update_drag();
                 EngineOutcome::Redraw
             }
             InputEvent::LeftDown { x, y } => {
                 self.cursor = self.clamp_point(x, y);
+                self.refresh_snap();
                 self.on_left_down()
             }
             InputEvent::LeftUp { x, y } => {
@@ -876,7 +928,51 @@ impl SelectionEngine {
                 }
                 EngineOutcome::Redraw
             }
+            InputEvent::Wheel { delta } => self.on_wheel(delta),
         }
+    }
+
+    /// R7:刷新光标处的命中栈(仅悬停态查询平台 provider)。命中栈变化时
+    /// 高亮回到默认最深层级;无 provider/检测不可用时保持空栈。
+    fn refresh_snap(&mut self) {
+        if self.state != EngineState::Idle {
+            return;
+        }
+        let Some(snap) = self.snap else {
+            return;
+        };
+        let stack = snap.hit(self.cursor.0, self.cursor.1);
+        if stack != self.snap_stack {
+            self.snap_stack = stack;
+            self.snap_index = self.snap_stack.default_index().unwrap_or(0);
+        }
+    }
+
+    /// R7:滚轮在命中栈父子层级间切换高亮(端点钳制)。仅悬停态消费。
+    fn on_wheel(&mut self, delta: i32) -> EngineOutcome {
+        if delta == 0 || self.state != EngineState::Idle || self.snap_stack.is_empty() {
+            return EngineOutcome::Redraw;
+        }
+        let step = if delta > 0 {
+            SnapStep::Parent
+        } else {
+            SnapStep::Child
+        };
+        self.snap_index = self.snap_stack.step(self.snap_index, step);
+        EngineOutcome::Redraw
+    }
+
+    /// R7:命中栈指示的当前高亮区域(不要求悬停态)。
+    fn highlighted_snap(&self) -> Option<PhysicalRect> {
+        self.snap?;
+        self.snap_stack.frame_rect(self.snap_index)
+    }
+
+    /// R7:清空命中栈与高亮(进入拖动/选区/终态时调用)。
+    fn clear_snap(&mut self) {
+        self.snap_stack = SnapStack::empty();
+        self.snap_index = 0;
+        self.snap_click = None;
     }
 
     fn clamp_point(&self, x: i32, y: i32) -> (i32, i32) {
@@ -889,6 +985,10 @@ impl SelectionEngine {
     fn update_drag(&mut self) {
         match self.state {
             EngineState::Dragging { anchor_x, anchor_y } => {
+                // R7:按下后发生拖动即放弃"点击确认高亮",改为自由拖选。
+                if (self.cursor.0, self.cursor.1) != (anchor_x, anchor_y) {
+                    self.snap_click = None;
+                }
                 self.selection = Some(Self::drag_rect(
                     (anchor_x, anchor_y),
                     self.cursor,
@@ -943,6 +1043,9 @@ impl SelectionEngine {
         }
         match self.state {
             EngineState::Idle => {
+                // R7:点击确认当前高亮区域——按下时记住高亮,松开前未拖动则
+                // 采纳为选区;发生拖动则走自由框选。
+                self.snap_click = self.highlighted_snap();
                 self.state = EngineState::Dragging {
                     anchor_x: x,
                     anchor_y: y,
@@ -988,6 +1091,7 @@ impl SelectionEngine {
                     }
                 }
                 // 选区外:清标注并重新拖出新选区(新选区从零开始标注)。
+                self.snap_click = None;
                 self.state = EngineState::Dragging {
                     anchor_x: x,
                     anchor_y: y,
@@ -1020,6 +1124,16 @@ impl SelectionEngine {
     fn on_left_up(&mut self) -> EngineOutcome {
         match self.state {
             EngineState::Dragging { anchor_x, anchor_y } => {
+                // R7:未拖动的点击采纳悬停高亮区域(点击确认);高亮太小时按
+                // 原"太小"路径处理(不产生选区)。
+                if let Some(rect) = self.snap_click.take() {
+                    if rect.width >= MIN_SELECTION_SIZE && rect.height >= MIN_SELECTION_SIZE {
+                        self.selection = Some(rect);
+                        self.state = EngineState::Selected;
+                        self.clear_snap();
+                        return EngineOutcome::Redraw;
+                    }
+                }
                 let rect = Self::drag_rect(
                     (anchor_x, anchor_y),
                     self.cursor,
@@ -1028,6 +1142,7 @@ impl SelectionEngine {
                 if rect.width >= MIN_SELECTION_SIZE && rect.height >= MIN_SELECTION_SIZE {
                     self.selection = Some(rect);
                     self.state = EngineState::Selected;
+                    self.clear_snap();
                 } else {
                     self.selection = None;
                     self.state = EngineState::Idle;
@@ -2173,6 +2288,191 @@ mod tests {
             EngineOutcome::Redraw
         );
         assert!(!engine.scene().toolbar_visible);
+    }
+
+    /// R7 测试 provider:命中栈固定为 控件(20,20,40×30) → 窗口(0,0,320×200),
+    /// 点必须落在画布内(10,10)-(310,190)。
+    #[derive(Debug)]
+    struct TestSnapProvider;
+
+    impl crate::capture::snap::SnapProvider for TestSnapProvider {
+        fn capability(&self) -> SnapCapability {
+            SnapCapability::Full
+        }
+
+        fn hit(&self, _context: SnapContext, x: i32, y: i32) -> SnapStack {
+            use crate::capture::snap::{SnapHit, SnapKind, SnapRect};
+            if (10..=310).contains(&x) && (10..=190).contains(&y) {
+                SnapStack::new(vec![
+                    SnapHit {
+                        kind: SnapKind::Control,
+                        rect: SnapRect::new(20, 20, 40, 30),
+                        label: Some("ok-button".into()),
+                    },
+                    SnapHit {
+                        kind: SnapKind::Window,
+                        rect: SnapRect::new(0, 0, 320, 200),
+                        label: Some("Notes".into()),
+                    },
+                ])
+            } else {
+                SnapStack::empty()
+            }
+        }
+    }
+
+    static TEST_SNAP: TestSnapProvider = TestSnapProvider;
+
+    #[derive(Debug)]
+    struct UnavailableSnapProvider;
+
+    impl crate::capture::snap::SnapProvider for UnavailableSnapProvider {
+        fn capability(&self) -> SnapCapability {
+            SnapCapability::Unavailable {
+                reason_key: "error.capture.snap_unavailable",
+            }
+        }
+
+        fn hit(&self, _context: SnapContext, _x: i32, _y: i32) -> SnapStack {
+            SnapStack::empty()
+        }
+    }
+
+    static UNAVAILABLE_SNAP: UnavailableSnapProvider = UnavailableSnapProvider;
+
+    fn snap_engine() -> SelectionEngine {
+        new_engine().with_snap(&TEST_SNAP, SnapContext::new((0, 0), (0, 0), 1.0))
+    }
+
+    #[test]
+    fn hover_highlights_deepest_hit_and_click_adopts_the_highlight() {
+        let mut engine = snap_engine();
+        engine.handle_event(InputEvent::PointerMove { x: 50, y: 50 });
+        // 默认高亮最深控件(悬停按钮即高亮按钮边界),尺寸显示随高亮更新
+        // 由场景携带的同一矩形驱动。
+        let expected = PhysicalRect {
+            x: 20,
+            y: 20,
+            width: 40,
+            height: 30,
+        };
+        assert_eq!(engine.snap_highlight(), Some(expected));
+        assert_eq!(engine.scene().snap_highlight, Some(expected));
+        assert_eq!(engine.snap_capability(), Some(SnapCapability::Full));
+
+        // 点击(按下/松开无拖动)确认当前高亮区域为选区。
+        engine.handle_event(InputEvent::LeftDown { x: 50, y: 50 });
+        assert_eq!(engine.state(), &EngineState::Dragging { anchor_x: 50, anchor_y: 50 });
+        assert_eq!(engine.handle_event(InputEvent::LeftUp { x: 50, y: 50 }), EngineOutcome::Redraw);
+        assert_eq!(engine.selection(), Some(expected));
+        assert_eq!(engine.state(), &EngineState::Selected);
+        assert_eq!(engine.snap_highlight(), None);
+
+        // 像素微调仍作用于采纳后的选区。
+        engine.handle_event(InputEvent::Key {
+            key: LogicalKey::ArrowRight,
+            shift: false,
+        });
+        assert_eq!(engine.selection().unwrap().x, 21);
+        assert_eq!(
+            engine.handle_event(InputEvent::Key {
+                key: LogicalKey::Enter,
+                shift: false,
+            }),
+            EngineOutcome::Confirmed(PhysicalRect {
+                x: 21,
+                y: 20,
+                width: 40,
+                height: 30,
+            })
+        );
+    }
+
+    #[test]
+    fn wheel_switches_parent_child_levels_and_clamps_at_ends() {
+        let mut engine = snap_engine();
+        engine.handle_event(InputEvent::PointerMove { x: 50, y: 50 });
+        assert_eq!(engine.snap_stack().len(), 2);
+        let control = PhysicalRect {
+            x: 20,
+            y: 20,
+            width: 40,
+            height: 30,
+        };
+        let window = PhysicalRect {
+            x: 0,
+            y: 0,
+            width: 320,
+            height: 200,
+        };
+        // 向上滚 = 父级方向(顶层窗口),到顶后钳制。
+        assert_eq!(engine.handle_event(InputEvent::Wheel { delta: 1 }), EngineOutcome::Redraw);
+        assert_eq!(engine.snap_highlight(), Some(window));
+        engine.handle_event(InputEvent::Wheel { delta: 1 });
+        assert_eq!(engine.snap_highlight(), Some(window));
+        // 向下滚 = 子级方向(更深控件),到底后钳制。
+        engine.handle_event(InputEvent::Wheel { delta: -1 });
+        assert_eq!(engine.snap_highlight(), Some(control));
+        engine.handle_event(InputEvent::Wheel { delta: -1 });
+        assert_eq!(engine.snap_highlight(), Some(control));
+    }
+
+    #[test]
+    fn dragging_away_from_a_highlight_keeps_free_selection() {
+        let mut engine = snap_engine();
+        engine.handle_event(InputEvent::PointerMove { x: 50, y: 50 });
+        assert!(engine.snap_highlight().is_some());
+        engine.handle_event(InputEvent::LeftDown { x: 50, y: 50 });
+        engine.handle_event(InputEvent::PointerMove { x: 200, y: 120 });
+        engine.handle_event(InputEvent::LeftUp { x: 200, y: 120 });
+        // 拖动覆盖点击确认:得到自由框选矩形而不是命中高亮。
+        assert_eq!(
+            engine.selection(),
+            Some(PhysicalRect {
+                x: 50,
+                y: 50,
+                width: 151,
+                height: 71,
+            })
+        );
+        assert_eq!(engine.snap_highlight(), None);
+    }
+
+    #[test]
+    fn unavailable_detection_falls_back_to_free_selection_with_capability_reason() {
+        let mut engine = new_engine().with_snap(&UNAVAILABLE_SNAP, SnapContext::new((0, 0), (0, 0), 1.0));
+        engine.handle_event(InputEvent::PointerMove { x: 50, y: 50 });
+        assert_eq!(engine.snap_highlight(), None);
+        assert_eq!(
+            engine.snap_capability(),
+            Some(SnapCapability::Unavailable {
+                reason_key: "error.capture.snap_unavailable",
+            })
+        );
+        // 检测不可用时滚轮不产生高亮,自由框选照常工作。
+        assert_eq!(engine.handle_event(InputEvent::Wheel { delta: 1 }), EngineOutcome::Redraw);
+        assert_eq!(engine.snap_highlight(), None);
+        drag(&mut engine, (40, 30), (200, 120));
+        assert_eq!(
+            engine.selection(),
+            Some(PhysicalRect {
+                x: 40,
+                y: 30,
+                width: 161,
+                height: 91,
+            })
+        );
+    }
+
+    #[test]
+    fn wheel_without_highlight_is_ignored() {
+        let mut engine = snap_engine();
+        // 光标在无命中区域:滚轮不产生高亮,也不改变选择状态。
+        engine.handle_event(InputEvent::PointerMove { x: 2, y: 2 });
+        assert_eq!(engine.snap_highlight(), None);
+        assert_eq!(engine.handle_event(InputEvent::Wheel { delta: 1 }), EngineOutcome::Redraw);
+        assert_eq!(engine.snap_highlight(), None);
+        assert_eq!(engine.selection(), None);
     }
 
     #[test]

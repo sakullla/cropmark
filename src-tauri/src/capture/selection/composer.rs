@@ -959,8 +959,8 @@ impl Composer {
     }
 
     /// 就地合成;`out` 长度必须与冻结帧一致(先整体写为暗幕)。
-    /// 合成顺序:暗幕→开洞→标注内容→描边→手柄→徽标→统一横条/菜单→放大镜
-    /// →hover 提示。
+    /// 合成顺序:暗幕→开洞→标注内容→描边→手柄→徽标→R7 悬停吸附高亮
+    /// (尚无选区时)→统一横条/菜单→放大镜→hover 提示。
     pub fn compose_into(&self, scene: &Scene, out: &mut [u8]) {
         self.compose_into_inner(scene, None, out, None);
     }
@@ -991,6 +991,7 @@ impl Composer {
         let cursor_follow = !annotating
             && prev.is_some_and(|prev| {
                 prev.selection == scene.selection
+                    && prev.snap_highlight == scene.snap_highlight
                     && prev.toolbar_visible == scene.toolbar_visible
                     && prev.menu_open == scene.menu_open
                     && prev.menu_anchor == scene.menu_anchor
@@ -1030,6 +1031,9 @@ impl Composer {
                         );
                     }
                 }
+            } else if let Some(rect) = scene.snap_highlight {
+                // R7:恢复暗幕会擦掉高亮,按同一矩形重绘(含尺寸徽标)。
+                self.draw_snap_highlight(out, self.width, self.height, rect);
             }
             if scene.menu_open {
                 self.draw_menu(out, self.width, self.height, scene);
@@ -1077,6 +1081,9 @@ impl Composer {
             if scene.toolbar_visible {
                 self.draw_unified_toolbar(out, w, h, selection, scene, overlay);
             }
+        } else if let Some(rect) = scene.snap_highlight {
+            // R7:尚无选区时的悬停吸附高亮(窗口/控件边界 + 尺寸徽标)。
+            self.draw_snap_highlight(out, w, h, rect);
         }
         if scene.menu_open {
             self.draw_menu(out, w, h, scene);
@@ -1111,6 +1118,7 @@ impl Composer {
         };
         let cursor_only = !annotating
             && prev.selection == scene.selection
+            && prev.snap_highlight == scene.snap_highlight
             && prev.toolbar_visible == scene.toolbar_visible
             && prev.menu_open == scene.menu_open
             && prev.menu_anchor == scene.menu_anchor
@@ -1192,6 +1200,10 @@ impl Composer {
                     }
                 }
             }
+        } else if let Some(rect) = scene.snap_highlight {
+            // R7:悬停高亮本身 + 其尺寸徽标(徽标在矩形上方/下方,留出余量)。
+            let pad = self.metrics.badge_margin + 40;
+            bounds = bounds.union(IntRect::from(rect).inflate(pad));
         }
         if scene.menu_open {
             let items = menu_items(scene.flags);
@@ -1510,6 +1522,54 @@ impl Composer {
             font,
             CHROME_TEXT,
         );
+    }
+
+    /// R7:悬停吸附高亮——低透明强调色填充 + 与选区同款晕边描边,并复用
+    /// 尺寸徽标(尺寸显示随高亮更新)。仅在尚无选区时出现。
+    fn draw_snap_highlight(&self, rgba: &mut [u8], w: u32, h: u32, rect: PhysicalRect) {
+        let sel = IntRect::from(rect);
+        if sel.is_empty() {
+            return;
+        }
+        let scheme = system_prefers_dark();
+        let accent = accent_for_scheme(scheme);
+        let halo = halo_for_scheme(scheme);
+        let fill = [accent[0], accent[1], accent[2], 40];
+        let clip = IntRect {
+            x: 0,
+            y: 0,
+            width: w as i32,
+            height: h as i32,
+        };
+        let visible = sel.intersect(clip);
+        for y in visible.y..visible.bottom() {
+            for x in visible.x..visible.right() {
+                blend(rgba, w, h, x, y, fill);
+            }
+        }
+        paint_outline_band(
+            rgba,
+            w,
+            h,
+            sel.x - 2,
+            sel.y - 2,
+            sel.right() - 1 + 2,
+            sel.bottom() - 1 + 2,
+            2,
+            halo,
+        );
+        paint_outline_band(
+            rgba,
+            w,
+            h,
+            sel.x,
+            sel.y,
+            sel.right() - 1,
+            sel.bottom() - 1,
+            2,
+            accent,
+        );
+        self.draw_size_badge(rgba, w, h, rect);
     }
 
     /// 动作图标:长截图与录屏没有位图资产,用几何笔画(长截图=竖框+箭头、
@@ -2280,6 +2340,7 @@ mod tests {
             menu_open: false,
             menu_anchor: (0, 0),
             more_open: false,
+            snap_highlight: None,
         }
     }
 
@@ -2300,6 +2361,56 @@ mod tests {
             text_size: 22.0,
             text_input: true,
         }
+    }
+
+    /// R7:悬停吸附高亮在无选区时绘制(边界描边 + 尺寸徽标),脏矩形合成
+    /// 与整帧合成逐像素一致,高亮消失后能恢复暗幕。
+    #[test]
+    fn snap_highlight_draws_without_selection_and_dirty_compose_matches() {
+        let composer = Composer::new(&solid_frame(320, 200, [30, 30, 30, 255])).unwrap();
+        let highlight = PhysicalRect {
+            x: 40,
+            y: 30,
+            width: 120,
+            height: 90,
+        };
+        let idle = Scene {
+            selection: None,
+            cursor: (10, 10),
+            flags: no_magnifier_flags(),
+            toolbar_visible: false,
+            menu_open: false,
+            menu_anchor: (0, 0),
+            more_open: false,
+            snap_highlight: None,
+        };
+        let hovered = Scene {
+            snap_highlight: Some(highlight),
+            ..idle
+        };
+        let overlay = annotation_overlay(&[], None, None, 0);
+        let full_idle = composer.compose_with_overlay(&idle, &overlay);
+        let full_hovered = composer.compose_with_overlay(&hovered, &overlay);
+        // 高亮可见:矩形边界描边与尺寸徽标改变像素。
+        assert_ne!(full_idle, full_hovered);
+
+        // 脏矩形路径:无 → 高亮 → 无,结果必须与整帧合成一致。
+        let mut buf = composer.dimmed.clone();
+        let first = composer.compose_into_dirty(&idle, &overlay, &mut buf, None);
+        assert_eq!(
+            first,
+            IntRect {
+                x: 0,
+                y: 0,
+                width: 320,
+                height: 200,
+            }
+        );
+        assert_eq!(buf, full_idle);
+        let _ = composer.compose_into_dirty(&hovered, &overlay, &mut buf, Some(&idle));
+        assert_eq!(buf, full_hovered);
+        let _ = composer.compose_into_dirty(&idle, &overlay, &mut buf, Some(&hovered));
+        assert_eq!(buf, full_idle);
     }
 
     /// R21 核心一致性:合成器在选区内绘制已确认图元的结果,必须与最终
@@ -2440,6 +2551,7 @@ mod tests {
             menu_open: false,
             menu_anchor: (0, 0),
             more_open: false,
+            snap_highlight: None,
         };
         let composed = composer.compose_with_overlay(&scene, &overlay);
         let panel = magnifier_rect(cursor, (w, h), 1.0);
@@ -2462,6 +2574,7 @@ mod tests {
             menu_open: true,
             menu_anchor: cursor,
             more_open: false,
+            snap_highlight: None,
         };
         let composed = composer.compose_with_overlay(&scene, &overlay);
         let items = menu_items(flags);
@@ -2539,6 +2652,7 @@ mod tests {
             menu_open: false,
             menu_anchor: (0, 0),
             more_open: more,
+            snap_highlight: None,
         };
         // 面板内深色图标像素计数(亮铬面板上的深墨图标)。
         let panel_ink = |bytes: &[u8], more: bool| {
@@ -3219,6 +3333,7 @@ mod tests {
             menu_open: false,
             menu_anchor: (0, 0),
             more_open: false,
+            snap_highlight: None,
         };
         let composed = composer.compose(&scene);
         let read = |x: i32, y: i32| {
@@ -3405,6 +3520,7 @@ mod tests {
             menu_open: false,
             menu_anchor: (0, 0),
             more_open: false,
+            snap_highlight: None,
         };
         let composed = composer.compose(&scene);
         let panel = magnifier_rect((200, 150), (400, 300), 1.0);
@@ -3446,6 +3562,7 @@ mod tests {
             menu_open: false,
             menu_anchor: (0, 0),
             more_open: false,
+            snap_highlight: None,
         };
         let composed = composer.compose(&scene);
         let panel = magnifier_rect((300, 200), (600, 400), 1.5);
@@ -3483,6 +3600,7 @@ mod tests {
             menu_open: false,
             menu_anchor: (0, 0),
             more_open: false,
+            snap_highlight: None,
         };
         let full_selected = composer.compose_with_overlay(&selected, &overlay);
         let mut dirty_buf = composer.dimmed.clone();
@@ -3506,6 +3624,7 @@ mod tests {
             menu_open: false,
             menu_anchor: (0, 0),
             more_open: false,
+            snap_highlight: None,
         };
         let idle_b = Scene {
             cursor: (100, 90),
@@ -3570,6 +3689,7 @@ mod tests {
             menu_open: false,
             menu_anchor: (0, 0),
             more_open: false,
+            snap_highlight: None,
         };
         let scene_b = Scene {
             cursor: (320, 50),
@@ -3613,6 +3733,7 @@ mod tests {
             menu_open: false,
             menu_anchor: (0, 0),
             more_open: false,
+            snap_highlight: None,
         };
         let panel = magnifier_rect(cursor, (400, 300), 1.0);
         let layout = mag_layout(1.0);
@@ -3647,6 +3768,7 @@ mod tests {
             menu_open: false,
             menu_anchor: (0, 0),
             more_open: false,
+            snap_highlight: None,
         };
         let composed = composer.compose(&scene);
         let read = |x: i32, y: i32| {
@@ -3678,6 +3800,7 @@ mod tests {
             menu_open: false,
             menu_anchor: (0, 0),
             more_open: false,
+            snap_highlight: None,
         };
         let composed = composer.compose(&scene);
         let read = |x: i32, y: i32| {
@@ -3899,6 +4022,7 @@ mod tests {
             menu_open: false,
             menu_anchor: (0, 0),
             more_open: false,
+            snap_highlight: None,
         };
         let composed = composer.compose(&scene);
         let read = |x: i32, y: i32| {
@@ -3984,6 +4108,7 @@ mod tests {
             menu_open: false,
             menu_anchor: (0, 0),
             more_open: false,
+            snap_highlight: None,
         };
         let (action, anchor) = composer
             .hovered_icon(&scene, None, 320, 200)
@@ -4203,6 +4328,7 @@ mod tests {
             menu_open: false,
             menu_anchor: (0, 0),
             more_open: false,
+            snap_highlight: None,
         };
         let composed = composer.compose(&scene);
         let read = |x: i32, y: i32| {
@@ -4234,6 +4360,7 @@ mod tests {
             menu_open: true,
             menu_anchor: (20, 20),
             more_open: false,
+            snap_highlight: None,
         };
         let composed = composer.compose(&scene);
         let read = |x: i32, y: i32| {

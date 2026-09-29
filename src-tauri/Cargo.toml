@@ -59,6 +59,9 @@ windows = { version = "0.61", features = [
   "Win32_UI_HiDpi",
   "Win32_UI_Input_Ime",
   "Win32_UI_Input_KeyboardAndMouse",
+  # R7:元素级吸附的控件级命中(UIA;
+  # snap-windows 任务使用 WindowFromPoint + UI Automation)。
+  "Win32_UI_Accessibility",
   "Win32_UI_WindowsAndMessaging",
 ] }
 

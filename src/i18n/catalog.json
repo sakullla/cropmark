@@ -507,6 +507,14 @@
     "zh-CN": "已经开始拼接内容，滚动方向已锁定。",
     "en": "Stitching has started, so the scroll direction is locked."
   },
+  "error.capture.snap_unavailable": {
+    "zh-CN": "当前平台无法检测窗口与控件边界，已回退为自由框选；也可改用窗口截取模式。",
+    "en": "This platform cannot detect window or control boundaries; free dragging is available instead, or use window capture mode."
+  },
+  "error.capture.snap_control_unavailable": {
+    "zh-CN": "控件级检测不可用，已回退窗口级高亮；自由拖选仍可用。",
+    "en": "Control-level detection is unavailable; window-level highlighting is used instead, and free dragging still works."
+  },
   "error.capture.pin_busy": {
     "zh-CN": "正在截取，无法进入贴图再标注。",
     "en": "A capture is in progress; cannot enter pin re-annotation."
@@ -2144,8 +2152,12 @@
     "en": "Confirm Enter"
   },
   "overlay.hint.window": {
-    "zh-CN": "点击要截取的窗口",
-    "en": "Click the window to capture"
+    "zh-CN": "点击要截取的窗口 · 滚轮切换重叠窗口",
+    "en": "Click the window to capture · Scroll to switch overlapping windows"
+  },
+  "overlay.hint.snap": {
+    "zh-CN": "悬停高亮窗口 · 滚轮切换层级 · 点击确认 · 拖动自由框选",
+    "en": "Hover to highlight a window · Scroll to switch levels · Click to confirm · Drag to select freely"
   },
   "overlay.hint.reduced": {
     "zh-CN": "拖出矩形截取区域 · Enter 确认 · Esc 取消",
@@ -2286,6 +2298,18 @@
   "overlay.caps.nudge_detail": {
     "zh-CN": "不可用；请重新拖选，或按 Esc 取消后重来。",
     "en": "Unavailable; drag again, or press Esc and start over."
+  },
+  "overlay.caps.snap_name": {
+    "zh-CN": "元素级吸附（控件级）",
+    "en": "Element snapping (control level)"
+  },
+  "overlay.caps.snap_detail_window": {
+    "zh-CN": "控件级检测不可用；窗口级高亮、滚轮切换与点击吸附可用。",
+    "en": "Control-level detection is unavailable; window highlighting, scroll switching, and click-to-snap still work."
+  },
+  "overlay.caps.snap_detail_none": {
+    "zh-CN": "元素吸附不可用；请自由拖选，或改用全屏截取。",
+    "en": "Element snapping is unavailable; drag freely, or use fullscreen capture instead."
   },
   "overlay.error.capture_failed": {
     "zh-CN": "截取失败。",
