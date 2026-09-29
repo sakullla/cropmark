@@ -438,20 +438,27 @@ unsafe fn monitor_scale_at(x: i32, y: i32) -> f64 {
     }
 }
 
-unsafe extern "system" fn enum_windows_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
-    let collected = &mut *(lparam.0 as *mut Vec<ListedWindow>);
-    if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
-        return BOOL::from(true);
+/// 单个顶层窗口的可截取快照,过滤规则与 `EnumWindows` 列表完全同源(可见、
+/// 非最小化、非工具窗、无属主、非 DWM cloaked、有标题、非零尺寸);
+/// `owner_is_self` 标记本进程窗口,是否排除由调用方决定。R7 元素吸附 provider
+/// 用它判断悬停点下的窗口能否作为吸附目标,避免两处过滤规则漂移。
+pub fn selectable_window(hwnd: HWND) -> Option<ListedWindow> {
+    unsafe { selectable_window_unchecked(hwnd) }
+}
+
+unsafe fn selectable_window_unchecked(hwnd: HWND) -> Option<ListedWindow> {
+    if hwnd.is_invalid() || !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
+        return None;
     }
     let ex = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
     if ex & WS_EX_TOOLWINDOW.0 != 0 {
-        return BOOL::from(true);
+        return None;
     }
     if GetWindow(hwnd, GW_OWNER)
         .ok()
         .is_some_and(|owner| !owner.is_invalid())
     {
-        return BOOL::from(true);
+        return None;
     }
     let mut cloaked = 0u32;
     let _ = DwmGetWindowAttribute(
@@ -461,27 +468,27 @@ unsafe extern "system" fn enum_windows_callback(hwnd: HWND, lparam: LPARAM) -> B
         size_of::<u32>() as u32,
     );
     if cloaked != 0 {
-        return BOOL::from(true);
+        return None;
     }
     let mut rect = RECT::default();
     if GetWindowRect(hwnd, &mut rect).is_err() {
-        return BOOL::from(true);
+        return None;
     }
     let width = (rect.right - rect.left).max(0) as u32;
     let height = (rect.bottom - rect.top).max(0) as u32;
     if width == 0 || height == 0 {
-        return BOOL::from(true);
+        return None;
     }
     let mut title = [0u16; 512];
     let len = GetWindowTextW(hwnd, &mut title);
     if len <= 0 {
-        return BOOL::from(true);
+        return None;
     }
     let title = String::from_utf16_lossy(&title[..len as usize]);
     let mut pid = 0u32;
     GetWindowThreadProcessId(hwnd, Some(&mut pid));
     let self_pid = GetCurrentProcessId();
-    collected.push(ListedWindow {
+    Some(ListedWindow {
         id: format!("{}", hwnd.0 as usize),
         title,
         pid,
@@ -491,7 +498,14 @@ unsafe extern "system" fn enum_windows_callback(hwnd: HWND, lparam: LPARAM) -> B
         height,
         visible: true,
         owner_is_self: pid == self_pid,
-    });
+    })
+}
+
+unsafe extern "system" fn enum_windows_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    if let Some(window) = selectable_window_unchecked(hwnd) {
+        let collected = &mut *(lparam.0 as *mut Vec<ListedWindow>);
+        collected.push(window);
+    }
     BOOL::from(true)
 }
 

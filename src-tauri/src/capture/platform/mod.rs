@@ -61,6 +61,9 @@ use linux as backend;
 use macos as backend;
 #[cfg(windows)]
 use win as backend;
+/// R7:单个顶层窗口的可截取快照(与窗口列表过滤同源),元素吸附 provider 消费。
+#[cfg(windows)]
+pub(crate) use win::selectable_window;
 
 #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 mod backend {

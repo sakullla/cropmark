@@ -52,6 +52,9 @@ windows = { version = "0.61", features = [
   "Win32_Graphics_Dwm",
   "Win32_Graphics_Gdi",
   "Win32_Security",
+  # R7:snap-windows 的 UIA 客户端需要 CoInitializeEx/CoCreateInstance;
+  # 其它依赖已间接启用,这里显式声明避免传递性 feature 被上游改动后失联。
+  "Win32_System_Com",
   "Win32_System_DataExchange",
   "Win32_System_LibraryLoader",
   "Win32_System_SystemInformation",
