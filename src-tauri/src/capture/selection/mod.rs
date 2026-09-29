@@ -196,10 +196,9 @@ impl AnnotationTool {
     }
 }
 
-/// R5/R19:标注工具逐项开关。合并工具(line/pen/blur)不单列,其入口随
-/// 保留工具(arrow/highlighter/mosaic)的开关出现/隐藏。R9 移除设置开关后
-/// 默认全开,运行时固定传入 `default()`;字段作为壳/合成器能力契约保留,
-/// 测试可构造子集验证工具条裁剪。
+/// 标注工具逐项开关。合并工具(line/pen/blur)不单列,其入口随
+/// 保留工具(arrow/highlighter/mosaic)的开关出现/隐藏。
+/// 主行默认只有常用项。序号、聚光灯、放大镜、气泡、贴纸、擦除默认出现在「更多」里。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ToolToggles {
     pub arrow: bool,
@@ -350,6 +349,12 @@ pub struct FeatureFlags {
     /// R3:录屏入口;由设置里的录屏开关门控(默认关闭),关闭时选区不出现
     /// 录屏动作,也不产生录制行为。
     pub recording: bool,
+    /// 「更多」里的直线。关闭后不出现,快捷键也不切换到直线。
+    pub mode_line: bool,
+    /// 「更多」里的模糊。关闭后不出现,快捷键也不切换到模糊。
+    pub mode_blur: bool,
+    /// 「更多」里的识别二维码。
+    pub qr_entry: bool,
     /// R5/R19/R9:标注工具逐项开关(注册表 12 项);默认全开,关闭的工具
     /// 不进工具条/「更多」面板/快捷键,已创建标注的渲染与编辑不受影响。
     pub tools: ToolToggles,
@@ -370,6 +375,9 @@ impl Default for FeatureFlags {
             long_capture: false,
             // 默认不出现录屏入口:运行时由会话层按设置开关注入(R3)。
             recording: false,
+            mode_line: true,
+            mode_blur: true,
+            qr_entry: true,
             tools: ToolToggles::default(),
         }
     }
@@ -1851,6 +1859,14 @@ impl SelectionEngine {
         self.draft = None;
     }
 
+    fn mode_entry_enabled(&self, mode: ToolMode) -> bool {
+        match mode {
+            ToolMode::Line => self.flags.mode_line,
+            ToolMode::Blur => self.flags.mode_blur,
+            _ => true,
+        }
+    }
+
     /// 模式入口(直线/画笔/模糊):选中所属保留工具并切换到该等效模式;
     /// 不做再次点击取消(与预览编辑器模式按钮一致)。
     fn select_mode(&mut self, mode: ToolMode) {
@@ -1858,6 +1874,7 @@ impl SelectionEngine {
         if !self.flags.inline_annotation
             || self.selection.is_none()
             || !self.flags.tools.enabled(tool)
+            || !self.mode_entry_enabled(mode)
         {
             return;
         }
@@ -4174,12 +4191,11 @@ mod tests {
         }
     }
 
-    /// R9:标注工具开关移除后全部工具常开。
     #[test]
-    fn tool_toggles_default_to_all_enabled() {
+    fn tool_toggles_default_on_for_primary_and_more() {
         let toggles = ToolToggles::default();
         for tool in AnnotationTool::ALL {
-            assert!(toggles.enabled(tool), "{tool:?} 应常开");
+            assert!(toggles.enabled(tool), "{tool:?} 应默认可用");
         }
     }
 
@@ -4212,7 +4228,18 @@ mod tests {
 
     #[test]
     fn number_tool_places_incrementing_values_and_reuses_after_undo() {
-        let mut engine = inline_engine(800, 600).with_annotation_options(AnnotationOptions {
+        let mut engine = SelectionEngine::new(
+            800,
+            600,
+            FeatureFlags {
+                tools: ToolToggles {
+                    number: true,
+                    ..ToolToggles::default()
+                },
+                ..FeatureFlags::default()
+            },
+        )
+        .with_annotation_options(AnnotationOptions {
             text_input: true,
             number_start: 5,
             ..AnnotationOptions::default()

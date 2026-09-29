@@ -153,6 +153,11 @@
   min-width: 0;
 }
 
+.preview-tools .annotation-more-panel {
+  flex-wrap: wrap;
+  max-width: min(420px, calc(100vw - 24px));
+}
+
 .preview-actions {
   margin-left: auto;
   flex-wrap: wrap;

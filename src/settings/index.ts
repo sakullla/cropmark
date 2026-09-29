@@ -2,6 +2,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { autostartHelp, hotkeyErrorText } from "../errors";
+import type { AnnotationTool } from "../annotation";
 import { t, type CatalogKey } from "../i18n";
 import { icons } from "../icons";
 
@@ -35,6 +36,7 @@ export interface CaptureSettings {
   delaySeconds: number;
   captureCursor: boolean;
   multiMonitor: boolean;
+  longCapture: boolean;
 }
 
 export interface HistorySettings {
@@ -75,6 +77,49 @@ export interface RecordingSettings {
   format: RecordingFormat;
 }
 
+/// 选区工具开关。关闭只是不放进工具条，工具本身还在。
+export interface RegionTools {
+  arrow: boolean;
+  rect: boolean;
+  ellipse: boolean;
+  highlighter: boolean;
+  mosaic: boolean;
+  text: boolean;
+  number: boolean;
+  spotlight: boolean;
+  magnifier: boolean;
+  bubble: boolean;
+  sticker: boolean;
+  erase: boolean;
+  line: boolean;
+  blur: boolean;
+  pin: boolean;
+  ocr: boolean;
+  qr: boolean;
+}
+
+export type RegionToolId = AnnotationTool | "line" | "blur" | "pin" | "ocr" | "qr";
+
+export const REGION_TOOL_FIELDS: { id: RegionToolId; labelKey: CatalogKey }[] = [
+  { id: "arrow", labelKey: "selection.tool.arrow" },
+  { id: "rect", labelKey: "selection.tool.rect" },
+  { id: "ellipse", labelKey: "selection.tool.ellipse" },
+  { id: "highlighter", labelKey: "selection.tool.highlighter" },
+  { id: "mosaic", labelKey: "selection.tool.mosaic" },
+  { id: "text", labelKey: "selection.tool.text" },
+  { id: "number", labelKey: "selection.tool.number" },
+  { id: "spotlight", labelKey: "selection.tool.spotlight" },
+  { id: "magnifier", labelKey: "selection.tool.magnifier" },
+  { id: "bubble", labelKey: "selection.tool.bubble" },
+  { id: "sticker", labelKey: "selection.tool.sticker" },
+  { id: "erase", labelKey: "selection.tool.erase" },
+  { id: "line", labelKey: "selection.tool.line" },
+  { id: "blur", labelKey: "selection.tool.blur" },
+  { id: "pin", labelKey: "selection.action.pin" },
+  { id: "ocr", labelKey: "selection.action.ocr" },
+  { id: "qr", labelKey: "selection.action.qr" },
+];
+
 export interface TrayState {
   available: boolean;
   message: string | null;
@@ -93,6 +138,7 @@ export interface UiSettings {
   export: ExportSettings;
   pin: PinSettings;
   recording: RecordingSettings;
+  regionTools: RegionTools;
   tray: TrayState;
   language: string;
   resolvedLanguage: string;
@@ -232,6 +278,20 @@ export function mountSettings(root: HTMLElement): () => void {
                     </div>
                     ${switchMarkup("capture-option", "multiMonitor", "multi-monitor-label", true)}
                   </div>
+                  <div class="setting-row">
+                    <div>
+                      <div class="label" id="long-capture-label" data-i18n="settings.capture.long_capture_label">长截图</div>
+                      <p class="hint" data-i18n="settings.capture.long_capture_hint">开启后托盘和选区出现长截图入口。</p>
+                    </div>
+                    ${switchMarkup("capture-option", "longCapture", "long-capture-label", false)}
+                  </div>
+                  <div class="setting-row">
+                    <div>
+                      <div class="label" id="region-tools-title" data-i18n="settings.region_tools.title">选区工具</div>
+                      <p class="hint" data-i18n="settings.region_tools.hint">决定区域截图工具条和「更多」里显示哪些项。</p>
+                    </div>
+                  </div>
+                  <div class="choices" data-region-tools role="group" aria-labelledby="region-tools-title"></div>
                 </section>
                 <section class="block" aria-labelledby="recording-title">
                   <h2 id="recording-title" data-i18n="settings.recording.title">录屏</h2>
@@ -440,6 +500,7 @@ export function mountSettings(root: HTMLElement): () => void {
   const delayErrorEl = root.querySelector("[data-capture-error]");
   const captureCursorEl = root.querySelector("[data-capture-option=captureCursor]");
   const multiMonitorEl = root.querySelector("[data-capture-option=multiMonitor]");
+  const longCaptureEl = root.querySelector("[data-capture-option=longCapture]");
   const historyEnabledEl = root.querySelector("[data-history=enabled]");
   const historyLimitEl = root.querySelector("[data-history=limit]");
   const historyErrorEl = root.querySelector("[data-history-error]");
@@ -455,6 +516,7 @@ export function mountSettings(root: HTMLElement): () => void {
   const pinRestoreEl = root.querySelector("[data-pin-option=restore]");
   const recordingEnabledEl = root.querySelector("[data-recording-option=enabled]");
   const recordingFormatsEl = root.querySelector("[data-recording-formats]");
+  const regionToolsEl = root.querySelector("[data-region-tools]");
   const openGuideEl = root.querySelector("[data-action=open-guide]");
   const logPathEl = root.querySelector("[data-log-path]");
   const openLogsEl = root.querySelector("[data-action=open-logs]");
@@ -474,6 +536,7 @@ export function mountSettings(root: HTMLElement): () => void {
     !(delayErrorEl instanceof HTMLElement) ||
     !(captureCursorEl instanceof HTMLButtonElement) ||
     !(multiMonitorEl instanceof HTMLButtonElement) ||
+    !(longCaptureEl instanceof HTMLButtonElement) ||
     !(historyEnabledEl instanceof HTMLButtonElement) ||
     !(historyLimitEl instanceof HTMLInputElement) ||
     !(historyErrorEl instanceof HTMLElement) ||
@@ -489,6 +552,7 @@ export function mountSettings(root: HTMLElement): () => void {
     !(pinRestoreEl instanceof HTMLButtonElement) ||
     !(recordingEnabledEl instanceof HTMLButtonElement) ||
     !(recordingFormatsEl instanceof HTMLElement) ||
+    !(regionToolsEl instanceof HTMLElement) ||
     !(openGuideEl instanceof HTMLButtonElement) ||
     !(logPathEl instanceof HTMLElement) ||
     !(openLogsEl instanceof HTMLButtonElement) ||
@@ -517,6 +581,7 @@ export function mountSettings(root: HTMLElement): () => void {
     delaySeconds: 0,
     captureCursor: false,
     multiMonitor: true,
+    longCapture: false,
   };
   let historySettings: HistorySettings = {
     enabled: true,
@@ -530,6 +595,25 @@ export function mountSettings(root: HTMLElement): () => void {
   };
   let pinSettings: PinSettings = { restore: false };
   let recordingSettings: RecordingSettings = { ...DEFAULT_RECORDING };
+  let regionTools: RegionTools = {
+    arrow: true,
+    rect: true,
+    ellipse: true,
+    highlighter: true,
+    mosaic: true,
+    text: true,
+    number: true,
+    spotlight: true,
+    magnifier: true,
+    bubble: true,
+    sticker: true,
+    erase: true,
+    line: true,
+    blur: true,
+    pin: true,
+    ocr: true,
+    qr: true,
+  };
 
   const syncSwitch = (button: HTMLButtonElement, on: boolean): void => {
     button.setAttribute("aria-checked", on ? "true" : "false");
@@ -604,6 +688,30 @@ export function mountSettings(root: HTMLElement): () => void {
     clearDelayError();
     syncSwitch(captureCursorEl, capture.captureCursor);
     syncSwitch(multiMonitorEl, capture.multiMonitor);
+    syncSwitch(longCaptureEl, capture.longCapture);
+  };
+
+  const renderRegionTools = (tools: RegionTools): void => {
+    regionTools = tools;
+    const active =
+      document.activeElement instanceof HTMLButtonElement
+        ? (document.activeElement.dataset.regionTool ?? null)
+        : null;
+    regionToolsEl.replaceChildren();
+    for (const field of REGION_TOOL_FIELDS) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "choice";
+      button.dataset.regionTool = field.id;
+      button.textContent = t(field.labelKey);
+      const on = tools[field.id];
+      button.setAttribute("aria-pressed", on ? "true" : "false");
+      button.classList.toggle("selected", on);
+      regionToolsEl.append(button);
+    }
+    if (active) {
+      regionToolsEl.querySelector<HTMLButtonElement>(`[data-region-tool="${active}"]`)?.focus();
+    }
   };
 
   const showHistoryError = (message: string): void => {
@@ -777,6 +885,7 @@ export function mountSettings(root: HTMLElement): () => void {
     helpEl.classList.toggle("error-text", Boolean(settings.autostart.message));
 
     renderCapture(settings.capture);
+    renderRegionTools(settings.regionTools);
     renderHistory(settings.history);
     renderExport(settings);
     renderPin(settings.pin);
@@ -912,6 +1021,18 @@ export function mountSettings(root: HTMLElement): () => void {
     }
   };
 
+  const applyRegionTools = async (next: RegionTools): Promise<void> => {
+    setApplying(true);
+    try {
+      const settings = await invoke<UiSettings>("set_region_tools", { tools: next });
+      render(settings);
+    } catch (error) {
+      showInvokeError(error);
+    } finally {
+      setApplying(false);
+    }
+  };
+
   const applyCapture = async (next: CaptureSettings): Promise<void> => {
     setApplying(true);
     try {
@@ -1021,6 +1142,33 @@ export function mountSettings(root: HTMLElement): () => void {
     }
     const next = multiMonitorEl.getAttribute("aria-checked") !== "true";
     void applyCapture({ ...captureSettings, multiMonitor: next });
+  });
+
+  longCaptureEl.addEventListener("click", () => {
+    if (applying) {
+      return;
+    }
+    const next = longCaptureEl.getAttribute("aria-checked") !== "true";
+    void applyCapture({ ...captureSettings, longCapture: next });
+  });
+
+  regionToolsEl.addEventListener("click", (event) => {
+    if (applying) {
+      return;
+    }
+    const target = event.target;
+    if (!(target instanceof Element)) {
+      return;
+    }
+    const button = target.closest("[data-region-tool]");
+    if (!(button instanceof HTMLButtonElement)) {
+      return;
+    }
+    const id = button.dataset.regionTool as keyof RegionTools | undefined;
+    if (!id || !(id in regionTools)) {
+      return;
+    }
+    void applyRegionTools({ ...regionTools, [id]: !regionTools[id] });
   });
 
   const commitHistoryLimit = (): void => {

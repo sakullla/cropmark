@@ -487,6 +487,10 @@
     "zh-CN": "当前没有进行中的区域截取。",
     "en": "No region capture is in progress."
   },
+  "error.capture.scroll_disabled": {
+    "zh-CN": "长截图已关闭。可在设置的采集里打开。",
+    "en": "Scrolling capture is off. Turn it on in Capture settings."
+  },
   "error.capture.scroll_unsupported": {
     "zh-CN": "当前会话不支持长截图：Wayland 下无法持续获取屏幕内容。请在 X11 会话或 Windows / macOS 上使用。",
     "en": "Scrolling capture is unavailable in this session: continuous screen grabs are not possible on Wayland. Use an X11 session or Windows / macOS."
@@ -1007,6 +1011,18 @@
     "zh-CN": "截图设置已应用",
     "en": "Capture settings applied"
   },
+  "notice.region_tools_applied": {
+    "zh-CN": "选区工具已更新，下一次截图生效",
+    "en": "Region tools updated. They apply on the next capture."
+  },
+  "settings.region_tools.title": {
+    "zh-CN": "选区工具",
+    "en": "Region tools"
+  },
+  "settings.region_tools.hint": {
+    "zh-CN": "决定区域截图工具条和「更多」里显示哪些项。",
+    "en": "Choose which items appear on the region toolbar and in More."
+  },
   "notice.history_applied": {
     "zh-CN": "历史记录设置已应用",
     "en": "History settings applied"
@@ -1138,6 +1154,14 @@
   "settings.capture.multi_monitor_label": {
     "zh-CN": "多屏全屏采集",
     "en": "Multi-monitor fullscreen"
+  },
+  "settings.capture.long_capture_label": {
+    "zh-CN": "长截图",
+    "en": "Scrolling capture"
+  },
+  "settings.capture.long_capture_hint": {
+    "zh-CN": "开启后托盘和选区出现长截图入口。",
+    "en": "Shows scrolling capture in the tray and on the region toolbar."
   },
   "settings.capture.multi_monitor_hint": {
     "zh-CN": "全屏采集可选择指定显示器或全部显示器拼接；关闭后只抓指针所在屏（现状）。",

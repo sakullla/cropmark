@@ -310,6 +310,9 @@ async fn run_capture(
 ) -> Result<(), CaptureError> {
     // R1:长截图需要平台连续抓取能力;Wayland/portal 在隐藏产品界面之前
     // 明确失败并给出文案,不产生剪贴板/历史/磁盘输出。
+    if mode == CaptureMode::LongCapture && !crate::settings::current_capture(app).long_capture {
+        return Err(CaptureError::unavailable("error.capture.scroll_disabled"));
+    }
     if mode == CaptureMode::LongCapture && !platform::scroll_capture_supported() {
         return Err(CaptureError::unavailable(
             "error.capture.scroll_unsupported",
@@ -833,8 +836,19 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
             session.as_ref().map(|current| current.mode)
         })
         .unwrap_or(CaptureMode::Region);
-        let flags =
-            recording_selection_flags(mode, crate::settings::current_recording(&handle).enabled);
+        let mut flags = recording_selection_flags(
+            mode,
+            crate::settings::current_recording(&handle).enabled,
+            crate::settings::current_capture(&handle).long_capture,
+        );
+        let region_tools = crate::settings::current_region_tools(&handle);
+        flags.tools = region_tools_from_settings(region_tools);
+        flags.ocr_entry = region_tools.ocr;
+        flags.pin_entry = region_tools.pin;
+        flags.toolbar_pin = region_tools.pin;
+        flags.mode_line = region_tools.line;
+        flags.mode_blur = region_tools.blur;
+        flags.qr_entry = region_tools.qr;
         // R7:元素检测完全不可用时按现有能力说明机制提示降级(自由框选或
         // 窗口截取模式);LongCapture/Recording 复用本壳但不需要该说明。
         if mode == CaptureMode::Region {
@@ -912,8 +926,8 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
         RegionOutcome::Ocr(rect, annotations) => {
             commit_region_to_workspace(app, rect, annotations, true, false, generation).await
         }
-        // R4:壳上的「识别二维码」提交区域并置 `pending_qr`;工作区打开后
-        // 对冻结帧自动开始本地识别,识别与展示阶段不写剪贴板、不打开链接。
+        // R4:壳上的「识别二维码」提交区域并置 `pending_qr`。二维码打开按图片
+        // 大小的预览并自动识别,不进入全屏冻结层;不写剪贴板、不打开链接。
         RegionOutcome::Qr(rect, annotations) => {
             commit_region_to_workspace(app, rect, annotations, false, true, generation).await
         }
@@ -1243,10 +1257,28 @@ fn snap_fallback_notice_key(capability: super::snap::SnapCapability) -> Option<&
 /// - 长截图模式:只保留「开始长截图」确认路径(壳动作同现状);
 /// - 录屏模式:只保留「录屏」确认路径,避免选区内标注的屏幕坐标与录制区域
 ///   错位(与长截图同构);
-/// - 普通区域模式:长截图常开,录屏动作由设置里的录屏开关门控(默认关闭)。
+/// - 普通区域模式:长截图和录屏都由设置开关门控,默认关闭。
+fn region_tools_from_settings(tools: crate::settings::RegionTools) -> super::selection::ToolToggles {
+    super::selection::ToolToggles {
+        arrow: tools.arrow,
+        rect: tools.rect,
+        ellipse: tools.ellipse,
+        highlighter: tools.highlighter,
+        mosaic: tools.mosaic,
+        text: tools.text,
+        number: tools.number,
+        spotlight: tools.spotlight,
+        magnifier: tools.magnifier,
+        bubble: tools.bubble,
+        sticker: tools.sticker,
+        erase: tools.erase,
+    }
+}
+
 fn recording_selection_flags(
     mode: CaptureMode,
     recording_enabled: bool,
+    long_capture_enabled: bool,
 ) -> super::selection::FeatureFlags {
     match mode {
         CaptureMode::LongCapture => super::selection::FeatureFlags {
@@ -1270,7 +1302,7 @@ fn recording_selection_flags(
             ..super::selection::FeatureFlags::default()
         },
         _ => super::selection::FeatureFlags {
-            long_capture: true,
+            long_capture: long_capture_enabled,
             recording: recording_enabled,
             ..super::selection::FeatureFlags::default()
         },
@@ -2285,10 +2317,20 @@ fn cancel_internal(app: &AppHandle, expected: Option<u64>) -> Result<CancelOutco
 
 /// 已定画面的去向(R2):浮层能挂上工作区动作时停在冻结帧工作区覆盖层
 /// (取字、复制、保存、贴图、进一步编辑都在这里);挂不上时退回预览。
+/// 二维码单独走预览:结果是一段文本,按图片大小的窗口看,不铺满屏幕。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkspaceRoute {
     Overlay,
     Preview,
+}
+
+/// 取字和二维码都打开按图片大小的预览，不进入全屏冻结层。
+pub fn recognition_surface(pending_ocr: bool, pending_qr: bool) -> WorkspaceRoute {
+    if pending_ocr || pending_qr {
+        WorkspaceRoute::Preview
+    } else {
+        WorkspaceRoute::Overlay
+    }
 }
 
 pub fn workspace_route(hosted: bool) -> WorkspaceRoute {
@@ -2324,6 +2366,10 @@ fn deliver_fixed_frame(
         ))
     })?;
     let monitor = monitor.or(session_monitor);
+    // 取字和二维码不进全屏冻结层。标记留在会话里,预览打开后消费并开始识别。
+    if recognition_surface(pending_ocr, pending_qr) == WorkspaceRoute::Preview {
+        return open_workspace_preview(app, frame, annotations, expected);
+    }
     // R19:旧入口开关移除后工作区动作固定全开;分支保留给确实挂不上的宿主。
     let capabilities = ui::OverlayCapabilities::hosted();
     if workspace_route(capabilities.workspace_actions) == WorkspaceRoute::Preview {
@@ -2437,6 +2483,36 @@ pub fn complete_workspace(
         _ => ui::show_toast_key(app, "toast.copied"),
     }
     Ok(())
+}
+
+/// 全屏工作区上的「取字」改去预览:按图片大小打开,并自动开始识别。
+pub fn preview_workspace_ocr(
+    app: &AppHandle,
+    annotations: Vec<Annotation>,
+) -> Result<(), CaptureError> {
+    let frame = workspace_frame(app)?;
+    with_session_mut(app, |session| {
+        if let Some(current) = session.as_mut() {
+            current.pending_ocr = true;
+            current.pending_qr = false;
+        }
+    });
+    open_workspace_preview(app, frame, annotations, None)
+}
+
+/// 全屏工作区上的「识别二维码」改去预览:按图片大小打开,并自动开始识别。
+pub fn preview_workspace_qr(
+    app: &AppHandle,
+    annotations: Vec<Annotation>,
+) -> Result<(), CaptureError> {
+    let frame = workspace_frame(app)?;
+    with_session_mut(app, |session| {
+        if let Some(current) = session.as_mut() {
+            current.pending_ocr = false;
+            current.pending_qr = true;
+        }
+    });
+    open_workspace_preview(app, frame, annotations, None)
 }
 
 /// 进一步编辑:关闭浮层,打开含当前标注的预览,不写剪贴板。R2/R4:覆盖层
@@ -3281,16 +3357,16 @@ mod tests {
     /// 只由设置开关控制;录屏模式不出现即时标注/取字/静默动作与长截图。
     #[test]
     fn recording_selection_flags_gate_the_action_and_reduce_recording_mode_actions() {
-        let off = recording_selection_flags(CaptureMode::Region, false);
+        let off = recording_selection_flags(CaptureMode::Region, false, false);
         assert!(!off.recording);
-        assert!(off.long_capture);
+        assert!(!off.long_capture);
         assert!(off.inline_annotation && off.ocr_entry && off.toolbar_copy && off.toolbar_save);
 
-        let on = recording_selection_flags(CaptureMode::Region, true);
+        let on = recording_selection_flags(CaptureMode::Region, true, true);
         assert!(on.recording);
         assert!(on.long_capture && on.inline_annotation && on.ocr_entry);
 
-        let recording = recording_selection_flags(CaptureMode::Recording, false);
+        let recording = recording_selection_flags(CaptureMode::Recording, false, true);
         assert!(recording.recording);
         assert!(!recording.long_capture);
         assert!(!recording.inline_annotation);
@@ -3298,7 +3374,7 @@ mod tests {
         assert!(!recording.toolbar_copy && !recording.toolbar_save && !recording.toolbar_pin);
 
         // R1:长截图模式的裁剪保持不变,且不带录屏入口。
-        let long = recording_selection_flags(CaptureMode::LongCapture, true);
+        let long = recording_selection_flags(CaptureMode::LongCapture, true, false);
         assert!(long.long_capture);
         assert!(!long.recording);
         assert!(!long.inline_annotation && !long.ocr_entry);
@@ -3318,6 +3394,26 @@ mod tests {
         assert!(!steps.contains(&SessionStep::ShowOverlayOnFreeze));
         assert_eq!(workspace_route(true), WorkspaceRoute::Overlay);
         assert_ne!(workspace_route(true), WorkspaceRoute::Preview);
+    }
+
+    #[test]
+    fn qr_recognition_opens_preview_instead_of_the_fullscreen_overlay() {
+        assert_eq!(
+            recognition_surface(false, true),
+            WorkspaceRoute::Preview
+        );
+        assert_eq!(
+            recognition_surface(true, false),
+            WorkspaceRoute::Preview
+        );
+        assert_eq!(
+            recognition_surface(true, true),
+            WorkspaceRoute::Preview
+        );
+        assert_eq!(
+            recognition_surface(false, false),
+            WorkspaceRoute::Overlay
+        );
     }
 
     #[test]

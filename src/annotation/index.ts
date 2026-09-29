@@ -159,6 +159,8 @@ export interface AnnotationEditorOptions {
   /** R6:宿主变换历史是否有可撤销/可重做步骤(同步工具条按钮启用态)。 */
   canUndoFallback?: () => boolean;
   canRedoFallback?: () => boolean;
+  /** 选区工具配置。缺省时全部工具可见。 */
+  enabledTools?: readonly AnnotationTool[];
 }
 
 export interface AnnotationEditor {
@@ -187,6 +189,8 @@ export interface AnnotationEditor {
   style: () => AnnotationStyle;
   setStyle: (next: Partial<AnnotationStyle>) => void;
   refreshLabels: () => void;
+  /** 按设置显示或收起工具。传入的是要显示的工具，未列出的只是不出现。 */
+  setEnabledTools: (ids: readonly AnnotationTool[]) => void;
 }
 
 export interface ToolModeDefinition {
@@ -1566,8 +1570,15 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
 
   // R9:标注工具去门控常开(与后端 ToolToggles::default 全开一致);
   // 贴纸入口仍只在素材实际可用时出现。
-  const isToolEnabled = (id: AnnotationTool): boolean =>
-    id !== "sticker" || stickerImages.size > 0;
+  let enabledTools: ReadonlySet<AnnotationTool> | null = options.enabledTools
+    ? new Set(options.enabledTools)
+    : null;
+  const isToolEnabled = (id: AnnotationTool): boolean => {
+    if (id === "sticker" && stickerImages.size === 0) {
+      return false;
+    }
+    return enabledTools === null || enabledTools.has(id);
+  };
 
   const modeFor = (id: AnnotationTool): ToolMode | null => {
     const definition = TOOL_BY_ID.get(id);
@@ -1644,7 +1655,9 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
       const value = button.dataset.tool;
       button.hidden = !value || !isAnnotationTool(value) || !isToolEnabled(value);
     });
-    const moreVisible = MORE_TOOLS.some((id) => isToolEnabled(id));
+    const moreVisible =
+      MORE_TOOLS.some((id) => isToolEnabled(id)) ||
+      morePanel.querySelector("button:not([data-tool])") !== null;
     moreRoot.hidden = !moreVisible;
     if (!moreVisible) {
       toggleMorePanel(false);
@@ -2894,6 +2907,16 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     style: () => ({ color: styleColor, width: styleWidth, textSize: styleTextBase, numberStart }),
     setStyle,
     refreshLabels,
+    setEnabledTools: (ids: readonly AnnotationTool[]) => {
+      enabledTools = new Set(ids);
+      if (!isToolEnabled(tool)) {
+        const fallback = ANNOTATION_TOOLS.find((id) => isToolEnabled(id));
+        if (fallback) {
+          setTool(fallback);
+        }
+      }
+      syncToolVisibility();
+    },
   };
 }
 

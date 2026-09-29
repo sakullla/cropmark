@@ -79,6 +79,8 @@ pub struct CaptureSettings {
     /// 全屏截取是否提供「全部显示器 / 指定显示器」子菜单。默认开启;
     /// 关闭时全屏只抓指针所在屏。
     pub multi_monitor: bool,
+    /// 长截图入口。默认关闭;关闭时托盘和选区都不出现长截图。
+    pub long_capture: bool,
 }
 
 impl Default for CaptureSettings {
@@ -87,6 +89,7 @@ impl Default for CaptureSettings {
             delay_seconds: 0,
             capture_cursor: false,
             multi_monitor: true,
+            long_capture: false,
         }
     }
 }
@@ -366,6 +369,9 @@ pub struct StoredSettings {
     pub pin: PinSettings,
     #[serde(default)]
     pub recording: RecordingSettings,
+    /// 选区工具开关。旧配置没有该字段时用常用项默认值。
+    #[serde(default)]
+    pub region_tools: RegionTools,
     #[serde(default)]
     pub last_region: Option<LastRegion>,
     /// 界面语言(R12):`system | zh-CN | en`;未知值按 system 处理。
@@ -430,6 +436,7 @@ pub struct UiSettings {
     pub export: ExportSettings,
     pub pin: PinSettings,
     pub recording: RecordingSettings,
+    pub region_tools: RegionTools,
     pub tray: TrayState,
     pub language: String,
     pub resolved_language: Language,
@@ -446,6 +453,7 @@ pub struct SessionState {
     pub export: Mutex<ExportSettings>,
     pub pin: Mutex<PinSettings>,
     pub recording: Mutex<RecordingSettings>,
+    pub region_tools: Mutex<RegionTools>,
     pub last_region: Mutex<Option<LastRegion>>,
     pub tray: Mutex<TrayState>,
     pub language: Mutex<String>,
@@ -465,6 +473,7 @@ impl SessionState {
             export: Mutex::new(stored.export.sanitized()),
             pin: Mutex::new(stored.pin),
             recording: Mutex::new(stored.recording),
+            region_tools: Mutex::new(stored.region_tools),
             last_region: Mutex::new(stored.last_region.and_then(LastRegion::sanitized)),
             tray: Mutex::new(TrayState::available()),
             language: Mutex::new(sanitize_language(&stored.language)),
@@ -503,6 +512,63 @@ pub fn current_pin(app: &AppHandle) -> PinSettings {
 /// 格式在每次启动录制前读取,无需重启。
 pub fn current_recording(app: &AppHandle) -> RecordingSettings {
     *lock(&app.state::<SessionState>().recording)
+}
+
+/// 选区与预览里出现哪些标注工具。工具实现都保留;关闭的只是不放进工具条。
+/// 主行常用项和「更多」里的序号、聚光灯、放大镜、气泡、贴纸、擦除默认都打开。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct RegionTools {
+    pub arrow: bool,
+    pub rect: bool,
+    pub ellipse: bool,
+    pub highlighter: bool,
+    pub mosaic: bool,
+    pub text: bool,
+    pub number: bool,
+    pub spotlight: bool,
+    pub magnifier: bool,
+    pub bubble: bool,
+    pub sticker: bool,
+    pub erase: bool,
+    /// 「更多」里的直线。
+    pub line: bool,
+    /// 「更多」里的模糊。
+    pub blur: bool,
+    /// 「更多」里的贴图。
+    pub pin: bool,
+    /// 「更多」里的取字。
+    pub ocr: bool,
+    /// 「更多」里的识别二维码。
+    pub qr: bool,
+}
+
+impl Default for RegionTools {
+    fn default() -> Self {
+        Self {
+            arrow: true,
+            rect: true,
+            ellipse: true,
+            highlighter: true,
+            mosaic: true,
+            text: true,
+            number: true,
+            spotlight: true,
+            magnifier: true,
+            bubble: true,
+            sticker: true,
+            erase: true,
+            line: true,
+            blur: true,
+            pin: true,
+            ocr: true,
+            qr: true,
+        }
+    }
+}
+
+pub fn current_region_tools(app: &AppHandle) -> RegionTools {
+    *lock(&app.state::<SessionState>().region_tools)
 }
 
 /// 保存成功后更新导出记忆:扩展名推导出的实际格式、目标目录与本次档位,
@@ -750,6 +816,7 @@ pub fn snapshot(app: &AppHandle) -> UiSettings {
     let export = lock(&state.export).clone();
     let pin = *lock(&state.pin);
     let recording = *lock(&state.recording);
+    let region_tools = *lock(&state.region_tools);
     let tray = lock(&state.tray).clone();
     let language = lock(&state.language).clone();
     let resolved_language = i18n::resolve_setting(&language);
@@ -764,6 +831,7 @@ pub fn snapshot(app: &AppHandle) -> UiSettings {
         export,
         pin,
         recording,
+        region_tools,
         tray,
         language,
         resolved_language,
@@ -859,6 +927,15 @@ pub fn set_pin_settings(app: AppHandle, settings: PinSettings) -> UiSettings {
     snapshot(&app)
 }
 
+/// 选区工具开关。下一次截图和已经打开的预览按新值显示,工具实现不删除。
+#[tauri::command]
+pub fn set_region_tools(app: AppHandle, tools: RegionTools) -> UiSettings {
+    *lock(&app.state::<SessionState>().region_tools) = tools;
+    let applied = i18n::t("notice.region_tools_applied");
+    persist_settings(&app, &applied);
+    snapshot(&app)
+}
+
 /// 设置录屏开关与录制格式(R3):开关默认关闭;入口(托盘/选区)按当前值
 /// 门控,无需重启。托盘菜单按新开关立即重建(与采集设置同语义),选区入口
 /// 与录制启动在打开/开始时读取当前值与格式。
@@ -903,6 +980,7 @@ fn stored_from_state(state: &SessionState) -> StoredSettings {
         export: lock(&state.export).clone(),
         pin: *lock(&state.pin),
         recording: *lock(&state.recording),
+        region_tools: *lock(&state.region_tools),
         last_region: *lock(&state.last_region),
         language: lock(&state.language).clone(),
         onboarding_done: *lock(&state.onboarding_done),
@@ -976,6 +1054,7 @@ mod tests {
                 delay_seconds: 5,
                 capture_cursor: true,
                 multi_monitor: false,
+                long_capture: true,
             },
             history: HistorySettings {
                 enabled: false,
@@ -1000,6 +1079,7 @@ mod tests {
                 enabled: true,
                 format: crate::record::RecordFormat::Mp4,
             },
+            region_tools: RegionTools::default(),
             last_region: Some(LastRegion {
                 x: -640,
                 y: 120,
@@ -1273,6 +1353,7 @@ mod tests {
             export: ExportSettings::default(),
             pin: PinSettings::default(),
             recording: RecordingSettings::default(),
+            region_tools: RegionTools::default(),
             tray: TrayState::available(),
             language: i18n::SYSTEM_LANGUAGE.to_string(),
             resolved_language: Language::ZhCn,

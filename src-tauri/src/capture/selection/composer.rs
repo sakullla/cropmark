@@ -358,7 +358,9 @@ fn capture_actions(flags: FeatureFlags) -> Vec<SelectionAction> {
     if flags.ocr_entry {
         actions.push(SelectionAction::Ocr);
     }
-    actions.push(SelectionAction::Qr);
+    if flags.qr_entry {
+        actions.push(SelectionAction::Qr);
+    }
     actions.push(SelectionAction::Cancel);
     actions
 }
@@ -422,6 +424,12 @@ pub fn more_panel_buttons(flags: FeatureFlags) -> Vec<SelectionAction> {
             if AnnotationTool::PRIMARY.contains(&tool) && tool.default_mode() == Some(mode) {
                 continue;
             }
+            if mode == ToolMode::Line && !flags.mode_line {
+                continue;
+            }
+            if mode == ToolMode::Blur && !flags.mode_blur {
+                continue;
+            }
             buttons.push(SelectionAction::Mode(mode));
         }
         buttons.push(SelectionAction::Delete);
@@ -432,8 +440,9 @@ pub fn more_panel_buttons(flags: FeatureFlags) -> Vec<SelectionAction> {
     if flags.ocr_entry {
         buttons.push(SelectionAction::Ocr);
     }
-    // R4:二维码识别常开(R19 去门控);结果只在工作区/预览面板展示并复制。
-    buttons.push(SelectionAction::Qr);
+    if flags.qr_entry {
+        buttons.push(SelectionAction::Qr);
+    }
     buttons
 }
 
@@ -3167,6 +3176,7 @@ mod tests {
         // 对话气泡/贴纸/内容擦除)。
         let all_tools = FeatureFlags {
             tools: ToolToggles {
+                number: true,
                 spotlight: true,
                 magnifier: true,
                 bubble: true,

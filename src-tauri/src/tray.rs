@@ -417,14 +417,17 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         None::<&str>,
     )?;
     let fullscreen_menu = fullscreen_submenu(app)?;
-    // R9:长截图去门控常开,入口固定在截取子菜单。
-    let long_capture = MenuItem::with_id(
-        app,
-        LONG_CAPTURE_ID,
-        i18n::t("tray.long_capture"),
-        true,
-        None::<&str>,
-    )?;
+    let long_capture = if settings::current_capture(app).long_capture {
+        Some(MenuItem::with_id(
+            app,
+            LONG_CAPTURE_ID,
+            i18n::t("tray.long_capture"),
+            true,
+            None::<&str>,
+        )?)
+    } else {
+        None
+    };
     let delay = delay_submenu(app)?;
     let mut capture_items: Vec<&dyn IsMenuItem<tauri::Wry>> = vec![&region, &last_region, &window];
     if multi_monitor {
@@ -432,7 +435,9 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     } else {
         capture_items.push(&fullscreen);
     }
-    capture_items.push(&long_capture);
+    if let Some(item) = &long_capture {
+        capture_items.push(item);
+    }
     capture_items.push(&delay);
     let capture = Submenu::with_items(app, i18n::t("tray.capture"), true, &capture_items)?;
     // R3:录屏入口与「截取」并列,受开关门控;活动录制时变为停止并保存项。

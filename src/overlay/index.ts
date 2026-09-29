@@ -1046,25 +1046,34 @@ export function mountOverlay(root: HTMLElement): () => void {
   };
 
   const activateWorkspaceOcr = (): void => {
-    if (ocrModel?.active) {
+    if (finishing || ocrModel?.active) {
       return;
     }
-    qrModel?.deactivate();
     editor?.commitText();
     editor?.deactivateTool();
     editor?.clearSelection();
-    ocrModel?.activate();
+    qrModel?.deactivate();
+    setFinishing(true);
+    void invoke("preview_workspace_ocr", { annotations: currentAnnotations() }).catch((error) => {
+      setFinishing(false);
+      showNotice(invokeError(error, t("overlay.error.capture_failed")));
+    });
   };
 
   const activateWorkspaceQr = (): void => {
-    if (qrModel?.active) {
+    if (finishing || qrModel?.active) {
       return;
     }
-    ocrModel?.deactivate();
+    // 二维码不留在全屏冻结层。按图片大小打开预览,预览里自动开始识别。
     editor?.commitText();
     editor?.deactivateTool();
     editor?.clearSelection();
-    qrModel?.activate();
+    ocrModel?.deactivate();
+    setFinishing(true);
+    void invoke("preview_workspace_qr", { annotations: currentAnnotations() }).catch((error) => {
+      setFinishing(false);
+      showNotice(invokeError(error, t("overlay.error.capture_failed")));
+    });
   };
 
   ocrModel = mountOcrModel({

@@ -345,6 +345,22 @@ pub fn complete_workspace(
 }
 
 #[tauri::command]
+pub fn preview_workspace_ocr(
+    app: AppHandle,
+    annotations: Vec<crate::annotate::Annotation>,
+) -> Result<(), CaptureError> {
+    session::preview_workspace_ocr(&app, annotations)
+}
+
+#[tauri::command]
+pub fn preview_workspace_qr(
+    app: AppHandle,
+    annotations: Vec<crate::annotate::Annotation>,
+) -> Result<(), CaptureError> {
+    session::preview_workspace_qr(&app, annotations)
+}
+
+#[tauri::command]
 pub fn edit_workspace_further(
     app: AppHandle,
     annotations: Vec<crate::annotate::Annotation>,

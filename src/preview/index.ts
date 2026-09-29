@@ -4,6 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   annotationToolForKey,
   clampFloatingPanel,
+  isAnnotationTool,
   mountAnnotationEditor,
   readAnnotationDefaults,
   resolveCanvasColor,
@@ -13,6 +14,7 @@ import {
 import { applyTranslations, t, type CatalogKey } from "../i18n";
 import { icons } from "../icons";
 import { mountOcrModel, type OcrDocument, type OcrModel } from "../ocr";
+import { REGION_TOOL_FIELDS, type RegionTools } from "../settings";
 import { mountQrModel, type QrModel } from "../qr";
 import "./preview.css";
 
@@ -73,9 +75,9 @@ export function mountPreview(root: HTMLElement): () => void {
         <div class="preview-action-group" data-preview-group="picture" data-tauri-drag-region="false">
           <button type="button" class="icon-action" data-tool="ocr" data-i18n-title="preview.action.ocr_title" data-i18n-aria-label="preview.action.ocr" aria-label="取字" data-tauri-drag-region="false">${icons.ocr}</button>
           <button type="button" class="icon-action" data-tool="qr" data-i18n-title="preview.action.qr_title" data-i18n-aria-label="preview.action.qr" aria-label="识别二维码" data-tauri-drag-region="false">${icons.qr}</button>
-          <button type="button" class="icon-action" data-action="rotate-left" data-i18n-title="preview.action.rotate_left_title" data-i18n-aria-label="preview.action.rotate_left" aria-label="左旋 90°" data-tauri-drag-region="false">${icons.rotateLeft}</button>
-          <button type="button" class="icon-action" data-action="rotate-right" data-i18n-title="preview.action.rotate_right_title" data-i18n-aria-label="preview.action.rotate_right" aria-label="右旋 90°" data-tauri-drag-region="false">${icons.rotateRight}</button>
-          <button type="button" class="icon-action" data-action="crop" data-i18n-title="preview.action.crop_title" data-i18n-aria-label="preview.action.crop" aria-label="裁剪" data-tauri-drag-region="false">${icons.crop}</button>
+          <button type="button" class="icon-action preview-more-action" data-action="rotate-left" data-i18n-title="preview.action.rotate_left_title" data-i18n-aria-label="preview.action.rotate_left" aria-label="左旋 90°" data-tauri-drag-region="false">${icons.rotateLeft}</button>
+          <button type="button" class="icon-action preview-more-action" data-action="rotate-right" data-i18n-title="preview.action.rotate_right_title" data-i18n-aria-label="preview.action.rotate_right" aria-label="右旋 90°" data-tauri-drag-region="false">${icons.rotateRight}</button>
+          <button type="button" class="icon-action preview-more-action" data-action="crop" data-i18n-title="preview.action.crop_title" data-i18n-aria-label="preview.action.crop" aria-label="裁剪" data-tauri-drag-region="false">${icons.crop}</button>
           <button type="button" class="icon-action" data-action="copy-ocr-all" hidden data-i18n-title="preview.action.copy_all" data-i18n-aria-label="preview.action.copy_all" aria-label="复制全部" data-tauri-drag-region="false">${icons.copy}</button>
         </div>
         <span class="preview-action-sep" aria-hidden="true"></span>
@@ -574,6 +576,48 @@ export function mountPreview(root: HTMLElement): () => void {
     canRedoFallback: () => !cropping && transformRedo && !(editor?.canUndo() ?? false),
   });
 
+  const morePanel = toolbarEl.querySelector("[data-more-panel]");
+  if (morePanel instanceof HTMLElement) {
+    const sep = document.createElement("span");
+    sep.className = "toolbar-sep";
+    sep.setAttribute("aria-hidden", "true");
+    morePanel.append(sep, rotateLeftBtn, rotateRightBtn, cropBtn);
+  }
+
+  const applyRegionTools = (tools: RegionTools): void => {
+    editor?.setEnabledTools(
+      REGION_TOOL_FIELDS.flatMap((field) =>
+        tools[field.id] && isAnnotationTool(field.id) ? [field.id] : [],
+      ),
+    );
+  };
+  applyRegionTools({
+    arrow: true,
+    rect: true,
+    ellipse: true,
+    highlighter: true,
+    mosaic: true,
+    text: true,
+    number: true,
+    spotlight: true,
+    magnifier: true,
+    bubble: true,
+    sticker: true,
+    erase: true,
+    line: true,
+    blur: true,
+    pin: true,
+    ocr: true,
+    qr: true,
+  });
+  void invoke<{ regionTools?: RegionTools }>("get_ui_settings")
+    .then((settings) => {
+      if (settings.regionTools) {
+        applyRegionTools(settings.regionTools);
+      }
+    })
+    .catch(() => undefined);
+
   // R2:共享取字模型(结果面板 + 图上三态 + 显式复制)。面板挂在预览舞台,
   // 与标注编辑器的 isEditable 互斥:取字期间画布输入只给取字。
   ocrModel = mountOcrModel({
@@ -868,6 +912,17 @@ export function mountPreview(root: HTMLElement): () => void {
     }
   });
 
+  const closeTransformMenu = (): void => {
+    const panel = toolbarEl.querySelector("[data-more-panel]");
+    const more = toolbarEl.querySelector("[data-action=more]");
+    if (panel instanceof HTMLElement) {
+      panel.hidden = true;
+    }
+    if (more instanceof HTMLButtonElement) {
+      more.setAttribute("aria-expanded", "false");
+    }
+  };
+
   root.addEventListener("click", (event) => {
     const button = event.target instanceof Element ? event.target.closest("button") : null;
     if (!(button instanceof HTMLButtonElement)) {
@@ -886,14 +941,17 @@ export function mountPreview(root: HTMLElement): () => void {
       return;
     }
     if (button.dataset.action === "rotate-left") {
+      closeTransformMenu();
       void rotate("left");
       return;
     }
     if (button.dataset.action === "rotate-right") {
+      closeTransformMenu();
       void rotate("right");
       return;
     }
     if (button.dataset.action === "crop") {
+      closeTransformMenu();
       if (cropping) {
         exitCrop();
       } else {
