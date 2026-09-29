@@ -41,11 +41,25 @@ impl QrError {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QrCode {
+    /// 解码原文。复制只按这段文本匹配,不使用矩形,也不打开链接。
+    pub text: String,
+    /// 码身轴对齐外接矩形,帧物理像素。没有可用矩形时宽高为 0。
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QrPayload {
     /// 本次识别出的二维码内容,按发现顺序;文本与网址原样返回,不自动打开。
     pub contents: Vec<String>,
+    /// 与 `contents` 对齐的外接矩形。复制仍只认文本。
+    pub codes: Vec<QrCode>,
 }
 
 #[derive(Default)]
@@ -98,7 +112,11 @@ fn recognize_blocking_inner(
 ) -> Result<QrPayload, String> {
     let runtime = app.state::<QrRuntime>();
     match decode_frame(frame) {
-        Ok(contents) => {
+        Ok(codes) => {
+            let contents = codes
+                .iter()
+                .map(|code| code.text.clone())
+                .collect::<Vec<_>>();
             log::info!(
                 "qr recognized codes={} size={}x{}",
                 contents.len(),
@@ -106,7 +124,7 @@ fn recognize_blocking_inner(
                 frame.height
             );
             runtime.store(Some(contents.clone()));
-            Ok(QrPayload { contents })
+            Ok(QrPayload { contents, codes })
         }
         Err(error) => {
             log::warn!("qr failed kind={}", error.key());
@@ -149,7 +167,8 @@ fn accepted_copy<'a>(contents: &'a [String], requested: &str) -> Result<&'a str,
 
 /// 对整帧做灰度化与二维码检测、解码。检测到码但解码失败不视为整体失败:
 /// 只要有一枚可解码就返回;一枚都没有(含无法解码)按「没有二维码」说明。
-pub fn decode_frame(frame: &crate::capture::buffer::Frame) -> Result<Vec<String>, QrError> {
+/// 每枚码带上 `Grid::bounds` 的轴对齐外接矩形,供面板避开码身;复制不使用矩形。
+pub fn decode_frame(frame: &crate::capture::buffer::Frame) -> Result<Vec<QrCode>, QrError> {
     let width = frame.width as usize;
     let height = frame.height as usize;
     if width == 0 || height == 0 || frame.rgba.len() < width * height * 4 {
@@ -160,21 +179,50 @@ pub fn decode_frame(frame: &crate::capture::buffer::Frame) -> Result<Vec<String>
         let index = (y * width + x) * 4;
         luma(rgba[index], rgba[index + 1], rgba[index + 2])
     });
-    let mut contents = Vec::new();
+    let mut codes = Vec::new();
     let mut grids = prepared.detect_grids();
     for grid in grids.iter_mut() {
         let Ok((_meta, text)) = grid.decode() else {
             continue;
         };
-        if !text.is_empty() {
-            contents.push(text);
+        if text.is_empty() {
+            continue;
         }
+        let (x, y, bounds_width, bounds_height) =
+            axis_aligned_bounds(grid.bounds, frame.width as i32, frame.height as i32);
+        codes.push(QrCode {
+            text,
+            x,
+            y,
+            width: bounds_width,
+            height: bounds_height,
+        });
     }
-    if contents.is_empty() {
+    if codes.is_empty() {
         Err(QrError::NoCode)
     } else {
-        Ok(contents)
+        Ok(codes)
     }
+}
+
+/// 四角点的轴对齐外接矩形,并钳进帧内。点序是 rqrr 的
+/// [左上, 右上, 右下, 左下];宽或高为 0 表示没有可用位置。
+fn axis_aligned_bounds(
+    bounds: [rqrr::Point; 4],
+    frame_w: i32,
+    frame_h: i32,
+) -> (i32, i32, i32, i32) {
+    let min_x = bounds.iter().map(|point| point.x).min().unwrap_or(0);
+    let min_y = bounds.iter().map(|point| point.y).min().unwrap_or(0);
+    let max_x = bounds.iter().map(|point| point.x).max().unwrap_or(0);
+    let max_y = bounds.iter().map(|point| point.y).max().unwrap_or(0);
+    let limit_x = frame_w.max(0);
+    let limit_y = frame_h.max(0);
+    let x0 = min_x.clamp(0, limit_x);
+    let y0 = min_y.clamp(0, limit_y);
+    let x1 = max_x.clamp(x0, limit_x);
+    let y1 = max_y.clamp(y0, limit_y);
+    (x0, y0, x1 - x0, y1 - y0)
 }
 
 /// ITU-R BT.601 灰度:整数近似 0.299R + 0.587G + 0.114B。
@@ -229,10 +277,36 @@ mod tests {
     }
 
     #[test]
-    fn decode_generated_qr_returns_exact_content() {
+    fn decode_generated_qr_returns_exact_content_and_bounds() {
         let frame = qr_frame("https://example.com/二维码", 4);
-        let contents = decode_frame(&frame).expect("sample decodes");
-        assert_eq!(contents, vec!["https://example.com/二维码".to_string()]);
+        let codes = decode_frame(&frame).expect("sample decodes");
+        assert_eq!(codes.len(), 1);
+        assert_eq!(codes[0].text, "https://example.com/二维码");
+        assert!(codes[0].width > 0 && codes[0].height > 0);
+        assert!(codes[0].x >= 0 && codes[0].y >= 0);
+        assert!(codes[0].x + codes[0].width <= frame.width as i32);
+        assert!(codes[0].y + codes[0].height <= frame.height as i32);
+        // 静区留白,外接矩形应盖住码身中心,而不是整幅白底或贴死边缘。
+        let mid = frame.width as i32 / 2;
+        let center_x = codes[0].x + codes[0].width / 2;
+        let center_y = codes[0].y + codes[0].height / 2;
+        assert!((center_x - mid).abs() < frame.width as i32 / 5);
+        assert!((center_y - mid).abs() < frame.height as i32 / 5);
+        assert!(codes[0].width > frame.width as i32 / 3);
+        assert!(codes[0].height > frame.height as i32 / 3);
+        assert!(codes[0].width < frame.width as i32);
+        assert!(codes[0].height < frame.height as i32);
+    }
+
+    #[test]
+    fn qr_bounds_are_axis_aligned_and_clamped_to_the_frame() {
+        let bounds = [
+            rqrr::Point { x: -4, y: 2 },
+            rqrr::Point { x: 30, y: -3 },
+            rqrr::Point { x: 28, y: 40 },
+            rqrr::Point { x: 1, y: 36 },
+        ];
+        assert_eq!(axis_aligned_bounds(bounds, 32, 32), (0, 0, 30, 32));
     }
 
     #[test]

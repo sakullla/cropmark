@@ -106,13 +106,13 @@
 
 .overlay-actions button {
   cursor: pointer;
-  border: 1px solid transparent;
+  border: 1px solid var(--line);
   border-radius: var(--radius-pill);
   min-width: 24px;
   min-height: 24px;
   padding: 8px 12px;
-  background: var(--accent);
-  color: var(--on-accent);
+  background: var(--panel);
+  color: var(--ink);
   font: inherit;
   font-size: 13px;
   font-weight: 650;
@@ -122,8 +122,9 @@
 
 /* finishing 期间按钮禁用:可视态走 app.css 共享 button:disabled,
    这里只把 hover/active 反馈限定在非禁用态。 */
-.overlay-actions button:hover:not(:disabled) {
-  filter: var(--control-hover-filter);
+.overlay-actions button:hover:not(:disabled):not(.primary) {
+  border-color: var(--control-hover-border);
+  background: var(--control-hover-bg);
 }
 
 .overlay-actions button:active:not(:disabled) {
@@ -134,20 +135,17 @@
   display: none;
 }
 
-/* “进一步编辑”是中性胶囊:实底与文字都取已定义 token,并在填充主操作之外补中性状态。 */
-.overlay-actions [data-workspace="edit"] {
-  background: var(--panel);
-  color: var(--ink);
-  border-color: var(--line);
+/* 动作行只有复制是实心主操作。其余沿用中性胶囊。这里不放录屏入口。 */
+.overlay-actions button.primary {
+  background: var(--accent);
+  border-color: transparent;
+  color: var(--on-accent);
 }
 
-.overlay-actions [data-workspace="edit"]:hover:not(:disabled) {
-  border-color: var(--control-hover-border);
-  background: var(--control-hover-bg);
-}
-
-.overlay-actions [data-workspace="edit"]:active:not(:disabled) {
-  filter: var(--control-pressed-filter);
+.overlay-actions button.primary:hover:not(:disabled) {
+  background: var(--accent);
+  border-color: transparent;
+  filter: var(--control-hover-filter);
 }
 
 /* R21:即时标注工具条,悬浮在选区下方居中;样式按钮面板向上展开。 */
@@ -201,19 +199,40 @@
   display: none;
 }
 
-/* R2:冻结帧工作区取字面板:浮在画面右侧,不参与画布布局。 */
-.overlay-root > .ocr-panel {
+/* 冻结帧取字/二维码面板:默认右侧。脚本在左右槽里选与结果相交更小的一侧。
+   顶距 64、边距 18 与 placeResultPanel 一致。空间不够时正文在面板内滚动。 */
+.overlay-root > .ocr-panel,
+.overlay-root > .qr-panel {
   position: absolute;
   top: 64px;
   right: 18px;
+  left: auto;
   z-index: 4;
-  width: min(320px, 42vw);
+  display: flex;
+  flex-direction: column;
+  width: min(320px, 42vw, calc(100% - 36px));
   max-height: calc(100% - 92px);
+  min-height: 0;
+  overflow: hidden;
   background: var(--panel);
   pointer-events: auto;
 }
 
-.overlay-root > .ocr-panel[hidden] {
+.overlay-root > .ocr-panel[data-slot="left"],
+.overlay-root > .qr-panel[data-slot="left"] {
+  left: 18px;
+  right: auto;
+}
+
+.overlay-root > .ocr-panel .ocr-panel-text,
+.overlay-root > .qr-panel .qr-panel-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.overlay-root > .ocr-panel[hidden],
+.overlay-root > .qr-panel[hidden] {
   display: none;
 }
 

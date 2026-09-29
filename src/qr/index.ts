@@ -7,8 +7,25 @@ import "./qr.css";
 // 识别只读当前冻结/预览帧,内容展示在结果面板,复制必须由用户显式点击;
 // 无码或失败只给本地化说明,不写剪贴板,也从不打开任何链接。
 
+export interface QrRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface QrCode {
+  text: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export interface QrPayload {
   contents: string[];
+  /** 与内容对齐的帧内矩形。缺失或宽高非正时,面板当作没有位置。 */
+  codes?: QrCode[];
 }
 
 export type QrNoticeKind = "progress" | "hint" | "success" | "error";
@@ -27,6 +44,8 @@ export interface QrModelOptions {
 export interface QrModel {
   readonly active: boolean;
   contents: () => string[] | null;
+  /** 正面积的码身矩形。没有位置时为空,面板留在右侧。 */
+  regions: () => QrRect[];
   isRunning: () => boolean;
   activate: () => void;
   deactivate: () => boolean;
@@ -75,6 +94,7 @@ export function mountQrModel(options: QrModelOptions): QrModel {
         return false;
       },
       contents: () => null,
+      regions: () => [],
       isRunning: () => false,
       activate: () => undefined,
       deactivate: () => false,
@@ -90,6 +110,7 @@ export function mountQrModel(options: QrModelOptions): QrModel {
 
   let active = false;
   let contents: string[] | null = null;
+  let codes: QrCode[] = [];
   let running = false;
   let generation = 0;
   let busy = false;
@@ -116,6 +137,27 @@ export function mountQrModel(options: QrModelOptions): QrModel {
   const setNoticeText = (text: string, kind: QrNoticeKind): void => {
     lastNotice = { key: null, kind };
     notice(text, kind);
+  };
+
+  const readCodes = (result: QrPayload): QrCode[] => {
+    if (!Array.isArray(result.codes)) {
+      return [];
+    }
+    const parsed: QrCode[] = [];
+    for (const code of result.codes) {
+      if (!code || typeof code.text !== "string") {
+        continue;
+      }
+      const x = Number(code.x);
+      const y = Number(code.y);
+      const width = Number(code.width);
+      const height = Number(code.height);
+      if (![x, y, width, height].every((value) => Number.isFinite(value))) {
+        continue;
+      }
+      parsed.push({ text: code.text, x, y, width, height });
+    }
+    return parsed;
   };
 
   const renderPanel = (): void => {
@@ -146,6 +188,7 @@ export function mountQrModel(options: QrModelOptions): QrModel {
     const token = ++generation;
     running = true;
     contents = null;
+    codes = [];
     panelDismissed = false;
     renderPanel();
     setNoticeKey("preview.note.qr_running", "progress");
@@ -155,14 +198,21 @@ export function mountQrModel(options: QrModelOptions): QrModel {
       if (token !== generation) {
         return;
       }
-      if (Array.isArray(result?.contents) && result.contents.length > 0) {
-        contents = result.contents;
+      const texts = Array.isArray(result?.contents)
+        ? result.contents.filter(
+            (item): item is string => typeof item === "string" && item.length > 0,
+          )
+        : [];
+      if (texts.length > 0) {
+        contents = texts;
+        codes = readCodes(result);
         renderPanel();
         if (active) {
           setNoticeKey("preview.note.qr_hint", "hint");
         }
       } else {
         contents = null;
+        codes = [];
         panelDismissed = true;
         renderPanel();
         if (active) {
@@ -174,6 +224,7 @@ export function mountQrModel(options: QrModelOptions): QrModel {
         return;
       }
       contents = null;
+      codes = [];
       panelDismissed = true;
       renderPanel();
       if (active) {
@@ -218,6 +269,7 @@ export function mountQrModel(options: QrModelOptions): QrModel {
     running = false;
     active = false;
     contents = null;
+    codes = [];
     busy = false;
     panelDismissed = true;
     lastNotice = null;
@@ -286,6 +338,10 @@ export function mountQrModel(options: QrModelOptions): QrModel {
       return active;
     },
     contents: () => contents,
+    regions: () =>
+      codes
+        .filter((code) => code.width > 0 && code.height > 0)
+        .map((code) => ({ x: code.x, y: code.y, width: code.width, height: code.height })),
     isRunning: () => running,
     activate,
     deactivate,

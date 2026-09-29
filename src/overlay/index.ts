@@ -121,7 +121,7 @@ export function mountOverlay(root: HTMLElement): () => void {
         <button type="button" data-workspace="qr" data-i18n="overlay.action.qr">识别二维码</button>
         <button type="button" data-workspace="pin" data-i18n="overlay.action.pin">贴图</button>
         <button type="button" data-workspace="save" data-i18n="overlay.action.save">保存</button>
-        <button type="button" data-workspace="copy" data-i18n="overlay.action.copy">复制</button>
+        <button type="button" class="primary" data-workspace="copy" data-i18n="overlay.action.copy">复制</button>
         <button type="button" data-workspace="edit" data-i18n="overlay.action.edit">进一步编辑</button>
       </div>
       <button type="button" class="overlay-capabilities" aria-haspopup="dialog" aria-controls="overlay-capability-panel" aria-expanded="false" data-i18n="overlay.capabilities" hidden>能力说明</button>
@@ -185,6 +185,10 @@ export function mountOverlay(root: HTMLElement): () => void {
   let snapClickPending = false;
   /// R7:点击吸附与自由拖选的判别阈值(物理像素,容忍按下抖动)。
   const SNAP_DRAG_THRESHOLD = 3;
+  /// 最近一次指针在宿主内的 CSS 坐标。尺寸徽标用它避开光标热点。
+  let pointer: { x: number; y: number } | null = null;
+  /// 当前徽标对应的帧矩形;为空则不显示。
+  let badgeTarget: Selection | null = null;
   /// R21:即时标注会话阶段;"select" 拖选区,"annotate" 选区固定后可标注。
   let phase: "select" | "annotate" = "select";
   /// R24:关闭 inlineAnnotation 后覆盖层不提供标注层,保持原有的松开即完成。
@@ -570,20 +574,126 @@ export function mountOverlay(root: HTMLElement): () => void {
     ctx.restore();
   };
 
-  /// R7:尺寸徽标位置——挂在宿主上,画布在工作区是居中的显示框:
-  /// 位置要加画布左上角偏移;四边钳制保证贴边时徽标完整可见。
-  const placeBadge = (crop: Selection): void => {
-    if (!frame) {
+  /// 帧矩形映射到宿主 CSS 坐标(画布在工作区是居中的显示框)。
+  const frameBoxToHost = (box: Selection): Selection | null => {
+    if (!frame || frame.width < 1 || frame.height < 1) {
+      return null;
+    }
+    const host = root.getBoundingClientRect();
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: rect.left - host.left + (box.x / frame.width) * rect.width,
+      y: rect.top - host.top + (box.y / frame.height) * rect.height,
+      width: (box.width / frame.width) * rect.width,
+      height: (box.height / frame.height) * rect.height,
+    };
+  };
+
+  const clearBadge = (): void => {
+    badgeTarget = null;
+    badge.hidden = true;
+  };
+
+  /// 尺寸徽标放在离光标热点最远、且仍在画面内的角外侧。没有光标时按选区中心平局,留在左上。
+  const layoutBadge = (): void => {
+    if (!frame || !badgeTarget) {
+      badge.hidden = true;
+      return;
+    }
+    const target = frameBoxToHost(badgeTarget);
+    if (!target || target.width < 1 || target.height < 1) {
+      badge.hidden = true;
       return;
     }
     badge.hidden = false;
-    badge.textContent = t("overlay.size_format", { width: crop.width, height: crop.height });
+    const label = t("overlay.size_format", {
+      width: badgeTarget.width,
+      height: badgeTarget.height,
+    });
+    if (badge.textContent !== label) {
+      badge.textContent = label;
+    }
     const host = root.getBoundingClientRect();
-    const rect = canvas.getBoundingClientRect();
-    const cssX = rect.left - host.left + (crop.x / frame.width) * rect.width;
-    const cssY = rect.top - host.top + (crop.y / frame.height) * rect.height;
-    badge.style.left = `${clamp(cssX + 8, 4, Math.max(4, host.width - 88))}px`;
-    badge.style.top = `${clamp(cssY - 28, 12, Math.max(12, host.height - 36))}px`;
+    const badgeWidth = badge.offsetWidth;
+    const badgeHeight = badge.offsetHeight;
+    if (badgeWidth < 1 || badgeHeight < 1 || host.width < 1 || host.height < 1) {
+      return;
+    }
+    const cursor = pointer ?? {
+      x: target.x + target.width / 2,
+      y: target.y + target.height / 2,
+    };
+    const placed = placeSizeBadge(target, cursor, host.width, host.height, badgeWidth, badgeHeight, 6);
+    badge.style.left = `${placed.x}px`;
+    badge.style.top = `${placed.y}px`;
+  };
+
+  const placeBadge = (crop: Selection): void => {
+    badgeTarget = crop;
+    layoutBadge();
+  };
+
+  // 结果面板左右槽:顶距与边距跟 overlay.css 一致。没有正面积矩形时留在右侧。
+  const RESULT_PANEL_TOP = 64;
+  const RESULT_PANEL_MARGIN = 18;
+  const placeResultPanel = (panel: HTMLElement, regions: Selection[]): void => {
+    if (panel.hidden) {
+      delete panel.dataset.slot;
+      return;
+    }
+    const host = root.getBoundingClientRect();
+    const width = panel.offsetWidth;
+    const height = panel.offsetHeight;
+    const usable = regions.filter((region) => region.width > 0 && region.height > 0);
+    if (width < 1 || height < 1 || host.width < 1 || usable.length === 0) {
+      delete panel.dataset.slot;
+      return;
+    }
+    const left = { x: RESULT_PANEL_MARGIN, y: RESULT_PANEL_TOP, width, height };
+    const right = {
+      x: Math.max(RESULT_PANEL_MARGIN, host.width - RESULT_PANEL_MARGIN - width),
+      y: RESULT_PANEL_TOP,
+      width,
+      height,
+    };
+    const area = (slot: Selection): number =>
+      usable.reduce((sum, region) => sum + intersectionArea(slot, region), 0);
+    if (area(left) < area(right)) {
+      panel.dataset.slot = "left";
+    } else {
+      delete panel.dataset.slot;
+    }
+  };
+
+  const placeResultPanels = (): void => {
+    const ocrPanel = root.querySelector(":scope > .ocr-panel");
+    const qrPanel = root.querySelector(":scope > .qr-panel");
+    if (ocrPanel instanceof HTMLElement) {
+      const regions: Selection[] = [];
+      for (const span of ocrModel?.document()?.spans ?? []) {
+        if (!span.text.trim() || span.width <= 0 || span.height <= 0) {
+          continue;
+        }
+        const box = frameBoxToHost(span);
+        if (box) {
+          regions.push(box);
+        }
+      }
+      placeResultPanel(ocrPanel, regions);
+    }
+    if (qrPanel instanceof HTMLElement) {
+      const regions: Selection[] = [];
+      for (const region of qrModel?.regions() ?? []) {
+        if (region.width <= 0 || region.height <= 0) {
+          continue;
+        }
+        const box = frameBoxToHost(region);
+        if (box) {
+          regions.push(box);
+        }
+      }
+      placeResultPanel(qrPanel, regions);
+    }
   };
 
   const draw = (): void => {
@@ -591,6 +701,7 @@ export function mountOverlay(root: HTMLElement): () => void {
       return;
     }
     fitCanvas();
+    placeResultPanels();
     ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
     if (frame.fixed !== true) {
       // 选择阶段整帧压暗;工作区帧已定,压暗只会让工作区图像发灰。
@@ -646,7 +757,7 @@ export function mountOverlay(root: HTMLElement): () => void {
       if (hoveredRect) {
         placeBadge(hoveredRect);
       } else {
-        badge.hidden = true;
+        clearBadge();
       }
       return;
     }
@@ -673,7 +784,7 @@ export function mountOverlay(root: HTMLElement): () => void {
         );
         placeBadge(snap);
       } else {
-        badge.hidden = true;
+        clearBadge();
       }
       return;
     }
@@ -761,6 +872,8 @@ export function mountOverlay(root: HTMLElement): () => void {
       dragging = false;
       // R7:上一会话的命中栈/高亮/点击吸附状态不跨会话。
       clearSnap();
+      clearBadge();
+      pointer = null;
       setFinishing(false);
       // 旧帧位图先摘除,避免重置标注会话触发的重绘读到未加载的新图。
       image = null;
@@ -928,6 +1041,7 @@ export function mountOverlay(root: HTMLElement): () => void {
     ocrWasActive = ocrActive;
     qrWasActive = qrActive;
     renderHint();
+    placeResultPanels();
     scheduleDraw();
   };
 
@@ -1119,6 +1233,11 @@ export function mountOverlay(root: HTMLElement): () => void {
   });
 
   window.addEventListener("mousemove", (event) => {
+    const host = root.getBoundingClientRect();
+    pointer = { x: event.clientX - host.left, y: event.clientY - host.top };
+    if (badgeTarget && !dragging) {
+      layoutBadge();
+    }
     if (!frame) {
       return;
     }
@@ -1470,6 +1589,7 @@ export function mountOverlay(root: HTMLElement): () => void {
     editor?.refreshLabels();
     ocrModel?.refreshLabels();
     qrModel?.refreshLabels();
+    placeResultPanels();
     setCapabilityPanel(!capabilityPanel.hidden);
     if (!capabilityPanel.hidden) {
       renderCapabilityPanel();
@@ -1573,6 +1693,111 @@ function fileNameFromPath(path: string | null | undefined): string | null {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
+}
+
+function intersectionArea(a: Selection, b: Selection): number {
+  const width = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
+  const height = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
+  if (width <= 0 || height <= 0) {
+    return 0;
+  }
+  return width * height;
+}
+
+/// 与原生 `place_size_badge` 同一规则:四角外侧离光标最远且整块在画面内。
+/// 平局优先左上。四角都放不下时,把最远角的候选钳进画面。
+function placeSizeBadge(
+  target: Selection,
+  cursor: { x: number; y: number },
+  screenWidth: number,
+  screenHeight: number,
+  width: number,
+  height: number,
+  margin: number,
+): Selection {
+  const right = target.x + target.width;
+  const bottom = target.y + target.height;
+  const anchors: Array<[{ x: number; y: number }, Selection]> = [
+    [
+      { x: target.x, y: target.y },
+      { x: target.x, y: target.y - height - margin, width, height },
+    ],
+    [
+      { x: right, y: target.y },
+      { x: right - width, y: target.y - height - margin, width, height },
+    ],
+    [
+      { x: target.x, y: bottom },
+      { x: target.x, y: bottom + margin, width, height },
+    ],
+    [
+      { x: right, y: bottom },
+      { x: right - width, y: bottom + margin, width, height },
+    ],
+  ];
+  const distance = (point: { x: number; y: number }): number => {
+    const dx = point.x - cursor.x;
+    const dy = point.y - cursor.y;
+    return dx * dx + dy * dy;
+  };
+  const inside = (panel: Selection): boolean =>
+    panel.width > 0 &&
+    panel.height > 0 &&
+    panel.x >= 0 &&
+    panel.y >= 0 &&
+    panel.x + panel.width <= screenWidth &&
+    panel.y + panel.height <= screenHeight;
+  const contains = (panel: Selection, point: { x: number; y: number }): boolean =>
+    point.x >= panel.x &&
+    point.y >= panel.y &&
+    point.x < panel.x + panel.width &&
+    point.y < panel.y + panel.height;
+  const pick = (avoidCursor: boolean): Selection | null => {
+    let bestDist = -1;
+    let bestRank = anchors.length;
+    let bestPanel: Selection | null = null;
+    for (let rank = 0; rank < anchors.length; rank += 1) {
+      const [point, panel] = anchors[rank];
+      if (!inside(panel) || (avoidCursor && contains(panel, cursor))) {
+        continue;
+      }
+      const dist = distance(point);
+      if (!bestPanel || dist > bestDist || (dist === bestDist && rank < bestRank)) {
+        bestDist = dist;
+        bestRank = rank;
+        bestPanel = panel;
+      }
+    }
+    return bestPanel;
+  };
+  const chosen = pick(true) ?? pick(false);
+  if (chosen) {
+    return chosen;
+  }
+  let farthest = 0;
+  let bestDist = -1;
+  for (let rank = 0; rank < anchors.length; rank += 1) {
+    const dist = distance(anchors[rank][0]);
+    if (dist > bestDist) {
+      bestDist = dist;
+      farthest = rank;
+    }
+  }
+  return clampBadge(anchors[farthest][1], screenWidth, screenHeight);
+}
+
+function clampBadge(panel: Selection, screenWidth: number, screenHeight: number): Selection {
+  if (screenWidth <= 0 || screenHeight <= 0) {
+    return { x: 0, y: 0, width: 0, height: 0 };
+  }
+  const width = Math.max(0, Math.min(panel.width, screenWidth));
+  const height = Math.max(0, Math.min(panel.height, screenHeight));
+  return {
+    x: clamp(panel.x, 0, screenWidth - width),
+    y: clamp(panel.y, 0, screenHeight - height),
+    width,
+    height,
+  };
 }
 
 function isCancelledError(error: unknown): boolean {

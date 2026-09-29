@@ -93,19 +93,3 @@
   opacity: var(--control-disabled-opacity);
   cursor: default;
 }
-
-/* 冻结帧工作区:浮在画面右侧,不参与画布布局(与取字面板同位置)。 */
-.overlay-root > .qr-panel {
-  position: absolute;
-  top: 64px;
-  right: 18px;
-  z-index: 4;
-  width: min(320px, 42vw);
-  max-height: calc(100% - 92px);
-  background: var(--panel);
-  pointer-events: auto;
-}
-
-.overlay-root > .qr-panel[hidden] {
-  display: none;
-}
