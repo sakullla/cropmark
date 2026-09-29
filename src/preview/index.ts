@@ -34,6 +34,8 @@ interface PreviewTransformResult {
 
 /** R6:裁剪最小边长(物理像素),与 Rust `session::MIN_CROP_EDGE` 一致。 */
 const MIN_CROP_EDGE = 8;
+/** 裁剪确认条离画面边缘的间距,与样式里的 12px 悬浮一致。 */
+const CROP_BAR_INSET = 12;
 const FALLBACK_CROP_EDGE = "#0ea5e9";
 
 type NoteKind = "success" | "feedback" | "error";
@@ -68,30 +70,35 @@ export function mountPreview(root: HTMLElement): () => void {
     <div class="preview-toolbar">
       <div class="preview-tools" role="toolbar" data-annotation-toolbar data-i18n-aria-label="preview.toolbar_group" aria-label="标注" data-tauri-drag-region="false"></div>
       <div class="preview-actions" data-tauri-drag-region="false">
-        <button type="button" class="icon-action" data-tool="ocr" data-i18n-title="preview.action.ocr_title" data-i18n-aria-label="preview.action.ocr" aria-label="取字" data-tauri-drag-region="false">${icons.ocr}</button>
-        <button type="button" class="icon-action" data-tool="qr" data-i18n-title="preview.action.qr_title" data-i18n-aria-label="preview.action.qr" aria-label="识别二维码" data-tauri-drag-region="false">${icons.qr}</button>
-        <button type="button" class="icon-action" data-action="rotate-left" data-i18n-title="preview.action.rotate_left_title" data-i18n-aria-label="preview.action.rotate_left" aria-label="左旋 90°" data-tauri-drag-region="false">${icons.rotateLeft}</button>
-        <button type="button" class="icon-action" data-action="rotate-right" data-i18n-title="preview.action.rotate_right_title" data-i18n-aria-label="preview.action.rotate_right" aria-label="右旋 90°" data-tauri-drag-region="false">${icons.rotateRight}</button>
-        <button type="button" class="icon-action" data-action="crop" data-i18n-title="preview.action.crop_title" data-i18n-aria-label="preview.action.crop" aria-label="裁剪" data-tauri-drag-region="false">${icons.crop}</button>
-        <button type="button" class="icon-action" data-action="copy-ocr-all" hidden data-i18n-title="preview.action.copy_all" data-i18n-aria-label="preview.action.copy_all" aria-label="复制全部" data-tauri-drag-region="false">${icons.copy}</button>
-        <button type="button" class="icon-action" data-action="pin" data-i18n-title="preview.action.pin_title" data-i18n-aria-label="preview.action.pin" aria-label="贴图" data-tauri-drag-region="false">${icons.pin}</button>
-        <button type="button" class="icon-action" data-action="update-pin" data-i18n-title="preview.action.update_pin_title" data-i18n-aria-label="preview.action.update_pin" aria-label="更新贴图" hidden data-tauri-drag-region="false">${icons.annotate}</button>
-        <div class="preview-save" data-save-quality-root>
-          <div class="preview-save-split">
-            <button type="button" data-action="save" data-i18n-title="preview.action.save_title" data-tauri-drag-region="false">${icons.save}<span data-i18n="preview.action.save">保存</span></button>
-            <button type="button" class="preview-save-caret" data-action="toggle-quality" data-i18n-title="preview.quality.group" data-i18n-aria-label="preview.quality.group" aria-label="保存质量" aria-haspopup="true" aria-expanded="false" data-tauri-drag-region="false">${icons.chevronDown}</button>
-          </div>
-          <div class="preview-quality-panel" data-save-quality-panel hidden>
-            <span class="style-label" data-i18n="preview.quality.label">质量</span>
-            <div class="style-options" role="group" data-i18n-aria-label="preview.quality.group" aria-label="保存质量">
-              ${SAVE_QUALITIES.map(
-                ({ value, labelKey, titleKey }) =>
-                  `<button type="button" data-save-quality="${value}" data-tooltip="${t(titleKey)}">${t(labelKey)}</button>`,
-              ).join("")}
+        <div class="preview-action-group" data-preview-group="picture" data-tauri-drag-region="false">
+          <button type="button" class="icon-action" data-tool="ocr" data-i18n-title="preview.action.ocr_title" data-i18n-aria-label="preview.action.ocr" aria-label="取字" data-tauri-drag-region="false">${icons.ocr}</button>
+          <button type="button" class="icon-action" data-tool="qr" data-i18n-title="preview.action.qr_title" data-i18n-aria-label="preview.action.qr" aria-label="识别二维码" data-tauri-drag-region="false">${icons.qr}</button>
+          <button type="button" class="icon-action" data-action="rotate-left" data-i18n-title="preview.action.rotate_left_title" data-i18n-aria-label="preview.action.rotate_left" aria-label="左旋 90°" data-tauri-drag-region="false">${icons.rotateLeft}</button>
+          <button type="button" class="icon-action" data-action="rotate-right" data-i18n-title="preview.action.rotate_right_title" data-i18n-aria-label="preview.action.rotate_right" aria-label="右旋 90°" data-tauri-drag-region="false">${icons.rotateRight}</button>
+          <button type="button" class="icon-action" data-action="crop" data-i18n-title="preview.action.crop_title" data-i18n-aria-label="preview.action.crop" aria-label="裁剪" data-tauri-drag-region="false">${icons.crop}</button>
+          <button type="button" class="icon-action" data-action="copy-ocr-all" hidden data-i18n-title="preview.action.copy_all" data-i18n-aria-label="preview.action.copy_all" aria-label="复制全部" data-tauri-drag-region="false">${icons.copy}</button>
+        </div>
+        <span class="preview-action-sep" aria-hidden="true"></span>
+        <div class="preview-action-group" data-preview-group="output" data-tauri-drag-region="false">
+          <button type="button" class="icon-action" data-action="pin" data-i18n-title="preview.action.pin_title" data-i18n-aria-label="preview.action.pin" aria-label="贴图" data-tauri-drag-region="false">${icons.pin}</button>
+          <button type="button" class="icon-action" data-action="update-pin" data-i18n-title="preview.action.update_pin_title" data-i18n-aria-label="preview.action.update_pin" aria-label="更新贴图" hidden data-tauri-drag-region="false">${icons.annotate}</button>
+          <div class="preview-save" data-save-quality-root>
+            <div class="preview-save-split">
+              <button type="button" data-action="save" data-i18n-title="preview.action.save_title" data-tauri-drag-region="false">${icons.save}<span data-i18n="preview.action.save">保存</span></button>
+              <button type="button" class="preview-save-caret" data-action="toggle-quality" data-i18n-title="preview.quality.group" data-i18n-aria-label="preview.quality.group" aria-label="保存质量" aria-haspopup="true" aria-expanded="false" data-tauri-drag-region="false">${icons.chevronDown}</button>
+            </div>
+            <div class="preview-quality-panel" data-save-quality-panel hidden>
+              <span class="style-label" data-i18n="preview.quality.label">质量</span>
+              <div class="style-options" role="group" data-i18n-aria-label="preview.quality.group" aria-label="保存质量">
+                ${SAVE_QUALITIES.map(
+                  ({ value, labelKey, titleKey }) =>
+                    `<button type="button" data-save-quality="${value}" data-tooltip="${t(titleKey)}">${t(labelKey)}</button>`,
+                ).join("")}
+              </div>
             </div>
           </div>
+          <button type="button" class="primary" data-action="copy" data-i18n-title="preview.action.copy_title" data-tauri-drag-region="false">${icons.copy}<span data-i18n="preview.action.copy">复制</span></button>
         </div>
-        <button type="button" class="primary" data-action="copy" data-i18n-title="preview.action.copy_title" data-tauri-drag-region="false">${icons.copy}<span data-i18n="preview.action.copy">复制</span></button>
       </div>
     </div>
     <div class="preview-stage">
@@ -353,6 +360,93 @@ export function mountPreview(root: HTMLElement): () => void {
     pinBtn.hidden = writebackLabel !== null;
   };
 
+  let cropPlaceAttempts = 0;
+  // 确认条默认贴画面下缘居中。与当前裁剪矩形相交时改到上缘，避免压住拖选范围。
+  const placeCropBar = (): void => {
+    if (!cropping) {
+      return;
+    }
+    const frameRect = frameEl.getBoundingClientRect();
+    const canvasRect = canvas.getBoundingClientRect();
+    const barWidth = cropBar.offsetWidth;
+    const barHeight = cropBar.offsetHeight;
+    if (
+      frameRect.width < 1 ||
+      frameRect.height < 1 ||
+      canvasRect.width < 1 ||
+      canvasRect.height < 1 ||
+      barWidth < 1 ||
+      barHeight < 1
+    ) {
+      if (cropPlaceAttempts >= 2) {
+        return;
+      }
+      cropPlaceAttempts += 1;
+      requestAnimationFrame(() => {
+        if (cropping) {
+          placeCropBar();
+        }
+      });
+      return;
+    }
+    cropPlaceAttempts = 0;
+    const maxLeft = Math.max(0, frameRect.width - barWidth);
+    const maxTop = Math.max(0, frameRect.height - barHeight);
+    const left = Math.round(
+      clamp(canvasRect.left - frameRect.left + (canvasRect.width - barWidth) / 2, 0, maxLeft),
+    );
+    const edgeTop = (preferred: number): number => Math.round(clamp(preferred, 0, maxTop));
+    const bottomTop = edgeTop(canvasRect.bottom - frameRect.top - CROP_BAR_INSET - barHeight);
+    const topTop = edgeTop(canvasRect.top - frameRect.top + CROP_BAR_INSET);
+    const intersectsCrop = (top: number): boolean => {
+      const rect = cropRect();
+      if (!rect || canvas.width < 1 || canvas.height < 1) {
+        return false;
+      }
+      const scaleX = canvasRect.width / canvas.width;
+      const scaleY = canvasRect.height / canvas.height;
+      const cropLeft = canvasRect.left + rect.x * scaleX;
+      const cropTop = canvasRect.top + rect.y * scaleY;
+      const cropRight = cropLeft + rect.width * scaleX;
+      const cropBottom = cropTop + rect.height * scaleY;
+      const barLeft = frameRect.left + left;
+      const barTop = frameRect.top + top;
+      return (
+        barLeft < cropRight &&
+        barLeft + barWidth > cropLeft &&
+        barTop < cropBottom &&
+        barTop + barHeight > cropTop
+      );
+    };
+    const edge = intersectsCrop(bottomTop) ? "top" : "bottom";
+    const top = edge === "top" ? topTop : bottomTop;
+    const leftPx = `${left}px`;
+    const topPx = `${top}px`;
+    if (
+      cropBar.style.left !== leftPx ||
+      cropBar.style.top !== topPx ||
+      cropBar.style.transform !== "none" ||
+      cropBar.dataset.cropEdge !== edge
+    ) {
+      cropBar.style.left = leftPx;
+      cropBar.style.top = topPx;
+      cropBar.style.right = "auto";
+      cropBar.style.bottom = "auto";
+      cropBar.style.transform = "none";
+      cropBar.dataset.cropEdge = edge;
+    }
+  };
+
+  const clearCropBarPlacement = (): void => {
+    cropPlaceAttempts = 0;
+    cropBar.style.left = "";
+    cropBar.style.top = "";
+    cropBar.style.right = "";
+    cropBar.style.bottom = "";
+    cropBar.style.transform = "";
+    delete cropBar.dataset.cropEdge;
+  };
+
   const applyBeautifyChrome = (): void => {
     if (!applyBeautify || !frame) {
       root.dataset.beautify = "off";
@@ -361,6 +455,7 @@ export function mountPreview(root: HTMLElement): () => void {
       canvas.style.height = "";
       canvas.style.borderRadius = "";
       canvas.style.boxShadow = "";
+      placeCropBar();
       return;
     }
     const layout = beautifyLayout(frame.width, frame.height, beautifyOptions);
@@ -368,6 +463,7 @@ export function mountPreview(root: HTMLElement): () => void {
     const availH = Math.max(frameEl.clientHeight, 1);
     const scale = Math.min(availW / layout.outputWidth, availH / layout.outputHeight);
     if (!Number.isFinite(scale) || scale <= 0) {
+      placeCropBar();
       return;
     }
     root.dataset.beautify = "on";
@@ -386,6 +482,7 @@ export function mountPreview(root: HTMLElement): () => void {
     } else {
       canvas.style.boxShadow = "none";
     }
+    placeCropBar();
   };
 
   const syncSaveQuality = (): void => {
@@ -540,6 +637,11 @@ export function mountPreview(root: HTMLElement): () => void {
     rotateLeftBtn.disabled = cropping;
     rotateRightBtn.disabled = cropping;
     cropConfirmBtn.disabled = !cropping || busy || cropRect() === null;
+    if (cropping) {
+      placeCropBar();
+    } else {
+      clearCropBarPlacement();
+    }
     syncToolDataset();
   };
 
@@ -1411,6 +1513,7 @@ export function mountPreview(root: HTMLElement): () => void {
   return () => {
     refreshOptionLabels();
     renderNote();
+    placeCropBar();
   };
 }
 

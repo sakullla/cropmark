@@ -155,10 +155,37 @@
 
 .preview-actions {
   margin-left: auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 6px;
+  row-gap: 6px;
+  max-width: 100%;
 }
 
-/* R6:裁剪确认条,悬浮在画布下缘;按钮与动作条共用同一套形状与状态语义。 */
+.preview-action-group {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  row-gap: 4px;
+  max-width: 100%;
+}
+
+/* 与标注工具条 `.toolbar-sep` 同一画法，隔开画面处理与产出。 */
+.preview-action-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 2px;
+  background: var(--line);
+  flex: 0 0 auto;
+}
+
+/* 作者样式的 display 会盖过无 !important 的 [hidden]。 */
+.preview-actions [hidden] {
+  display: none;
+}
+
+/* R6:裁剪确认条默认贴画面下缘;与裁剪矩形相交时由脚本改到上缘。 */
 .preview-crop-bar {
   position: absolute;
   left: 50%;
