@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import {
   mountAnnotationEditor,
   type Annotation,
@@ -20,6 +20,9 @@ import "./record.css";
 
 const POLL_MS = 500;
 const SYNC_MS = 200;
+/** 底部提示与工具条/完成条之间至少留出的间距;再近就把提示交给控制卡片。 */
+const NOTICE_GAP = 8;
+const OVERLAY_NOTICE_EVENT = "record-overlay-notice";
 
 function messageOf(error: unknown): string {
   return typeof error === "string" && error.trim().length > 0 ? error : String(error);
@@ -66,6 +69,8 @@ export function mountRecordOverlay(root: HTMLElement): () => void {
   let timer: number | null = null;
   let syncTimer: number | null = null;
   let synced = "[]";
+  let noticeMessage = "";
+  let publishedNotice = "";
 
   const fitCanvas = (): void => {
     if (!region) {
@@ -111,9 +116,48 @@ export function mountRecordOverlay(root: HTMLElement): () => void {
     });
   };
 
+  const publishNotice = (text: string): void => {
+    // 空说明只发一次;仍显示的说明重复发送,控制条晚挂载时也能接到。
+    if (text.length === 0 && text === publishedNotice) {
+      return;
+    }
+    publishedNotice = text;
+    void emit(OVERLAY_NOTICE_EVENT, text);
+  };
+
+  /**
+   * 提示贴在区域底部。碰上工具条、完成标注条或画面中心时不留在区域上,
+   * 改送到控制卡片已有的说明行。测量在同一次布局里完成,避免闪烁。
+   */
+  const layoutNotice = (): void => {
+    const text = noticeMessage;
+    if (!text) {
+      notice.hidden = true;
+      notice.style.visibility = "";
+      publishNotice("");
+      return;
+    }
+    notice.hidden = false;
+    notice.style.visibility = "hidden";
+    const noticeBox = notice.getBoundingClientRect();
+    const rootBox = root.getBoundingClientRect();
+    const centerY = rootBox.top + rootBox.height / 2;
+    const occupiedBottom = drawBar.hidden ? 0 : drawBar.getBoundingClientRect().bottom;
+    const hitsTools = occupiedBottom > 0 && noticeBox.top < occupiedBottom + NOTICE_GAP;
+    const coversCenter = noticeBox.top <= centerY && noticeBox.bottom >= centerY;
+    const collides = hitsTools || coversCenter;
+    notice.style.visibility = "";
+    if (collides) {
+      notice.hidden = true;
+      publishNotice(text);
+      return;
+    }
+    publishNotice("");
+  };
+
   const showNotice = (text: string): void => {
-    notice.textContent = text;
-    notice.hidden = text.length === 0;
+    noticeMessage = text;
+    layoutNotice();
   };
 
   const syncAnnotations = (): void => {
@@ -179,9 +223,9 @@ export function mountRecordOverlay(root: HTMLElement): () => void {
         if (loaded) {
           void invoke("set_recording_hud_overlay_visible", { visible: true });
         } else {
-          showNotice(t("record.overlay.snapshot_failed"));
           interactive = false;
           drawBar.hidden = true;
+          showNotice(t("record.overlay.snapshot_failed"));
           void invoke("set_recording_hud_interactive", { interactive: false });
         }
       }
@@ -195,6 +239,7 @@ export function mountRecordOverlay(root: HTMLElement): () => void {
         void invoke("set_recording_hud_overlay_visible", { visible: false });
       }
     }
+    layoutNotice();
   };
 
   const applyState = (state: RecordingHudState): void => {
@@ -214,6 +259,7 @@ export function mountRecordOverlay(root: HTMLElement): () => void {
       void applyInteractive(state.interactive);
     } else {
       scheduleDraw();
+      layoutNotice();
     }
   };
 
@@ -319,6 +365,7 @@ export function mountRecordOverlay(root: HTMLElement): () => void {
   void refresh();
 
   return () => {
+    layoutNotice();
     scheduleDraw();
   };
 }

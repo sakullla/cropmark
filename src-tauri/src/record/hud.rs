@@ -51,7 +51,8 @@ pub const EVENT_RESET: &str = "record-hud-reset";
 /// 状态广播(标注模式切换等即时变化;时长仍由视图轮询刷新)。
 pub const EVENT_STATE: &str = "record-hud-state";
 
-/// 控制条:紧凑态与有待处理产物时的展开态(逻辑像素)。
+/// 控制条窗口(逻辑像素)。宽度固定,避免时长刷新带动按钮;
+/// 高度在紧凑态与展开上限之间跟随内容,换行后的按钮仍在窗口内。
 const CONTROL_WIDTH: f64 = 420.0;
 const CONTROL_HEIGHT: f64 = 64.0;
 const CONTROL_HEIGHT_EXPANDED: f64 = 248.0;
@@ -818,9 +819,26 @@ pub fn set_recording_hud_overlay_visible(app: AppHandle, visible: bool) {
     }
 }
 
-/// 控制条展开/收起(待处理产物列表需要更多高度)。
+/// 控制条逻辑尺寸。宽度保持 [`CONTROL_WIDTH`];高度跟随内容测量值,
+/// 不小于紧凑态,也不超过展开上限。非有限测量值回落到紧凑态。
+fn control_window_size(content_height: f64) -> LogicalSize<f64> {
+    LogicalSize {
+        width: CONTROL_WIDTH,
+        height: control_window_height(content_height),
+    }
+}
+
+fn control_window_height(content_height: f64) -> f64 {
+    if !content_height.is_finite() {
+        return CONTROL_HEIGHT;
+    }
+    content_height.clamp(CONTROL_HEIGHT, CONTROL_HEIGHT_EXPANDED)
+}
+
+/// 控制条按内容增高(换行、说明或待保存列表)。`content_height` 为前端量到的
+/// 逻辑像素高度;缺省时仍按展开标志在紧凑态与展开上限之间二选一。
 #[tauri::command]
-pub fn set_recording_hud_expanded(app: AppHandle, expanded: bool) {
+pub fn set_recording_hud_expanded(app: AppHandle, expanded: bool, content_height: Option<f64>) {
     let context = {
         let hud = hud_lock();
         hud.region.zip(hud.monitor.clone())
@@ -831,15 +849,14 @@ pub fn set_recording_hud_expanded(app: AppHandle, expanded: bool) {
     let Some(control) = app.get_webview_window(CONTROL) else {
         return;
     };
-    let size = LogicalSize {
-        width: CONTROL_WIDTH,
-        height: if expanded {
+    let requested = content_height
+        .filter(|height| height.is_finite())
+        .unwrap_or(if expanded {
             CONTROL_HEIGHT_EXPANDED
         } else {
             CONTROL_HEIGHT
-        },
-    };
-    place_control(&control, region, &monitor, size);
+        });
+    place_control(&control, region, &monitor, control_window_size(requested));
 }
 
 /// 收起 HUD(控制条「关闭」)。
@@ -899,6 +916,35 @@ mod tests {
             width: CONTROL_WIDTH,
             height: CONTROL_HEIGHT,
         }
+    }
+
+    #[test]
+    fn control_window_size_keeps_width_and_grows_height_with_content() {
+        let compact = control_window_size(1.0);
+        assert_eq!(compact.width, CONTROL_WIDTH);
+        assert_eq!(compact.height, CONTROL_HEIGHT);
+        let wrapped = control_window_size(96.0);
+        assert_eq!(wrapped.width, CONTROL_WIDTH);
+        assert_eq!(wrapped.height, 96.0);
+        let capped = control_window_size(CONTROL_HEIGHT_EXPANDED + 80.0);
+        assert_eq!(capped.width, CONTROL_WIDTH);
+        assert_eq!(capped.height, CONTROL_HEIGHT_EXPANDED);
+        assert_eq!(control_window_size(f64::NAN).height, CONTROL_HEIGHT);
+        assert_eq!(control_window_size(f64::INFINITY).height, CONTROL_HEIGHT);
+    }
+
+    #[test]
+    fn wrapped_control_stays_outside_the_region_when_space_allows() {
+        let size = control_window_size(120.0);
+        let region = RecordRegion::new(100, 80, 900, 640);
+        let (_, y) = control_origin(region, &monitor(), size, true);
+        let region_bottom = 80 + 640;
+        assert!(y >= region_bottom);
+        assert!(y + size.height as i32 <= 1080);
+        // 全屏区域外侧放不下:更高的控制条仍完整留在显示器内。
+        let full = RecordRegion::new(0, 0, 1920, 1080);
+        let (_, y) = control_origin(full, &monitor(), size, true);
+        assert!(y >= 0 && y + size.height as i32 <= 1080);
     }
 
     #[test]

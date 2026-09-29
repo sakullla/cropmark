@@ -34,13 +34,17 @@ html[data-view="record-overlay"] #app {
   border: 1px solid var(--line);
   border-radius: var(--radius-panel);
   box-shadow: var(--shadow);
+  /* 只裁待保存列表的内部滚动,不裁换行后的控制按钮。 */
   overflow: hidden;
 }
 
 .record-row {
   display: flex;
   align-items: center;
+  align-content: flex-start;
+  flex-wrap: wrap;
   gap: 8px;
+  row-gap: 6px;
   flex-shrink: 0;
 }
 
@@ -69,22 +73,33 @@ html[data-view="record-overlay"] #app {
 }
 
 .record-time {
-  flex-shrink: 0;
+  flex: 0 0 auto;
+  /* `mm:ss / mm:ss` 加字距;宽度不随秒数变化,按钮才不会被时长挤走。 */
+  min-width: 14ch;
   font-size: 15px;
   font-weight: 650;
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.02em;
+  white-space: nowrap;
 }
 
 .record-phase {
-  flex-shrink: 0;
+  flex: 0 0 auto;
+  max-width: 100%;
   color: var(--muted);
   font-size: 12px;
+  white-space: nowrap;
 }
 
-.record-spacer {
-  flex: 1 1 auto;
-  min-width: 4px;
+.record-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  margin-left: auto;
 }
 
 .record-btn {
@@ -95,6 +110,7 @@ html[data-view="record-overlay"] #app {
   color: var(--ink);
   font: inherit;
   font-size: 12px;
+  white-space: nowrap;
   background: var(--control-fill);
   border: 1px solid var(--line);
   border-radius: var(--radius-control-sm);
@@ -133,9 +149,10 @@ html[data-view="record-overlay"] #app {
   filter: var(--control-hover-filter);
 }
 
-.record-draw.is-active {
-  color: var(--on-accent);
-  background: var(--accent);
+.record-btn.record-draw.is-active,
+.record-btn.record-draw.is-active:hover:not(:disabled) {
+  color: var(--accent);
+  background: var(--accent-soft);
   border-color: var(--accent);
 }
 
@@ -145,6 +162,7 @@ html[data-view="record-overlay"] #app {
   color: var(--muted);
   font-size: 11px;
   line-height: 1.4;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
@@ -173,6 +191,7 @@ html[data-view="record-overlay"] #app {
 .record-pending-head {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   flex-shrink: 0;
 }
@@ -201,6 +220,7 @@ html[data-view="record-overlay"] #app {
 .record-pending-item {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   padding: 6px 8px;
   background: var(--card);
@@ -261,24 +281,37 @@ html[data-view="record-overlay"] #app {
   touch-action: none;
 }
 
-.record-draw[hidden] {
-  display: none;
-}
-
-/* 工具条贴区域顶部居中:控制条固定在区域底边(或区域外),两者不互相遮挡;
-   样式面板与提示向下展开,避免越出窗口。 */
-.record-tools {
+/* 工具条留在区域顶部;完成标注条接在工具条下沿,不再用固定 top 叠到工具条上。
+   选择器限定在标注层,避免命中控制条里同名的标注按钮。 */
+.record-overlay-root .record-draw {
   position: absolute;
   top: 20px;
-  left: 0;
-  right: 0;
+  left: 16px;
+  right: 16px;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: auto;
+  pointer-events: none;
+}
+
+.record-overlay-root .record-tools {
+  position: relative;
+  top: auto;
+  left: auto;
+  right: auto;
   width: fit-content;
-  margin-inline: auto;
+  margin: 0;
   z-index: 4;
   display: flex;
   align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
   gap: 2px;
-  max-width: calc(100% - 32px);
+  row-gap: 4px;
+  max-width: 100%;
   padding: 6px 8px;
   border: 1px solid var(--line);
   border-radius: var(--radius-window);
@@ -292,18 +325,20 @@ html[data-view="record-overlay"] #app {
   bottom: auto;
 }
 
-.record-draw-actions {
-  position: absolute;
-  top: 68px;
-  left: 0;
-  right: 0;
+.record-overlay-root .record-draw-actions {
+  position: relative;
+  top: auto;
+  left: auto;
+  right: auto;
   width: fit-content;
-  margin-inline: auto;
+  margin: 0;
   z-index: 5;
   display: flex;
   align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
   gap: 8px;
-  max-width: calc(100% - 32px);
+  max-width: 100%;
   padding: 6px 8px;
   border: 1px solid var(--line);
   border-radius: var(--radius-window);
@@ -334,7 +369,8 @@ html[data-view="record-overlay"] #app {
 
 .record-overlay-notice {
   position: absolute;
-  top: 16px;
+  top: auto;
+  bottom: 16px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 6;

@@ -15,6 +15,11 @@ import "./record.css";
 // 区域上下文时提供「重新录制」与「关闭」。停止/保存成功或全部丢弃后自动收起。
 
 const POLL_MS = 400;
+/** 与 `hud.rs` 的紧凑态 / 展开上限一致(逻辑像素)。 */
+const CONTROL_HEIGHT = 64;
+const CONTROL_HEIGHT_EXPANDED = 248;
+/** 区域太矮时,标注层把提示改写进控制卡片的说明行。 */
+const OVERLAY_NOTICE_EVENT = "record-overlay-notice";
 
 const PHASE_KEYS: Record<RecordingStatus["phase"], CatalogKey> = {
   recording: "record.status.recording",
@@ -39,10 +44,11 @@ export function mountRecordControl(root: HTMLElement): () => void {
         <span class="record-pulse" aria-hidden="true"></span>
         <span class="record-time" data-i18n-title="record.bar.time_title"></span>
         <span class="record-phase"></span>
-        <span class="record-spacer"></span>
-        <button type="button" class="record-btn record-toggle" hidden></button>
-        <button type="button" class="record-btn record-primary record-stop" hidden></button>
-        <button type="button" class="record-btn record-draw" data-i18n="record.bar.draw" hidden></button>
+        <div class="record-actions">
+          <button type="button" class="record-btn record-toggle" hidden></button>
+          <button type="button" class="record-btn record-primary record-stop" hidden></button>
+          <button type="button" class="record-btn record-draw" data-i18n="record.bar.draw" hidden></button>
+        </div>
       </div>
       <p class="record-notice" role="status" hidden></p>
       <div class="record-pending" hidden>
@@ -54,6 +60,8 @@ export function mountRecordControl(root: HTMLElement): () => void {
         <ul class="record-pending-list"></ul>
       </div>
     </div>`;
+  const card = root.querySelector(".record-card");
+  const row = root.querySelector(".record-row");
   const time = root.querySelector(".record-time");
   const phase = root.querySelector(".record-phase");
   const toggle = root.querySelector(".record-toggle");
@@ -66,6 +74,8 @@ export function mountRecordControl(root: HTMLElement): () => void {
   const start = root.querySelector(".record-start");
   const close = root.querySelector(".record-close");
   if (
+    !(card instanceof HTMLElement) ||
+    !(row instanceof HTMLElement) ||
     !(time instanceof HTMLElement) ||
     !(phase instanceof HTMLElement) ||
     !(toggle instanceof HTMLButtonElement) ||
@@ -84,37 +94,88 @@ export function mountRecordControl(root: HTMLElement): () => void {
   let state: RecordingHudState | null = null;
   let busy = false;
   let lastError = "";
-  let expanded = false;
+  let overlayNotice = "";
+  let appliedHeight = -1;
   let timer: number | null = null;
   const pendingView = { signature: "" };
 
-  const noticeText = (): { text: string; error: boolean } => {
-    const status = state?.status ?? null;
-    if (status?.error) {
-      return { text: status.error, error: true };
-    }
-    if (lastError) {
-      return { text: lastError, error: true };
-    }
-    if (status && (status.autoStopped || status.phase === "finished")) {
-      return { text: t("toast.recording_auto_stopped"), error: false };
-    }
-    if (!status && (state?.pending.length ?? 0) > 0) {
-      return { text: t("record.pending.kept"), error: false };
-    }
-    const noticeKey = state?.capabilities.noticeKey;
-    if (noticeKey) {
-      return { text: t(noticeKey as CatalogKey), error: false };
-    }
-    return { text: "", error: false };
+  const readPx = (value: string): number => {
+    const parsed = Number.parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : 0;
   };
 
-  const setExpanded = (next: boolean): void => {
-    if (next === expanded) {
+  /** 卡片内容的逻辑像素高度(含根内边距)。待保存列表按完整内容计,窗口上限由宿主夹紧。 */
+  const measureWindowHeight = (): number => {
+    const cardStyle = getComputedStyle(card);
+    const gap = readPx(cardStyle.rowGap);
+    let content = 0;
+    let visible = 0;
+    for (const node of card.children) {
+      if (!(node instanceof HTMLElement) || node.hidden) {
+        continue;
+      }
+      let height = node.offsetHeight;
+      if (node.classList.contains("record-pending")) {
+        const list = node.querySelector(".record-pending-list");
+        if (list instanceof HTMLElement) {
+          height += Math.max(0, list.scrollHeight - list.clientHeight);
+        }
+      }
+      content += height;
+      visible += 1;
+    }
+    if (visible > 1) {
+      content += gap * (visible - 1);
+    }
+    const cardChrome =
+      readPx(cardStyle.paddingTop) +
+      readPx(cardStyle.paddingBottom) +
+      readPx(cardStyle.borderTopWidth) +
+      readPx(cardStyle.borderBottomWidth);
+    const rootStyle = getComputedStyle(root);
+    const rootChrome = readPx(rootStyle.paddingTop) + readPx(rootStyle.paddingBottom);
+    return Math.ceil(content + cardChrome + rootChrome);
+  };
+
+  const syncWindow = (): void => {
+    if (!state?.region && (state?.pending.length ?? 0) === 0) {
       return;
     }
-    expanded = next;
-    void invoke("set_recording_hud_expanded", { expanded: next });
+    // 待保存列表沿用展开上限,避免列表被压扁后又按剩余高度来回改窗口。
+    const height =
+      (state?.pending.length ?? 0) > 0 ? CONTROL_HEIGHT_EXPANDED : measureWindowHeight();
+    if (appliedHeight >= 0 && Math.abs(height - appliedHeight) <= 1) {
+      return;
+    }
+    appliedHeight = height;
+    void invoke("set_recording_hud_expanded", {
+      expanded: height > CONTROL_HEIGHT,
+      contentHeight: height,
+    });
+  };
+
+  const noticeText = (): { text: string; error: boolean } => {
+    const status = state?.status ?? null;
+    let text = "";
+    let error = false;
+    if (status?.error) {
+      text = status.error;
+      error = true;
+    } else if (lastError) {
+      text = lastError;
+      error = true;
+    } else if (status && (status.autoStopped || status.phase === "finished")) {
+      text = t("toast.recording_auto_stopped");
+    } else if (!status && (state?.pending.length ?? 0) > 0) {
+      text = t("record.pending.kept");
+    } else if (state?.capabilities.noticeKey) {
+      text = t(state.capabilities.noticeKey as CatalogKey);
+    }
+    if (overlayNotice && !text.includes(overlayNotice)) {
+      text = text ? `${text}\n${overlayNotice}` : overlayNotice;
+      error = true;
+    }
+    return { text, error };
   };
 
   const renderPending = (): void => {
@@ -212,7 +273,7 @@ export function mountRecordControl(root: HTMLElement): () => void {
     close.hidden = status !== null;
     close.disabled = busy;
     renderPending();
-    setExpanded((state?.pending.length ?? 0) > 0 || noticeInfo.text.length > 0);
+    syncWindow();
   };
 
   const apply = (next: RecordingHudState): void => {
@@ -359,12 +420,28 @@ export function mountRecordControl(root: HTMLElement): () => void {
 
   void listen("record-hud-open", () => {
     lastError = "";
+    appliedHeight = -1;
     startPolling();
     void refresh();
   });
   void listen("record-hud-close", () => {
     stopPolling();
+    overlayNotice = "";
+    appliedHeight = -1;
   });
+  void listen<string>(OVERLAY_NOTICE_EVENT, (event) => {
+    const text = typeof event.payload === "string" ? event.payload : "";
+    if (text === overlayNotice) {
+      return;
+    }
+    overlayNotice = text;
+    render();
+  });
+  const resizeObserver = new ResizeObserver(() => {
+    syncWindow();
+  });
+  resizeObserver.observe(row);
+  resizeObserver.observe(notice);
   void listen<RecordingHudState>("record-hud-state", (event) => {
     apply(event.payload);
   });
