@@ -45,6 +45,9 @@ pub const OVERLAY: &str = "record-overlay";
 pub const EVENT_OPEN: &str = "record-hud-open";
 /// 控制条窗口收起:两个视图停止轮询并清空状态。
 pub const EVENT_CLOSE: &str = "record-hud-close";
+/// 标注层复位:会话结束或重新开始时清空上一会话的绘制内容,从引擎标注
+/// 重新初始化(避免残留标注只显示在覆盖层、不进入新录制)。
+pub const EVENT_RESET: &str = "record-hud-reset";
 /// 状态广播(标注模式切换等即时变化;时长仍由视图轮询刷新)。
 pub const EVENT_STATE: &str = "record-hud-state";
 
@@ -171,6 +174,9 @@ fn hud_lock() -> MutexGuard<'static, HudRuntime> {
 pub struct HudRegion {
     pub width: u32,
     pub height: u32,
+    /// 显示器缩放系数:标注层 `AnnotationFrame.scale` 与录制合成使用的
+    /// `Frame.scale` 语义一致,预览线宽/字号等推导尺寸与导出对齐。
+    pub scale: f64,
 }
 
 /// 待处理(保存失败保留)录制的展示信息;`temp_path` 是重试/丢弃的精确句柄。
@@ -324,10 +330,20 @@ fn leave_draw_mode(app: &AppHandle) {
     }
 }
 
+/// 复位标注层:通知前端清空上一会话的绘制内容。实时平台覆盖层保持可见,
+/// 但不再显示旧标注(新会话从引擎标注重新初始化)。
+fn reset_overlay(app: &AppHandle) {
+    if let Some(overlay) = app.get_webview_window(OVERLAY) {
+        let _ = overlay.emit(EVENT_RESET, ());
+    }
+}
+
 /// 录制会话被取出(任何停止路径)后复位绘制交互:会话已结束,标注层必须
-/// 停止接收输入并归还鼠标穿透,避免挡住后续截图/取字操作。
+/// 停止接收输入、归还鼠标穿透并清空上一会话的标注,避免挡住后续截图/取字,
+/// 也避免残留标注只显示在覆盖层而不进入下一次录制。
 pub fn reset_after_session_end(app: &AppHandle) {
     leave_draw_mode(app);
+    reset_overlay(app);
 }
 
 /// 保存失败登记待处理产物后重新呼出控制条。托盘停止路径的保存对话框期间
@@ -516,9 +532,9 @@ fn broadcast_state(app: &AppHandle) {
 }
 
 pub fn state_snapshot(app: &AppHandle) -> RecordingHudState {
-    let (interactive, region) = {
+    let (interactive, context) = {
         let hud = hud_lock();
-        (hud.interactive, hud.region)
+        (hud.interactive, hud.region.zip(hud.monitor.clone()))
     };
     RecordingHudState {
         status: session::with_recording(app, |recording| recording.status()),
@@ -528,10 +544,11 @@ pub fn state_snapshot(app: &AppHandle) -> RecordingHudState {
             .collect(),
         capabilities: capabilities(),
         interactive,
-        has_context: region.is_some(),
-        region: region.map(|region| HudRegion {
+        has_context: context.is_some(),
+        region: context.map(|(region, monitor)| HudRegion {
             width: region.width,
             height: region.height,
+            scale: monitor.scale,
         }),
         limit_ms: MAX_RECORDING_MS,
     }
@@ -596,6 +613,9 @@ fn start_from_hud(app: &AppHandle) -> Result<RecordingStatus, String> {
         hud.interactive = false;
         hud.paused_for_draw = false;
     }
+    // 重新开始:标注层复位后按新会话的标注(空)重新初始化,旧会话残留的
+    // 绘制内容不会继续显示或被误并入新录制。
+    reset_overlay(app);
     session::refresh_tray_menu(app);
     ui::show_toast_key(app, "toast.recording_started");
     broadcast_state(app);
@@ -1066,6 +1086,7 @@ mod tests {
             region: Some(HudRegion {
                 width: 4,
                 height: 2,
+                scale: 2.0,
             }),
             limit_ms: MAX_RECORDING_MS,
         };
@@ -1077,6 +1098,55 @@ mod tests {
         assert_eq!(json["capabilities"]["captureProtection"], true);
         assert!(json["capabilities"].get("noticeKey").is_none());
         assert_eq!(json["region"]["width"], 4);
+        assert_eq!(json["region"]["height"], 2);
+        // 标注层按显示器 scale 生成 AnnotationFrame.scale:与录制合成一致。
+        assert_eq!(json["region"]["scale"], 2.0);
         assert_eq!(json["interactive"], false);
+    }
+
+    /// capability 的 windows 支持 glob(`pin-*`);实现既有用法里的单个 `*`
+    /// 语义,足以判定一个 label 是否被某个 pattern 覆盖。
+    fn label_pattern_matches(pattern: &str, label: &str) -> bool {
+        match pattern.split_once('*') {
+            None => pattern == label,
+            Some((prefix, suffix)) => {
+                label.len() >= prefix.len() + suffix.len()
+                    && label.starts_with(prefix)
+                    && label.ends_with(suffix)
+            }
+        }
+    }
+
+    #[test]
+    fn label_pattern_matches_globs_and_exact_labels() {
+        assert!(label_pattern_matches("record-control", "record-control"));
+        assert!(label_pattern_matches("pin-*", "pin-1"));
+        assert!(!label_pattern_matches("pin-*", "record-control"));
+        assert!(!label_pattern_matches("record-control", "record-controls"));
+    }
+
+    /// 与 `scroll.rs` 的控制窗回归同类:Tauri 2 按 (window label, capability
+    /// windows) 放行 plugin 命令;`record-control` / `record-overlay` 前端的
+    /// `listen(...)` 依赖两个 label 出现在唯一 capability 的 windows 列表,
+    /// 缺失时会被 ACL 拒绝,控制条与标注层收不到 open/state/close 事件。
+    #[test]
+    fn hud_window_labels_are_covered_by_the_default_capability() {
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../../capabilities/default.json"))
+                .expect("default capability must be valid JSON");
+        let windows: Vec<&str> = capability["windows"]
+            .as_array()
+            .expect("capability must list windows")
+            .iter()
+            .map(|label| label.as_str().expect("window labels are strings"))
+            .collect();
+        for label in [CONTROL, OVERLAY] {
+            assert!(
+                windows
+                    .iter()
+                    .any(|pattern| label_pattern_matches(pattern, label)),
+                "capability windows {windows:?} must cover {label}"
+            );
+        }
     }
 }

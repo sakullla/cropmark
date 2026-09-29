@@ -17,6 +17,8 @@ export interface RecordingStatus {
 export interface HudRegion {
   width: number;
   height: number;
+  /** 显示器缩放系数:标注层 `AnnotationFrame.scale` 用,与录制合成一致。 */
+  scale: number;
 }
 
 export interface HudCapabilities {

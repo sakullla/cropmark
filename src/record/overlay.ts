@@ -6,7 +6,7 @@ import {
   type AnnotationEditor,
 } from "../annotation";
 import { t } from "../i18n";
-import type { HudCapabilities, HudSnapshot, RecordingHudState } from "./types";
+import type { HudCapabilities, HudRegion, HudSnapshot, RecordingHudState } from "./types";
 import "./record.css";
 
 // R3 录制标注层:覆盖录制区域的透明画布 + 标注工具条。
@@ -57,7 +57,7 @@ export function mountRecordOverlay(root: HTMLElement): () => void {
   }
 
   let editor: AnnotationEditor | null = null;
-  let region: { width: number; height: number } | null = null;
+  let region: HudRegion | null = null;
   let capabilities: HudCapabilities | null = null;
   let interactive = false;
   let initialized = false;
@@ -82,10 +82,20 @@ export function mountRecordOverlay(root: HTMLElement): () => void {
   /** 马赛克工具(含其模糊模式)在画布上直接取像素:需要定格底图避免预览读出透明像素。 */
   const needsBase = (): boolean => editor?.tool() === "mosaic";
 
+  /**
+   * 降级(非 live)平台的不透明层只有快照能充当底图:快照就绪后始终绘制,
+   * 否则透明背景上的标注在录制中不可见。实时平台仍只在取像素工具下绘制。
+   */
+  const shouldDrawSnapshot = (): boolean =>
+    snapshot !== null &&
+    snapshot.complete &&
+    snapshot.naturalWidth > 0 &&
+    (capabilities?.liveOverlay !== true || needsBase());
+
   const draw = (): void => {
     fitCanvas();
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    if (snapshot && snapshot.complete && snapshot.naturalWidth > 0 && needsBase()) {
+    if (shouldDrawSnapshot() && snapshot) {
       ctx.drawImage(snapshot, 0, 0, canvas.width, canvas.height);
     }
     editor?.paint(ctx);
@@ -256,7 +266,9 @@ export function mountRecordOverlay(root: HTMLElement): () => void {
     ctx,
     toolbar: tools,
     textHost: root,
-    frame: () => (region ? { width: region.width, height: region.height, scale: 1 } : null),
+    // 坐标空间 = 录制区域物理像素(与 Rust 逐帧合成一致);scale 取显示器
+    // 缩放系数,线宽/字号等推导尺寸与导出及截图路径保持一致。
+    frame: () => (region ? { width: region.width, height: region.height, scale: region.scale } : null),
     redraw: () => scheduleDraw(),
     isEditable: () => interactive,
     onToolChange: () => scheduleDraw(),
@@ -264,6 +276,18 @@ export function mountRecordOverlay(root: HTMLElement): () => void {
       showNotice(typeof error === "string" ? error : t(error.key, error.params));
     },
   });
+
+  /** 清空上一会话的绘制状态:复位后由下一次状态刷新按引擎标注重新初始化。 */
+  const resetView = (): void => {
+    initialized = false;
+    interactive = false;
+    snapshot = null;
+    drawBar.hidden = true;
+    showNotice("");
+    editor?.clear();
+    synced = "[]";
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  };
 
   done.addEventListener("click", () => void exitInteractive());
   window.addEventListener("keydown", (event) => {
@@ -275,26 +299,18 @@ export function mountRecordOverlay(root: HTMLElement): () => void {
 
   void listen("record-hud-open", () => {
     region = null;
-    initialized = false;
-    interactive = false;
-    snapshot = null;
-    drawBar.hidden = true;
-    showNotice("");
-    editor?.clear();
-    synced = "[]";
+    resetView();
     startTimers();
     void refresh();
   });
   void listen("record-hud-close", () => {
     stopTimers();
-    initialized = false;
-    interactive = false;
-    drawBar.hidden = true;
-    snapshot = null;
-    showNotice("");
-    editor?.clear();
-    synced = "[]";
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    resetView();
+  });
+  void listen("record-hud-reset", () => {
+    // 会话结束/重新开始:清空旧标注后立即按当前引擎标注重新初始化。
+    resetView();
+    void refresh();
   });
   void listen<RecordingHudState>("record-hud-state", (event) => {
     applyState(event.payload);
