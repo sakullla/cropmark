@@ -4261,8 +4261,8 @@ mod tests {
         let mut engine = inline_engine(400, 300);
         drag_selection(&mut engine, (40, 30), (300, 250));
         click_action(&mut engine, SelectionAction::Tool(AnnotationTool::Arrow));
-        // 横条在选区外(下方优先);从选区内部下方拖出选区外,端点钳制在选区内。
-        engine.handle_event(InputEvent::LeftDown { x: 100, y: 220 });
+        // 窄屏横条会换行并贴住选区下缘。从换行横条上方的选区内部拖出,端点仍钳在选区内。
+        engine.handle_event(InputEvent::LeftDown { x: 100, y: 150 });
         engine.handle_event(InputEvent::PointerMove { x: 900, y: 900 });
         engine.handle_event(InputEvent::LeftUp { x: 900, y: 900 });
         match &engine.annotations()[0] {

@@ -2,9 +2,9 @@
 //!
 //! 在冻结帧(`capture::buffer::Frame`)的 RGBA 位图上合成:暗幕+选区开洞、
 //! 跟随系统明暗的强调色描边、白芯蓝环手柄、尺寸徽标、放大镜(原始帧全分辨率采样 +
-//! 十字准星 + 单行色值读数)、单条统一横条(主行工具/动作 + 「更多」展开
-//! 面板)与右键菜单。浮层用冷灰表面和与选区描边同一的蓝,只有复制是实心强调。
-//! 布局/hitbox 函数是纯几何,状态机与绘制共用
+//! 十字准星 + 单行色值读数)、统一横条(主行工具/动作,超出屏幕宽度时换行 +
+//! 「更多」展开面板)与右键菜单。浮层用冷灰表面和与选区描边同一的蓝,只有复制是实心强调。
+//! 尺寸徽标放在离光标更远、且仍在画面内的角上。布局/hitbox 函数是纯几何,状态机与绘制共用
 //! 同一份,保证命中判定与合成输出一致。不含窗口代码;系统明暗只决定选区描边。
 
 use std::cell::RefCell;
@@ -35,8 +35,9 @@ const HALO_LIGHT: [u8; 4] = [255, 255, 255, 255];
 const HALO_DARK: [u8; 4] = [0x12, 0x16, 0x1C, 255];
 /// 悬停文字与图标 #1e40af,比填充蓝更深,压在浅蓝底上仍清楚。
 const ACCENT_DEEP: [u8; 4] = [0x1E, 0x40, 0xAF, 255];
-/// 图标字形白色(accent 填充按钮上的纯图标)。
-const ICON_INK: [u8; 4] = [255, 255, 255, 255];
+/// 实心强调按钮上的字形,与网页浅色 `--on-accent` 相同(#f8fafc)。
+/// 横条始终铺浅色强调填充,不改用深色 `--on-accent`。
+const ON_ACCENT: [u8; 4] = [0xF8, 0xFA, 0xFC, 255];
 /// 浮层底 #e4ebf6,不透明的浅蓝灰。纯白贴在截图上没有层次,半透明又会发灰。
 const CHROME_BG: [u8; 4] = [0xE4, 0xEB, 0xF6, 255];
 /// 正文 #1c2128。
@@ -453,14 +454,26 @@ pub struct UnifiedToolbar {
     pub buttons: Vec<(SelectionAction, IntRect)>,
 }
 
-/// 统一横条布局:恒为单行,取代右侧图标轨与第二阶段标注条。
+/// 单行放得下时返回按钮数;单行宽于屏幕时返回每行能容纳的列数(至少 1)。
+fn toolbar_columns(button: i32, count: i32, screen_w: i32) -> i32 {
+    if count <= 1 {
+        return count.max(1);
+    }
+    let button = button.max(1);
+    if count.saturating_mul(button) <= screen_w.max(0) {
+        return count;
+    }
+    (screen_w.max(0) / button).clamp(1, count)
+}
+
+/// 统一横条布局:宽屏单行,超出屏幕宽度时按原按钮尺寸换行。
 ///
 /// 放置:候选须在选区外、屏幕内。下缘是强默认(人体工学:靠近拖选区结
 /// 束位置的光标);仅下缘放不下时翻上缘;竖直都不行再按「剩余空间大者
 /// 优先、平局保右侧」选水平侧;四面候选都与选区相交时选重叠最小者,
 /// 最后兜底下方钳制屏内(Snipaste/ShareX/macOS 通行行为:不是哪边空间
 /// 大就翻哪边,避免选区在屏幕中下部时工具栏频繁跳到远处上方)。
-/// 返回 None 表示无按钮。
+/// 放不下的动作不收进「更多」。返回 None 表示无按钮。
 pub fn unified_toolbar(
     metrics: ChromeMetrics,
     selection: PhysicalRect,
@@ -475,12 +488,14 @@ pub fn unified_toolbar(
     let count = buttons.len() as i32;
     let button = metrics.bar_button;
     let margin = metrics.bar_margin;
-    let panel_w = count * button;
-    let panel_h = button;
-
-    let sel = IntRect::from(selection);
     let sw = screen.0 as i32;
     let sh = screen.1 as i32;
+    let columns = toolbar_columns(button, count, sw);
+    let rows = (count + columns - 1) / columns;
+    let panel_w = columns * button;
+    let panel_h = rows * button;
+
+    let sel = IntRect::from(selection);
     let clamp_x = |x: i32| x.clamp(0, (sw - panel_w).max(0));
     let clamp_y = |y: i32| y.clamp(0, (sh - panel_h).max(0));
     let centered_x = || clamp_x(sel.x + (sel.width - panel_w) / 2);
@@ -560,11 +575,12 @@ pub fn unified_toolbar(
         .iter()
         .enumerate()
         .map(|(index, action)| {
+            let index = index as i32;
             (
                 *action,
                 IntRect {
-                    x: panel.x + index as i32 * button,
-                    y: panel.y,
+                    x: panel.x + (index % columns) * button,
+                    y: panel.y + (index / columns) * button,
                     width: button,
                     height: button,
                 },
@@ -851,6 +867,121 @@ pub fn size_readout(rect: PhysicalRect) -> String {
     format!("{} × {} · {}, {}", rect.width, rect.height, rect.x, rect.y)
 }
 
+/// 尺寸徽标放在目标矩形的哪一只角外侧:离光标热点最远,且整块仍在画面内。
+/// 四角都放不下时,把最远角的候选钳进画面。距离相同优先左上,与原先默认一致。
+pub fn place_size_badge(
+    target: PhysicalRect,
+    cursor: (i32, i32),
+    screen: (u32, u32),
+    width: i32,
+    height: i32,
+    margin: i32,
+) -> IntRect {
+    let sel = IntRect::from(target);
+    let sw = screen.0 as i32;
+    let sh = screen.1 as i32;
+    // 顺序即平局优先级:左上、右上、左下、右下。
+    let anchors = [
+        (
+            (sel.x, sel.y),
+            IntRect {
+                x: sel.x,
+                y: sel.y - height - margin,
+                width,
+                height,
+            },
+        ),
+        (
+            (sel.right(), sel.y),
+            IntRect {
+                x: sel.right() - width,
+                y: sel.y - height - margin,
+                width,
+                height,
+            },
+        ),
+        (
+            (sel.x, sel.bottom()),
+            IntRect {
+                x: sel.x,
+                y: sel.bottom() + margin,
+                width,
+                height,
+            },
+        ),
+        (
+            (sel.right(), sel.bottom()),
+            IntRect {
+                x: sel.right() - width,
+                y: sel.bottom() + margin,
+                width,
+                height,
+            },
+        ),
+    ];
+    let distance = |point: (i32, i32)| {
+        let dx = i64::from(point.0) - i64::from(cursor.0);
+        let dy = i64::from(point.1) - i64::from(cursor.1);
+        dx * dx + dy * dy
+    };
+    let inside = |panel: IntRect| {
+        panel.width > 0
+            && panel.height > 0
+            && panel.x >= 0
+            && panel.y >= 0
+            && panel.right() <= sw
+            && panel.bottom() <= sh
+    };
+    let pick = |avoid_cursor: bool| {
+        let mut best: Option<(i64, usize, IntRect)> = None;
+        for (rank, (point, panel)) in anchors.iter().copied().enumerate() {
+            if !inside(panel) || (avoid_cursor && panel.contains(cursor.0, cursor.1)) {
+                continue;
+            }
+            let dist = distance(point);
+            let replace = match best {
+                None => true,
+                Some((best_dist, best_rank, _)) => {
+                    dist > best_dist || (dist == best_dist && rank < best_rank)
+                }
+            };
+            if replace {
+                best = Some((dist, rank, panel));
+            }
+        }
+        best
+    };
+    if let Some((_, _, panel)) = pick(true).or_else(|| pick(false)) {
+        return panel;
+    }
+    let mut farthest = 0usize;
+    let mut best_dist = -1i64;
+    for (rank, (point, _)) in anchors.iter().enumerate() {
+        let dist = distance(*point);
+        if dist > best_dist {
+            best_dist = dist;
+            farthest = rank;
+        }
+    }
+    clamp_badge(anchors[farthest].1, sw, sh)
+}
+
+fn clamp_badge(mut panel: IntRect, sw: i32, sh: i32) -> IntRect {
+    if sw <= 0 || sh <= 0 {
+        return IntRect {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        };
+    }
+    panel.width = panel.width.min(sw).max(0);
+    panel.height = panel.height.min(sh).max(0);
+    panel.x = panel.x.clamp(0, sw - panel.width);
+    panel.y = panel.y.clamp(0, sh - panel.height);
+    panel
+}
+
 /// 光标物理坐标读数,例如 "10, 20"。
 pub fn coordinate_readout(x: i32, y: i32) -> String {
     format!("{}, {}", x, y)
@@ -1019,7 +1150,7 @@ impl Composer {
                 if !chrome.intersect(dirty).is_empty() {
                     outline_selection(out, self.width, self.height, selection);
                     self.draw_handles(out, self.width, self.height, selection);
-                    self.draw_size_badge(out, self.width, self.height, selection);
+                    self.draw_size_badge(out, self.width, self.height, selection, scene.cursor);
                     if scene.toolbar_visible {
                         self.draw_unified_toolbar(
                             out,
@@ -1033,7 +1164,7 @@ impl Composer {
                 }
             } else if let Some(rect) = scene.snap_highlight {
                 // R7:恢复暗幕会擦掉高亮,按同一矩形重绘(含尺寸徽标)。
-                self.draw_snap_highlight(out, self.width, self.height, rect);
+                self.draw_snap_highlight(out, self.width, self.height, rect, scene.cursor);
             }
             if scene.menu_open {
                 self.draw_menu(out, self.width, self.height, scene);
@@ -1077,13 +1208,13 @@ impl Composer {
             }
             outline_selection(out, w, h, selection);
             self.draw_handles(out, w, h, selection);
-            self.draw_size_badge(out, w, h, selection);
+            self.draw_size_badge(out, w, h, selection, scene.cursor);
             if scene.toolbar_visible {
                 self.draw_unified_toolbar(out, w, h, selection, scene, overlay);
             }
         } else if let Some(rect) = scene.snap_highlight {
             // R7:尚无选区时的悬停吸附高亮(窗口/控件边界 + 尺寸徽标)。
-            self.draw_snap_highlight(out, w, h, rect);
+            self.draw_snap_highlight(out, w, h, rect, scene.cursor);
         }
         if scene.menu_open {
             self.draw_menu(out, w, h, scene);
@@ -1098,7 +1229,8 @@ impl Composer {
         }
     }
 
-    /// 两帧之间需要重绘的屏内矩形。选区几何未变时只含放大镜与 hover 提示。
+    /// 两帧之间需要重绘的屏内矩形。选区几何未变时含放大镜、hover 提示,
+    /// 以及随光标换角的尺寸徽标。
     fn dirty_rect(
         &self,
         scene: &Scene,
@@ -1151,6 +1283,18 @@ impl Composer {
         dirty = dirty
             .union(self.hover_bounds(prev, overlay, screen))
             .union(self.hover_bounds(scene, overlay, screen));
+        if prev.cursor != scene.cursor {
+            for (rect, cursor) in [
+                (scene.selection.or(scene.snap_highlight), scene.cursor),
+                (prev.selection.or(prev.snap_highlight), prev.cursor),
+            ] {
+                if let Some(rect) = rect {
+                    if let Some(badge) = self.size_badge_rect(rect, cursor) {
+                        dirty = dirty.union(badge);
+                    }
+                }
+            }
+        }
         if dirty.is_empty() {
             return full;
         }
@@ -1176,6 +1320,9 @@ impl Composer {
                 .max(self.metrics.bar_button + self.metrics.bar_margin)
                 .max(self.metrics.badge_margin + 36);
             bounds = bounds.union(IntRect::from(selection).inflate(pad));
+            if let Some(badge) = self.size_badge_rect(selection, scene.cursor) {
+                bounds = bounds.union(badge);
+            }
             if scene.toolbar_visible {
                 if let Some(toolbar) = unified_toolbar(
                     self.metrics,
@@ -1204,6 +1351,9 @@ impl Composer {
             // R7:悬停高亮本身 + 其尺寸徽标(徽标在矩形上方/下方,留出余量)。
             let pad = self.metrics.badge_margin + 40;
             bounds = bounds.union(IntRect::from(rect).inflate(pad));
+            if let Some(badge) = self.size_badge_rect(rect, scene.cursor) {
+                bounds = bounds.union(badge);
+            }
         }
         if scene.menu_open {
             let items = menu_items(scene.flags);
@@ -1377,8 +1527,8 @@ impl Composer {
         }
     }
 
-    /// 统一横条:浅蓝灰面板 + 位图图标。仅复制为蓝色填充(白色图标);
-    /// 当前绘制工具有独立的 accent 选中态;hover 软底;工具组与动作组之间画
+    /// 统一横条:浅蓝灰面板 + 位图图标。仅复制为实心强调填充(`--on-accent` 字形);
+    /// 当前工具保留浅底选中态,墨色与普通按钮相同;hover 软底;工具组与动作组之间画
     /// 1px 分隔线。「更多」展开时在其按钮上方弹出动作列表面板(图标+名称,
     /// 与右键菜单同构)。
     fn draw_unified_toolbar(
@@ -1419,9 +1569,12 @@ impl Composer {
                     .is_some_and(|tool| AnnotationTool::MORE.contains(&tool)),
                 (_, _) => false,
             };
-            // 复制与其他按钮同一墨色。实心圆和短杠在像素网格上都会显得突兀。
-            let ink = if selected_tool { ACCENT } else { CHROME_TEXT };
-            if selected_tool || hover {
+            // 只有复制是实心主操作。当前工具用浅底,避免第二个实心强调。
+            let primary = *action == SelectionAction::Copy;
+            let ink = if primary { ON_ACCENT } else { CHROME_TEXT };
+            if primary {
+                fill_round(rgba, w, h, inset(*rect, 2), radius, ACCENT);
+            } else if selected_tool || hover {
                 fill_round_blend(rgba, w, h, inset(*rect, 2), radius, ACTIVE_BG);
             }
             self.draw_action_icon(rgba, w, h, *action, cx, cy, metrics.bar_icon, ink);
@@ -1485,39 +1638,56 @@ impl Composer {
         }
     }
 
-    /// 亮底 pill 深字加粗徽标,位于选区上方(上方放不下时翻到下方)。
-    fn draw_size_badge(&self, rgba: &mut [u8], w: u32, h: u32, rect: PhysicalRect) {
+    /// 徽标尺寸与落点。文字量不到时不画。
+    fn size_badge_rect(&self, rect: PhysicalRect, cursor: (i32, i32)) -> Option<IntRect> {
+        self.size_badge_layout(rect, cursor).map(|(_, panel)| panel)
+    }
+
+    fn size_badge_layout(
+        &self,
+        rect: PhysicalRect,
+        cursor: (i32, i32),
+    ) -> Option<(String, IntRect)> {
         let metrics = self.metrics;
         let font = metrics.badge_font;
         let label = size_readout(rect);
-        let Some(text_width) = text::measure_width(&label, font) else {
-            return;
-        };
-        let pad_x = metrics.badge_pad_x;
-        let pad_y = metrics.badge_pad_y;
-        let margin = metrics.badge_margin;
+        let text_width = text::measure_width(&label, font)?;
         // faux bold 二次描画会向右多占约 5% 字号宽度,预留。
         let bold_slack = (font * 0.05).ceil() as i32;
-        let width = text_width.ceil() as i32 + bold_slack + pad_x * 2;
-        let height = text::line_height(font).ceil() as i32 + pad_y * 2;
-        let sel = IntRect::from(rect);
-        let mut y = sel.y - height - margin;
-        if y < 0 {
-            y = sel.bottom() + margin;
-        }
-        let panel = IntRect {
-            x: sel.x.clamp(0, (w as i32 - width).max(0)),
-            y: y.clamp(0, (h as i32 - height).max(0)),
+        let width = text_width.ceil() as i32 + bold_slack + metrics.badge_pad_x * 2;
+        let height = text::line_height(font).ceil() as i32 + metrics.badge_pad_y * 2;
+        let panel = place_size_badge(
+            rect,
+            cursor,
+            (self.width, self.height),
             width,
             height,
+            metrics.badge_margin,
+        );
+        Some((label, panel))
+    }
+
+    /// 亮底 pill 深字加粗徽标,落在离光标更远且仍在画面内的角外侧。
+    fn draw_size_badge(
+        &self,
+        rgba: &mut [u8],
+        w: u32,
+        h: u32,
+        rect: PhysicalRect,
+        cursor: (i32, i32),
+    ) {
+        let metrics = self.metrics;
+        let font = metrics.badge_font;
+        let Some((label, panel)) = self.size_badge_layout(rect, cursor) else {
+            return;
         };
-        draw_panel_chrome(rgba, w, h, panel, height / 2);
+        draw_panel_chrome(rgba, w, h, panel, panel.height / 2);
         text::draw_text_bold(
             rgba,
             w,
             h,
-            (panel.x + pad_x) as f32,
-            (panel.y + pad_y) as f32,
+            (panel.x + metrics.badge_pad_x) as f32,
+            (panel.y + metrics.badge_pad_y) as f32,
             &label,
             font,
             CHROME_TEXT,
@@ -1526,7 +1696,14 @@ impl Composer {
 
     /// R7:悬停吸附高亮——低透明强调色填充 + 与选区同款晕边描边,并复用
     /// 尺寸徽标(尺寸显示随高亮更新)。仅在尚无选区时出现。
-    fn draw_snap_highlight(&self, rgba: &mut [u8], w: u32, h: u32, rect: PhysicalRect) {
+    fn draw_snap_highlight(
+        &self,
+        rgba: &mut [u8],
+        w: u32,
+        h: u32,
+        rect: PhysicalRect,
+        cursor: (i32, i32),
+    ) {
         let sel = IntRect::from(rect);
         if sel.is_empty() {
             return;
@@ -1569,7 +1746,7 @@ impl Composer {
             2,
             accent,
         );
-        self.draw_size_badge(rgba, w, h, rect);
+        self.draw_size_badge(rgba, w, h, rect, cursor);
     }
 
     /// 动作图标:长截图与录屏没有位图资产,用几何笔画(长截图=竖框+箭头、
@@ -2621,8 +2798,8 @@ mod tests {
         assert!(count > 0, "draft must be visible while dragging");
     }
 
-    /// 统一横条:主行恒为单行;关闭即时标注时为 标注/复制/保存/取消/更多;
-    /// 复制 accent 填充;选中工具有 accent 选中态;「更多」展开动作面板。
+    /// 统一横条:宽屏主行单行;关闭即时标注时为 标注/复制/保存/取消/更多;
+    /// 复制是实心强调,当前工具只是浅底;「更多」展开动作面板。
     #[test]
     fn unified_toolbar_draws_main_row_and_more_panel() {
         let frame = solid_frame(800, 600, [30, 30, 30, 255]);
@@ -2734,37 +2911,56 @@ mod tests {
             panel_ink(&light, false) > 20,
             "annotate-form toolbar should draw icons"
         );
-        // 选中工具用蓝色字形。复制按钮也是这块蓝,所以只断言选中后蓝像素变多。
+        // 复制是实心强调;其他动作和当前工具都不是实心主操作。
         let selected = composer.compose_with_overlay(
             &mode_scene(selection, enabled, false),
             &overlay(Some(AnnotationTool::Rect)),
         );
-        let accent_pixels = |bytes: &[u8]| {
-            bytes
-                .chunks_exact(4)
-                .filter(|px| px[0] < 80 && px[1] < 140 && px[2] > 180)
-                .count()
-        };
-        assert!(
-            accent_pixels(&selected) > accent_pixels(&with_tools),
-            "selected tool should paint its glyph in accent ink"
-        );
-        // 复制按钮不再单独高亮,短杠位置应是浮层底而不是强调色。
         let copy_rect = toolbar
             .buttons
             .iter()
             .find(|(action, _)| *action == SelectionAction::Copy)
             .map(|(_, rect)| *rect)
             .expect("copy button");
-        let (cx, cy) = copy_rect.center();
         let read = |bytes: &[u8], x: i32, y: i32| {
             let i = ((y as u32 * 800 + x as u32) * 4) as usize;
             [bytes[i], bytes[i + 1], bytes[i + 2]]
         };
+        let fill_at = |rect: IntRect| (rect.center().0, rect.bottom() - 6);
+        let accent = [ACCENT[0], ACCENT[1], ACCENT[2]];
+        let (cx, cy) = fill_at(copy_rect);
+        assert_eq!(
+            read(&with_tools, cx, cy),
+            accent,
+            "copy button should be a solid accent fill"
+        );
+        for (action, rect) in &toolbar.buttons {
+            if *action == SelectionAction::Copy {
+                continue;
+            }
+            let (x, y) = fill_at(*rect);
+            assert_ne!(
+                read(&with_tools, x, y),
+                accent,
+                "{action:?} should not be a solid primary"
+            );
+            assert_ne!(
+                read(&selected, x, y),
+                accent,
+                "selected {action:?} should not be a solid primary"
+            );
+        }
+        let tool_rect = toolbar
+            .buttons
+            .iter()
+            .find(|(action, _)| *action == SelectionAction::Tool(AnnotationTool::Rect))
+            .map(|(_, rect)| *rect)
+            .expect("rect tool");
+        let (tx, ty) = fill_at(tool_rect);
         assert_ne!(
-            read(&with_tools, cx, cy + copy_rect.height / 2 - 6),
-            [ACCENT[0], ACCENT[1], ACCENT[2]],
-            "copy button should not carry an accent mark"
+            read(&selected, tx, ty),
+            read(&with_tools, tx, ty),
+            "current tool keeps a light selected fill"
         );
     }
 
@@ -3109,6 +3305,106 @@ mod tests {
         );
     }
 
+    /// 单行宽于屏幕时按原按钮尺寸换行,每个按钮仍在屏内;宽屏保持单行。
+    /// 录屏开关关闭时主行没有录屏入口。
+    #[test]
+    fn unified_toolbar_wraps_when_wider_than_the_screen() {
+        let metrics = metrics_1();
+        let flags = FeatureFlags::default();
+        assert!(!flags.recording);
+        let selection = PhysicalRect {
+            x: 40,
+            y: 40,
+            width: 80,
+            height: 60,
+        };
+        let screen = (180u32, 600u32);
+        let toolbar = unified_toolbar(metrics, selection, screen, flags, true).expect("toolbar");
+        let count = toolbar.buttons.len() as i32;
+        let button = metrics.bar_button;
+        assert!(count * button > screen.0 as i32);
+        assert!(!toolbar
+            .buttons
+            .iter()
+            .any(|(action, _)| *action == SelectionAction::Recording));
+        let columns = screen.0 as i32 / button;
+        let rows = (count + columns - 1) / columns;
+        assert!(rows > 1);
+        assert_eq!(toolbar.panel.width, columns * button);
+        assert_eq!(toolbar.panel.height, rows * button);
+        assert_eq!(
+            toolbar.panel.y,
+            selection.y as i32 + selection.height as i32 + metrics.bar_margin
+        );
+        for (index, (action, rect)) in toolbar.buttons.iter().enumerate() {
+            assert_eq!(rect.width, button, "{action:?}");
+            assert_eq!(rect.height, button, "{action:?}");
+            assert!(rect.x >= 0 && rect.y >= 0, "{action:?}");
+            assert!(rect.right() <= screen.0 as i32 && rect.bottom() <= screen.1 as i32);
+            let slot = index as i32;
+            assert_eq!(rect.x, toolbar.panel.x + (slot % columns) * button);
+            assert_eq!(rect.y, toolbar.panel.y + (slot / columns) * button);
+            for (other_index, (_, other)) in toolbar.buttons.iter().enumerate() {
+                if other_index != index {
+                    assert!(!intersects(*rect, *other));
+                }
+            }
+        }
+        let wide = unified_toolbar(metrics, selection, (1280, 800), flags, true).expect("wide");
+        assert_eq!(wide.panel.height, button);
+        assert_eq!(wide.panel.width, wide.buttons.len() as i32 * button);
+    }
+
+    /// 尺寸徽标选离光标更远、且整块仍在画面内的角;贴顶时改用放得下的远角。
+    #[test]
+    fn size_badge_prefers_the_corner_farthest_from_the_cursor() {
+        let target = PhysicalRect {
+            x: 80,
+            y: 60,
+            width: 200,
+            height: 120,
+        };
+        let screen = (640u32, 400u32);
+        let near_se = (270, 170);
+        let badge = place_size_badge(target, near_se, screen, 70, 24, 6);
+        assert_eq!(
+            badge,
+            IntRect {
+                x: 80,
+                y: 30,
+                width: 70,
+                height: 24,
+            }
+        );
+        assert!(!badge.contains(near_se.0, near_se.1));
+        let near_nw = (80, 60);
+        let badge = place_size_badge(target, near_nw, screen, 70, 24, 6);
+        assert_eq!(
+            badge,
+            IntRect {
+                x: 210,
+                y: 186,
+                width: 70,
+                height: 24,
+            }
+        );
+        assert!(!badge.contains(near_nw.0, near_nw.1));
+        let center = (180, 120);
+        let badge = place_size_badge(target, center, screen, 70, 24, 6);
+        assert_eq!(badge.x, 80);
+        assert_eq!(badge.y, 30);
+        let top = PhysicalRect {
+            x: 80,
+            y: 0,
+            width: 200,
+            height: 120,
+        };
+        let badge = place_size_badge(top, (80, 120), screen, 70, 24, 6);
+        assert_eq!(badge.x, 210);
+        assert_eq!(badge.y, 126);
+        assert!(badge.y >= 0 && badge.bottom() <= screen.1 as i32);
+    }
+
     #[test]
     fn chrome_icons_paint_ink_inside_their_box() {
         let (w, h) = (48u32, 48u32);
@@ -3375,7 +3671,7 @@ mod tests {
         assert_eq!(CHROME_BORDER, [28, 33, 40, 41]);
         assert_eq!(ACTIVE_BG, [0x1D, 0x4E, 0xD8, 36]);
         assert_eq!(ACCENT, ACCENT_LIGHT);
-        assert_eq!(ICON_INK, [255, 255, 255, 255]);
+        assert_eq!(ON_ACCENT, [0xF8, 0xFA, 0xFC, 255]);
         // 压暗系数保持 52%。
         assert_eq!(DIM_KEEP, 52);
     }
@@ -4004,7 +4300,11 @@ mod tests {
         // 统一横条位于选区下方(compose 无 overlay,布局按 text_input=false 计算)。
         let toolbar = unified_toolbar(composer.metrics, selection, (320, 200), flags, false)
             .expect("toolbar");
-        assert!(toolbar.panel.y >= selection.y as i32 + selection.height as i32);
+        assert!(toolbar.panel.x >= 0 && toolbar.panel.y >= 0);
+        assert!(toolbar.panel.right() <= 320 && toolbar.panel.bottom() <= 200);
+        assert!(toolbar.buttons.iter().all(|(_, rect)| {
+            rect.x >= 0 && rect.y >= 0 && rect.right() <= 320 && rect.bottom() <= 200
+        }));
         let copy_rect = toolbar
             .buttons
             .iter()
@@ -4031,12 +4331,11 @@ mod tests {
         };
         // 选区开洞:选区内部是原始像素。
         assert_eq!(read(190, 60), [10, 200, 90]);
-        // 选区外是暗幕(避开所有面板)。
-        assert_eq!(read(10, 190), [dimmed[0], dimmed[1], dimmed[2]]);
-        // 复制按钮不再单独铺强调色。
-        let (cx, cy) = copy_rect.center();
-        assert_ne!(
-            read(cx, cy + copy_rect.height / 2 - 6),
+        // 选区外是暗幕(避开换行后的横条、悬停提示和徽标)。
+        assert_eq!(read(300, 15), [dimmed[0], dimmed[1], dimmed[2]]);
+        // 复制按钮是实心强调,探针落在图标外的填充上。
+        assert_eq!(
+            read(copy_rect.center().0, copy_rect.bottom() - 6),
             [ACCENT[0], ACCENT[1], ACCENT[2]]
         );
         // 横条面板内部是浮层底(取左缘内 2px,避开图标与分隔线)。
@@ -4233,17 +4532,25 @@ mod tests {
                 true,
             )
             .expect("toolbar");
-            assert_eq!(toolbar.panel.height, metrics.bar_button, "scale {scale}");
+            let count = toolbar.buttons.len() as i32;
+            let columns = toolbar_columns(metrics.bar_button, count, 800);
+            let rows = (count + columns - 1) / columns;
             assert_eq!(
                 toolbar.panel.width,
-                toolbar.buttons.len() as i32 * metrics.bar_button,
+                columns * metrics.bar_button,
                 "scale {scale}"
             );
-            assert!(toolbar
-                .buttons
-                .iter()
-                .all(|(_, rect)| rect.width == metrics.bar_button
-                    && rect.height == metrics.bar_button));
+            assert_eq!(
+                toolbar.panel.height,
+                rows * metrics.bar_button,
+                "scale {scale}"
+            );
+            assert!(toolbar.buttons.iter().all(|(_, rect)| {
+                rect.width == metrics.bar_button
+                    && rect.height == metrics.bar_button
+                    && rect.right() <= 800
+                    && rect.bottom() <= 600
+            }));
             // 菜单几何按 metrics;分隔线与项底对齐。
             let items = menu_items(FeatureFlags::default());
             let menu = menu_panel(metrics, (50, 50), (800, 600), &items);
@@ -4335,7 +4642,7 @@ mod tests {
             let i = ((y as u32 * 640 + x as u32) * 4) as usize;
             [composed[i], composed[i + 1], composed[i + 2]]
         };
-        // 复制按钮与其他按钮一样,不再画强调色短杠。
+        // 复制按钮是实心强调,探针落在图标外的填充上。
         let toolbar = unified_toolbar(metrics, selection, (640, 400), flags, false).unwrap();
         let copy_rect = toolbar
             .buttons
@@ -4343,9 +4650,20 @@ mod tests {
             .find(|(action, _)| *action == SelectionAction::Copy)
             .map(|(_, rect)| *rect)
             .unwrap();
-        let (cx, cy) = copy_rect.center();
-        let inset = metrics.bar_icon / 2 + 2;
-        assert_ne!(read(cx, cy + inset), [ACCENT[0], ACCENT[1], ACCENT[2]]);
+        assert_eq!(
+            read(copy_rect.center().0, copy_rect.bottom() - 6),
+            [ACCENT[0], ACCENT[1], ACCENT[2]]
+        );
+        let other = toolbar
+            .buttons
+            .iter()
+            .find(|(action, _)| *action != SelectionAction::Copy)
+            .map(|(_, rect)| *rect)
+            .unwrap();
+        assert_ne!(
+            read(other.center().0, other.bottom() - 6),
+            [ACCENT[0], ACCENT[1], ACCENT[2]]
+        );
         // 手柄视觉半径也随 scale 放大:距锚点 1.0 基准半径外、缩放半径内仍为强调色。
         let (hx, hy) = handle_anchor(selection, HandleKind::SouthEast);
         assert_eq!(read(hx, hy), [255, 255, 255]);
