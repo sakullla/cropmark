@@ -326,6 +326,44 @@ html[data-chrome="border"] #app {
 
 /* 工具条留在区域顶部;完成标注条接在工具条下沿,不再用固定 top 叠到工具条上。
    选择器限定在标注层,避免命中控制条里同名的标注按钮。 */
+.record-annotate {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 4px;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.record-annotate[hidden] {
+  display: none;
+}
+
+.record-annotate button {
+  flex: 0 0 auto;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: var(--radius-control-sm);
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+}
+
+.record-annotate button.is-active {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.record-annotate button[data-style-color] {
+  width: 22px;
+  padding: 0;
+  background: var(--swatch);
+  border-color: var(--line);
+}
+
 .record-overlay-root .record-draw {
   position: absolute;
   top: 20px;

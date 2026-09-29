@@ -794,7 +794,13 @@ export function mountSettings(root: HTMLElement): () => void {
       button.dataset.recordingFps = String(fps);
       button.setAttribute("role", "radio");
       button.textContent = t("settings.recording.fps_option", { fps: String(fps) });
-      const selected = settings.fps === fps;
+      const effective =
+        settings.fps === 10 || settings.fps === 15 || settings.fps === 30
+          ? settings.fps
+          : settings.format === "mp4"
+            ? 30
+            : 15;
+      const selected = fps === effective;
       button.setAttribute("aria-checked", selected ? "true" : "false");
       button.classList.toggle("selected", selected);
       button.disabled = !settings.enabled;

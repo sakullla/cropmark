@@ -1487,6 +1487,7 @@ impl Composer {
                         selection,
                         scene.cursor,
                         self.size_badge_obstacle(scene, selection, overlay.text_input),
+                        scene.flags.record_fps,
                     );
                     if scene.toolbar_visible {
                         self.draw_unified_toolbar(
@@ -1553,6 +1554,7 @@ impl Composer {
                 selection,
                 scene.cursor,
                 self.size_badge_obstacle(scene, selection, text_input),
+                scene.flags.record_fps,
             );
             if scene.toolbar_visible {
                 self.draw_unified_toolbar(out, w, h, selection, scene, overlay);
@@ -2108,7 +2110,7 @@ impl Composer {
         cursor: (i32, i32),
         avoid: Option<IntRect>,
     ) -> Option<IntRect> {
-        self.size_badge_layout(rect, cursor, avoid)
+        self.size_badge_layout(rect, cursor, avoid, 0)
             .map(|(_, panel)| panel)
     }
 
@@ -2117,10 +2119,17 @@ impl Composer {
         rect: PhysicalRect,
         cursor: (i32, i32),
         avoid: Option<IntRect>,
+        fps: u32,
     ) -> Option<(String, IntRect)> {
         let metrics = self.metrics;
         let font = metrics.badge_font;
-        let label = size_readout(rect);
+        let mut label = size_readout(rect);
+        if fps > 0 {
+            label = format!(
+                "{label} · {}",
+                crate::i18n::tp("record.bar.fps", &[("fps", &fps.to_string())])
+            );
+        }
         let text_width = text::measure_width(&label, font)?;
         // faux bold 二次描画会向右多占约 5% 字号宽度,预留。
         let bold_slack = (font * 0.05).ceil() as i32;
@@ -2147,10 +2156,11 @@ impl Composer {
         rect: PhysicalRect,
         cursor: (i32, i32),
         avoid: Option<IntRect>,
+        fps: u32,
     ) {
         let metrics = self.metrics;
         let font = metrics.badge_font;
-        let Some((label, panel)) = self.size_badge_layout(rect, cursor, avoid) else {
+        let Some((label, panel)) = self.size_badge_layout(rect, cursor, avoid, fps) else {
             return;
         };
         draw_panel_chrome(rgba, w, h, panel, panel.height / 2);
@@ -2218,7 +2228,7 @@ impl Composer {
             2,
             accent,
         );
-        self.draw_size_badge(rgba, w, h, rect, cursor, None);
+        self.draw_size_badge(rgba, w, h, rect, cursor, None, 0);
     }
 
     /// 动作图标:长截图与录屏没有位图资产,用几何笔画(长截图=竖框+箭头、

@@ -707,6 +707,10 @@
     "zh-CN": "{fps} 帧/秒",
     "en": "{fps} fps"
   },
+  "record.selection.yielded": {
+    "zh-CN": "录制范围已让出边框和控制条。再确认一次即可开始，尺寸与成片一致。",
+    "en": "The recording area now leaves room for the border and controls. Confirm again to start; this size is what will be recorded."
+  },
   "record.preview.failed": {
     "zh-CN": "无法播放预览，仍可保存或丢弃。",
     "en": "Could not play the preview. You can still save or discard it."

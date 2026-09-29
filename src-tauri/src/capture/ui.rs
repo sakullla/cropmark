@@ -149,6 +149,21 @@ pub struct OverlayPayload {
     pub pending_qr: bool,
     /// 录屏且格式要求偶数宽高时,确认前的矩形按这个标记收边。
     pub record_even: bool,
+    /// 录屏确认前的边框和控制条让位。缺省表示这次不是录屏选区。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub record_chrome: Option<RecordChromePreview>,
+}
+
+/// 与 `plan_recording_chrome` 同一套物理像素参数,Web 覆盖层在拖动时就收成成片矩形。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordChromePreview {
+    pub border: i32,
+    pub control_height: i32,
+    pub control_margin: i32,
+    pub even: bool,
+    pub capture_protection: bool,
+    pub fps: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -277,6 +292,7 @@ pub fn overlay_payload(
         pending_ocr: false,
         pending_qr: false,
         record_even: false,
+        record_chrome: None,
     })
 }
 

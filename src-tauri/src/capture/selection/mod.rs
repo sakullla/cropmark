@@ -360,6 +360,8 @@ pub struct FeatureFlags {
     pub tools: ToolToggles,
     /// 录屏确认前把宽高向下收成偶数(MP4)。其它格式保持原样。
     pub record_even: bool,
+    /// 这次录制实际使用的帧率。0 表示尺寸徽标不显示帧率。
+    pub record_fps: u32,
     /// 录屏确认后、壳关闭前要保持矩形可见的延时。0 表示确认后直接开始。
     pub confirm_delay_ms: u64,
     /// 录屏确认要用的格式。有值时,开始录制前用 `RecordRegion::for_format` 校验。
@@ -389,6 +391,7 @@ impl Default for FeatureFlags {
             qr_entry: true,
             tools: ToolToggles::default(),
             record_even: false,
+            record_fps: 0,
             confirm_delay_ms: 0,
             record_format: None,
             recording_entry: false,
@@ -1334,8 +1337,13 @@ impl SelectionEngine {
                     if self.selection.is_none() {
                         return EngineOutcome::Redraw;
                     }
+                    let before = self.selection;
                     return match self.gate_recording_rect() {
-                        Ok(rect) => EngineOutcome::Confirmed(rect),
+                        Ok(rect) => self.confirm_yielded_recording(
+                            before,
+                            rect,
+                            EngineOutcome::Confirmed(rect),
+                        ),
                         Err(message) => self.hold_rejected_recording(message),
                     };
                 }
@@ -2098,10 +2106,26 @@ impl SelectionEngine {
         if !gated {
             return None;
         }
+        let before = self.selection;
         Some(match self.gate_recording_rect() {
-            Ok(_) => EngineOutcome::Action(action),
+            Ok(rect) => self.confirm_yielded_recording(before, rect, EngineOutcome::Action(action)),
             Err(message) => self.hold_rejected_recording(message),
         })
+    }
+
+    /// 让位改变了矩形时先留在选区上,确认前看到的尺寸就是成片尺寸。
+    fn confirm_yielded_recording(
+        &mut self,
+        before: Option<PhysicalRect>,
+        rect: PhysicalRect,
+        ready: EngineOutcome,
+    ) -> EngineOutcome {
+        if before == Some(rect) {
+            return ready;
+        }
+        self.notice = Some(crate::i18n::t("record.selection.yielded"));
+        self.more_open = false;
+        EngineOutcome::Redraw
     }
 
     /// 格式放不下:说明原因,选区留在调整后的矩形,不向壳交出终态。
@@ -2116,40 +2140,53 @@ impl SelectionEngine {
         EngineOutcome::Redraw
     }
 
-    /// 按格式收成偶数(若需要)并校验。失败时选区已经是调整后的矩形。
+    /// 按格式、边框和控制条收成将要录下的矩形。失败时选区留在原处并说明原因。
     fn gate_recording_rect(&mut self) -> Result<PhysicalRect, String> {
         let Some(rect) = self.selection else {
             return Err(crate::i18n::t("error.record.region"));
         };
-        let Some(format) = self.flags.record_format else {
-            return Ok(rect);
-        };
-        let adjusted = crate::record::RecordRegion::new(rect.x, rect.y, rect.width, rect.height)
-            .adjusted_for_format(format);
-        if adjusted.width >= MIN_SELECTION_SIZE && adjusted.height >= MIN_SELECTION_SIZE {
-            self.selection = Some(PhysicalRect {
-                x: adjusted.x,
-                y: adjusted.y,
-                width: adjusted.width,
-                height: adjusted.height,
-            });
-        }
-        let stayed = self.selection.unwrap_or(rect);
-        match crate::record::RecordRegion::new(stayed.x, stayed.y, stayed.width, stayed.height)
-            .for_format(format)
-        {
-            Ok(region) => Ok(PhysicalRect {
-                x: region.x,
-                y: region.y,
-                width: region.width,
-                height: region.height,
-            }),
-            Err(error) => Err(error.user_message()),
+        match self.planned_recording_rect(rect) {
+            Ok(next) => {
+                self.selection = Some(next);
+                Ok(next)
+            }
+            Err(message) => {
+                if let Some(current) = self.selection {
+                    if let Some(format) = self.flags.record_format {
+                        let adjusted = crate::record::RecordRegion::new(
+                            current.x,
+                            current.y,
+                            current.width,
+                            current.height,
+                        )
+                        .adjusted_for_format(format);
+                        if adjusted.width >= MIN_SELECTION_SIZE
+                            && adjusted.height >= MIN_SELECTION_SIZE
+                        {
+                            self.selection = Some(PhysicalRect {
+                                x: adjusted.x,
+                                y: adjusted.y,
+                                width: adjusted.width,
+                                height: adjusted.height,
+                            });
+                        }
+                    }
+                }
+                Err(message)
+            }
         }
     }
 
-    /// 录屏 MP4 把宽高向下收成偶数;收不成至少 2px 时不保留这块选区。
+    /// 拖动时就把选区收成成片矩形,确认前看到的尺寸就是将要录下的范围。
     fn snap_record_rect(&self, rect: PhysicalRect) -> Option<PhysicalRect> {
+        if self.flags.record_format.is_some() && self.flags.recording_entry {
+            if let Ok(next) = self.planned_recording_rect(rect) {
+                if next.width >= MIN_SELECTION_SIZE && next.height >= MIN_SELECTION_SIZE {
+                    return Some(next);
+                }
+            }
+            // 边框或格式仍放不下时保留偶数矩形,确认时再说明原因并留在选区上。
+        }
         if !self.flags.record_even {
             return Some(rect);
         }
@@ -2163,6 +2200,44 @@ impl SelectionEngine {
             height,
             ..rect
         })
+    }
+
+    /// 与录制会话同一套边框和控制条让位。显示器就是当前冻结帧。
+    fn planned_recording_rect(&self, rect: PhysicalRect) -> Result<PhysicalRect, String> {
+        let Some(format) = self.flags.record_format else {
+            return Ok(rect);
+        };
+        let scale = if self.scale.is_finite() && self.scale > 0.0 {
+            f64::from(self.scale)
+        } else {
+            1.0
+        };
+        let monitor = super::geometry::MonitorGeom {
+            id: String::new(),
+            logical_x: 0,
+            logical_y: 0,
+            logical_width: self.width.max(0) as u32,
+            logical_height: self.height.max(0) as u32,
+            physical_x: 0,
+            physical_y: 0,
+            physical_width: self.width.max(0) as u32,
+            physical_height: self.height.max(0) as u32,
+            scale,
+        };
+        let region = crate::record::RecordRegion::new(rect.x, rect.y, rect.width, rect.height);
+        let spec = crate::record::hud::chrome_spec_for(&monitor, format);
+        match crate::record::hud::plan_recording_chrome(region, &monitor, spec) {
+            Ok(plan) => match plan.capture.for_format(format) {
+                Ok(capture) => Ok(PhysicalRect {
+                    x: capture.x,
+                    y: capture.y,
+                    width: capture.width,
+                    height: capture.height,
+                }),
+                Err(error) => Err(error.user_message()),
+            },
+            Err(()) => Err(crate::i18n::t("error.record.region")),
+        }
     }
 
     fn assign_selection(&mut self, rect: PhysicalRect) {
@@ -2520,6 +2595,73 @@ mod tests {
         drag(&mut plain, (10, 12), (110, 62));
         let raw = plain.selection().unwrap();
         assert!(selection.width <= raw.width && selection.height <= raw.height);
+    }
+
+    #[test]
+    fn fullscreen_recording_yields_the_control_bar_before_confirm() {
+        let mut engine = SelectionEngine::new(
+            800,
+            600,
+            FeatureFlags {
+                inline_annotation: false,
+                recording: true,
+                recording_entry: true,
+                record_format: Some(crate::record::RecordFormat::Mp4),
+                record_fps: 30,
+                ..FeatureFlags::default()
+            },
+        );
+        drag(&mut engine, (0, 0), (799, 599));
+        let selection = engine.selection().expect("选区");
+        assert!(
+            selection.height < 600,
+            "整屏录制要在确认前让出控制条, 实际高度 {}",
+            selection.height
+        );
+        assert_eq!(selection.width % 2, 0);
+        assert_eq!(selection.height % 2, 0);
+    }
+
+    #[test]
+    fn region_recording_shows_the_yielded_rect_before_it_starts() {
+        let mut engine = SelectionEngine::new(
+            800,
+            600,
+            FeatureFlags {
+                inline_annotation: false,
+                recording: true,
+                record_format: Some(crate::record::RecordFormat::Mp4),
+                ..FeatureFlags::default()
+            },
+        );
+        drag(&mut engine, (0, 0), (799, 599));
+        let seen = engine.selection().expect("选区");
+        assert_eq!(seen.height, 600, "普通选区在按下录屏前不提前让出");
+        let click_recording = |engine: &mut SelectionEngine| {
+            engine.handle_event(InputEvent::RightDown { x: 100, y: 100 });
+            let items = engine.current_menu_items();
+            let panel = composer::menu_panel(
+                engine.metrics(),
+                engine.menu_anchor(),
+                engine.size(),
+                &items,
+            );
+            let (_, rect) = composer::menu_item_rects(engine.metrics(), panel, &items)
+                .into_iter()
+                .find(|(action, _)| *action == SelectionAction::Recording)
+                .expect("录屏菜单项");
+            let (x, y) = rect.center();
+            engine.handle_event(InputEvent::LeftDown { x, y });
+            engine.handle_event(InputEvent::LeftUp { x, y })
+        };
+        assert_eq!(click_recording(&mut engine), EngineOutcome::Redraw);
+        let yielded = engine.selection().expect("让出后的选区");
+        assert!(yielded.height < seen.height);
+        assert!(engine.take_notice().is_some());
+        assert_eq!(
+            click_recording(&mut engine),
+            EngineOutcome::Action(SelectionAction::Recording)
+        );
     }
 
     #[test]

@@ -893,8 +893,10 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
             flags.confirm_delay_ms = crate::settings::current_capture(&handle).delay_ms();
             flags.recording_entry = true;
         }
-        if flags.recording {
+        if flags.recording || mode == CaptureMode::Recording {
             flags.record_format = Some(recording_format);
+            flags.record_fps =
+                crate::record::RecordConfig::from_settings(&handle, recording_format).fps;
         }
         // R7:元素检测完全不可用时按现有能力说明机制提示降级(自由框选或
         // 窗口截取模式);LongCapture/Recording 复用本壳但不需要该说明。
@@ -1119,7 +1121,7 @@ fn start_recording_from_selection(
     let config = crate::record::RecordConfig::from_settings(app, recording_settings.format);
     // 壳关闭前(Web 覆盖层则是收起前)按格式校验。放不下就说明原因并留在选区,
     // 不走取消把壳关掉。
-    let region = match prepare_recording_region(&selection, config.format) {
+    let region = match prepare_recording_region(&selection, config.format, &monitor) {
         Ok(region) => region,
         Err(message) => {
             ui::show_toast(app, &message);
@@ -1164,8 +1166,15 @@ fn start_recording_from_selection(
 fn prepare_recording_region(
     selection: &RegionSelection,
     format: crate::record::RecordFormat,
+    monitor: &super::geometry::MonitorGeom,
 ) -> Result<crate::record::RecordRegion, String> {
-    crate::record::RecordRegion::new(selection.x, selection.y, selection.width, selection.height)
+    let region =
+        crate::record::RecordRegion::new(selection.x, selection.y, selection.width, selection.height);
+    let spec = crate::record::hud::chrome_spec_for(monitor, format);
+    let planned = crate::record::hud::plan_recording_chrome(region, monitor, spec)
+        .map_err(|_| crate::i18n::t("error.record.region"))?;
+    planned
+        .capture
         .for_format(format)
         .map_err(|error| error.user_message())
 }
@@ -1780,8 +1789,19 @@ fn store_freeze(
         overlay_reduced_capabilities(mode, region_native_shell()),
         capabilities,
     )?;
-    overlay.record_even = mode == CaptureMode::Recording
-        && crate::settings::current_recording(app).format == crate::record::RecordFormat::Mp4;
+    if mode == CaptureMode::Recording {
+        let recording = crate::settings::current_recording(app);
+        overlay.record_even = recording.format == crate::record::RecordFormat::Mp4;
+        let spec = crate::record::hud::chrome_spec_for(&monitor, recording.format);
+        overlay.record_chrome = Some(ui::RecordChromePreview {
+            border: spec.border,
+            control_height: spec.control_height,
+            control_margin: spec.control_margin,
+            even: spec.even,
+            capture_protection: spec.capture_protection,
+            fps: crate::record::RecordConfig::from_settings(app, recording.format).fps,
+        });
+    }
     with_session_mut(app, |session| {
         let session = session.as_mut().ok_or_else(CaptureError::cancelled)?;
         if session.cancelled || session.generation != generation {
@@ -3495,7 +3515,20 @@ mod tests {
             width: 4000,
             height: 100,
         };
-        let rejected = prepare_recording_region(&too_wide, crate::record::RecordFormat::Mp4);
+        let monitor = crate::capture::geometry::MonitorGeom {
+            id: "test".to_string(),
+            logical_x: 0,
+            logical_y: 0,
+            logical_width: 1920,
+            logical_height: 1080,
+            physical_x: 0,
+            physical_y: 0,
+            physical_width: 1920,
+            physical_height: 1080,
+            scale: 1.0,
+        };
+        let rejected =
+            prepare_recording_region(&too_wide, crate::record::RecordFormat::Mp4, &monitor);
         let message = rejected.expect_err("MP4 长边 3840 放不下");
         assert!(!message.is_empty());
         assert_eq!(too_wide.width, 4000, "校验失败不改调用方手里的选区");
@@ -3506,14 +3539,15 @@ mod tests {
             width: 101,
             height: 80,
         };
-        let adjusted = prepare_recording_region(&odd, crate::record::RecordFormat::Mp4)
+        let adjusted = prepare_recording_region(&odd, crate::record::RecordFormat::Mp4, &monitor)
             .expect("奇数宽高应收成偶数后通过");
         assert_eq!(adjusted.width, 100);
         assert_eq!(adjusted.height, 80);
         assert_eq!(adjusted.x, odd.x);
         assert_eq!(adjusted.y, odd.y);
 
-        let gif = prepare_recording_region(&odd, crate::record::RecordFormat::Gif).expect("gif");
+        let gif =
+            prepare_recording_region(&odd, crate::record::RecordFormat::Gif, &monitor).expect("gif");
         assert_eq!((gif.width, gif.height), (odd.width, odd.height));
     }
 

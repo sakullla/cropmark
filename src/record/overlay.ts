@@ -1,10 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import {
+  isAnnotationTool,
   mountAnnotationEditor,
   type Annotation,
   type AnnotationEditor,
+  type AnnotationTool,
 } from "../annotation";
+import { REGION_TOOL_FIELDS, type RegionTools } from "../settings";
 import { t } from "../i18n";
 import type { HudCapabilities, HudRegion, HudSnapshot, RecordingHudState } from "./types";
 import "./record.css";
@@ -271,7 +274,8 @@ export function mountRecordOverlay(root: HTMLElement): () => void {
   /** 标注模式切换:进入时准备底图,降级平台等底图就绪后再显示绘制层。 */
   const applyInteractive = async (next: boolean): Promise<void> => {
     interactive = next;
-    drawBar.hidden = !next;
+    // 工具条在控制条里，不盖住捕获矩形。
+    drawBar.hidden = true;
     if (next) {
       const live = capabilities?.liveOverlay === true;
       const loaded = await loadSnapshot();
@@ -363,22 +367,74 @@ export function mountRecordOverlay(root: HTMLElement): () => void {
     }
   };
 
+  const defaultAnnotateTools = (): AnnotationTool[] =>
+    REGION_TOOL_FIELDS.flatMap((field) =>
+      field.id === "arrow" ||
+      field.id === "rect" ||
+      field.id === "ellipse" ||
+      field.id === "highlighter" ||
+      field.id === "mosaic" ||
+      field.id === "text"
+        ? [field.id]
+        : [],
+    );
+
+  void listen<{ tool?: string }>("record-annotate-tool", (event) => {
+    const tool = event.payload.tool;
+    if (tool && isAnnotationTool(tool)) {
+      editor?.setTool(tool);
+    }
+  });
+  void listen<{ action?: string }>("record-annotate-action", (event) => {
+    if (event.payload.action === "undo") {
+      editor?.undo();
+    } else if (event.payload.action === "redo") {
+      editor?.redo();
+    }
+  });
+  void listen<{ color?: string; width?: number; textSize?: number }>("record-annotate-style", (event) => {
+    editor?.setStyle({
+      color: event.payload.color,
+      width: event.payload.width,
+      textSize: event.payload.textSize,
+    });
+  });
+
   editor = mountAnnotationEditor({
     root,
     canvas,
     ctx,
     toolbar: tools,
     textHost: root,
+    // 未读到设置前不把缺省空集当成“全部打开”。
+    enabledTools: [],
     // 坐标空间 = 录制区域物理像素(与 Rust 逐帧合成一致);scale 取显示器
     // 缩放系数,线宽/字号等推导尺寸与导出及截图路径保持一致。
     frame: () => (region ? { width: region.width, height: region.height, scale: region.scale } : null),
     redraw: () => scheduleDraw(),
     isEditable: () => interactive,
-    onToolChange: () => scheduleDraw(),
+    onToolChange: (tool) => {
+      scheduleDraw();
+      void emit("record-annotate-active", { tool });
+    },
     onError: (error) => {
       showNotice(typeof error === "string" ? error : t(error.key, error.params));
     },
   });
+  void invoke<{ regionTools?: RegionTools }>("get_ui_settings")
+    .then((settings) => {
+      const chosen = settings.regionTools;
+      editor?.setEnabledTools(
+        chosen
+          ? REGION_TOOL_FIELDS.flatMap((field) =>
+              chosen[field.id] && isAnnotationTool(field.id) ? [field.id] : [],
+            )
+          : defaultAnnotateTools(),
+      );
+    })
+    .catch(() => {
+      editor?.setEnabledTools(defaultAnnotateTools());
+    });
 
   /** 清空上一会话的绘制状态:复位后由下一次状态刷新按引擎标注重新初始化。 */
   const resetView = (): void => {

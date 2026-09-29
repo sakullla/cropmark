@@ -1,5 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
+import {
+  isAnnotationTool,
+  STYLE_COLORS,
+  STYLE_TEXT_SIZES,
+  STYLE_WIDTHS,
+  type AnnotationTool,
+} from "../annotation";
+import { REGION_TOOL_FIELDS, type RegionTools } from "../settings";
 import { currentLanguage, t, type CatalogKey } from "../i18n";
 import {
   formatDuration,
@@ -57,6 +65,7 @@ export function mountRecordControl(root: HTMLElement): () => void {
         <video class="record-preview-video" muted autoplay loop playsinline hidden></video>
         <p class="record-preview-meta"></p>
       </div>
+      <div class="record-annotate" data-record-annotate hidden></div>
       <p class="record-notice" role="status" hidden></p>
       <div class="record-pending" hidden>
         <div class="record-pending-head">
@@ -75,6 +84,7 @@ export function mountRecordControl(root: HTMLElement): () => void {
   const stop = root.querySelector(".record-stop");
   const discard = root.querySelector(".record-discard");
   const draw = root.querySelector(".record-draw");
+  const annotateHost = root.querySelector("[data-record-annotate]");
   const previewBox = root.querySelector(".record-preview");
   const previewImage = root.querySelector(".record-preview-image");
   const previewVideo = root.querySelector(".record-preview-video");
@@ -94,6 +104,7 @@ export function mountRecordControl(root: HTMLElement): () => void {
     !(stop instanceof HTMLButtonElement) ||
     !(discard instanceof HTMLButtonElement) ||
     !(draw instanceof HTMLButtonElement) ||
+    !(annotateHost instanceof HTMLElement) ||
     !(previewBox instanceof HTMLElement) ||
     !(previewImage instanceof HTMLImageElement) ||
     !(previewVideo instanceof HTMLVideoElement) ||
@@ -117,6 +128,11 @@ export function mountRecordControl(root: HTMLElement): () => void {
   let overlayNotice = "";
   let appliedHeight = -1;
   let timer: number | null = null;
+  let annotateToken = 0;
+  let activeTool: AnnotationTool | null = null;
+  let styleOpen = false;
+  const strokeTools = new Set<AnnotationTool>(["arrow", "rect", "ellipse", "highlighter"]);
+  const textTools = new Set<AnnotationTool>(["text", "number", "bubble"]);
   const pendingView = { signature: "" };
 
   const readPx = (value: string): number => {
@@ -318,6 +334,138 @@ export function mountRecordControl(root: HTMLElement): () => void {
     }
   };
 
+  const markAnnotateTool = (): void => {
+    annotateHost.querySelectorAll<HTMLButtonElement>("[data-tool]").forEach((button) => {
+      button.classList.toggle("is-active", button.dataset.tool === activeTool);
+    });
+    const styleButton = annotateHost.querySelector("[data-annotate-style]");
+    if (styleButton instanceof HTMLButtonElement) {
+      styleButton.classList.toggle("is-active", styleOpen);
+    }
+  };
+
+  const syncAnnotateStyle = (): void => {
+    const showStyle = styleOpen;
+    annotateHost.querySelectorAll<HTMLElement>("[data-tool], [data-annotate-action]").forEach((node) => {
+      node.hidden = showStyle;
+    });
+    annotateHost.querySelectorAll<HTMLElement>("[data-style-color]").forEach((node) => {
+      node.hidden = !showStyle;
+    });
+    const stroke = activeTool !== null && strokeTools.has(activeTool);
+    const text = activeTool !== null && textTools.has(activeTool);
+    annotateHost.querySelectorAll<HTMLElement>("[data-style-width]").forEach((node) => {
+      node.hidden = !showStyle || !stroke;
+    });
+    annotateHost.querySelectorAll<HTMLElement>("[data-style-text]").forEach((node) => {
+      node.hidden = !showStyle || !text;
+    });
+    markAnnotateTool();
+  };
+
+  const fillAnnotateTools = async (): Promise<void> => {
+    const token = ++annotateToken;
+    const settings = await invoke<{ regionTools?: RegionTools }>("get_ui_settings").catch(() => null);
+    if (token !== annotateToken || state?.interactive !== true) {
+      return;
+    }
+    const chosen = settings?.regionTools;
+    const enabled = (id: (typeof REGION_TOOL_FIELDS)[number]["id"]): boolean => {
+      if (chosen) {
+        return chosen[id];
+      }
+      return (
+        id === "arrow" ||
+        id === "rect" ||
+        id === "ellipse" ||
+        id === "highlighter" ||
+        id === "mosaic" ||
+        id === "text"
+      );
+    };
+    annotateHost.replaceChildren();
+    const append = (button: HTMLButtonElement): void => {
+      annotateHost.append(button);
+    };
+    for (const field of REGION_TOOL_FIELDS) {
+      const toolId = field.id;
+      if (!enabled(toolId) || !isAnnotationTool(toolId)) {
+        continue;
+      }
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.tool = toolId;
+      button.textContent = t(field.labelKey);
+      button.addEventListener("click", () => {
+        activeTool = toolId;
+        styleOpen = false;
+        markAnnotateTool();
+        syncAnnotateStyle();
+        void emit("record-annotate-tool", { tool: toolId });
+      });
+      append(button);
+    }
+    for (const action of ["undo", "redo"] as const) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.annotateAction = action;
+      button.textContent = t(action === "undo" ? "preview.tool.undo" : "preview.tool.redo");
+      button.addEventListener("click", () => {
+        void emit("record-annotate-action", { action });
+      });
+      append(button);
+    }
+    const styleButton = document.createElement("button");
+    styleButton.type = "button";
+    styleButton.dataset.annotateStyle = "true";
+    styleButton.textContent = t("preview.tool.style_title");
+    styleButton.addEventListener("click", () => {
+      styleOpen = !styleOpen;
+      syncAnnotateStyle();
+    });
+    append(styleButton);
+    for (const color of STYLE_COLORS) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.styleColor = color;
+      button.style.setProperty("--swatch", color);
+      button.hidden = true;
+      button.addEventListener("click", () => {
+        void emit("record-annotate-style", { color });
+      });
+      append(button);
+    }
+    for (const width of STYLE_WIDTHS) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.styleWidth = String(width.value);
+      button.textContent = t(width.labelKey);
+      button.hidden = true;
+      button.addEventListener("click", () => {
+        void emit("record-annotate-style", { width: width.value });
+      });
+      append(button);
+    }
+    for (const size of STYLE_TEXT_SIZES) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.styleText = String(size.value);
+      button.textContent = t(size.labelKey);
+      button.hidden = true;
+      button.addEventListener("click", () => {
+        void emit("record-annotate-style", { textSize: size.value });
+      });
+      append(button);
+    }
+    if (activeTool === null) {
+      const first = annotateHost.querySelector<HTMLButtonElement>("[data-tool]");
+      if (first?.dataset.tool && isAnnotationTool(first.dataset.tool)) {
+        activeTool = first.dataset.tool;
+      }
+    }
+    syncAnnotateStyle();
+  };
+
   const render = (): void => {
     const status = state?.status ?? null;
     const preview = state?.preview ?? null;
@@ -329,7 +477,9 @@ export function mountRecordControl(root: HTMLElement): () => void {
       ? `${formatDuration(status.elapsedMs)} / ${formatDuration(state?.limitMs ?? 0)} · ${fpsLabel}`
       : preview
         ? `${formatDuration(preview.durationMs)} · ${fpsLabel}`
-        : "--:--";
+        : state?.fps
+      ? fpsLabel
+      : "--:--";
     phase.textContent = status ? t(PHASE_KEYS[status.phase]) : "";
     root.dataset.phase = status?.phase ?? (preview ? "finished" : "idle");
     root.classList.toggle("is-paused", status?.phase === "paused");
@@ -378,6 +528,16 @@ export function mountRecordControl(root: HTMLElement): () => void {
       ? t("record.bar.draw_done")
       : t("record.bar.draw");
     draw.classList.toggle("is-active", state?.interactive === true);
+    annotateHost.hidden = state?.interactive !== true;
+    if (state?.interactive === true && annotateHost.childElementCount === 0) {
+      void fillAnnotateTools();
+    }
+    if (state?.interactive !== true) {
+      annotateToken += 1;
+      styleOpen = false;
+      activeTool = null;
+      annotateHost.replaceChildren();
+    }
 
     const noticeInfo = noticeText();
     notice.hidden = noticeInfo.text.length === 0;
@@ -588,6 +748,14 @@ export function mountRecordControl(root: HTMLElement): () => void {
     stopPolling();
     overlayNotice = "";
     appliedHeight = -1;
+  });
+  void listen<{ tool?: string }>("record-annotate-active", (event) => {
+    const tool = event.payload.tool;
+    if (!tool || !isAnnotationTool(tool)) {
+      return;
+    }
+    activeTool = tool;
+    syncAnnotateStyle();
   });
   void listen<string>(OVERLAY_NOTICE_EVENT, (event) => {
     const text = typeof event.payload === "string" ? event.payload : "";

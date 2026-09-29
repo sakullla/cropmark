@@ -21,6 +21,58 @@ function isRegionSelectionMode(mode: CaptureMode): boolean {
   return mode === "region" || mode === "recording";
 }
 
+/// 与 `plan_recording_chrome` 同一套让位:四边贴齐且没有内容保护时边框向内收,
+/// 外面放不下控制条时从高度让出。失败时调用方退回偶数收边。
+function planRecordingRect(
+  rect: Selection,
+  monitorWidth: number,
+  monitorHeight: number,
+  spec: RecordChrome,
+): Selection | null {
+  let x = rect.x;
+  let y = rect.y;
+  let w = rect.width;
+  let h = rect.height;
+  if (x < 0 || y < 0 || w <= 0 || h <= 0 || x + w > monitorWidth || y + h > monitorHeight) {
+    return null;
+  }
+  const border = Math.max(1, spec.border);
+  const margin = Math.max(0, spec.controlMargin);
+  const controlHeight = Math.max(1, spec.controlHeight);
+  const gap = Math.max(margin, border);
+  const band = controlHeight + gap;
+  const minEdge = spec.even ? 2 : 1;
+  const outside = [x, y, monitorWidth - (x + w), monitorHeight - (y + h)];
+  if (outside.every((side) => side < border)) {
+    if (!spec.captureProtection) {
+      if (w < border * 2 + minEdge || h < border * 2 + minEdge) {
+        return null;
+      }
+      x += border;
+      y += border;
+      w -= border * 2;
+      h -= border * 2;
+    }
+  }
+  const bottomSpace = monitorHeight - (y + h);
+  const topSpace = y;
+  if (bottomSpace >= band || topSpace >= band) {
+    // 控制条放在捕获矩形外面。
+  } else if (h >= band + minEdge) {
+    h -= band;
+  } else {
+    return null;
+  }
+  if (spec.even) {
+    w -= w % 2;
+    h -= h % 2;
+  }
+  if (w < minEdge || h < minEdge) {
+    return null;
+  }
+  return { x, y, width: w, height: h };
+}
+
 interface ListedWindow {
   id: string;
   title: string;
@@ -65,6 +117,17 @@ interface OverlayFrame {
   pendingQr?: boolean;
   /** 录屏 MP4:确认前把宽高向下收成偶数,尺寸与将要录下的矩形一致。 */
   recordEven?: boolean;
+  /** 录屏确认前的边框和控制条让位,与后端 plan_recording_chrome 同一套物理像素。 */
+  recordChrome?: RecordChrome;
+}
+
+interface RecordChrome {
+  border: number;
+  controlHeight: number;
+  controlMargin: number;
+  even: boolean;
+  captureProtection: boolean;
+  fps: number;
 }
 
 interface Selection {
@@ -212,6 +275,7 @@ export function mountOverlay(root: HTMLElement): () => void {
 
   /// 与 `confirm_region` 发送的整数裁剪矩形完全一致:徽标数值、挖洞区域
   /// 与实际裁剪结果同源,且保证 x+width/y+height 不越出冻结帧(R13)。
+  /// 录屏时再按边框和控制条让位,确认前看到的就是成片矩形。
   const roundedRect = (): Selection | null => {
     if (!frame || !selection) {
       return null;
@@ -220,13 +284,18 @@ export function mountOverlay(root: HTMLElement): () => void {
     const top = clamp(Math.round(selection.y), 0, frame.height);
     const right = clamp(Math.round(selection.x + selection.width), 0, frame.width);
     const bottom = clamp(Math.round(selection.y + selection.height), 0, frame.height);
-    let width = right - left;
-    let height = bottom - top;
-    if (frame.recordEven) {
-      width -= width % 2;
-      height -= height % 2;
+    const raw = { x: left, y: top, width: right - left, height: bottom - top };
+    if (frame.mode === "recording" && frame.recordChrome) {
+      const planned = planRecordingRect(raw, frame.width, frame.height, frame.recordChrome);
+      if (planned && planned.width >= 2 && planned.height >= 2) {
+        return planned;
+      }
     }
-    return { x: left, y: top, width, height };
+    if (frame.recordEven) {
+      raw.width -= raw.width % 2;
+      raw.height -= raw.height % 2;
+    }
+    return raw;
   };
 
   const annotationActive = (): boolean =>
@@ -619,10 +688,12 @@ export function mountOverlay(root: HTMLElement): () => void {
       return;
     }
     badge.hidden = false;
-    const label = t("overlay.size_format", {
+    const sizeLabel = t("overlay.size_format", {
       width: badgeTarget.width,
       height: badgeTarget.height,
     });
+    const fps = frame.mode === "recording" ? frame.recordChrome?.fps ?? 0 : 0;
+    const label = fps > 0 ? `${sizeLabel} · ${t("record.bar.fps", { fps })}` : sizeLabel;
     if (badge.textContent !== label) {
       badge.textContent = label;
     }
