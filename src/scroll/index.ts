@@ -58,24 +58,28 @@ function messageOf(error: unknown): string {
 }
 
 /**
- * 长截图控制窗(R1/R5):置顶非模态、位于框选区域旁;承载状态提示、
+ * 长截图控制窗:置顶非模态、位于框选区域旁;承载状态提示、
  * 方向选择与「完成/取消」。窗口本身不参与截图内容,状态由 Rust 周期推送;
  * 方向在首个内容变化前可切换,之后锁定(以 Rust 状态里的 axis 为准)。
+ * 锁定原因写在卡片里;完成和取消在滚动区外,进度变长时仍留在底部。
  */
 export function mountScroll(root: HTMLElement): () => void {
   root.className = "scroll-root";
   root.innerHTML = `
     <div class="scroll-card">
-      <div class="scroll-head">
-        <span class="scroll-title" data-i18n="scroll.title"></span>
-        <span class="scroll-size"></span>
+      <div class="scroll-body">
+        <div class="scroll-head">
+          <span class="scroll-title" data-i18n="scroll.title"></span>
+          <span class="scroll-size"></span>
+        </div>
+        <div class="scroll-axis" role="group" data-i18n-aria-label="scroll.axis.label">
+          <button type="button" class="scroll-axis-option" data-axis="vertical" data-i18n="scroll.axis.vertical" aria-pressed="true"></button>
+          <button type="button" class="scroll-axis-option" data-axis="horizontal" data-i18n="scroll.axis.horizontal" aria-pressed="false"></button>
+        </div>
+        <p class="scroll-lock" hidden></p>
+        <p class="scroll-status" role="status"></p>
+        <p class="scroll-hint"></p>
       </div>
-      <div class="scroll-axis" role="group" data-i18n-aria-label="scroll.axis.label">
-        <button type="button" class="scroll-axis-option" data-axis="vertical" data-i18n="scroll.axis.vertical" aria-pressed="true"></button>
-        <button type="button" class="scroll-axis-option" data-axis="horizontal" data-i18n="scroll.axis.horizontal" aria-pressed="false"></button>
-      </div>
-      <p class="scroll-status" role="status"></p>
-      <p class="scroll-hint"></p>
       <div class="scroll-actions">
         <button type="button" class="scroll-finish" data-i18n="scroll.finish"></button>
         <button type="button" class="scroll-cancel" data-i18n="scroll.cancel"></button>
@@ -84,6 +88,7 @@ export function mountScroll(root: HTMLElement): () => void {
   const status = root.querySelector(".scroll-status");
   const size = root.querySelector(".scroll-size");
   const hint = root.querySelector(".scroll-hint");
+  const lock = root.querySelector(".scroll-lock");
   const finish = root.querySelector(".scroll-finish");
   const cancel = root.querySelector(".scroll-cancel");
   const axisButtons = Array.from(root.querySelectorAll(".scroll-axis-option")).filter(
@@ -93,6 +98,7 @@ export function mountScroll(root: HTMLElement): () => void {
     !(status instanceof HTMLElement) ||
     !(size instanceof HTMLElement) ||
     !(hint instanceof HTMLElement) ||
+    !(lock instanceof HTMLElement) ||
     !(finish instanceof HTMLButtonElement) ||
     !(cancel instanceof HTMLButtonElement) ||
     axisButtons.length !== 2
@@ -129,6 +135,14 @@ export function mountScroll(root: HTMLElement): () => void {
       } else {
         delete button.dataset.tooltip;
       }
+    }
+    // 锁定原因常驻在卡片里,不依赖悬停;未锁定时不占位。
+    if (locked) {
+      lock.hidden = false;
+      lock.textContent = t("scroll.axis.locked");
+    } else {
+      lock.hidden = true;
+      lock.textContent = "";
     }
     hint.textContent = axis === "horizontal" ? t("scroll.hint.horizontal") : t("scroll.hint");
 

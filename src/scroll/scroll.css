@@ -23,11 +23,22 @@ html[data-view="scroll"] #app {
   height: 100%;
   min-height: 0;
   padding: var(--panel-padding);
-  overflow-y: auto;
+  overflow: hidden;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--radius-panel);
   box-shadow: var(--shadow);
+}
+
+/* 状态和尺寸在此滚动;完成和取消在这一层之外。 */
+.scroll-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .scroll-head {
@@ -40,7 +51,7 @@ html[data-view="scroll"] #app {
   background: var(--panel);
 }
 
-/* R5 方向选择:默认纵向,首个内容变化后锁定(禁用并给出提示)。 */
+/* 方向选择:默认纵向,首个内容变化后锁定。当前项保持填充;锁定原因见 .scroll-lock。 */
 .scroll-axis {
   display: flex;
   flex-shrink: 0;
@@ -86,6 +97,11 @@ html[data-view="scroll"] #app {
   cursor: default;
 }
 
+/* 全局禁用透明度会把当前方向的填充冲淡;锁定后仍要能看出选中项。 */
+.scroll-axis-option.is-active:disabled {
+  opacity: 1;
+}
+
 .scroll-title {
   font-size: 13px;
   font-weight: 600;
@@ -126,17 +142,22 @@ html[data-view="scroll"] #app {
   overflow-wrap: anywhere;
 }
 
+/* 锁定后的常驻说明,跟在方向选择后面,不盖住按钮。 */
+.scroll-lock {
+  flex-shrink: 0;
+  margin: 0;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
 .scroll-actions {
-  position: sticky;
-  bottom: 0;
-  z-index: 1;
   display: flex;
   flex-shrink: 0;
   gap: 8px;
-  margin-top: auto;
   background: var(--panel);
-  /* 盖住卡片 gap，滚动中的状态不会穿进按钮。 */
-  box-shadow: 0 -6px 0 var(--panel);
 }
 
 .scroll-actions button {
