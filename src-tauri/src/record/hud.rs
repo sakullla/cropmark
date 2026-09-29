@@ -58,6 +58,12 @@ const CONTROL_HEIGHT: f64 = 64.0;
 const CONTROL_HEIGHT_EXPANDED: f64 = 248.0;
 /// 控制条与录制区域/显示器边缘的间距(逻辑像素)。
 const CONTROL_MARGIN: f64 = 12.0;
+/// 与 `.record-overlay-notice` 的 `bottom: 16px` 一致(标注层 CSS 像素)。
+#[cfg(test)]
+const NOTICE_BOTTOM_INSET: f64 = 16.0;
+/// 与标注层 `NOTICE_GAP` 一致:再近就视为挡住控制条。
+#[cfg(test)]
+const NOTICE_CONTROL_GAP: f64 = 8.0;
 /// 降级绘制快照的长边上限(等比缩放,只决定传输分辨率)。
 const SNAPSHOT_MAX_EDGE: u32 = 1280;
 
@@ -157,6 +163,9 @@ struct HudRuntime {
     monitor: Option<MonitorGeom>,
     interactive: bool,
     paused_for_draw: bool,
+    /// 最近一次放置控制条使用的逻辑尺寸;状态里的矩形与窗口一致。
+    control_width: f64,
+    control_height: f64,
 }
 
 static HUD: Mutex<HudRuntime> = Mutex::new(HudRuntime {
@@ -164,6 +173,8 @@ static HUD: Mutex<HudRuntime> = Mutex::new(HudRuntime {
     monitor: None,
     interactive: false,
     paused_for_draw: false,
+    control_width: CONTROL_WIDTH,
+    control_height: CONTROL_HEIGHT,
 });
 
 fn hud_lock() -> MutexGuard<'static, HudRuntime> {
@@ -224,8 +235,22 @@ pub struct RecordingHudState {
     /// 是否有可「重新录制」的区域上下文。
     pub has_context: bool,
     pub region: Option<HudRegion>,
+    /// 控制条在标注层坐标系中的矩形(CSS 像素)。无区域上下文时省略。
+    /// 区域外放置时坐标可以越出标注层。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub control_frame: Option<HudControlFrame>,
     /// 单次录制上限(毫秒),控制条据此显示 已录/上限。
     pub limit_ms: u64,
+}
+
+/// 控制条相对标注层左上角的矩形,单位是 CSS 像素。
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HudControlFrame {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
 }
 
 /// 停止/保存的结构化结果,驱动控制条的可见收尾。
@@ -468,11 +493,82 @@ fn place_control(
     monitor: &MonitorGeom,
     size: LogicalSize<f64>,
 ) {
+    {
+        let mut hud = hud_lock();
+        hud.control_width = size.width;
+        hud.control_height = size.height;
+    }
     let _ = control.set_size(Size::Logical(size));
     // 优先放在区域外(不挡录制内容;无内容保护能力的平台也据此避免入画),
     // 放不下时按显示器边界回落到区域内部底边。
     let (x, y) = control_origin(region, monitor, size, true);
     let _ = control.set_position(Position::Physical(PhysicalPosition { x, y }));
+}
+
+#[cfg(test)]
+fn overlay_css_size(region: RecordRegion, monitor: &MonitorGeom) -> (f64, f64) {
+    let scale = monitor.scale.max(f64::EPSILON);
+    (region.width as f64 / scale, region.height as f64 / scale)
+}
+
+/// 控制条在标注层坐标系中的矩形。`prefer_outside` 与 [`place_control`] 一致时,
+/// 全屏或贴住显示器上下沿会落在区域内侧底边。
+fn control_frame_in_region(
+    region: RecordRegion,
+    monitor: &MonitorGeom,
+    size: LogicalSize<f64>,
+    prefer_outside: bool,
+) -> HudControlFrame {
+    let (px, py) = control_origin(region, monitor, size, prefer_outside);
+    let scale = monitor.scale.max(f64::EPSILON);
+    let region_left = monitor.physical_x + region.x as i32;
+    let region_top = monitor.physical_y + region.y as i32;
+    HudControlFrame {
+        x: (px - region_left) as f64 / scale,
+        y: (py - region_top) as f64 / scale,
+        width: size.width,
+        height: size.height,
+    }
+}
+
+/// 贴在区域底部、水平居中的提示矩形。高度由调用方按实际文案给出。
+#[cfg(test)]
+fn bottom_notice_frame(
+    region: RecordRegion,
+    monitor: &MonitorGeom,
+    notice_width: f64,
+    notice_height: f64,
+) -> HudControlFrame {
+    let (region_width, region_height) = overlay_css_size(region, monitor);
+    let width = notice_width.max(0.0).min(region_width.max(0.0));
+    let height = notice_height.max(0.0);
+    HudControlFrame {
+        x: (region_width - width) / 2.0,
+        y: region_height - NOTICE_BOTTOM_INSET - height,
+        width,
+        height,
+    }
+}
+
+#[cfg(test)]
+fn rects_conflict(a: HudControlFrame, b: HudControlFrame, gap: f64) -> bool {
+    a.x < b.x + b.width + gap
+        && a.x + a.width > b.x - gap
+        && a.y < b.y + b.height + gap
+        && a.y + a.height > b.y - gap
+}
+
+/// 底部提示与控制条相交时不留在区域上(改由控制卡片显示),因此可见矩形为空。
+#[cfg(test)]
+fn visible_region_notice(
+    notice: HudControlFrame,
+    control: HudControlFrame,
+) -> Option<HudControlFrame> {
+    if rects_conflict(notice, control, NOTICE_CONTROL_GAP) {
+        None
+    } else {
+        Some(notice)
+    }
 }
 
 /// 控制条物理坐标:默认贴录制区域底边居中;无捕获排除能力时优先放到区域外
@@ -533,9 +629,16 @@ fn broadcast_state(app: &AppHandle) {
 }
 
 pub fn state_snapshot(app: &AppHandle) -> RecordingHudState {
-    let (interactive, context) = {
+    let (interactive, context, control_size) = {
         let hud = hud_lock();
-        (hud.interactive, hud.region.zip(hud.monitor.clone()))
+        (
+            hud.interactive,
+            hud.region.zip(hud.monitor.clone()),
+            LogicalSize {
+                width: hud.control_width,
+                height: hud.control_height,
+            },
+        )
     };
     RecordingHudState {
         status: session::with_recording(app, |recording| recording.status()),
@@ -546,11 +649,14 @@ pub fn state_snapshot(app: &AppHandle) -> RecordingHudState {
         capabilities: capabilities(),
         interactive,
         has_context: context.is_some(),
-        region: context.map(|(region, monitor)| HudRegion {
+        region: context.as_ref().map(|(region, monitor)| HudRegion {
             width: region.width,
             height: region.height,
             scale: monitor.scale,
         }),
+        control_frame: context
+            .as_ref()
+            .map(|(region, monitor)| control_frame_in_region(*region, monitor, control_size, true)),
         limit_ms: MAX_RECORDING_MS,
     }
 }
@@ -857,6 +963,8 @@ pub fn set_recording_hud_expanded(app: AppHandle, expanded: bool, content_height
             CONTROL_HEIGHT
         });
     place_control(&control, region, &monitor, control_window_size(requested));
+    // 增高后控制条可能从区域外回到内侧底边,标注层要按新矩形重新避让。
+    broadcast_state(&app);
 }
 
 /// 收起 HUD(控制条「关闭」)。
@@ -1134,6 +1242,7 @@ mod tests {
                 height: 2,
                 scale: 2.0,
             }),
+            control_frame: None,
             limit_ms: MAX_RECORDING_MS,
         };
         let json = serde_json::to_value(state).unwrap();
@@ -1147,7 +1256,43 @@ mod tests {
         assert_eq!(json["region"]["height"], 2);
         // 标注层按显示器 scale 生成 AnnotationFrame.scale:与录制合成一致。
         assert_eq!(json["region"]["scale"], 2.0);
+        assert!(json.get("controlFrame").is_none());
         assert_eq!(json["interactive"], false);
+    }
+
+    #[test]
+    fn fullscreen_bottom_notice_does_not_intersect_the_control_bar() {
+        let screen = monitor();
+        let region = RecordRegion::new(0, 0, 1920, 1080);
+        let control = control_frame_in_region(region, &screen, compact(), true);
+        assert!(control.y >= 0.0 && control.y + control.height <= region.height as f64);
+        let notice = bottom_notice_frame(region, &screen, 240.0, 32.0);
+        assert!(
+            rects_conflict(notice, control, 0.0),
+            "bottom notice would cover the in-region control bar"
+        );
+        let visible = visible_region_notice(notice, control);
+        assert!(
+            visible.is_none(),
+            "fullscreen notice moves into the control card"
+        );
+        assert!(!visible.is_some_and(|rect| rects_conflict(rect, control, 0.0)));
+
+        let hidpi = MonitorGeom::from_physical("hidpi", 0, 0, 2560, 1440, 2.0);
+        let full = RecordRegion::new(0, 0, 2560, 1440);
+        let hidpi_control = control_frame_in_region(full, &hidpi, compact(), true);
+        let hidpi_notice = bottom_notice_frame(full, &hidpi, 240.0, 32.0);
+        assert!(visible_region_notice(hidpi_notice, hidpi_control).is_none());
+    }
+
+    #[test]
+    fn bottom_notice_stays_when_the_control_bar_is_outside_the_region() {
+        let screen = monitor();
+        let region = RecordRegion::new(100, 100, 1200, 700);
+        let control = control_frame_in_region(region, &screen, compact(), true);
+        let notice = bottom_notice_frame(region, &screen, 240.0, 32.0);
+        let visible = visible_region_notice(notice, control).expect("notice stays on the region");
+        assert!(!rects_conflict(visible, control, 0.0));
     }
 
     /// capability 的 windows 支持 glob(`pin-*`);实现既有用法里的单个 `*`

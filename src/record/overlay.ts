@@ -20,9 +20,53 @@ import "./record.css";
 
 const POLL_MS = 500;
 const SYNC_MS = 200;
-/** 底部提示与工具条/完成条之间至少留出的间距;再近就把提示交给控制卡片。 */
+/** 底部提示与工具条、完成条或控制条之间至少留出的间距;再近就把提示交给控制卡片。 */
 const NOTICE_GAP = 8;
 const OVERLAY_NOTICE_EVENT = "record-overlay-notice";
+
+/** 与 `HudControlFrame` 一致:相对标注层左上角的 CSS 像素。 */
+interface ControlFrame {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+function readControlFrame(state: RecordingHudState): ControlFrame | null {
+  const frame = (state as RecordingHudState & { controlFrame?: unknown }).controlFrame;
+  if (typeof frame !== "object" || frame === null) {
+    return null;
+  }
+  const raw = frame as Record<string, unknown>;
+  const { x, y, width, height } = raw;
+  if (
+    typeof x !== "number" ||
+    typeof y !== "number" ||
+    typeof width !== "number" ||
+    typeof height !== "number" ||
+    !Number.isFinite(x) ||
+    !Number.isFinite(y) ||
+    !Number.isFinite(width) ||
+    !Number.isFinite(height)
+  ) {
+    return null;
+  }
+  return { x, y, width, height };
+}
+
+/** 与 `hud.rs` 全屏几何测试同一规则:间距内也算挡住控制条。 */
+function conflictsWithControl(notice: DOMRect, root: DOMRect, frame: ControlFrame): boolean {
+  const left = notice.left - root.left;
+  const top = notice.top - root.top;
+  const right = notice.right - root.left;
+  const bottom = notice.bottom - root.top;
+  return (
+    left < frame.x + frame.width + NOTICE_GAP &&
+    right > frame.x - NOTICE_GAP &&
+    top < frame.y + frame.height + NOTICE_GAP &&
+    bottom > frame.y - NOTICE_GAP
+  );
+}
 
 function messageOf(error: unknown): string {
   return typeof error === "string" && error.trim().length > 0 ? error : String(error);
@@ -71,6 +115,7 @@ export function mountRecordOverlay(root: HTMLElement): () => void {
   let synced = "[]";
   let noticeMessage = "";
   let publishedNotice = "";
+  let controlFrame: ControlFrame | null = null;
 
   const fitCanvas = (): void => {
     if (!region) {
@@ -126,8 +171,9 @@ export function mountRecordOverlay(root: HTMLElement): () => void {
   };
 
   /**
-   * 提示贴在区域底部。碰上工具条、完成标注条或画面中心时不留在区域上,
-   * 改送到控制卡片已有的说明行。测量在同一次布局里完成,避免闪烁。
+   * 提示贴在区域底部。碰上工具条、完成标注条、控制条或画面中心时不留在区域上,
+   * 改送到控制卡片已有的说明行。全屏时控制条在区域内侧底边,必须计入它的实际矩形。
+   * 测量在同一次布局里完成,避免闪烁。
    */
   const layoutNotice = (): void => {
     const text = noticeMessage;
@@ -145,7 +191,9 @@ export function mountRecordOverlay(root: HTMLElement): () => void {
     const occupiedBottom = drawBar.hidden ? 0 : drawBar.getBoundingClientRect().bottom;
     const hitsTools = occupiedBottom > 0 && noticeBox.top < occupiedBottom + NOTICE_GAP;
     const coversCenter = noticeBox.top <= centerY && noticeBox.bottom >= centerY;
-    const collides = hitsTools || coversCenter;
+    const hitsControl =
+      controlFrame !== null && conflictsWithControl(noticeBox, rootBox, controlFrame);
+    const collides = hitsTools || coversCenter || hitsControl;
     notice.style.visibility = "";
     if (collides) {
       notice.hidden = true;
@@ -244,6 +292,7 @@ export function mountRecordOverlay(root: HTMLElement): () => void {
 
   const applyState = (state: RecordingHudState): void => {
     capabilities = state.capabilities;
+    controlFrame = readControlFrame(state);
     if (state.region) {
       region = state.region;
     }
