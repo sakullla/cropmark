@@ -173,10 +173,11 @@ export function mountRecordOverlay(root: HTMLElement): () => void {
   /**
    * 提示贴在区域底部。碰上工具条、完成标注条、控制条或画面中心时不留在区域上,
    * 改送到控制卡片已有的说明行。全屏时控制条在区域内侧底边,必须计入它的实际矩形。
-   * 测量在同一次布局里完成,避免闪烁。
+   * 文案在测量前写入元素,空文案则清空。测量在同一次布局里完成,避免闪烁。
    */
   const layoutNotice = (): void => {
     const text = noticeMessage;
+    notice.textContent = text;
     if (!text) {
       notice.hidden = true;
       notice.style.visibility = "";
