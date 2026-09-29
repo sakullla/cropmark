@@ -313,8 +313,9 @@ impl IconName {
             SelectionAction::Redo => Self::Redo,
             SelectionAction::Delete => Self::Delete,
             SelectionAction::More => Self::More,
-            // 长截图字形由合成器几何笔画绘制,无位图资产。
+            // 长截图与录屏字形由合成器几何笔画绘制,无位图资产。
             SelectionAction::LongCapture => return None,
+            SelectionAction::Recording => return None,
             SelectionAction::CopyColor => return None,
         })
     }

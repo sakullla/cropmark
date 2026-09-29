@@ -146,12 +146,14 @@ pub fn default_pin_file_name() -> String {
 }
 
 /// `{mode}` 的稳定英文 token。长截图是 `long`,不是 serde 的 `longcapture`。
+/// R3:录屏产物不进入截图历史,`record` 仅作为模式命名兜底(历史不认该 token)。
 pub fn capture_mode_token(mode: CaptureMode) -> &'static str {
     match mode {
         CaptureMode::Region => "region",
         CaptureMode::Window => "window",
         CaptureMode::Fullscreen => "fullscreen",
         CaptureMode::LongCapture => "long",
+        CaptureMode::Recording => "record",
     }
 }
 

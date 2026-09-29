@@ -45,6 +45,9 @@ pub fn effective_fullscreen_target(
 pub struct CaptureRuntime {
     inner: Mutex<Option<ActiveSession>>,
     last_error: Mutex<Option<CaptureError>>,
+    /// R3:活动录制会话。选区入口启动;托盘(停止/保存)与后续录制 HUD 消费,
+    /// 同一时间最多一个。
+    recording: Mutex<Option<crate::record::RecordingSession>>,
 }
 
 impl Default for CaptureRuntime {
@@ -52,6 +55,7 @@ impl Default for CaptureRuntime {
         Self {
             inner: Mutex::new(None),
             last_error: Mutex::new(None),
+            recording: Mutex::new(None),
         }
     }
 }
@@ -322,6 +326,9 @@ async fn run_capture(
         CaptureMode::Fullscreen => capture_fullscreen(app, generation).await,
         // R1:长截图复用区域选区壳选一个固定区域,确认后进入滚动会话。
         CaptureMode::LongCapture => capture_long_capture(app, generation).await,
+        // R3:录屏复用区域选区壳;原生壳经「录屏」动作确认,Web 覆盖层
+        // (Wayland)确认后由 `confirm_region` 分流进录制。
+        CaptureMode::Recording => capture_region(app, generation).await,
     }
 }
 
@@ -815,30 +822,15 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
         let (frame, monitor) = grab_pointer_screen(&handle)?;
         store_pixels(&handle, frame.clone(), monitor.clone(), generation)?;
         // R19:旧入口开关(取字/贴图/复制/保存/放大镜/光标提示/即时标注)已按
-        // 常开语义移除;R9:长截图与全部标注工具去门控常开,选区壳固定传入
-        // 全开的能力集。以长截图模式进入时只保留「开始长截图」确认路径,
-        // 不出现即时标注与静默动作,避免选区内标注的屏幕坐标与拼接结果错位。
+        // 常开语义移除;R9:长截图与全部标注工具去门控常开,普通区域选区固定
+        // 传入全开的能力集;R3:录屏动作由设置开关门控,录屏模式只保留「录屏」
+        // 确认路径(与长截图同构,避免选区内标注的屏幕坐标与录制区域错位)。
         let mode = with_session(&handle, |session| {
             session.as_ref().map(|current| current.mode)
         })
         .unwrap_or(CaptureMode::Region);
-        let flags = if mode == CaptureMode::LongCapture {
-            super::selection::FeatureFlags {
-                long_capture: true,
-                inline_annotation: false,
-                ocr_entry: false,
-                pin_entry: false,
-                toolbar_copy: false,
-                toolbar_save: false,
-                toolbar_pin: false,
-                ..super::selection::FeatureFlags::default()
-            }
-        } else {
-            super::selection::FeatureFlags {
-                long_capture: true,
-                ..super::selection::FeatureFlags::default()
-            }
-        };
+        let flags =
+            recording_selection_flags(mode, crate::settings::current_recording(&handle).enabled);
         let annotation_options = annotation_options_from(&handle);
         // 壳回调在同一线程内同步执行,经 thread-local 取回 AppHandle。
         SHELL_APP.with(|slot| *slot.borrow_mut() = Some(handle.clone()));
@@ -872,7 +864,21 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
             .as_ref()
             .is_some_and(|current| current.mode == CaptureMode::LongCapture)
     });
+    // R3:以录屏模式进入时,Enter/「标注」确认都转为开始录制会话。
+    let recording_mode = with_session(app, |session| {
+        session
+            .as_ref()
+            .is_some_and(|current| current.mode == CaptureMode::Recording)
+    });
     match picked {
+        RegionOutcome::Recording(rect, annotations) => {
+            start_recording_from_shell(app, rect, annotations, generation)
+        }
+        RegionOutcome::Preview(rect, annotations) | RegionOutcome::Annotate(rect, annotations)
+            if recording_mode =>
+        {
+            start_recording_from_shell(app, rect, annotations, generation)
+        }
         RegionOutcome::LongCapture(rect, annotations) => {
             start_scroll_session(app, rect, annotations, generation)
         }
@@ -987,6 +993,150 @@ async fn capture_long_capture(_app: &AppHandle, _generation: u64) -> Result<(), 
     ))
 }
 
+/// R3:原生选区壳确认(「录屏」动作或 Enter/「标注」)→ 会话层启动录制。
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+fn start_recording_from_shell(
+    app: &AppHandle,
+    rect: super::geometry::PhysicalRect,
+    annotations: Vec<Annotation>,
+    generation: u64,
+) -> Result<(), CaptureError> {
+    start_recording_from_selection(
+        app,
+        RegionSelection {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+        },
+        annotations,
+        Some(generation),
+    )
+}
+
+/// R3:录屏入口的选区确认 → 启动录制会话。开关关闭、已有录制或启动失败时
+/// 不产生录制行为,并按取消收尾(恢复产品表面并释放选区槽位)。
+fn start_recording_from_selection(
+    app: &AppHandle,
+    selection: RegionSelection,
+    annotations: Vec<Annotation>,
+    expected: Option<u64>,
+) -> Result<(), CaptureError> {
+    let recording_settings = crate::settings::current_recording(app);
+    if !recording_settings.enabled {
+        return cancel_recording_entry(app, expected);
+    }
+    if recording_active(app) {
+        ui::show_toast_key(app, "toast.recording_busy");
+        return cancel_recording_entry(app, expected);
+    }
+    let monitor = with_session(app, |session| {
+        session.as_ref().and_then(|current| current.monitor.clone())
+    });
+    let Some(monitor) = monitor else {
+        return cancel_recording_entry(app, expected);
+    };
+    let region = crate::record::RecordRegion::new(
+        selection.x,
+        selection.y,
+        selection.width,
+        selection.height,
+    );
+    let config = crate::record::RecordConfig::from_settings(app, recording_settings.format);
+    // 壳上已确认的标注跟着选区平移到录制区域坐标系,首次抓帧即合并进画面;
+    // 录制中的实时标注由后续 HUD 经 `with_recording` 同步。
+    let translated =
+        crate::annotate::translated_all(&annotations, -(selection.x as f64), -(selection.y as f64));
+    let recording = match crate::record::RecordingSession::start(
+        region,
+        config,
+        crate::record::MonitorSource::new(monitor),
+    ) {
+        Ok(recording) => recording,
+        Err(error) => {
+            ui::show_toast(app, &error.user_message());
+            return cancel_recording_entry(app, expected);
+        }
+    };
+    recording.set_annotations(translated);
+    {
+        let runtime = app.state::<CaptureRuntime>();
+        *lock(&runtime.recording) = Some(recording);
+    }
+    // 选区会话正常结束(不是取消):隐藏会话窗、恢复产品表面并释放槽位,
+    // 录制在后台独立继续;不广播 capture-cancelled。
+    release_capture_for_recording(app, expected);
+    ui::show_toast_key(app, "toast.recording_started");
+    refresh_tray_menu(app);
+    Ok(())
+}
+
+/// 不进入录制时的收尾(开关关闭/已有录制/启动失败):按取消语义释放选区
+/// 会话并恢复产品表面。
+fn cancel_recording_entry(app: &AppHandle, expected: Option<u64>) -> Result<(), CaptureError> {
+    if let Some((generation, restore)) = accept_cancel(app, expected) {
+        finish_cancel(app, generation, restore, false);
+    }
+    Ok(())
+}
+
+/// 录制已启动:选区会话正常结束,隐藏会话窗并恢复此前隐藏的产品表面,
+/// 释放槽位等待后续截图。代际不符(旧壳)时不触碰新会话。
+fn release_capture_for_recording(app: &AppHandle, expected: Option<u64>) {
+    let restore = with_session(app, |session| {
+        session
+            .as_ref()
+            .filter(|current| !generation_mismatch(current, expected))
+            .map(|current| current.hide.restore_on_cancel())
+            .unwrap_or_default()
+    });
+    for label in ui::session_window_labels() {
+        ui::hide_window(app, label);
+    }
+    for surface in restore {
+        ui::show_window(app, &surface.label);
+    }
+    crate::pin::restore_after_capture(app);
+    with_session_mut(app, |session| {
+        if session
+            .as_ref()
+            .is_some_and(|current| !generation_mismatch(current, expected))
+        {
+            *session = None;
+        }
+    });
+}
+
+/// R3:是否存在活动录制会话(托盘在「录屏」与「停止录屏并保存」之间切换)。
+pub fn recording_active(app: &AppHandle) -> bool {
+    with_recording(app, |_| ()).is_some()
+}
+
+/// R3:取出活动录制会话(停止/保存路径消费);同一时间最多一个。
+pub fn take_recording_session(app: &AppHandle) -> Option<crate::record::RecordingSession> {
+    let runtime = app.state::<CaptureRuntime>();
+    let taken = lock(&runtime.recording).take();
+    taken
+}
+
+/// R3:录制会话的 HUD 面(后续 recording-hud 消费):状态查询、暂停/继续与
+/// 实时标注同步都经这里拿到会话引用;入口任务先定义,避免跨 scope 修改本文件。
+pub fn with_recording<R>(
+    app: &AppHandle,
+    f: impl FnOnce(&crate::record::RecordingSession) -> R,
+) -> Option<R> {
+    let runtime = app.state::<CaptureRuntime>();
+    let guard = lock(&runtime.recording);
+    guard.as_ref().map(f)
+}
+
+/// 录制开始/结束后托盘入口需要切换(菜单 API 需在主线程执行)。
+pub(crate) fn refresh_tray_menu(app: &AppHandle) {
+    let handle = app.clone();
+    let task = app.clone();
+    let _ = handle.run_on_main_thread(move || crate::tray::refresh_menu(&task));
+}
+
 #[cfg(any(windows, target_os = "macos"))]
 async fn capture_region(app: &AppHandle, generation: u64) -> Result<(), CaptureError> {
     capture_region_native(app, generation).await
@@ -1039,6 +1189,44 @@ fn region_native_shell() -> bool {
 /// 窗口模式的 Web 覆盖层不提供原生壳能力也不展示该说明,避免误导。
 fn overlay_reduced_capabilities(mode: CaptureMode, native_shell: bool) -> bool {
     mode == CaptureMode::Region && !native_shell
+}
+
+/// R3/R9:选区壳能力集。
+/// - 长截图模式:只保留「开始长截图」确认路径(壳动作同现状);
+/// - 录屏模式:只保留「录屏」确认路径,避免选区内标注的屏幕坐标与录制区域
+///   错位(与长截图同构);
+/// - 普通区域模式:长截图常开,录屏动作由设置里的录屏开关门控(默认关闭)。
+fn recording_selection_flags(
+    mode: CaptureMode,
+    recording_enabled: bool,
+) -> super::selection::FeatureFlags {
+    match mode {
+        CaptureMode::LongCapture => super::selection::FeatureFlags {
+            long_capture: true,
+            inline_annotation: false,
+            ocr_entry: false,
+            pin_entry: false,
+            toolbar_copy: false,
+            toolbar_save: false,
+            toolbar_pin: false,
+            ..super::selection::FeatureFlags::default()
+        },
+        CaptureMode::Recording => super::selection::FeatureFlags {
+            recording: true,
+            inline_annotation: false,
+            ocr_entry: false,
+            pin_entry: false,
+            toolbar_copy: false,
+            toolbar_save: false,
+            toolbar_pin: false,
+            ..super::selection::FeatureFlags::default()
+        },
+        _ => super::selection::FeatureFlags {
+            long_capture: true,
+            recording: recording_enabled,
+            ..super::selection::FeatureFlags::default()
+        },
+    }
 }
 
 #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
@@ -1566,11 +1754,20 @@ pub fn writeback_target(app: &AppHandle) -> Option<String> {
 }
 
 /// 命令层区域确认:裁剪后把已定画面送进网页浮层,不打开预览、不写剪贴板。
+/// R3:录屏模式下同一确认路径转为启动录制会话(Web 覆盖层路径)。
 pub fn confirm_region(
     app: &AppHandle,
     selection: RegionSelection,
     annotations: Vec<Annotation>,
 ) -> Result<(), CaptureError> {
+    let recording = with_session(app, |session| {
+        session
+            .as_ref()
+            .is_some_and(|current| current.mode == CaptureMode::Recording)
+    });
+    if recording {
+        return start_recording_from_selection(app, selection, annotations, None);
+    }
     finish_selection(app, selection, annotations, None)
 }
 
@@ -2619,6 +2816,8 @@ mod tests {
                     }
                     // R1:长截图无热键,不进入 `CaptureMode::ALL`。
                     CaptureMode::LongCapture => unreachable!("LongCapture is not a hotkey mode"),
+                    // R3:录屏无热键,不进入 `CaptureMode::ALL`。
+                    CaptureMode::Recording => unreachable!("Recording is not a hotkey mode"),
                 }
             }
         }
@@ -2637,6 +2836,41 @@ mod tests {
                 SessionStep::ShowOverlayOnFreeze,
             ]
         );
+    }
+
+    /// R3:录屏模式的选区走区域壳(冻结帧上覆盖层);普通区域模式的录屏动作
+    /// 只由设置开关控制;录屏模式不出现即时标注/取字/静默动作与长截图。
+    #[test]
+    fn recording_selection_flags_gate_the_action_and_reduce_recording_mode_actions() {
+        let off = recording_selection_flags(CaptureMode::Region, false);
+        assert!(!off.recording);
+        assert!(off.long_capture);
+        assert!(off.inline_annotation && off.ocr_entry && off.toolbar_copy && off.toolbar_save);
+
+        let on = recording_selection_flags(CaptureMode::Region, true);
+        assert!(on.recording);
+        assert!(on.long_capture && on.inline_annotation && on.ocr_entry);
+
+        let recording = recording_selection_flags(CaptureMode::Recording, false);
+        assert!(recording.recording);
+        assert!(!recording.long_capture);
+        assert!(!recording.inline_annotation);
+        assert!(!recording.ocr_entry && !recording.pin_entry);
+        assert!(!recording.toolbar_copy && !recording.toolbar_save && !recording.toolbar_pin);
+
+        // R1:长截图模式的裁剪保持不变,且不带录屏入口。
+        let long = recording_selection_flags(CaptureMode::LongCapture, true);
+        assert!(long.long_capture);
+        assert!(!long.recording);
+        assert!(!long.inline_annotation && !long.ocr_entry);
+
+        // 录屏模式与普通区域模式一样在冻结帧上挂覆盖层。
+        let steps = session_steps(true, 0);
+        assert_eq!(
+            steps.last().copied(),
+            Some(SessionStep::ShowOverlayOnFreeze)
+        );
+        assert!(!CaptureMode::ALL.contains(&CaptureMode::Recording));
     }
 
     #[test]

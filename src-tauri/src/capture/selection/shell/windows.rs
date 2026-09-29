@@ -112,6 +112,8 @@ pub enum RegionOutcome {
     Quiet(PhysicalRect, QuietAction, Vec<Annotation>),
     /// R1 操作条/菜单的长截图动作:rect 交给会话层开始滚动会话。
     LongCapture(PhysicalRect, Vec<Annotation>),
+    /// R3 操作条/菜单的录屏动作:rect 交给会话层开始录制会话(设置开关门控)。
+    Recording(PhysicalRect, Vec<Annotation>),
     /// Esc 或菜单「取消」:整个会话取消。
     Cancelled,
 }
@@ -364,6 +366,14 @@ fn feed_event(state: &mut ShellState, event: InputEvent, hwnd: HWND) -> bool {
                 }
                 false
             }
+            // R3:以当前选区开始录制会话。
+            SelectionAction::Recording => {
+                if let Some(outcome) = recording_outcome(&state.canvas.engine) {
+                    state.outcome = Some(outcome);
+                    return true;
+                }
+                false
+            }
             // R2:取字提交区域,工作区覆盖层打开后自动进入取字。
             SelectionAction::Ocr => {
                 if let Some(outcome) = ocr_outcome(&state.canvas.engine) {
@@ -446,8 +456,15 @@ fn qr_outcome(engine: &SelectionEngine) -> Option<RegionOutcome> {
         .map(|rect| RegionOutcome::Qr(rect, engine.annotations().to_vec()))
 }
 
-/// 操作条/菜单动作到静默完成动作的映射;标注/取字/二维码/取消/复制色值与
-/// 标注工具条动作不在此列。
+/// R3:「录屏」动作到壳结果的映射;会话层据此启动录制会话。
+fn recording_outcome(engine: &SelectionEngine) -> Option<RegionOutcome> {
+    engine
+        .selection()
+        .map(|rect| RegionOutcome::Recording(rect, engine.annotations().to_vec()))
+}
+
+/// 操作条/菜单动作到静默完成动作的映射;标注/取字/二维码/录屏/取消/复制色值
+/// 与标注工具条动作不在此列。
 fn quiet_action_for(action: SelectionAction) -> Option<QuietAction> {
     match action {
         SelectionAction::Copy => Some(QuietAction::Copy),
@@ -464,6 +481,7 @@ fn quiet_action_for(action: SelectionAction) -> Option<QuietAction> {
         | SelectionAction::Redo
         | SelectionAction::Delete
         | SelectionAction::LongCapture
+        | SelectionAction::Recording
         | SelectionAction::More => None,
     }
 }
@@ -2276,6 +2294,8 @@ mod tests {
         assert_eq!(quiet_action_for(SelectionAction::Ocr), None);
         // R4:二维码识别同样提交区域,走工作区面板而不是静默动作。
         assert_eq!(quiet_action_for(SelectionAction::Qr), None);
+        // R3:录屏由会话层启动,不走静默完成。
+        assert_eq!(quiet_action_for(SelectionAction::Recording), None);
         assert_eq!(quiet_action_for(SelectionAction::Annotate), None);
         assert_eq!(quiet_action_for(SelectionAction::Cancel), None);
         assert_eq!(quiet_action_for(SelectionAction::CopyColor), None);
@@ -2371,6 +2391,61 @@ mod tests {
         assert_eq!(
             state.outcome,
             Some(RegionOutcome::Qr(
+                PhysicalRect {
+                    x: 40,
+                    y: 30,
+                    width: 161,
+                    height: 91
+                },
+                Vec::new()
+            ))
+        );
+    }
+
+    #[test]
+    fn menu_recording_starts_the_recording_outcome() {
+        let flags = FeatureFlags {
+            inline_annotation: false,
+            recording: true,
+            ..FeatureFlags::default()
+        };
+        let mut state = test_state_with_flags(320, 200, flags);
+        let hwnd = HWND::default();
+        for event in [
+            InputEvent::LeftDown { x: 40, y: 30 },
+            InputEvent::PointerMove { x: 200, y: 120 },
+            InputEvent::LeftUp { x: 200, y: 120 },
+            InputEvent::RightDown { x: 150, y: 100 },
+        ] {
+            assert!(!feed_event(&mut state, event, hwnd));
+        }
+        let items = composer::menu_items(state.canvas.engine.flags());
+        let metrics = composer::ChromeMetrics::for_scale(1.0);
+        let panel = composer::menu_panel(
+            metrics,
+            state.canvas.engine.menu_anchor(),
+            (320, 200),
+            &items,
+        );
+        let (_, recording_rect) = composer::menu_item_rects(metrics, panel, &items)
+            .into_iter()
+            .find(|(action, _)| *action == SelectionAction::Recording)
+            .unwrap();
+        let (cx, cy) = recording_rect.center();
+        assert!(!feed_event(
+            &mut state,
+            InputEvent::LeftDown { x: cx, y: cy },
+            hwnd
+        ));
+        assert!(feed_event(
+            &mut state,
+            InputEvent::LeftUp { x: cx, y: cy },
+            hwnd
+        ));
+        // 录屏动作把当前选区交给会话层启动录制会话。
+        assert_eq!(
+            state.outcome,
+            Some(RegionOutcome::Recording(
                 PhysicalRect {
                     x: 40,
                     y: 30,

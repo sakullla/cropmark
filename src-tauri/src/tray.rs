@@ -27,6 +27,12 @@ pub const LONG_CAPTURE_ID: &str = "capture-long";
 /// R8 托盘「从剪贴板贴图」入口的菜单 id(R9 去门控常开)。
 pub const CLIPBOARD_PIN_ID: &str = "pin-from-clipboard";
 
+/// R3 托盘录屏入口的菜单 id(受录屏开关门控)。
+pub const RECORDING_ID: &str = "recording";
+
+/// R3 托盘停止录屏并保存的菜单 id(存在活动录制时取代开始项)。
+pub const RECORDING_STOP_ID: &str = "recording-stop";
+
 /// R9 托盘「全部显示器」菜单 id。
 pub const FULLSCREEN_ALL_ID: &str = "capture-fullscreen-all";
 
@@ -60,6 +66,30 @@ fn last_region_enabled(has_region: bool) -> bool {
 /// R9:多屏开关开启时全屏是子菜单;关闭时保持单一「全屏」项(只抓指针屏)。
 pub fn fullscreen_uses_submenu(multi_monitor: bool) -> bool {
     multi_monitor
+}
+
+/// R3:录屏菜单项可见性 = 开关开启,或已有活动录制。活动录制必须保留停止/
+/// 保存出口,即使录制中途把开关关掉;关闭且空闲时托盘没有录屏入口。
+pub fn recording_item_visible(enabled: bool, active: bool) -> bool {
+    enabled || active
+}
+
+/// R3:录屏菜单项 id:空闲为「录屏」开始项,活动录制为「停止录屏并保存」项。
+pub fn recording_item_id(active: bool) -> &'static str {
+    if active {
+        RECORDING_STOP_ID
+    } else {
+        RECORDING_ID
+    }
+}
+
+/// R3:录屏菜单项文案;活动录制时提示停止并进入保存。
+pub fn recording_item_label(active: bool) -> String {
+    i18n::t(if active {
+        "tray.record_stop"
+    } else {
+        "tray.record"
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -321,6 +351,9 @@ fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
         LAST_REGION_ID => crate::dispatch_last_region(app),
         EXIT_CLICK_THROUGH_ID => crate::pin::exit_pin_click_through(app.clone()),
         CLIPBOARD_PIN_ID => crate::pin::pin_from_clipboard(app),
+        // R3:录屏入口经设置开关门控;活动录制时该项变为停止并保存。
+        RECORDING_ID => crate::capture::dispatch_recording(app),
+        RECORDING_STOP_ID => crate::capture::stop_recording(app),
         "quit" => app.exit(0),
         id => {
             if let Some(choice) = fullscreen_menu_choice(id) {
@@ -402,6 +435,20 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     capture_items.push(&long_capture);
     capture_items.push(&delay);
     let capture = Submenu::with_items(app, i18n::t("tray.capture"), true, &capture_items)?;
+    // R3:录屏入口与「截取」并列,受开关门控;活动录制时变为停止并保存项。
+    let recording_enabled = settings::current_recording(app).enabled;
+    let recording_active = crate::capture::session::recording_active(app);
+    let recording = if recording_item_visible(recording_enabled, recording_active) {
+        Some(MenuItem::with_id(
+            app,
+            recording_item_id(recording_active),
+            recording_item_label(recording_active),
+            true,
+            None::<&str>,
+        )?)
+    } else {
+        None
+    };
     let settings_item = MenuItem::with_id(
         app,
         "settings",
@@ -430,8 +477,13 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let quit = MenuItem::with_id(app, "quit", i18n::t("tray.quit"), true, None::<&str>)?;
     let first_separator = PredefinedMenuItem::separator(app)?;
     let second_separator = PredefinedMenuItem::separator(app)?;
-    let mut items: Vec<&dyn IsMenuItem<tauri::Wry>> =
-        vec![&capture, &first_separator, &settings_item, &history_item];
+    let mut items: Vec<&dyn IsMenuItem<tauri::Wry>> = vec![&capture];
+    if let Some(recording) = &recording {
+        items.push(recording);
+    }
+    items.push(&first_separator);
+    items.push(&settings_item);
+    items.push(&history_item);
     items.push(&clipboard_pin);
     let click_through_visible = exit_click_through_visible(crate::pin::has_click_through());
     if click_through_visible {
@@ -625,6 +677,32 @@ mod tests {
     #[test]
     fn clipboard_pin_id_is_not_parsed_as_a_capture_mode() {
         assert_eq!(menu_action(CLIPBOARD_PIN_ID), None);
+    }
+
+    /// R3:关闭且空闲时没有录屏入口;开关开启出现「录屏」;活动录制保留
+    /// 停止/保存出口(即使录制中途关闭开关)。
+    #[test]
+    fn recording_entry_visibility_follows_switch_and_activity() {
+        assert!(!recording_item_visible(false, false));
+        assert!(recording_item_visible(true, false));
+        assert!(recording_item_visible(false, true));
+        assert!(recording_item_visible(true, true));
+    }
+
+    #[test]
+    fn recording_entry_switches_between_start_and_stop() {
+        assert_eq!(recording_item_id(false), RECORDING_ID);
+        assert_eq!(recording_item_id(true), RECORDING_STOP_ID);
+        assert_eq!(recording_item_label(false), "录屏");
+        assert_eq!(recording_item_label(true), "停止录屏并保存");
+        assert_ne!(recording_item_label(false), recording_item_label(true));
+    }
+
+    #[test]
+    fn recording_ids_are_not_parsed_as_capture_modes() {
+        assert_eq!(menu_action(RECORDING_ID), None);
+        assert_eq!(menu_action(RECORDING_STOP_ID), None);
+        assert_eq!(menu_action("recording-delay-3"), None);
     }
 
     #[test]

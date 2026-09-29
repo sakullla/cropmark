@@ -16,10 +16,12 @@ pub enum CaptureMode {
     Fullscreen,
     /// R1 手动滚动长截图:入口在托盘与选区壳(设置开关控制),无全局快捷键。
     LongCapture,
+    /// R3 录屏:入口在托盘与选区壳(设置录屏开关控制),无全局快捷键。
+    Recording,
 }
 
 impl CaptureMode {
-    /// 可绑定全局快捷键的模式集合(R1 长截图无热键,不在此列)。
+    /// 可绑定全局快捷键的模式集合(R1 长截图与 R3 录屏无热键,不在此列)。
     pub const ALL: [CaptureMode; 3] = [Self::Region, Self::Window, Self::Fullscreen];
 }
 
@@ -51,8 +53,8 @@ impl Hotkeys {
             CaptureMode::Region => &self.region,
             CaptureMode::Window => &self.window,
             CaptureMode::Fullscreen => &self.fullscreen,
-            // 长截图不参与热键计划:调用方只用 ALL 中的模式。
-            CaptureMode::LongCapture => "",
+            // 长截图与录屏不参与热键计划:调用方只用 ALL 中的模式。
+            CaptureMode::LongCapture | CaptureMode::Recording => "",
         }
     }
 
@@ -61,7 +63,7 @@ impl Hotkeys {
             CaptureMode::Region => self.region = value,
             CaptureMode::Window => self.window = value,
             CaptureMode::Fullscreen => self.fullscreen = value,
-            CaptureMode::LongCapture => {}
+            CaptureMode::LongCapture | CaptureMode::Recording => {}
         }
     }
 
@@ -98,7 +100,8 @@ impl HotkeyErrors {
             HotkeyTarget::Capture(CaptureMode::Region) => self.region = message,
             HotkeyTarget::Capture(CaptureMode::Window) => self.window = message,
             HotkeyTarget::Capture(CaptureMode::Fullscreen) => self.fullscreen = message,
-            HotkeyTarget::Capture(CaptureMode::LongCapture) => {}
+            HotkeyTarget::Capture(CaptureMode::LongCapture)
+            | HotkeyTarget::Capture(CaptureMode::Recording) => {}
             HotkeyTarget::ClipboardPin => self.pin_clipboard = message,
         }
     }
@@ -673,5 +676,30 @@ mod tests {
         let localized = errors.localized();
         assert!(localized.pin_clipboard.as_deref().unwrap().contains("冲突"));
         assert!(localized.region.is_none());
+    }
+
+    /// R3:录屏入口没有热键槽位,也不进入热键计划/错误表。
+    #[test]
+    fn recording_mode_has_no_hotkey_slot() {
+        let mut hotkeys = Hotkeys::default();
+        assert_eq!(hotkeys.get(CaptureMode::Recording), "");
+        hotkeys.set(CaptureMode::Recording, "Ctrl+Alt+R".into());
+        assert_eq!(hotkeys.region, "Alt+Shift+A");
+        assert_eq!(hotkeys.window, "Alt+Shift+W");
+        assert_eq!(hotkeys.fullscreen, "Alt+Shift+S");
+        assert!(!CaptureMode::ALL.contains(&CaptureMode::Recording));
+        assert!(plan_bindings(&hotkeys)
+            .iter()
+            .all(|item| item.target != HotkeyTarget::Capture(CaptureMode::Recording)));
+
+        let mut errors = HotkeyErrors::default();
+        errors.set(
+            HotkeyTarget::Capture(CaptureMode::Recording),
+            Some("error.hotkey.conflict".into()),
+        );
+        assert!(errors.region.is_none());
+        assert!(errors.window.is_none());
+        assert!(errors.fullscreen.is_none());
+        assert!(errors.pin_clipboard.is_none());
     }
 }

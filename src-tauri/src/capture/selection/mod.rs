@@ -342,6 +342,9 @@ pub struct FeatureFlags {
     /// R1/R9:长截图入口;配置精简后常开,会话层固定传入 true。默认 false
     /// 仅作为壳/合成器能力契约(测试构造子集验证入口裁剪)。
     pub long_capture: bool,
+    /// R3:录屏入口;由设置里的录屏开关门控(默认关闭),关闭时选区不出现
+    /// 录屏动作,也不产生录制行为。
+    pub recording: bool,
     /// R5/R19/R9:标注工具逐项开关(注册表 12 项);默认全开,关闭的工具
     /// 不进工具条/「更多」面板/快捷键,已创建标注的渲染与编辑不受影响。
     pub tools: ToolToggles,
@@ -360,6 +363,8 @@ impl Default for FeatureFlags {
             inline_annotation: true,
             // 默认不出现长截图入口:运行时由会话层固定注入 true(R9 常开)。
             long_capture: false,
+            // 默认不出现录屏入口:运行时由会话层按设置开关注入(R3)。
+            recording: false,
             tools: ToolToggles::default(),
         }
     }
@@ -469,6 +474,8 @@ pub enum SelectionAction {
     /// R1 手动滚动长截图:以当前选区开始滚动会话(R9 去门控常开;壳能力集
     /// 仍可用 `long_capture` 裁剪入口以支持测试子集)。
     LongCapture,
+    /// R3 录屏:以当前选区开始录制会话,由设置里的录屏开关门控(默认关闭)。
+    Recording,
 }
 
 /// 一次输入事件的处理结果;除 `None` 外都意味着需要重新合成并呈现。

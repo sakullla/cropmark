@@ -11,7 +11,7 @@ pub mod session;
 pub mod ui;
 pub mod windows_list;
 
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 
 use crate::hotkeys::CaptureMode;
 use crate::settings;
@@ -27,6 +27,79 @@ pub fn begin(app: &AppHandle, mode: CaptureMode, delay_ms: u64) {
 /// 托盘全屏子菜单:指针屏、指定显示器或全部拼接。热键不走这里。
 pub fn begin_fullscreen(app: &AppHandle, delay_ms: u64, target: session::FullscreenTarget) {
     begin_with_target(app, CaptureMode::Fullscreen, delay_ms, target);
+}
+
+/// R3 托盘录屏入口:受录屏开关门控(关闭时不产生任何行为);延时与热键/
+/// 托盘截取同源,随后进入现有区域选区,确认后启动录制会话。
+pub fn dispatch_recording(app: &AppHandle) {
+    if !settings::current_recording(app).enabled {
+        return;
+    }
+    let delay_ms = settings::current_capture(app).delay_ms();
+    let _ = app.emit("capture-requested", CaptureMode::Recording);
+    begin_with_target(
+        app,
+        CaptureMode::Recording,
+        delay_ms,
+        session::FullscreenTarget::Pointer,
+    );
+}
+
+/// R3:停止活动录制并进入保存(托盘与后续录制 HUD 共用)。无活动录制时
+/// no-op;保存取消或失败都丢弃临时文件并给本地化说明,应用继续可用。
+pub fn stop_recording(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        stop_recording_inner(app).await;
+    });
+}
+
+async fn stop_recording_inner(app: AppHandle) {
+    let Some(recording) = session::take_recording_session(&app) else {
+        return;
+    };
+    let stopped = tauri::async_runtime::spawn_blocking(move || recording.stop()).await;
+    let output = match stopped {
+        Ok(Ok(output)) => output,
+        Ok(Err(error)) => {
+            ui::show_toast(&app, &error.user_message());
+            session::refresh_tray_menu(&app);
+            return;
+        }
+        Err(_) => {
+            ui::show_toast_key(&app, "error.record.thread");
+            session::refresh_tray_menu(&app);
+            return;
+        }
+    };
+    // 上限自动停止/抓帧中断先给可见说明,再进入保存对话框。
+    if output.auto_stopped {
+        ui::show_toast_key(&app, "toast.recording_auto_stopped");
+    }
+    if let Some(interrupted) = output.interrupted.as_deref() {
+        ui::show_toast(&app, interrupted);
+    }
+    match crate::record::save_recording_with_dialog(&app, None, &output).await {
+        Ok(result) if result.saved => {
+            let name = result
+                .path
+                .as_deref()
+                .and_then(|path| std::path::Path::new(path).file_name())
+                .and_then(|name| name.to_str())
+                .unwrap_or("cropmark");
+            ui::show_toast_key_params(&app, "toast.saved", &[("name", name)]);
+        }
+        Ok(_) => {
+            // 取消保存:当前没有重试入口,丢弃临时文件。
+            crate::record::discard_recording(&output);
+            ui::show_toast_key(&app, "overlay.notice.save_cancelled");
+        }
+        Err(message) => {
+            crate::record::discard_recording(&output);
+            ui::show_toast(&app, &message);
+        }
+    }
+    session::refresh_tray_menu(&app);
 }
 
 fn begin_with_target(

@@ -31,6 +31,14 @@
     "zh-CN": "长截图",
     "en": "Scrolling capture"
   },
+  "tray.record": {
+    "zh-CN": "录屏",
+    "en": "Record"
+  },
+  "tray.record_stop": {
+    "zh-CN": "停止录屏并保存",
+    "en": "Stop recording and save"
+  },
   "tray.last_region": {
     "zh-CN": "上次区域",
     "en": "Last region"
@@ -126,6 +134,10 @@
   "selection.action.long_capture": {
     "zh-CN": "长截图",
     "en": "Scrolling capture"
+  },
+  "selection.action.recording": {
+    "zh-CN": "录屏",
+    "en": "Record"
   },
   "selection.tool.rect": {
     "zh-CN": "矩形",
@@ -554,6 +566,18 @@
   "toast.saved": {
     "zh-CN": "已保存 {name}。",
     "en": "Saved {name}."
+  },
+  "toast.recording_started": {
+    "zh-CN": "录制已开始；可从托盘停止并保存，录制内容不会进入截图历史。",
+    "en": "Recording started. Stop and save from the tray; recordings never enter screenshot history."
+  },
+  "toast.recording_busy": {
+    "zh-CN": "已有录制在进行中，请先停止并保存后再开始新录制。",
+    "en": "A recording is already in progress. Stop and save it before starting a new one."
+  },
+  "toast.recording_auto_stopped": {
+    "zh-CN": "录制已达 30 分钟上限，已自动停止并保留已完成内容。",
+    "en": "Recording reached the 30-minute limit and stopped automatically with the completed content kept."
   },
   "toast.pinned": {
     "zh-CN": "已贴到屏幕。",
@@ -990,6 +1014,38 @@
   "settings.capture.delay_error": {
     "zh-CN": "延时需为 0–60 之间的整数秒。",
     "en": "Delay must be a whole number of seconds from 0 to 60."
+  },
+  "settings.recording.title": {
+    "zh-CN": "录屏",
+    "en": "Recording"
+  },
+  "settings.recording.enabled_label": {
+    "zh-CN": "启用录屏",
+    "en": "Enable recording"
+  },
+  "settings.recording.enabled_hint": {
+    "zh-CN": "开启后托盘与选区出现录屏入口，经延时与区域选择开始录制；关闭时没有入口，也不产生录制行为。录制文件不会进入截图历史。",
+    "en": "When on, recording entries appear in the tray and the selection overlay, starting after the delay and region selection; when off there is no entry and no recording. Recordings never enter screenshot history."
+  },
+  "settings.recording.format_label": {
+    "zh-CN": "录制格式",
+    "en": "Recording format"
+  },
+  "settings.recording.format_hint": {
+    "zh-CN": "录制文件的保存格式；GIF 通用、WebP 体积更小、MP4 适合较长内容。",
+    "en": "Format of the saved recording; GIF is universal, WebP is smaller, MP4 suits longer content."
+  },
+  "settings.recording.format.gif": {
+    "zh-CN": "GIF",
+    "en": "GIF"
+  },
+  "settings.recording.format.webp": {
+    "zh-CN": "WebP",
+    "en": "WebP"
+  },
+  "settings.recording.format.mp4": {
+    "zh-CN": "MP4",
+    "en": "MP4"
   },
   "settings.history.title": {
     "zh-CN": "历史记录",

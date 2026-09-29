@@ -328,15 +328,16 @@ pub fn action_label(action: SelectionAction) -> String {
         SelectionAction::Delete => "selection.tool.delete",
         SelectionAction::More => "selection.tool.more",
         SelectionAction::LongCapture => "selection.action.long_capture",
+        SelectionAction::Recording => "selection.action.recording",
     })
 }
 
 /// 右键菜单动作过滤(顺序固定,保持现状):
 /// Copy←`toolbar_copy`, Save←`toolbar_save`, Pin←`toolbar_pin && pin_entry`,
-/// Annotate 恒在, LongCapture←`long_capture`(R1), Ocr←`ocr_entry`,
-/// Qr 恒在(R4), Cancel 恒在。
+/// Annotate 恒在, LongCapture←`long_capture`(R1), Recording←`recording`(R3),
+/// Ocr←`ocr_entry`, Qr 恒在(R4), Cancel 恒在。
 fn capture_actions(flags: FeatureFlags) -> Vec<SelectionAction> {
-    let mut actions = Vec::with_capacity(8);
+    let mut actions = Vec::with_capacity(9);
     if flags.toolbar_copy {
         actions.push(SelectionAction::Copy);
     }
@@ -350,6 +351,9 @@ fn capture_actions(flags: FeatureFlags) -> Vec<SelectionAction> {
     if flags.long_capture {
         actions.push(SelectionAction::LongCapture);
     }
+    if flags.recording {
+        actions.push(SelectionAction::Recording);
+    }
     if flags.ocr_entry {
         actions.push(SelectionAction::Ocr);
     }
@@ -361,11 +365,12 @@ fn capture_actions(flags: FeatureFlags) -> Vec<SelectionAction> {
 /// 统一横条主行动作集(R5 注册表驱动,与预览编辑器工具条同源):
 /// 即时标注开启时为注册表主行工具(开关允许 + 平台有文本输入通道时的文字)+
 /// 撤销/重做(成对,只出现在横条) + LongCapture←`long_capture`(R1) +
-/// Copy←`toolbar_copy` + Save←`toolbar_save` + 取消 + 更多;关闭时为 标注 +
-/// LongCapture←`long_capture` + Copy←`toolbar_copy` + Save←`toolbar_save` +
+/// Recording←`recording`(R3) + Copy←`toolbar_copy` + Save←`toolbar_save` +
+/// 取消 + 更多;关闭时为 标注 + LongCapture←`long_capture` +
+/// Recording←`recording` + Copy←`toolbar_copy` + Save←`toolbar_save` +
 /// 取消 + 更多。关闭复制/保存后主行不再含该项,其余顺序不变。
 pub fn toolbar_buttons(flags: FeatureFlags, text_input: bool) -> Vec<SelectionAction> {
-    let mut buttons = Vec::with_capacity(13);
+    let mut buttons = Vec::with_capacity(14);
     if flags.inline_annotation {
         for tool in AnnotationTool::PRIMARY {
             if !flags.tools.enabled(tool) {
@@ -382,6 +387,9 @@ pub fn toolbar_buttons(flags: FeatureFlags, text_input: bool) -> Vec<SelectionAc
     }
     if flags.long_capture {
         buttons.push(SelectionAction::LongCapture);
+    }
+    if flags.recording {
+        buttons.push(SelectionAction::Recording);
     }
     if flags.toolbar_copy {
         buttons.push(SelectionAction::Copy);
@@ -1504,8 +1512,8 @@ impl Composer {
         );
     }
 
-    /// 动作图标:长截图没有位图资产,用几何笔画(竖框 + 向下箭头)绘制;
-    /// 其余动作仍走 `icons` 资产。
+    /// 动作图标:长截图与录屏没有位图资产,用几何笔画(长截图=竖框+箭头、
+    /// 录屏=圆环+圆点);其余动作仍走 `icons` 资产。
     #[allow(clippy::too_many_arguments)]
     fn draw_action_icon(
         &self,
@@ -1520,6 +1528,10 @@ impl Composer {
     ) {
         if action == SelectionAction::LongCapture {
             draw_long_capture_icon(rgba, w, h, cx, cy, size, ink);
+            return;
+        }
+        if action == SelectionAction::Recording {
+            draw_recording_icon(rgba, w, h, cx, cy, size, ink);
             return;
         }
         icons::draw(rgba, w, h, action, cx, cy, size, ink);
@@ -1744,6 +1756,26 @@ fn draw_long_capture_icon(
         for y in top..bottom.max(top + 1) {
             for x in left..right.max(left + 1) {
                 blend(rgba, w, h, x, y, ink);
+            }
+        }
+    }
+}
+
+/// 录屏字形:同心圆环 + 实心圆点(与长截图同为几何笔画,无位图资产)。
+/// 24×24 稿,按请求尺寸缩放;圆环描边与圆心点都走 blend,不透明落笔会打穿底色。
+fn draw_recording_icon(rgba: &mut [u8], w: u32, h: u32, cx: i32, cy: i32, size: i32, ink: [u8; 4]) {
+    let size = size.max(16) as f32;
+    let scale = size / 24.0;
+    let outer = 9.0 * scale;
+    let inner = 6.0 * scale;
+    let core = 3.25 * scale;
+    let reach = outer.ceil() as i32;
+    for oy in -reach..=reach {
+        for ox in -reach..=reach {
+            let d2 = (ox * ox + oy * oy) as f32;
+            let ring = d2 <= outer * outer && d2 >= inner * inner;
+            if ring || d2 <= core * core {
+                blend(rgba, w, h, cx + ox, cy + oy, ink);
             }
         }
     }
@@ -3050,6 +3082,55 @@ mod tests {
         draw_long_capture_icon(&mut buf, 48, 48, 24, 24, 24, [255, 255, 255, 255]);
         let painted = buf.chunks_exact(4).filter(|px| px[3] > 0).count();
         assert!(painted > 20, "painted {painted}");
+    }
+
+    /// R3:录屏开关开启时工具条与右键菜单出现入口,关闭时不出现;
+    /// 菜单位置在长截图之后、取字之前,文案为「录屏」。
+    #[test]
+    fn recording_entry_is_gated_by_the_feature_flag() {
+        let enabled = FeatureFlags {
+            long_capture: true,
+            recording: true,
+            ..FeatureFlags::default()
+        };
+        let items = menu_items(enabled);
+        assert!(items.contains(&SelectionAction::Recording));
+        assert!(toolbar_buttons(enabled, true).contains(&SelectionAction::Recording));
+        let long = items
+            .iter()
+            .position(|action| *action == SelectionAction::LongCapture)
+            .unwrap();
+        let recording = items
+            .iter()
+            .position(|action| *action == SelectionAction::Recording)
+            .unwrap();
+        let ocr = items
+            .iter()
+            .position(|action| *action == SelectionAction::Ocr)
+            .unwrap();
+        assert!(long < recording && recording < ocr);
+
+        let disabled = FeatureFlags {
+            long_capture: true,
+            ..FeatureFlags::default()
+        };
+        assert!(!menu_items(disabled).contains(&SelectionAction::Recording));
+        assert!(!toolbar_buttons(disabled, true).contains(&SelectionAction::Recording));
+        assert_eq!(action_label(SelectionAction::Recording), "录屏");
+    }
+
+    /// R3:录屏没有位图资产,几何字形(圆环+圆点)必须实际落笔。
+    #[test]
+    fn recording_icon_paints_ink() {
+        let mut buf = vec![0u8; 48 * 48 * 4];
+        draw_recording_icon(&mut buf, 48, 48, 24, 24, 24, [255, 255, 255, 255]);
+        let painted = buf.chunks_exact(4).filter(|px| px[3] > 0).count();
+        assert!(painted > 20, "painted {painted}");
+        // 中心为实心圆点,圆环与圆点之间留空(24 稿:圆心 3.25、环内径 6)。
+        let center = (24 * 48 + 24) * 4;
+        assert_eq!(buf[center + 3], 255);
+        let ring_gap = (24 * 48 + 29) * 4;
+        assert_eq!(buf[ring_gap + 3], 0, "ring gap must stay empty");
     }
 
     #[test]

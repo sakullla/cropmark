@@ -67,6 +67,14 @@ export interface PinSettings {
   restore: boolean;
 }
 
+/// R3:录屏开关与录制格式。开关默认关闭;格式默认 GIF。
+export type RecordingFormat = "gif" | "webp" | "mp4";
+
+export interface RecordingSettings {
+  enabled: boolean;
+  format: RecordingFormat;
+}
+
 export interface TrayState {
   available: boolean;
   message: string | null;
@@ -84,6 +92,7 @@ export interface UiSettings {
   history: HistorySettings;
   export: ExportSettings;
   pin: PinSettings;
+  recording: RecordingSettings;
   tray: TrayState;
   language: string;
   resolvedLanguage: string;
@@ -115,6 +124,15 @@ const LANGUAGE_OPTIONS: Array<{ value: LanguageSetting; labelKey: CatalogKey }> 
 ];
 
 const HOTKEY_SLOTS: HotkeySlot[] = ["region", "window", "fullscreen", "clipboardpin"];
+
+/// R3:录制格式选项;value 与 Rust `RecordFormat` 的 lowercase serde 值一致。
+const RECORDING_FORMATS: Array<{ value: RecordingFormat; labelKey: CatalogKey }> = [
+  { value: "gif", labelKey: "settings.recording.format.gif" },
+  { value: "webp", labelKey: "settings.recording.format.webp" },
+  { value: "mp4", labelKey: "settings.recording.format.mp4" },
+];
+
+const DEFAULT_RECORDING: RecordingSettings = { enabled: false, format: "gif" };
 
 const DEFAULT_BEAUTIFY: BeautifyOptions = {
   preset: "paper",
@@ -214,6 +232,23 @@ export function mountSettings(root: HTMLElement): () => void {
                     </div>
                     ${switchMarkup("capture-option", "multiMonitor", "multi-monitor-label", true)}
                   </div>
+                </section>
+                <section class="block" aria-labelledby="recording-title">
+                  <h2 id="recording-title" data-i18n="settings.recording.title">录屏</h2>
+                  <div class="setting-row">
+                    <div>
+                      <div class="label" id="recording-enabled-label" data-i18n="settings.recording.enabled_label">启用录屏</div>
+                      <p class="hint" data-i18n="settings.recording.enabled_hint">开启后托盘与选区出现录屏入口，经延时与区域选择开始录制；关闭时没有入口，也不产生录制行为。录制文件不会进入截图历史。</p>
+                    </div>
+                    ${switchMarkup("recording-option", "enabled", "recording-enabled-label", false)}
+                  </div>
+                  <div class="setting-row">
+                    <div>
+                      <div class="label" id="recording-format-label" data-i18n="settings.recording.format_label">录制格式</div>
+                      <p class="hint" data-i18n="settings.recording.format_hint">录制文件的保存格式；GIF 通用、WebP 体积更小、MP4 适合较长内容。</p>
+                    </div>
+                  </div>
+                  <div class="choices" data-recording-formats role="radiogroup" aria-labelledby="recording-format-label"></div>
                 </section>
               </section>
             </section>
@@ -418,6 +453,8 @@ export function mountSettings(root: HTMLElement): () => void {
   const exportErrorEl = root.querySelector("[data-export-error]");
   const shadowEl = root.querySelector("[data-beautify-shadow=shadow]");
   const pinRestoreEl = root.querySelector("[data-pin-option=restore]");
+  const recordingEnabledEl = root.querySelector("[data-recording-option=enabled]");
+  const recordingFormatsEl = root.querySelector("[data-recording-formats]");
   const openGuideEl = root.querySelector("[data-action=open-guide]");
   const logPathEl = root.querySelector("[data-log-path]");
   const openLogsEl = root.querySelector("[data-action=open-logs]");
@@ -450,6 +487,8 @@ export function mountSettings(root: HTMLElement): () => void {
     !(exportErrorEl instanceof HTMLElement) ||
     !(shadowEl instanceof HTMLButtonElement) ||
     !(pinRestoreEl instanceof HTMLButtonElement) ||
+    !(recordingEnabledEl instanceof HTMLButtonElement) ||
+    !(recordingFormatsEl instanceof HTMLElement) ||
     !(openGuideEl instanceof HTMLButtonElement) ||
     !(logPathEl instanceof HTMLElement) ||
     !(openLogsEl instanceof HTMLButtonElement) ||
@@ -490,6 +529,7 @@ export function mountSettings(root: HTMLElement): () => void {
     useFilenameTemplate: false,
   };
   let pinSettings: PinSettings = { restore: false };
+  let recordingSettings: RecordingSettings = { ...DEFAULT_RECORDING };
 
   const syncSwitch = (button: HTMLButtonElement, on: boolean): void => {
     button.setAttribute("aria-checked", on ? "true" : "false");
@@ -588,6 +628,37 @@ export function mountSettings(root: HTMLElement): () => void {
   const renderPin = (pin: PinSettings): void => {
     pinSettings = pin;
     syncSwitch(pinRestoreEl, pin.restore);
+  };
+
+  // R3:录制格式按钮每次重建(与美化预设一致),方向键漫游后还原焦点。
+  const renderRecording = (settings: RecordingSettings): void => {
+    recordingSettings = settings;
+    syncSwitch(recordingEnabledEl, settings.enabled);
+    const activeFormat =
+      document.activeElement instanceof HTMLButtonElement &&
+      recordingFormatsEl.contains(document.activeElement)
+        ? (document.activeElement.dataset.recordingFormat ?? null)
+        : null;
+    recordingFormatsEl.replaceChildren();
+    for (const item of RECORDING_FORMATS) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "choice";
+      button.dataset.recordingFormat = item.value;
+      button.setAttribute("role", "radio");
+      button.textContent = t(item.labelKey);
+      const selected = item.value === settings.format;
+      button.setAttribute("aria-checked", selected ? "true" : "false");
+      button.classList.toggle("selected", selected);
+      // 漫游 tabindex:与语言/预设组一致的 radio 组键盘行为。
+      button.tabIndex = selected ? 0 : -1;
+      recordingFormatsEl.append(button);
+    }
+    if (activeFormat) {
+      recordingFormatsEl
+        .querySelector<HTMLButtonElement>(`[data-recording-format="${activeFormat}"]`)
+        ?.focus();
+    }
   };
 
   const renderLanguage = (language: string): void => {
@@ -707,6 +778,7 @@ export function mountSettings(root: HTMLElement): () => void {
     renderHistory(settings.history);
     renderExport(settings);
     renderPin(settings.pin);
+    renderRecording(settings.recording ?? { ...DEFAULT_RECORDING });
   };
 
   const showExportError = (message: string): void => {
@@ -878,6 +950,19 @@ export function mountSettings(root: HTMLElement): () => void {
     }
   };
 
+  // R3:录屏开关与录制格式;托盘入口按新值立即重建,选区入口打开时读取。
+  const applyRecording = async (next: RecordingSettings): Promise<void> => {
+    setApplying(true);
+    try {
+      const settings = await invoke<UiSettings>("set_recording_settings", { settings: next });
+      render(settings);
+    } catch (error) {
+      showInvokeError(error);
+    } finally {
+      setApplying(false);
+    }
+  };
+
   const applyLanguageSetting = async (language: LanguageSetting): Promise<void> => {
     setApplying(true);
     try {
@@ -988,6 +1073,30 @@ export function mountSettings(root: HTMLElement): () => void {
     }
     const next = pinRestoreEl.getAttribute("aria-checked") !== "true";
     void applyPin({ ...pinSettings, restore: next });
+  });
+
+  recordingEnabledEl.addEventListener("click", () => {
+    if (applying) {
+      return;
+    }
+    const next = recordingEnabledEl.getAttribute("aria-checked") !== "true";
+    void applyRecording({ ...recordingSettings, enabled: next });
+  });
+
+  recordingFormatsEl.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element) || applying) {
+      return;
+    }
+    const button = target.closest("[data-recording-format]");
+    if (!(button instanceof HTMLButtonElement) || button.disabled) {
+      return;
+    }
+    const format = button.dataset.recordingFormat as RecordingFormat | undefined;
+    if (!format || format === recordingSettings.format) {
+      return;
+    }
+    void applyRecording({ ...recordingSettings, format });
   });
 
   let logDirectory = "";
@@ -1195,6 +1304,9 @@ export function mountSettings(root: HTMLElement): () => void {
   });
   presetRoot.addEventListener("keydown", (event) => {
     handleRadioGroupKeydown(event, presetRoot, "[data-beautify-preset]");
+  });
+  recordingFormatsEl.addEventListener("keydown", (event) => {
+    handleRadioGroupKeydown(event, recordingFormatsEl, "[data-recording-format]");
   });
 
   switchEl.addEventListener("click", () => {

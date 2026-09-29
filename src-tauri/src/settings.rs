@@ -263,10 +263,21 @@ pub struct PinSettings {
 
 /// 录屏开关(R3/R9):配置精简后唯一保留的功能开关,默认关闭。
 /// 关闭时托盘与选区不出现录屏入口;录制引擎本身由入口按该值门控。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// `format` 为录制产物格式(GIF/WebP/MP4),默认 GIF,启动录制前读取。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct RecordingSettings {
     pub enabled: bool,
+    pub format: crate::record::RecordFormat,
+}
+
+impl Default for RecordingSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            format: crate::record::RecordFormat::Gif,
+        }
+    }
 }
 
 /// 上次区域(R6):成功完成区域截图后记住的全局物理像素矩形(多显示器桌面允许负坐标),
@@ -488,9 +499,8 @@ pub fn current_pin(app: &AppHandle) -> PinSettings {
     *lock(&app.state::<SessionState>().pin)
 }
 
-/// 供录屏入口读取录屏开关(R3):默认关闭,关闭时不出现入口。
-/// 入口任务(recording-entry)接入前没有生产调用点。
-#[allow(dead_code)]
+/// 供录屏入口读取录屏开关与录制格式(R3):默认关闭,关闭时不出现入口;
+/// 格式在每次启动录制前读取,无需重启。
 pub fn current_recording(app: &AppHandle) -> RecordingSettings {
     *lock(&app.state::<SessionState>().recording)
 }
@@ -849,8 +859,9 @@ pub fn set_pin_settings(app: AppHandle, settings: PinSettings) -> UiSettings {
     snapshot(&app)
 }
 
-/// 设置录屏开关(R3):默认关闭;入口(托盘/选区)按当前值门控,无需重启。
-/// 托盘菜单按新开关立即重建(与采集设置同语义),选区入口在打开时读取当前值。
+/// 设置录屏开关与录制格式(R3):开关默认关闭;入口(托盘/选区)按当前值
+/// 门控,无需重启。托盘菜单按新开关立即重建(与采集设置同语义),选区入口
+/// 与录制启动在打开/开始时读取当前值与格式。
 #[tauri::command]
 pub fn set_recording_settings(app: AppHandle, settings: RecordingSettings) -> UiSettings {
     *lock(&app.state::<SessionState>().recording) = settings;
@@ -985,7 +996,10 @@ mod tests {
                 use_filename_template: true,
             },
             pin: PinSettings { restore: true },
-            recording: RecordingSettings { enabled: true },
+            recording: RecordingSettings {
+                enabled: true,
+                format: crate::record::RecordFormat::Mp4,
+            },
             last_region: Some(LastRegion {
                 x: -640,
                 y: 120,
@@ -1033,7 +1047,9 @@ mod tests {
         assert!(loaded.export.use_filename_template);
         assert!(loaded.pin.restore);
         assert!(loaded.recording.enabled);
+        assert_eq!(loaded.recording.format, crate::record::RecordFormat::Mp4);
         assert!(text.contains("\"recording\""));
+        assert!(text.contains("\"format\": \"mp4\"") || text.contains("\"format\":\"mp4\""));
         assert_eq!(loaded.language, "en");
         assert!(loaded.onboarding_done);
         assert!(text.contains("\"onboardingDone\""));
@@ -1155,23 +1171,42 @@ mod tests {
         assert!(!export.apply_beautify);
         assert!(!export.use_filename_template);
         assert!(!PinSettings::default().restore);
-        // R3/R9:录屏开关默认关闭,是配置精简后唯一保留的功能开关。
+        // R3/R9:录屏开关默认关闭,是配置精简后唯一保留的功能开关;录制格式默认 GIF。
         assert!(!RecordingSettings::default().enabled);
+        assert_eq!(
+            RecordingSettings::default().format,
+            crate::record::RecordFormat::Gif
+        );
     }
 
     #[test]
     fn recording_setting_roundtrips_and_defaults_to_disabled() {
         let missing: StoredSettings = serde_json::from_str("{}").unwrap();
         assert!(!missing.recording.enabled);
-        let parsed: StoredSettings =
+        assert_eq!(missing.recording.format, crate::record::RecordFormat::Gif);
+        // 旧文件只有 enabled(格式字段加入前):按默认 GIF 读取。
+        let legacy: StoredSettings =
             serde_json::from_str(r#"{"recording":{"enabled":true}}"#).unwrap();
+        assert!(legacy.recording.enabled);
+        assert_eq!(legacy.recording.format, crate::record::RecordFormat::Gif);
+        let parsed: StoredSettings =
+            serde_json::from_str(r#"{"recording":{"enabled":true,"format":"webp"}}"#).unwrap();
         assert!(parsed.recording.enabled);
+        assert_eq!(parsed.recording.format, crate::record::RecordFormat::Webp);
         let serialized = serde_json::to_value(parsed.recording).unwrap();
         assert_eq!(serialized["enabled"], true);
+        assert_eq!(serialized["format"], "webp");
         let rewritten = stored_from_state(&SessionState::from_stored(parsed));
         assert!(rewritten.recording.enabled);
+        assert_eq!(
+            rewritten.recording.format,
+            crate::record::RecordFormat::Webp
+        );
         let text = serde_json::to_string(&rewritten).unwrap();
-        assert!(text.contains("\"recording\":{\"enabled\":true}"), "{text}");
+        assert!(
+            text.contains("\"recording\":{\"enabled\":true,\"format\":\"webp\"}"),
+            "{text}"
+        );
     }
 
     #[test]
