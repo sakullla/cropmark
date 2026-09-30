@@ -2971,14 +2971,6 @@
     "zh-CN": "再编辑",
     "en": "Re-edit"
   },
-  "history.deleted": {
-    "zh-CN": "已删除。",
-    "en": "Deleted."
-  },
-  "history.cleared": {
-    "zh-CN": "已清空。",
-    "en": "Cleared."
-  },
   "history.undo.deleted": {
     "zh-CN": "已删除 {count} 条记录。",
     "en": "Deleted {count} record(s)."
@@ -3000,16 +2992,16 @@
     "en": "Pinned."
   },
   "history.confirm_delete": {
-    "zh-CN": "删除这条历史记录？此操作不可撤销。",
-    "en": "Delete this history record? This cannot be undone."
+    "zh-CN": "删除这条历史记录？删除后短时间内仍可撤销。",
+    "en": "Delete this history record? You can undo this for a short time afterwards."
   },
   "history.confirm_delete_accept": {
     "zh-CN": "确认删除",
     "en": "Delete"
   },
   "history.confirm_clear": {
-    "zh-CN": "清空全部历史记录？此操作不可撤销。",
-    "en": "Clear all history? This cannot be undone."
+    "zh-CN": "清空全部历史记录？清空后短时间内仍可撤销。",
+    "en": "Clear all history? You can undo this for a short time afterwards."
   },
   "history.confirm_clear_accept": {
     "zh-CN": "确认清空",

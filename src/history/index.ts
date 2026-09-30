@@ -17,10 +17,18 @@ interface HistoryEntryView {
   note: string;
 }
 
+/** R6:当前可撤销的删除/清空批;`expiresAt` 为 Unix 毫秒,与后端 8 秒窗口同源。 */
+interface PendingUndo {
+  kind: "delete" | "clear";
+  count: number;
+  expiresAt: number;
+}
+
 interface HistoryListPayload {
   entries: HistoryEntryView[];
   notice: string | null;
   toolsEnabled: boolean;
+  pendingUndo: PendingUndo | null;
 }
 
 type TimeRange = "all" | "today" | "7d" | "30d";
@@ -154,6 +162,10 @@ export function mountHistory(root: HTMLElement): () => void {
         </div>
         <p class="notice" data-notice role="alert" hidden></p>
         <p class="history-status" data-status role="status" hidden></p>
+        <p class="history-undo" data-undo role="status" hidden>
+          <span class="history-undo-text" data-undo-text></span>
+          <button type="button" class="history-btn history-undo-btn" data-undo-action data-i18n="history.undo.action">撤销</button>
+        </p>
         <div class="history-confirm" data-confirm role="alertdialog" data-i18n-aria-label="history.confirm_group" aria-label="确认操作" hidden>
           <p class="history-confirm-text" data-confirm-text></p>
           <div class="history-confirm-actions">
@@ -175,6 +187,9 @@ export function mountHistory(root: HTMLElement): () => void {
   const clearFiltersEl = root.querySelector("[data-action=clear-filters]");
   const noticeEl = root.querySelector("[data-notice]");
   const statusEl = root.querySelector("[data-status]");
+  const undoEl = root.querySelector("[data-undo]");
+  const undoTextEl = root.querySelector("[data-undo-text]");
+  const undoBtn = root.querySelector("[data-undo-action]");
   const confirmEl = root.querySelector("[data-confirm]");
   const confirmTextEl = root.querySelector("[data-confirm-text]");
   const confirmAcceptEl = root.querySelector("[data-confirm-accept]");
@@ -193,6 +208,9 @@ export function mountHistory(root: HTMLElement): () => void {
     !(clearFiltersEl instanceof HTMLButtonElement) ||
     !(noticeEl instanceof HTMLElement) ||
     !(statusEl instanceof HTMLElement) ||
+    !(undoEl instanceof HTMLElement) ||
+    !(undoTextEl instanceof HTMLElement) ||
+    !(undoBtn instanceof HTMLButtonElement) ||
     !(confirmEl instanceof HTMLElement) ||
     !(confirmTextEl instanceof HTMLElement) ||
     !(confirmAcceptEl instanceof HTMLButtonElement) ||
@@ -225,6 +243,30 @@ export function mountHistory(root: HTMLElement): () => void {
   let pendingConfirm: PendingConfirm | null = null;
   // 打开确认条的触发按钮:确认条关闭后焦点还原到它(键盘用户不丢上下文)。
   let confirmTrigger: HTMLElement | null = null;
+  // R6:撤销条跟随后端 pending-delete 生命周期;隐藏计时按 `expiresAt` 剩余
+  // 时长对齐 8 秒窗口,不复用 3600ms 的结果反馈常量(此处窗口即撤销机会本身)。
+  let undoTimer: number | undefined;
+
+  const hideUndo = (): void => {
+    if (undoTimer !== undefined) {
+      window.clearTimeout(undoTimer);
+      undoTimer = undefined;
+    }
+    undoEl.hidden = true;
+  };
+
+  const showUndo = (pending: PendingUndo): void => {
+    if (undoTimer !== undefined) {
+      window.clearTimeout(undoTimer);
+    }
+    undoTextEl.textContent = t(
+      pending.kind === "clear" ? "history.undo.cleared" : "history.undo.deleted",
+      { count: pending.count },
+    );
+    undoEl.hidden = false;
+    const remaining = pending.expiresAt - Date.now();
+    undoTimer = window.setTimeout(hideUndo, Math.max(remaining, 0));
+  };
 
   const confirmMessage = (pending: PendingConfirm): string =>
     pending.kind === "delete" ? t("history.confirm_delete") : t("history.confirm_clear");
@@ -238,6 +280,7 @@ export function mountHistory(root: HTMLElement): () => void {
   const syncBusy = (): void => {
     clearEl.disabled = busy;
     confirmAcceptEl.disabled = busy;
+    undoBtn.disabled = busy;
     listEl
       .querySelectorAll<HTMLButtonElement>("[data-entry-action]")
       .forEach((button) => {
@@ -551,6 +594,11 @@ export function mountHistory(root: HTMLElement): () => void {
       toolsEnabled && filtersActive()
         ? t("history.count_filtered", { count: visible.length, total: payload.entries.length })
         : t("history.count", { count: payload.entries.length });
+    if (payload.pendingUndo) {
+      showUndo(payload.pendingUndo);
+    } else {
+      hideUndo();
+    }
   };
 
   const refresh = async (): Promise<void> => {
@@ -566,10 +614,12 @@ export function mountHistory(root: HTMLElement): () => void {
 
   const performDelete = async (id: string): Promise<void> => {
     setBusy(true);
+    // 删除的终态反馈由撤销条(「已删除 N 条记录。撤销」)承担,状态行清空。
+    statusState = { key: null, text: "", isError: false };
+    renderStatus();
     try {
       render(await invoke<HistoryListPayload>("delete_history_entry", { id }));
       noteDrafts.delete(id);
-      setStatusKey("history.deleted");
     } catch (error) {
       setStatusText(errorMessage(error), true);
     } finally {
@@ -584,9 +634,22 @@ export function mountHistory(root: HTMLElement): () => void {
     try {
       render(await invoke<HistoryListPayload>("clear_history"));
       noteDrafts.clear();
-      setStatusKey("history.cleared");
     } catch (error) {
       setStatusText(errorMessage(error), true);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const performUndo = async (): Promise<void> => {
+    setBusy(true);
+    hideUndo();
+    try {
+      render(await invoke<HistoryListPayload>("undo_history_delete"));
+    } catch (error) {
+      setStatusText(errorMessage(error), true);
+      // 失败后按后端实际状态重绘(标记可能仍在窗口内)。
+      await refresh();
     } finally {
       setBusy(false);
     }
@@ -685,6 +748,13 @@ export function mountHistory(root: HTMLElement): () => void {
       return;
     }
     showConfirm({ kind: "clear" }, clearEl);
+  });
+
+  undoBtn.addEventListener("click", () => {
+    if (busy) {
+      return;
+    }
+    void performUndo();
   });
 
   confirmAcceptEl.addEventListener("click", () => {

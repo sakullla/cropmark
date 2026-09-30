@@ -3,7 +3,11 @@
 //! 截图完成后在 `app_data_dir/history/` 保留最近记录:
 //! - `index.json`:schemaVersion + 条目列表(新→旧),原子写(临时文件+rename);
 //! - `<id>.png`:原始帧 PNG;
-//! - `<id>.thumb.png`:最长边约 320px 的缩略图。
+//! - `<id>.thumb.png`:最长边约 320px 的缩略图;
+//! - `pending-delete.json`:R6 限时撤销标记。删除/清空先把条目移出索引、
+//!   文件原地保留并落标记(含完整条目元数据与截止时间),8 秒内可整体撤销;
+//!   到期线程、退出与启动兜底统一走 `sweep_pending` 终结标记并删除文件。
+//!   后到操作为准:新删除/清空会先终结既有标记,旧批不可再撤销。
 //!
 //! 索引 v2 为每条增加 `mode`(region/window/fullscreen/long)、`favorite`、`note`。
 //! 读取更低版本时按默认值在内存中升级(无模式、未收藏、空备注),下次写入才落成 v2;
@@ -14,6 +18,7 @@
 //! 淘汰最旧记录。索引损坏或缩略图缺失时列表降级可用并给出可理解状态,
 //! 数据只保存在本机,不上传。
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -34,17 +39,23 @@ pub const SCHEMA_VERSION: u32 = 2;
 pub const THUMB_MAX_EDGE: u32 = 320;
 /// 备注最大字符数(按 Unicode 标量值,不是字节)。
 pub const NOTE_MAX_CHARS: usize = 500;
+/// R6:删除/清空后的限时撤销窗口(毫秒),窗口内条目文件原地保留。
+pub const UNDO_WINDOW_MS: u64 = 8_000;
 /// 可筛选的采集模式 token,与文件名模板 `{mode}` 保持同一套稳定英文值。
 const MODE_TOKENS: [&str; 4] = ["region", "window", "fullscreen", "long"];
 
 const INDEX_FILE: &str = "index.json";
 const INDEX_TMP_FILE: &str = "index.json.tmp";
+const PENDING_FILE: &str = "pending-delete.json";
+const PENDING_TMP_FILE: &str = "pending-delete.json.tmp";
 const THUMB_SUFFIX: &str = ".thumb.png";
 
 /// 索引读改写互斥:写入、删除、清空与裁剪都在此锁内完成。
 static STORE_LOCK: Mutex<()> = Mutex::new(());
 /// 记录 id 的同毫秒序号,避免同一毫秒内多条记录互相覆盖。
 static ID_SEQ: AtomicU64 = AtomicU64::new(0);
+/// pending-delete 批 id 的同毫秒序号:到期线程据批 id 识别过时定时器。
+static PENDING_SEQ: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -98,6 +109,29 @@ pub struct HistoryListPayload {
     /// R9:历史检索与收藏/备注去门控常开,固定为 true;字段保留供前端沿用
     /// 同一列表布局契约。
     pub tools_enabled: bool,
+    /// R6:当前可撤销的删除/清空批;无标记或已过窗口时为 `None`。
+    pub pending_undo: Option<PendingUndoPayload>,
+}
+
+/// 前端撤销条视图:操作种类、条数与截止时间(毫秒),用于文案与剩余时长。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingUndoPayload {
+    /// `delete`(单条)或 `clear`(清空批量)。
+    pub kind: String,
+    pub count: usize,
+    pub expires_at: u64,
+}
+
+/// R6:限时撤销标记。条目元数据整体入批,撤销时原样回索引(含收藏/备注);
+/// `deadline` 为 Unix 毫秒,过期后只允许终结不允许恢复。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingDelete {
+    id: String,
+    kind: String,
+    deadline: u64,
+    entries: Vec<HistoryEntry>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -212,6 +246,117 @@ fn index_notice(state: IndexState) -> Option<String> {
         IndexState::Corrupted => Some(i18n::t("error.history.corrupted")),
         IndexState::Unsupported => Some(i18n::t("error.history.unsupported")),
     }
+}
+
+// --- R6:限时撤销(pending-delete)-----------------------------------------
+
+fn pending_path(dir: &Path) -> PathBuf {
+    dir.join(PENDING_FILE)
+}
+
+/// 读取标记;缺失或结构损坏都视作无待撤销批(损坏标记由 sweep 兜底清掉)。
+fn load_pending(dir: &Path) -> Option<PendingDelete> {
+    let text = fs::read_to_string(pending_path(dir)).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// 落一批待删除条目:文件原地保留,标记原子写(临时文件+rename)。
+/// 失败时调用方负责回退到立即删除语义,不留索引外文件。
+fn stage_pending(
+    dir: &Path,
+    kind: &str,
+    entries: Vec<HistoryEntry>,
+) -> Result<PendingDelete, String> {
+    let pending = PendingDelete {
+        id: format!(
+            "pending-{}-{}",
+            now_millis(),
+            PENDING_SEQ.fetch_add(1, Ordering::Relaxed)
+        ),
+        kind: kind.to_string(),
+        deadline: now_millis().saturating_add(UNDO_WINDOW_MS),
+        entries,
+    };
+    let text = serde_json::to_string_pretty(&pending).map_err(|error| error.to_string())?;
+    let tmp = dir.join(PENDING_TMP_FILE);
+    fs::write(&tmp, text).map_err(|error| {
+        i18n::tp(
+            "error.history.write_index",
+            &[("error", &error.to_string())],
+        )
+    })?;
+    fs::rename(&tmp, pending_path(dir)).map_err(|error| {
+        i18n::tp(
+            "error.history.rename_index",
+            &[("error", &error.to_string())],
+        )
+    })?;
+    Ok(pending)
+}
+
+/// 终结当前标记:删除批内条目文件与标记本身。调用方必须已持有 STORE_LOCK。
+fn finalize_pending_locked(dir: &Path) {
+    if let Some(pending) = load_pending(dir) {
+        for entry in &pending.entries {
+            remove_entry_files(dir, entry);
+        }
+    }
+    let _ = fs::remove_file(pending_path(dir));
+    let _ = fs::remove_file(dir.join(PENDING_TMP_FILE));
+}
+
+/// 到期/退出/启动共用的兜底清理:终结遗留标记并删除其条目文件。
+/// 到期线程在锁内按批 id 过期时间判定,过时定时器(已被新操作取代)不动作。
+fn schedule_pending_expiry(dir: PathBuf, batch_id: String, deadline: u64) {
+    std::thread::spawn(move || {
+        let now = now_millis();
+        if deadline > now {
+            std::thread::sleep(std::time::Duration::from_millis(deadline - now));
+        }
+        let _guard = lock_store();
+        if let Some(pending) = load_pending(&dir) {
+            if pending.id == batch_id && now_millis() >= pending.deadline {
+                finalize_pending_locked(&dir);
+            }
+        }
+    });
+}
+
+/// 启动/退出兜底(R6):终结异常退出遗留的 pending-delete,条目与文件最终
+/// 删除,重启后不复活。启动侧由后台线程调用,不在启动路径同步做历史 IO。
+pub fn sweep_pending(dir: &Path) {
+    let _guard = lock_store();
+    finalize_pending_locked(dir);
+}
+
+/// 撤销最近一次删除/清空:窗口内把批内条目(含收藏/备注等元数据)原样
+/// 回索引,文件未动即完整回原位。无标记或已过期返回 `false`(过期时顺带
+/// 终结标记)。同一 id 已被新记录占位时跳过该条,不覆盖新数据。
+pub fn undo_pending_delete(dir: &Path) -> Result<bool, String> {
+    let _guard = lock_store();
+    let Some(pending) = load_pending(dir) else {
+        return Ok(false);
+    };
+    if now_millis() >= pending.deadline {
+        finalize_pending_locked(dir);
+        return Ok(false);
+    }
+    let (mut entries, state) = load_index(dir);
+    match state {
+        IndexState::Corrupted => return Err(i18n::t("error.history.corrupted")),
+        IndexState::Unsupported => return Err(i18n::t("error.history.unsupported")),
+        IndexState::Ready | IndexState::Missing => {}
+    }
+    for entry in pending.entries {
+        if !entries.iter().any(|existing| existing.id == entry.id) {
+            entries.push(entry);
+        }
+    }
+    sort_entries(&mut entries);
+    write_index(dir, &entries)?;
+    let _ = fs::remove_file(pending_path(dir));
+    let _ = fs::remove_file(dir.join(PENDING_TMP_FILE));
+    Ok(true)
 }
 
 fn thumbnail_png(frame: &Frame) -> Result<Vec<u8>, String> {
@@ -374,7 +519,9 @@ pub fn read_thumbnail(dir: &Path, id: &str) -> Result<Vec<u8>, String> {
     fs::read(dir.join(&entry.thumb_name)).map_err(|_| i18n::t("error.history.thumb_missing"))
 }
 
-/// 删除单条;记录已不存在时视作成功(幂等),便于重复点击。
+/// 删除单条(R6):条目立即移出索引,文件原地保留并入 pending-delete 批,
+/// 8 秒内可撤销;到期线程/退出/启动兜底负责最终删除。后到操作为准:既有
+/// 待撤销批先被终结(文件删除)。记录已不存在时视作成功(幂等)。
 pub fn delete_entry(dir: &Path, id: &str) -> Result<(), String> {
     let _guard = lock_store();
     let (mut entries, _) = load_index(dir);
@@ -382,9 +529,19 @@ pub fn delete_entry(dir: &Path, id: &str) -> Result<(), String> {
         return Ok(());
     };
     let entry = entries.remove(position);
+    finalize_pending_locked(dir);
     write_index(dir, &entries)?;
-    remove_entry_files(dir, &entry);
-    Ok(())
+    match stage_pending(dir, "delete", vec![entry.clone()]) {
+        Ok(pending) => {
+            schedule_pending_expiry(dir.to_path_buf(), pending.id, pending.deadline);
+            Ok(())
+        }
+        // 置标失败退回旧的立即删除语义:索引已不含该条,不能留索引外文件。
+        Err(error) => {
+            remove_entry_files(dir, &entry);
+            Err(error)
+        }
+    }
 }
 
 /// 改一条的收藏或备注。不支持/损坏的索引不覆盖;成功写入即把低版本落成 v2。
@@ -416,14 +573,39 @@ fn set_note(dir: &Path, id: &str, note: &str) -> Result<(), String> {
     update_entry(dir, id, move |entry| entry.note = note)
 }
 
-/// 清空全部:删除索引与目录内全部文件(含索引损坏后遗留的孤儿文件与收藏)。
+/// 清空全部(R6):索引条目整体进入 pending-delete 批,文件原地保留待
+/// 撤销;孤儿文件(索引损坏遗留等)仍立即删除;既有待撤销批先被终结
+/// (后到操作为准)。索引移除成功、标记写入失败时退回旧的立即删除语义。
 pub fn clear_entries(dir: &Path) -> Result<(), String> {
     let _guard = lock_store();
+    finalize_pending_locked(dir);
+    let (entries, _) = load_index(dir);
+    let kept: HashSet<String> = entries
+        .iter()
+        .flat_map(|entry| [entry.file_name.clone(), entry.thumb_name.clone()])
+        .collect();
+    // 索引先移除:此窗口内崩溃只会留下孤儿文件,不会出现索引引用已删文件的
+    // 降级视图;随后标记落盘,撤销依据才生效。
+    match fs::remove_file(dir.join(INDEX_FILE)) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(i18n::tp(
+                "error.history.clear",
+                &[("error", &error.to_string())],
+            ))
+        }
+    }
     match fs::read_dir(dir) {
         Ok(read) => {
             for item in read.flatten() {
                 let path = item.path();
-                if path.is_file() {
+                if path.is_file()
+                    && path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| !kept.contains(name))
+                {
                     let _ = fs::remove_file(path);
                 }
             }
@@ -436,7 +618,21 @@ pub fn clear_entries(dir: &Path) -> Result<(), String> {
             ))
         }
     }
-    Ok(())
+    if entries.is_empty() {
+        return Ok(());
+    }
+    match stage_pending(dir, "clear", entries.clone()) {
+        Ok(pending) => {
+            schedule_pending_expiry(dir.to_path_buf(), pending.id, pending.deadline);
+            Ok(())
+        }
+        Err(error) => {
+            for entry in &entries {
+                remove_entry_files(dir, entry);
+            }
+            Err(error)
+        }
+    }
 }
 
 /// 完成路径调用:仅当 history.enabled 时把最终帧交给后台线程落盘,
@@ -476,11 +672,23 @@ pub fn prune_async(app: &AppHandle, limit: u32) {
 }
 
 fn list_payload(app: &AppHandle) -> HistoryListPayload {
-    let (entries, notice) = list_views(&history_dir(app));
+    let dir = history_dir(app);
+    let (entries, notice) = list_views(&dir);
+    let pending_undo = {
+        let _guard = lock_store();
+        load_pending(&dir)
+            .filter(|pending| now_millis() < pending.deadline)
+            .map(|pending| PendingUndoPayload {
+                kind: pending.kind,
+                count: pending.entries.len(),
+                expires_at: pending.deadline,
+            })
+    };
     HistoryListPayload {
         entries,
         notice,
         tools_enabled: true,
+        pending_undo,
     }
 }
 
@@ -567,6 +775,26 @@ pub fn delete_history_entry(app: AppHandle, id: String) -> Result<HistoryListPay
 pub fn clear_history(app: AppHandle) -> Result<HistoryListPayload, String> {
     clear_entries(&history_dir(&app))?;
     Ok(list_payload(&app))
+}
+
+/// R6:撤销最近一次删除/清空。窗口已过或无待撤销批时为无害空操作,
+/// 返回的列表如实反映当前状态。
+#[tauri::command]
+pub fn undo_history_delete(app: AppHandle) -> Result<HistoryListPayload, String> {
+    undo_pending_delete(&history_dir(&app))?;
+    Ok(list_payload(&app))
+}
+
+/// R6 启动兜底:后台线程清理异常退出遗留的 pending-delete,不在启动路径
+/// 同步做历史 IO(R15)。
+pub fn sweep_on_startup(app: &AppHandle) {
+    let dir = history_dir(app);
+    tauri::async_runtime::spawn_blocking(move || sweep_pending(&dir));
+}
+
+/// R6 退出兜底:窗口期内退出时条目与文件最终删除,重启不复活。
+pub fn sweep_on_exit(app: &AppHandle) {
+    sweep_pending(&history_dir(app));
 }
 
 /// 打开(或唤出)历史窗口;托盘与设置页入口共用。窗口按需创建,
@@ -792,30 +1020,191 @@ mod tests {
     }
 
     #[test]
-    fn delete_removes_entry_files_and_is_idempotent() {
+    fn delete_stages_pending_then_sweep_removes_files_idempotently() {
         let dir = temp_dir("delete");
         let entry = record(&dir, &solid(8, 8, [1, 1, 1, 255]), 20, 1).unwrap();
         let keeper = record(&dir, &solid(8, 8, [2, 2, 2, 255]), 20, 2).unwrap();
 
         delete_entry(&dir, &entry.id).unwrap();
+        // R6:条目立即出索引,文件与标记原地保留等待撤销窗口。
+        assert_eq!(load_index(&dir).0.len(), 1);
+        assert!(dir.join(&entry.file_name).is_file());
+        assert!(dir.join(&entry.thumb_name).is_file());
+        assert!(dir.join(PENDING_FILE).is_file());
+        assert!(dir.join(&keeper.file_name).exists());
+
+        // 到期/退出/启动共用的兜底路径最终删除文件与标记。
+        sweep_pending(&dir);
         assert!(!dir.join(&entry.file_name).exists());
         assert!(!dir.join(&entry.thumb_name).exists());
+        assert!(!dir.join(PENDING_FILE).exists());
         assert!(dir.join(&keeper.file_name).exists());
         assert_eq!(load_index(&dir).0.len(), 1);
 
+        // 记录不存在时删除幂等,不影响现存条目。
         delete_entry(&dir, &entry.id).unwrap();
         assert_eq!(load_index(&dir).0.len(), 1);
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn clear_removes_index_and_every_file() {
-        let dir = temp_dir("clear");
-        record(&dir, &solid(8, 8, [1, 1, 1, 255]), 20, 1).unwrap();
-        record(&dir, &solid(8, 8, [2, 2, 2, 255]), 20, 2).unwrap();
-        clear_entries(&dir).unwrap();
+    fn delete_undo_restores_entry_with_metadata_and_is_once_only() {
+        let dir = temp_dir("undo-delete");
+        let entry = record_frame(&dir, &solid(8, 8, [1, 1, 1, 255]), 20, 1, Some("long")).unwrap();
+        set_favorite(&dir, &entry.id, true).unwrap();
+        set_note(&dir, &entry.id, "keep me").unwrap();
+        let image = fs::read(dir.join(&entry.file_name)).unwrap();
+        let thumb = fs::read(dir.join(&entry.thumb_name)).unwrap();
+
+        delete_entry(&dir, &entry.id).unwrap();
+        assert!(read_entry(&dir, &entry.id).is_err());
+        // 撤销窗口外的新记录与撤销共存:按时间重排,互不覆盖。
+        let fresh = record(&dir, &solid(4, 4, [9, 9, 9, 255]), 20, 100).unwrap();
+
+        assert!(undo_pending_delete(&dir).unwrap());
+        let (entries, _) = load_index(&dir);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].id, fresh.id);
+        let restored = entries.iter().find(|e| e.id == entry.id).unwrap();
+        assert!(restored.favorite);
+        assert_eq!(restored.note, "keep me");
+        assert_eq!(restored.mode.as_deref(), Some("long"));
+        assert_eq!(fs::read(dir.join(&entry.file_name)).unwrap(), image);
+        assert_eq!(fs::read(dir.join(&entry.thumb_name)).unwrap(), thumb);
+        assert!(!dir.join(PENDING_FILE).exists());
+
+        // 标记已消费:再次撤销是无害空操作。
+        assert!(!undo_pending_delete(&dir).unwrap());
+        assert_eq!(load_index(&dir).0.len(), 2);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn undo_after_deadline_finalizes_files_instead_of_restoring() {
+        let dir = temp_dir("undo-expired");
+        let entry = record(&dir, &solid(8, 8, [1, 1, 1, 255]), 20, 1).unwrap();
+        delete_entry(&dir, &entry.id).unwrap();
+        // 把标记截止时间改到过去,模拟用户在 8 秒窗口之后才点撤销。
+        let mut pending = load_pending(&dir).unwrap();
+        pending.deadline = now_millis().saturating_sub(1);
+        fs::write(
+            pending_path(&dir),
+            serde_json::to_string_pretty(&pending).unwrap(),
+        )
+        .unwrap();
+
+        assert!(!undo_pending_delete(&dir).unwrap());
         assert!(load_index(&dir).0.is_empty());
+        assert!(!dir.join(&entry.file_name).exists());
+        assert!(!dir.join(&entry.thumb_name).exists());
+        assert!(!dir.join(PENDING_FILE).exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn startup_sweep_cleans_crash_leftover_and_nothing_resurrects() {
+        let dir = temp_dir("undo-sweep");
+        let entry = record(&dir, &solid(8, 8, [1, 1, 1, 255]), 20, 1).unwrap();
+        delete_entry(&dir, &entry.id).unwrap();
+        // 异常退出:到期线程与退出兜底都没跑,标记与文件遗留。
+        assert!(dir.join(PENDING_FILE).is_file());
+        assert!(dir.join(&entry.file_name).is_file());
+
+        // 下次启动的 sweep 终结遗留:条目与文件最终删除,重启不复活。
+        sweep_pending(&dir);
+        assert!(!dir.join(&entry.file_name).exists());
+        assert!(!dir.join(&entry.thumb_name).exists());
+        assert!(!dir.join(PENDING_FILE).exists());
+        assert!(load_index(&dir).0.is_empty());
+        // 撤销入口随标记一起消失。
+        assert!(!undo_pending_delete(&dir).unwrap());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clear_batches_all_entries_then_sweep_removes_every_file() {
+        let dir = temp_dir("clear");
+        let first = record(&dir, &solid(8, 8, [1, 1, 1, 255]), 20, 1).unwrap();
+        let second = record(&dir, &solid(8, 8, [2, 2, 2, 255]), 20, 2).unwrap();
+        // 索引未引用的孤儿文件(索引损坏遗留等)清空时立即删除,不进撤销批。
+        fs::write(dir.join("orphan.png"), b"stale").unwrap();
+
+        clear_entries(&dir).unwrap();
+        let (entries, state) = load_index(&dir);
+        assert!(entries.is_empty());
+        assert_eq!(state, IndexState::Missing);
+        assert!(!dir.join(INDEX_FILE).exists());
+        assert!(!dir.join("orphan.png").exists());
+        // 批内文件与标记在窗口内保留。
+        assert!(dir.join(&first.file_name).is_file());
+        assert!(dir.join(&second.thumb_name).is_file());
+        assert!(dir.join(PENDING_FILE).is_file());
+
+        sweep_pending(&dir);
+        assert!(load_index(&dir).0.is_empty());
+        assert!(!dir.join(&first.file_name).exists());
+        assert!(!dir.join(&second.thumb_name).exists());
+        assert!(!dir.join(PENDING_FILE).exists());
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clear_undo_restores_whole_batch_with_metadata() {
+        let dir = temp_dir("undo-clear");
+        let first =
+            record_frame(&dir, &solid(8, 8, [1, 1, 1, 255]), 20, 1, Some("region")).unwrap();
+        let second =
+            record_frame(&dir, &solid(6, 6, [2, 2, 2, 255]), 20, 2, Some("window")).unwrap();
+        set_favorite(&dir, &first.id, true).unwrap();
+        set_note(&dir, &second.id, "batch note").unwrap();
+        assert!(load_pending(&dir).is_none());
+
+        clear_entries(&dir).unwrap();
+        let pending = load_pending(&dir).unwrap();
+        assert_eq!(pending.kind, "clear");
+        assert_eq!(pending.entries.len(), 2);
+
+        assert!(undo_pending_delete(&dir).unwrap());
+        let (entries, state) = load_index(&dir);
+        assert_eq!(state, IndexState::Ready);
+        assert_eq!(entries.len(), 2);
+        let restored_first = entries.iter().find(|e| e.id == first.id).unwrap();
+        let restored_second = entries.iter().find(|e| e.id == second.id).unwrap();
+        assert!(restored_first.favorite);
+        assert_eq!(restored_first.mode.as_deref(), Some("region"));
+        assert_eq!(restored_second.note, "batch note");
+        assert_eq!(restored_second.mode.as_deref(), Some("window"));
+        assert!(dir.join(&first.file_name).is_file());
+        assert!(dir.join(&second.thumb_name).is_file());
+        assert!(!dir.join(PENDING_FILE).exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn later_operation_supersedes_earlier_pending_batch() {
+        let dir = temp_dir("undo-last-op");
+        let first = record(&dir, &solid(8, 8, [1, 1, 1, 255]), 20, 1).unwrap();
+        let second = record(&dir, &solid(6, 6, [2, 2, 2, 255]), 20, 2).unwrap();
+
+        // 先删 first:进入待撤销批。
+        delete_entry(&dir, &first.id).unwrap();
+        // 再清空:既有批被终结(first 的文件最终删除),清空批成为唯一可撤销项。
+        clear_entries(&dir).unwrap();
+        assert!(!dir.join(&first.file_name).exists());
+        assert!(!dir.join(&first.thumb_name).exists());
+        let pending = load_pending(&dir).unwrap();
+        assert_eq!(pending.kind, "clear");
+        assert_eq!(pending.entries.len(), 1);
+        assert_eq!(pending.entries[0].id, second.id);
+
+        // 撤销只恢复后到的清空批,first 不复活。
+        assert!(undo_pending_delete(&dir).unwrap());
+        let (entries, _) = load_index(&dir);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, second.id);
+        assert!(dir.join(&second.file_name).is_file());
+        assert!(!dir.join(&first.file_name).exists());
         let _ = fs::remove_dir_all(&dir);
     }
 

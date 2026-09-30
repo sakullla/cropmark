@@ -293,6 +293,8 @@ pub fn run() {
             // R9:贴图增强常开,启动恢复只由「重启后恢复」普通选项决定
             // (默认关闭);已关闭的贴图不重现。
             pin::restore_persisted(app.handle());
+            // R6:清理异常退出遗留的历史限时撤销标记(后台线程,不阻塞启动)。
+            history::sweep_on_startup(app.handle());
             // R15:托盘(或降级)、热键与预建窗口就绪,启动路径到此结束;
             // 门控日志只读时钟,不引入启动期同步 IO。
             log::info!(
@@ -422,6 +424,7 @@ pub fn run() {
             history::set_history_favorite,
             history::set_history_note,
             history::clear_history,
+            history::undo_history_delete,
             history::open_history,
             settings::open_guide,
             logging::log_directory,
@@ -474,6 +477,8 @@ pub fn run() {
             tauri::RunEvent::Exit => {
                 capture::scroll::shutdown(app);
                 pin::close_all(app);
+                // R6:撤销窗口期内退出,遗留的待删除条目与文件最终删除。
+                history::sweep_on_exit(app);
             }
             _ => {}
         });

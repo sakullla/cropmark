@@ -108,6 +108,44 @@
   color: var(--danger);
 }
 
+/* R6:限时撤销条。删除/清空后出现,随 8 秒窗口到期自动消失;撤销点击交由
+   后端 pending-delete 决定成败。 */
+.history-undo {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-control);
+  background: var(--accent-soft);
+}
+
+.history-undo-text {
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.history-undo .history-undo-btn {
+  flex: 0 0 auto;
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 650;
+}
+
+.history-undo .history-undo-btn:hover:not(:disabled) {
+  filter: var(--control-hover-filter);
+}
+
+.history-undo .history-undo-btn:active:not(:disabled) {
+  filter: var(--control-pressed-filter);
+}
+
 /* 窗口内确认条:删除/清空不依赖 WebView 原生 confirm(macOS WKWebView 不可用)。 */
 .history-confirm {
   display: flex;
