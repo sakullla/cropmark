@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use image::RgbImage;
 use paddle_ocr_rs::ocr_lite::OcrLite;
 use paddle_ocr_rs::ocr_result::TextBlock;
+use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
 use crate::capture::buffer::Frame;
@@ -33,6 +34,29 @@ const RETRY_TEXT_SCORE: f32 = 0.6;
 
 pub struct Engine {
     lite: OcrLite,
+}
+
+/// R7/ADR-UX7:OCR 阶段事件载荷,序列化为裸阶段名。引擎单次调用没有
+/// 内部粒度,只报告阶段、不虚构百分比;`Preparing`(引擎懒加载)由命令层
+/// 在进入引擎前发出,其余三个阶段在 `recognize_reporting` 的边界发出。
+/// 字符串与前端 `preview.note.ocr_stage.<stage>` 词条后缀一一对应。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OcrStage {
+    Preparing,
+    Recognizing,
+    Retrying,
+    PostProcessing,
+}
+
+/// 首次候选报告 `Recognizing`;此后按 ADR-9 顺序的整图旋转重试报告
+/// `Retrying`。纯逻辑便于单测。
+fn stage_for_attempt(attempt: usize) -> OcrStage {
+    if attempt == 0 {
+        OcrStage::Recognizing
+    } else {
+        OcrStage::Retrying
+    }
 }
 
 /// 一次旋转候选的识别结果与可信度,用于低置信重试择优(R11)。
@@ -137,12 +161,15 @@ impl Engine {
         Ok(Self { lite })
     }
 
-    /// R24:`orientation_enabled` 为 false 时仅按正置识别:不做逐行 180°
-    /// 纠正(`do_angle=false`),也不做整图旋转候选重试。
-    pub fn recognize(
+    /// R7:带阶段回调的识别(R24:`orientation_enabled` 为 false 时仅按正置
+    /// 识别:不做逐行 180° 纠正,也不做整图旋转候选重试)。`on_stage` 在
+    /// 阶段边界同步调用:`Recognizing`(首个候选)→ 可选的 `Retrying`
+    /// (整图旋转重试)→ `PostProcessing`(展开选择区并拼接全文)。
+    pub fn recognize_reporting(
         &mut self,
         frame: &Frame,
         orientation_enabled: bool,
+        on_stage: &mut dyn FnMut(OcrStage),
     ) -> Result<OcrDocument, OcrError> {
         let rgb = frame_to_rgb(frame)?;
         let frame_width = rgb.width() as f64;
@@ -151,7 +178,10 @@ impl Engine {
         // R11:先按原图(逐行 180° 纠正)识别;仅当无 span 或平均分过低时,
         // 再按 ADR-9 顺序旋转整图重试,候选坐标逆变换回原图后择优。
         // R24:方向纠正关闭时只识别正置一次。
+        let mut attempt = 0usize;
         let (best, _) = recognize_with_policy(orientation_enabled, |orientation| {
+            on_stage(stage_for_attempt(attempt));
+            attempt += 1;
             self.recognize_candidate(
                 &rgb,
                 orientation,
@@ -160,6 +190,7 @@ impl Engine {
                 frame_height,
             )
         })?;
+        on_stage(OcrStage::PostProcessing);
         let spans = expand_for_selection(&best.spans);
         if spans.is_empty() {
             return Err(OcrError::NoText);
@@ -332,6 +363,63 @@ mod tests {
                 assert!(file.is_file());
                 assert!(std::fs::metadata(&file).unwrap().len() > 1024);
             }
+        }
+    }
+
+    /// R7:`ocr-progress` 事件载荷是裸阶段名,与前端
+    /// `preview.note.ocr_stage.<stage>` 词条后缀一一对应。
+    #[test]
+    fn ocr_stage_payloads_match_frontend_catalog_suffixes() {
+        assert_eq!(
+            serde_json::to_string(&OcrStage::Preparing).unwrap(),
+            "\"preparing\""
+        );
+        assert_eq!(
+            serde_json::to_string(&OcrStage::Recognizing).unwrap(),
+            "\"recognizing\""
+        );
+        assert_eq!(
+            serde_json::to_string(&OcrStage::Retrying).unwrap(),
+            "\"retrying\""
+        );
+        assert_eq!(
+            serde_json::to_string(&OcrStage::PostProcessing).unwrap(),
+            "\"post_processing\""
+        );
+    }
+
+    /// 首个候选报告 recognizing,之后的整图旋转重试报告 retrying。
+    #[test]
+    fn attempt_stage_reports_retrying_only_after_the_first_candidate() {
+        assert_eq!(stage_for_attempt(0), OcrStage::Recognizing);
+        assert_eq!(stage_for_attempt(1), OcrStage::Retrying);
+        assert_eq!(stage_for_attempt(Orientation::RETRY_ORDER.len() - 1), OcrStage::Retrying);
+    }
+
+    /// 阶段序列契约:recognizing 开头、post_processing 结尾;可信识别
+    /// 不出现 retrying,重试只夹在两者之间(顺序单调,无阶段回跳)。
+    #[test]
+    fn recognize_reporting_emits_monotonic_stages_or_skip() {
+        let dir = crate_model_dir();
+        if !models_present(&dir) {
+            return;
+        }
+        let Ok(mut engine) = Engine::load(&dir) else {
+            return;
+        };
+        let frame = printed_sample();
+        let mut stages = Vec::new();
+        engine
+            .recognize_reporting(&frame, true, &mut |stage| stages.push(stage))
+            .ok();
+        assert!(!stages.is_empty());
+        assert_eq!(stages.first(), Some(&OcrStage::Recognizing));
+        assert_eq!(stages.last(), Some(&OcrStage::PostProcessing));
+        assert_eq!(stages.iter().filter(|s| **s == OcrStage::PostProcessing).count(), 1);
+        // 重试(若触发)必须发生在 recognizing 之后、post_processing 之前。
+        if let Some(retrying) = stages.iter().position(|s| *s == OcrStage::Retrying) {
+            assert!(retrying > 0, "retrying 不能先于 recognizing");
+            assert!(retrying < stages.len() - 1, "retrying 不能晚于 post_processing");
         }
     }
 
@@ -556,7 +644,7 @@ mod tests {
             return;
         };
         let upright = printed_sample();
-        let Ok(base) = engine.recognize(&upright, true) else {
+        let Ok(base) = engine.recognize_reporting(&upright, true, &mut |_| {}) else {
             return;
         };
         let base_text = base.full_text.trim().to_string();
@@ -568,7 +656,7 @@ mod tests {
         ] {
             let frame = rotate_frame(&upright, orientation);
             let doc = engine
-                .recognize(&frame, true)
+                .recognize_reporting(&frame, true, &mut |_| {})
                 .unwrap_or_else(|error| panic!("{orientation:?} sample not recognized: {error:?}"));
             let rotated_text = doc.full_text.trim();
             assert!(
@@ -615,7 +703,7 @@ mod tests {
             return;
         };
         let frame = printed_sample();
-        match engine.recognize(&frame, true) {
+        match engine.recognize_reporting(&frame, true, &mut |_| {}) {
             Ok(doc) => {
                 assert!(!doc.full_text.trim().is_empty());
                 let span = &doc.spans[0];

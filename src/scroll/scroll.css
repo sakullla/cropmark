@@ -132,6 +132,11 @@ html[data-view="scroll"] #app {
   color: var(--danger);
 }
 
+/* R7:finishing 进行中跟在文案后的共享旋转圈;失败/完成文案替换时隐藏。 */
+.scroll-status .progress {
+  margin-inline-start: 6px;
+}
+
 .scroll-hint {
   flex-shrink: 0;
   margin: 0;

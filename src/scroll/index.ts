@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { handleRadioGroupKeydown } from "../a11y";
 import { t, type CatalogKey } from "../i18n";
 import "./scroll.css";
 
@@ -15,6 +16,8 @@ interface ScrollStatus {
   appended: number;
   /** 回退段栈非空:栈空时禁用回退按钮(首帧不可回退)。 */
   canUndo: boolean;
+  /** 拼接结果总段数(初始区域计 1 段);finishing 的「正在拼接 · N 段」用它。 */
+  segmentCount: number;
 }
 
 const STATUS_KEYS: Record<string, CatalogKey> = {
@@ -24,7 +27,6 @@ const STATUS_KEYS: Record<string, CatalogKey> = {
   fast: "scroll.status.fast",
   no_match: "scroll.status.no_match",
   limit: "scroll.status.limit",
-  finishing: "scroll.status.finishing",
   failed: "scroll.status.failed",
 };
 
@@ -75,12 +77,12 @@ export function mountScroll(root: HTMLElement): () => void {
           <span class="scroll-title" data-i18n="scroll.title"></span>
           <span class="scroll-size"></span>
         </div>
-        <div class="scroll-axis" role="group" data-i18n-aria-label="scroll.axis.label">
-          <button type="button" class="scroll-axis-option" data-axis="vertical" data-i18n="scroll.axis.vertical" aria-pressed="true"></button>
-          <button type="button" class="scroll-axis-option" data-axis="horizontal" data-i18n="scroll.axis.horizontal" aria-pressed="false"></button>
+        <div class="scroll-axis" role="radiogroup" data-i18n-aria-label="scroll.axis.label">
+          <button type="button" class="scroll-axis-option" role="radio" data-axis="vertical" data-i18n="scroll.axis.vertical" aria-checked="true" tabindex="0"></button>
+          <button type="button" class="scroll-axis-option" role="radio" data-axis="horizontal" data-i18n="scroll.axis.horizontal" aria-checked="false" tabindex="-1"></button>
         </div>
         <p class="scroll-lock" hidden></p>
-        <p class="scroll-status" role="status"></p>
+        <p class="scroll-status" role="status"><span class="scroll-status-text"></span><span class="progress" aria-hidden="true" hidden></span></p>
         <p class="scroll-hint"></p>
       </div>
       <div class="scroll-actions">
@@ -91,6 +93,8 @@ export function mountScroll(root: HTMLElement): () => void {
       </div>
     </div>`;
   const status = root.querySelector(".scroll-status");
+  const statusText = root.querySelector(".scroll-status-text");
+  const statusSpinner = root.querySelector(".scroll-status .progress");
   const size = root.querySelector(".scroll-size");
   const hint = root.querySelector(".scroll-hint");
   const lock = root.querySelector(".scroll-lock");
@@ -98,11 +102,14 @@ export function mountScroll(root: HTMLElement): () => void {
   const start = root.querySelector(".scroll-start");
   const undo = root.querySelector(".scroll-undo");
   const cancel = root.querySelector(".scroll-cancel");
+  const axisGroup = root.querySelector(".scroll-axis");
   const axisButtons = Array.from(root.querySelectorAll(".scroll-axis-option")).filter(
     (button): button is HTMLButtonElement => button instanceof HTMLButtonElement,
   );
   if (
     !(status instanceof HTMLElement) ||
+    !(statusText instanceof HTMLElement) ||
+    !(statusSpinner instanceof HTMLElement) ||
     !(size instanceof HTMLElement) ||
     !(hint instanceof HTMLElement) ||
     !(lock instanceof HTMLElement) ||
@@ -110,6 +117,7 @@ export function mountScroll(root: HTMLElement): () => void {
     !(start instanceof HTMLButtonElement) ||
     !(undo instanceof HTMLButtonElement) ||
     !(cancel instanceof HTMLButtonElement) ||
+    !(axisGroup instanceof HTMLElement) ||
     axisButtons.length !== 2
   ) {
     return () => undefined;
@@ -138,7 +146,9 @@ export function mountScroll(root: HTMLElement): () => void {
     for (const button of axisButtons) {
       const active = axisFromDataset(button.dataset.axis) === axis;
       button.classList.toggle("is-active", active);
-      button.setAttribute("aria-pressed", active ? "true" : "false");
+      button.setAttribute("aria-checked", active ? "true" : "false");
+      // radiogroup 漫游 tab 序:仅当前方向可 Tab 到达,其余靠方向键/Home/End。
+      button.tabIndex = active ? 0 : -1;
       button.disabled = axisDisabled;
       if (locked) {
         button.dataset.tooltip = t("scroll.axis.locked");
@@ -156,13 +166,19 @@ export function mountScroll(root: HTMLElement): () => void {
     }
     hint.textContent = axis === "horizontal" ? t("scroll.hint.horizontal") : t("scroll.hint");
 
+    // R7:finishing 进行中呈现「正在拼接 · N 段」+ 共享旋转圈,常驻到被
+    // 结果替换(成功收窗/失败走 failed 文案,ADR-2);其余状态不转圈。
+    const finishing = last?.state === "finishing";
+    statusSpinner.hidden = !finishing;
     if (!last) {
       status.classList.remove("is-error");
-      status.textContent = t(statusKey("ready", axis));
+      statusText.textContent = t(statusKey("ready", axis));
       size.textContent = "";
     } else {
       status.classList.toggle("is-error", last.state === "failed");
-      status.textContent = t(statusKey(last.state, last.axis));
+      statusText.textContent = finishing
+        ? t("scroll.status.finishing_segments", { count: last.segmentCount })
+        : t(statusKey(last.state, last.axis));
       // 尺寸一直显示：这就是正在截的那一块，滚动后沿轴变长。
       const parts = [t("scroll.watching", { width: last.width, height: last.height })];
       if (last.appended > 0) {
@@ -222,7 +238,8 @@ export function mountScroll(root: HTMLElement): () => void {
     start.disabled = false;
     undo.disabled = false;
     cancel.disabled = false;
-    status.textContent = message;
+    statusText.textContent = message;
+    statusSpinner.hidden = true;
     status.classList.add("is-error");
   };
 
@@ -270,7 +287,11 @@ export function mountScroll(root: HTMLElement): () => void {
     undo.disabled = true;
     cancel.disabled = true;
     status.classList.remove("is-error");
-    status.textContent = t("scroll.status.finishing");
+    // 乐观呈现段数(以最近状态为准),拼接线程的 finishing 事件随即对齐。
+    statusText.textContent = t("scroll.status.finishing_segments", {
+      count: last?.segmentCount ?? 1,
+    });
+    statusSpinner.hidden = false;
     void invoke("finish_scroll_capture").catch(() => {
       showActionError("scroll.action.finish_failed");
     });
@@ -323,7 +344,8 @@ export function mountScroll(root: HTMLElement): () => void {
     undo.disabled = true;
     cancel.disabled = true;
     status.classList.remove("is-error");
-    status.textContent = t("scroll.action.canceling");
+    statusText.textContent = t("scroll.action.canceling");
+    statusSpinner.hidden = true;
     void invoke("cancel_scroll_capture").catch(() => {
       showActionError("scroll.action.cancel_failed");
     });
@@ -339,6 +361,10 @@ export function mountScroll(root: HTMLElement): () => void {
       selectAxis(axisFromDataset(button.dataset.axis));
     });
   }
+  // R2:方向选择 radiogroup 化:方向键/Home/End 漫游并互斥选中(共享 a11y 实现)。
+  axisGroup.addEventListener("keydown", (event) => {
+    handleRadioGroupKeydown(event, axisGroup, ".scroll-axis-option");
+  });
 
   void invoke<ScrollStatus | null>("get_scroll_status").then(apply);
   void listen<ScrollStatus>("scroll-status", (event) => apply(event.payload));

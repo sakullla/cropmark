@@ -148,6 +148,8 @@ impl CaptureAxis {
 /// 控制窗状态载荷:前端按 `state` 映射词条,`axis` 显示方向与锁定状态,
 /// `width`/`height` 为当前拼接结果尺寸(横向时宽度增长),`can_undo`
 /// 表示回退栈非空(栈空时前端禁用回退按钮)。
+/// `segment_count` 是当前拼接结果的构成段数(初始区域计 1 段):与
+/// `appended`(像素数)口径不同,finishing 阶段的「正在拼接 · N 段」用它。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScrollStatus {
@@ -159,6 +161,8 @@ pub struct ScrollStatus {
     pub appended: u32,
     /// 回退段栈非空:至少有一段可回退。
     pub can_undo: bool,
+    /// 拼接结果总段数(初始区域 + 已追加段,回退同步扣减)。
+    pub segment_count: u32,
 }
 
 impl ScrollStatus {
@@ -169,6 +173,7 @@ impl ScrollStatus {
         height: u32,
         appended: u32,
         can_undo: bool,
+        segment_count: u32,
     ) -> Self {
         Self {
             state: state.to_string(),
@@ -177,6 +182,7 @@ impl ScrollStatus {
             height,
             appended,
             can_undo,
+            segment_count,
         }
     }
 }
@@ -411,6 +417,10 @@ pub(crate) struct Stitcher {
     /// 沿滚动轴的拼接长度上限(纵向 = 高度,横向 = 宽度)。
     cap_length: u32,
     appended: u32,
+    /// 当前拼接结果的构成段数:初始区域计 1,每次追加 +1、回退 -1。
+    /// 与回退栈独立维护——栈有 `MAX_UNDO_SEGMENTS` 上限会丢最旧段,
+    /// 段数不能拿栈长推(否则超过上限后 finishing 的「N 段」会少报)。
+    strips: u32,
     unchanged_ticks: u32,
     no_match_ticks: u32,
     scrolled: bool,
@@ -433,6 +443,7 @@ impl Stitcher {
             cap_length: cap_length.max(1),
             segments: Vec::new(),
             appended: 0,
+            strips: 1,
             unchanged_ticks: 0,
             no_match_ticks: 0,
             scrolled: false,
@@ -477,6 +488,11 @@ impl Stitcher {
 
     pub(crate) fn appended(&self) -> u32 {
         self.appended
+    }
+
+    /// 当前拼接结果的构成段数(初始区域 + 已追加段,回退同步扣减)。
+    pub(crate) fn segment_count(&self) -> u32 {
+        self.strips
     }
 
     /// 是否产生过滚动内容;为假时完成按钮按「内容未变化」路径处理(无输出)。
@@ -539,6 +555,7 @@ impl Stitcher {
             amount: append,
             anchor: self.prev.clone(),
         });
+        self.strips += 1;
         self.append_axis(&next, append);
         let fast = delta > prev_length / 2;
         self.prev = next;
@@ -593,6 +610,7 @@ impl Stitcher {
         let Some(segment) = self.segments.pop() else {
             return false;
         };
+        self.strips -= 1;
         match self.axis {
             CaptureAxis::Vertical => {
                 let stride = self.width as usize * 4;
@@ -943,7 +961,7 @@ pub(crate) fn start(
     // 范围框内滚轮或就绪期内容变化兜底任一触发。
     emit_status(
         app,
-        ScrollStatus::new("ready", axis, initial.width, initial.height, 0, false),
+        ScrollStatus::new("ready", axis, initial.width, initial.height, 0, false, 1),
     );
     let handle = app.clone();
     let spawn = std::thread::Builder::new()
@@ -1259,6 +1277,7 @@ fn status_from(stitcher: &Stitcher, state: &str) -> ScrollStatus {
         stitcher.height(),
         stitcher.appended(),
         stitcher.can_undo(),
+        stitcher.segment_count(),
     )
 }
 
@@ -1333,7 +1352,7 @@ pub fn finish_scroll_capture(app: AppHandle) -> Result<(), CaptureError> {
     ) {
         Ok(_) => {
             let last = get_scroll_status().unwrap_or_else(|| {
-                ScrollStatus::new("running", CaptureAxis::default(), 0, 0, 0, false)
+                ScrollStatus::new("running", CaptureAxis::default(), 0, 0, 0, false, 1)
             });
             emit_status(
                 &app,
@@ -2128,6 +2147,7 @@ mod tests {
             10,
             0,
             false,
+            1,
         ));
         drop(status);
         SCROLL_AXIS_REQUEST.store(CaptureAxis::Vertical.as_u8(), Ordering::SeqCst);
@@ -2151,6 +2171,7 @@ mod tests {
             10,
             0,
             false,
+            1,
         ));
         drop(status);
         assert!(set_scroll_axis(CaptureAxis::Vertical).is_err());
@@ -2507,20 +2528,62 @@ mod tests {
     #[test]
     fn scroll_status_serializes_for_the_control_window() {
         let json = serde_json::to_value(ScrollStatus::new(
-            "unchanged",
+            "finishing",
             CaptureAxis::Horizontal,
             640,
             1200,
             90,
             true,
+            7,
         ))
         .unwrap();
-        assert_eq!(json["state"], "unchanged");
+        assert_eq!(json["state"], "finishing");
         assert_eq!(json["axis"], "horizontal");
         assert_eq!(json["width"], 640);
         assert_eq!(json["height"], 1200);
         assert_eq!(json["appended"], 90);
         assert_eq!(json["canUndo"], true);
+        // R7:finishing 的「正在拼接 · N 段」消费 camelCase 段数字段。
+        assert_eq!(json["segmentCount"], 7);
+    }
+
+    /// R7:段数随追加增长、随回退扣减;超过回退栈上限后仍如实计数
+    /// (栈会丢最旧段,但拼接结果的构成段数不受影响)。
+    #[test]
+    fn segment_count_tracks_appends_and_undos_beyond_the_undo_stack_cap() {
+        let step = 20u32;
+        let total_appends = MAX_UNDO_SEGMENTS as u32 + 6;
+        let page_height = 120 + step * total_appends;
+        let page = page(64, page_height, 5);
+        let mut stitcher =
+            Stitcher::new(viewport(&page, 0, 120), CaptureAxis::Vertical, page_height * 2);
+
+        assert_eq!(stitcher.segment_count(), 1);
+        for tick in 1..=total_appends {
+            let top = step * tick;
+            assert_eq!(
+                stitcher.tick(viewport(&page, top, 120)),
+                ScrollTick::Appended { fast: false }
+            );
+            assert_eq!(stitcher.segment_count(), 1 + tick);
+        }
+        // 栈已封顶丢弃最旧段,段数仍等于初始区域 + 全部追加。
+        assert_eq!(stitcher.segment_count(), 1 + total_appends);
+
+        // 回退只回拨最近一段:段数随之 -1,像素与高度同步回退。
+        let height_before = stitcher.height();
+        assert!(stitcher.undo_last_segment());
+        assert_eq!(stitcher.segment_count(), total_appends);
+        assert_eq!(stitcher.height(), height_before - step);
+        // 回退到栈空:可回退段(上限 64)全部撤销;被栈丢弃的最旧 6 段仍在
+        // 图里,所以段数 = 初始区域 + 未回退的追加段,高度同理。
+        while stitcher.can_undo() {
+            assert!(stitcher.undo_last_segment());
+        }
+        let kept = total_appends - MAX_UNDO_SEGMENTS as u32;
+        assert_eq!(stitcher.segment_count(), 1 + kept);
+        assert!(!stitcher.can_undo());
+        assert_eq!(stitcher.height(), 120 + kept * step);
     }
 
     #[test]

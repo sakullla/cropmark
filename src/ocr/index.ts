@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { resolveCanvasColor } from "../annotation";
 import { t, type CatalogKey } from "../i18n";
 import { icons } from "../icons";
@@ -40,6 +41,23 @@ export interface OcrRect {
 }
 
 export type OcrNoticeKind = "progress" | "hint" | "success" | "error";
+
+/** R7:Rust `ocr-progress` 事件载荷(裸阶段名);与 Rust `OcrStage` serde 表示一致。 */
+export type OcrStage = "preparing" | "recognizing" | "retrying" | "post_processing";
+
+const OCR_STAGE_KEYS: Record<OcrStage, CatalogKey> = {
+  preparing: "preview.note.ocr_stage.preparing",
+  recognizing: "preview.note.ocr_stage.recognizing",
+  retrying: "preview.note.ocr_stage.retrying",
+  post_processing: "preview.note.ocr_stage.post_processing",
+};
+
+/** 未知/丢失的载荷返回 null:调用方保持「识别中」常驻兜底,不报错不阻塞。 */
+function ocrStageKey(payload: string): CatalogKey | null {
+  return Object.prototype.hasOwnProperty.call(OCR_STAGE_KEYS, payload)
+    ? OCR_STAGE_KEYS[payload as OcrStage]
+    : null;
+}
 
 export interface OcrModelOptions {
   /** 结果面板挂载容器(预览舞台 / 覆盖层根)。 */
@@ -269,6 +287,17 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
   `;
   host.append(panel);
 
+  // R7:识别进行中的阶段化进度呈现(共享 .progress 旋转圈 + 阶段词条)。
+  // 纯视觉:词条同时走宿主 notice 通道(role=status 由宿主提示条承担播报),
+  // 这里不重复播报;宿主提示条本身不动。
+  const progressNote = document.createElement("p");
+  progressNote.className = "ocr-progress";
+  progressNote.setAttribute("aria-hidden", "true");
+  progressNote.hidden = true;
+  progressNote.innerHTML = '<span class="progress"></span><span class="ocr-progress-text"></span>';
+  host.append(progressNote);
+  const progressText = progressNote.querySelector(".ocr-progress-text") as HTMLElement;
+
   const searchInput = panel.querySelector("[data-ocr-search]") as HTMLInputElement;
   const searchCount = panel.querySelector("[data-ocr-search-count]") as HTMLElement;
   const panelText = panel.querySelector("[data-ocr-text]") as HTMLElement;
@@ -311,9 +340,21 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
     params?: Record<string, string | number>;
     kind: OcrNoticeKind;
   } | null = null;
+  // R7:当前呈现的阶段词条(语言切换时用它重渲染进度行)。
+  let stageKey: CatalogKey = "preview.note.ocr_running";
 
   const emitChange = (): void => {
     options.onChange?.();
+  };
+
+  const showProgressStage = (key: CatalogKey): void => {
+    stageKey = key;
+    progressText.textContent = t(key);
+    progressNote.hidden = false;
+  };
+
+  const hideProgressStage = (): void => {
+    progressNote.hidden = true;
   };
 
   const setNoticeKey = (
@@ -530,7 +571,23 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
     clearDrag();
     clearPanelView();
     setNoticeKey("preview.note.ocr_running", "progress");
+    showProgressStage("preview.note.ocr_running");
     emitChange();
+    // R7:识别期间订阅后端阶段事件(准备/识别/重试/后处理)映射词条;
+    // 订阅失败或事件丢失时保持上面的「识别中」常驻兜底,不阻塞识别。
+    const unlistenStage = await listen<string>("ocr-progress", (event) => {
+      if (token !== generation || !running) {
+        return;
+      }
+      const key = ocrStageKey(String(event.payload));
+      if (!key) {
+        return;
+      }
+      showProgressStage(key);
+      if (active) {
+        setNoticeKey(key, "progress");
+      }
+    }).catch(() => null);
     try {
       const result = await invoke<OcrDocument>("recognize_preview");
       if (token !== generation) {
@@ -563,8 +620,10 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
         setNoticeText(invokeError(error, t("preview.error.ocr_fallback")), "error");
       }
     } finally {
+      unlistenStage?.();
       if (token === generation) {
         running = false;
+        hideProgressStage();
         renderPanel();
         emitChange();
       }
@@ -595,6 +654,8 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
     clearSelection();
     clearDrag();
     panel.hidden = true;
+    // 退出取字即撤下阶段进度呈现;词条通道也随之静默(结果不再展示)。
+    hideProgressStage();
     syncActions();
     if (panelHasDomSelection()) {
       window.getSelection()?.removeAllRanges();
@@ -611,6 +672,7 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
     spanOffsets = [];
     panelDismissed = true;
     lastNotice = null;
+    hideProgressStage();
     clearSelection();
     clearDrag();
     clearPanelView();
@@ -625,6 +687,7 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
     running = false;
     clearSelection();
     clearDrag();
+    hideProgressStage();
     if (!next || !next.fullText.trim() || next.spans.length === 0) {
       doc = null;
       spanOffsets = [];
@@ -1021,6 +1084,9 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
     syncSearchStatus();
     if (lastNotice?.key) {
       notice(t(lastNotice.key, lastNotice.params), lastNotice.kind);
+    }
+    if (!progressNote.hidden) {
+      progressText.textContent = t(stageKey);
     }
   };
 

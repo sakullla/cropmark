@@ -4,13 +4,13 @@ pub mod hit;
 use std::sync::Mutex;
 
 use serde::Serialize;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::capture::session;
 use crate::clipboard;
 use crate::i18n;
 
-use engine::{resolve_model_dir, Engine};
+use engine::{resolve_model_dir, Engine, OcrStage};
 use hit::{
     all_indices, hit_point, hit_rect, join_spans, panel_matches, panel_text_for, PanelMatch, Rect,
     TextSpan,
@@ -125,31 +125,44 @@ pub fn copy_recognized_text(text: &str, empty: OcrError) -> Result<String, OcrEr
 }
 
 #[tauri::command]
-pub async fn recognize_preview(app: AppHandle) -> Result<OcrDocument, String> {
+pub async fn recognize_preview(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<OcrDocument, String> {
     let frame =
         session::current_preview_frame(&app).map_err(|_| OcrError::NoPreview.user_message())?;
     let app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || recognize_blocking(&app, &frame))
+    // R7:阶段事件只发给发起识别的窗口(预览/冻结帧工作区覆盖层共用本命令)。
+    let label = window.label().to_string();
+    tauri::async_runtime::spawn_blocking(move || recognize_blocking(&app, &label, &frame))
         .await
         .map_err(|_| OcrError::Failed.user_message())?
 }
 
 fn recognize_blocking(
     app: &AppHandle,
+    label: &str,
     frame: &crate::capture::buffer::Frame,
 ) -> Result<OcrDocument, String> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        recognize_blocking_inner(app, frame)
+        recognize_blocking_inner(app, label, frame)
     }))
     .unwrap_or_else(|_| Err(OcrError::Failed.user_message()))
 }
 
 fn recognize_blocking_inner(
     app: &AppHandle,
+    label: &str,
     frame: &crate::capture::buffer::Frame,
 ) -> Result<OcrDocument, String> {
+    // 事件发送失败不阻断识别:前端丢失事件时保持「识别中」常驻兜底。
+    let mut emit_stage = |stage: OcrStage| {
+        let _ = app.emit_to(label, "ocr-progress", stage);
+    };
     // R19:旧 ocrOrientation 开关按常开语义移除,方向纠正保持开启;
     // 引擎按每次识别读取的固定值走同一路径(无需重载模型)。
+    // R7:引擎懒加载属 preparing 阶段(首次识别包含模型装载,耗时最长)。
+    emit_stage(OcrStage::Preparing);
     let runtime = app.state::<OcrRuntime>();
     let mut inner = runtime.lock();
     if inner.engine.is_none() {
@@ -168,7 +181,7 @@ fn recognize_blocking_inner(
     let width = frame.width;
     let height = frame.height;
     let engine = inner.engine.as_mut().expect("ocr engine loaded");
-    match engine.recognize(frame, true) {
+    match engine.recognize_reporting(frame, true, &mut emit_stage) {
         Ok(doc) => {
             log::info!(
                 "ocr recognized spans={} chars={} size={width}x{height}",

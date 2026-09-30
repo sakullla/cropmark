@@ -2615,10 +2615,6 @@
     "zh-CN": "已达到宽度上限，正在自动完成…",
     "en": "Width limit reached; finishing automatically…"
   },
-  "scroll.status.finishing": {
-    "zh-CN": "正在合成…",
-    "en": "Stitching…"
-  },
   "scroll.status.finishing_segments": {
     "zh-CN": "正在拼接 · {count} 段",
     "en": "Stitching · {count} strips"

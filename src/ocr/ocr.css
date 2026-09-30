@@ -1,5 +1,33 @@
 /* R2:共享取字面板(预览与冻结帧工作区覆盖层共用)。 */
 
+/* R7:识别进行中的阶段化进度行(共享 .progress 旋转圈令牌 + 阶段词条)。
+   固定定位挂在窗口下方居中:预览舞台与冻结帧工作区两种宿主免改宿主布局;
+   纯视觉(aria-hidden),播报由宿主提示条的 notice 通道词条承担。
+   [hidden] 由 app.css 全局规则隐藏。 */
+.ocr-progress {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 6px 12px;
+  border: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+  border-radius: var(--radius-panel);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+  z-index: 30;
+  pointer-events: none;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
 .ocr-panel {
   flex: 0 0 auto;
   /* 窄窗口随舞台宽度弹性收缩,宽窗口仍取 260px。 */
