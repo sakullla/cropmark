@@ -1,6 +1,6 @@
 [package]
 name = "cropmark"
-version = "0.3.13"
+version = "0.3.14"
 description = "Cropmark screenshot tool"
 authors = ["Cropmark"]
 license = "GPL-3.0-only"
@@ -36,7 +36,7 @@ log = "0.4"
 tauri-plugin-log = "2"
 tauri-plugin-opener = "2"
 # R4:纯本地二维码解码(无网络、无运行时资源);仅解码二维码,不含一维条码。
-rqrr = { version = "0.10.1", default-features = false }
+rqrr = { version = "0.11.0", default-features = false }
 # R3:录屏编码。GIF 流式编码、纯 Rust MP4 muxer,以及构建期随包编译的
 # H.264 编码器;三者都不在运行时下载任何资源。
 gif = "0.14.2"

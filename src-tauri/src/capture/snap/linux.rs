@@ -252,7 +252,7 @@ fn window_list_property(
         .map_err(|_| ())?
         .reply()
         .map_err(|_| ())?;
-    if reply.type_ == xproto::AtomEnum::NONE.into() {
+    if reply.type_ == xproto::Atom::from(xproto::AtomEnum::NONE) {
         return Ok(None);
     }
     Ok(Some(reply.value32().into_iter().flatten().collect()))
