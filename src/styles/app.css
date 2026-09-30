@@ -879,6 +879,16 @@ input[data-filename-template] {
   z-index: 50;
 }
 
+/* <input> 是 replaced 元素,::after 不渲染;禁用原因挂到外层 .input-wrap 上。 */
+.input-wrap {
+  display: inline-flex;
+}
+
+.input-wrap .number-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 /* 热键按钮贴近卡片右缘,提示右对齐,避免长文案被窗口右缘裁切。 */
 .hotkey-btn[data-tooltip]::after {
   right: 0;

@@ -56,10 +56,10 @@ export function mountRecordControl(root: HTMLElement): () => void {
         <span class="record-time" data-i18n-title="record.bar.time_title"></span>
         <span class="record-phase"></span>
         <div class="record-actions">
-          <button type="button" class="record-btn record-toggle" hidden></button>
-          <button type="button" class="record-btn record-primary record-stop" hidden></button>
-          <button type="button" class="record-btn record-discard" data-i18n="record.pending.discard" hidden></button>
-          <button type="button" class="record-btn record-draw" data-i18n="record.bar.draw" hidden></button>
+          <button type="button" class="record-btn record-toggle" data-i18n-title="record.bar.toggle_title" data-i18n-aria-label="record.bar.toggle_title" hidden></button>
+          <button type="button" class="record-btn record-primary record-stop" data-i18n-title="record.bar.stop_title" data-i18n-aria-label="record.bar.stop_title" hidden></button>
+          <button type="button" class="record-btn record-discard" data-i18n="record.pending.discard" data-i18n-title="record.pending.discard_title" data-i18n-aria-label="record.pending.discard_title" hidden></button>
+          <button type="button" class="record-btn record-draw" data-i18n="record.bar.draw" data-i18n-title="record.bar.draw_title" data-i18n-aria-label="record.bar.draw_title" hidden></button>
         </div>
       </div>
       <div class="record-preview" hidden>
@@ -72,9 +72,9 @@ export function mountRecordControl(root: HTMLElement): () => void {
       <div class="record-pending" hidden>
         <div class="record-pending-head">
           <span class="record-pending-title"></span>
-          <button type="button" class="record-btn record-start" data-i18n="record.bar.start" hidden></button>
-          <button type="button" class="record-btn record-again" data-i18n="record.bar.again" hidden></button>
-          <button type="button" class="record-btn record-close" data-i18n="record.bar.close" hidden></button>
+          <button type="button" class="record-btn record-start" data-i18n="record.bar.start" data-i18n-title="record.bar.start_title" data-i18n-aria-label="record.bar.start_title" hidden></button>
+          <button type="button" class="record-btn record-again" data-i18n="record.bar.again" data-i18n-title="record.bar.again_title" data-i18n-aria-label="record.bar.again_title" hidden></button>
+          <button type="button" class="record-btn record-close" data-i18n="record.bar.close" data-i18n-title="record.bar.close_title" data-i18n-aria-label="record.bar.close_title" hidden></button>
         </div>
         <ul class="record-pending-list"></ul>
       </div>
@@ -268,6 +268,7 @@ export function mountRecordControl(root: HTMLElement): () => void {
         discard.className = "record-btn";
         discard.textContent = t("record.pending.discard");
         discard.disabled = busy;
+        discard.dataset.tooltip = t("record.pending.discard_title");
         discard.addEventListener("click", () => void discardPending(item));
         row.append(meta, retry, discard);
         return row;

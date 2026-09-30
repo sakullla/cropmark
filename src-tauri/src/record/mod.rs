@@ -689,7 +689,10 @@ impl RecordingSession {
         {
             let mut state = self.shared.lock();
             match state.phase {
-                Phase::Finished => return state.output.clone().ok_or(RecordError::Empty),
+                Phase::Finished => {
+                    // take() 把产物所有权交给调用方;Drop 见 None 即不再清理。
+                    return state.output.take().ok_or(RecordError::Empty);
+                }
                 Phase::Failed => {
                     return Err(state.error.clone().unwrap_or(RecordError::Empty));
                 }
@@ -701,9 +704,9 @@ impl RecordingSession {
         }
         self.shared.wake.notify_all();
         self.join_worker();
-        let state = self.shared.lock();
+        let mut state = self.shared.lock();
         match state.phase {
-            Phase::Finished => state.output.clone().ok_or(RecordError::Empty),
+            Phase::Finished => state.output.take().ok_or(RecordError::Empty),
             _ => Err(state.error.clone().unwrap_or(RecordError::Empty)),
         }
     }
@@ -750,13 +753,20 @@ impl Drop for RecordingSession {
             let mut state = self.shared.lock();
             if matches!(
                 state.phase,
-                Phase::Ready | Phase::Countdown(_) | Phase::Recording | Phase::Paused
+                Phase::Ready
+                    | Phase::Countdown(_)
+                    | Phase::Recording
+                    | Phase::Paused
+                    | Phase::StopRequested
             ) {
                 state.freeze_elapsed(Instant::now());
                 state.phase = Phase::StopRequested;
                 true
             } else {
-                false
+                // Finished/Failed 阶段已无须停线程;但 Finished 且 output 仍在
+                // (cancel() 竞态或调用方未取走产物)时,其 temp_path 属于无人
+                // 消费的收尾残留,同样要清。
+                matches!(state.phase, Phase::Finished) && state.output.is_some()
             }
         };
         self.shared.wake.notify_all();
@@ -1688,6 +1698,31 @@ mod tests {
         let output = session.stop().expect("stop");
         assert_eq!((output.width, output.height), (48, 32));
         let _ = std::fs::remove_file(&output.temp_path);
+    }
+
+    #[test]
+    fn drop_after_cancel_cleans_finished_temp_file() {
+        // 竞态修复验证:cancel() 置 StopRequested 后若 worker 已产出成片,
+        // Drop 必须删除该 temp_path(不再依赖 abandoned 判定排除 StopRequested)。
+        let source = SyntheticSource::new(48, 32);
+        let region = RecordRegion::new(2, 2, 48, 32);
+        let session =
+            RecordingSession::start(region, test_config(RecordFormat::Gif, 60_000), source)
+                .expect("start");
+        run_until_frames(&session, 1);
+        // 不再调 stop() 取回产物——模拟调用方在 cancel() 后直接丢会话。
+        session.cancel();
+        let done = wait_until(Duration::from_secs(5), || {
+            session.status().phase == RecordingPhase::Finished
+        });
+        assert!(done, "worker must still finish and produce an output");
+        let path = session
+            .output()
+            .expect("output must exist before drop")
+            .temp_path;
+        assert!(path.exists());
+        drop(session);
+        assert!(!path.exists(), "drop must delete the abandoned temp file");
     }
 
     #[test]

@@ -913,6 +913,7 @@ pub(crate) fn start(
     SCROLL_AXIS_CHOSEN.store(false, Ordering::SeqCst);
     SCROLL_CONTROL_READY.store(false, Ordering::SeqCst);
     SCROLL_SESSION_STARTED.store(false, Ordering::SeqCst);
+    SCROLL_UNDO_REQUESTS.store(0, Ordering::SeqCst);
     let (freeze, monitor) = match session::scroll_source(app, generation) {
         Ok(source) => source,
         Err(error) => {

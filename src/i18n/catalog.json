@@ -735,6 +735,34 @@
     "zh-CN": "{fps} 帧/秒",
     "en": "{fps} fps"
   },
+  "record.bar.toggle_title": {
+    "zh-CN": "暂停或继续录制",
+    "en": "Pause or resume the recording"
+  },
+  "record.bar.stop_title": {
+    "zh-CN": "停止并收尾成片，或取消就绪/倒计时",
+    "en": "Stop and finish, or cancel while ready/counting down"
+  },
+  "record.bar.draw_title": {
+    "zh-CN": "进入或退出实时标注",
+    "en": "Enter or finish live annotation"
+  },
+  "record.bar.start_title": {
+    "zh-CN": "开始录制；无会话时沿用上次区域",
+    "en": "Start recording; reuses the last region when no session is active"
+  },
+  "record.bar.again_title": {
+    "zh-CN": "回到选区重新框选一段录制",
+    "en": "Return to area selection for a new recording"
+  },
+  "record.bar.close_title": {
+    "zh-CN": "关闭控制条与待保存列表",
+    "en": "Close the control bar and pending list"
+  },
+  "record.pending.discard_title": {
+    "zh-CN": "丢弃这条待保存录制",
+    "en": "Discard this pending recording"
+  },
   "record.selection.yielded": {
     "zh-CN": "录制范围已让出边框和控制条。再确认一次即可开始，尺寸与成片一致。",
     "en": "The recording area now leaves room for the border and controls. Confirm again to start; this size is what will be recorded."

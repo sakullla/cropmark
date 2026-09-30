@@ -1220,7 +1220,8 @@ fn start_from_hud(app: &AppHandle) -> Result<RecordingStatus, String> {
         return Err(RecordError::NotRunning.user_message());
     };
     let config = RecordConfig::from_settings(app, settings::current_recording(app).format);
-    let recording = RecordingSession::start(region, config, MonitorSource::new(monitor.clone()))
+    // 与选区确认入口一致:重录也走就绪/倒计时,而不是立即开录。
+    let recording = RecordingSession::start_ready(region, config, MonitorSource::new(monitor.clone()))
         .map_err(|error| error.user_message())?;
     if !session::install_recording(app, recording) {
         return Err(i18n::t("toast.recording_busy"));

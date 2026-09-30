@@ -364,7 +364,7 @@ export function mountSettings(root: HTMLElement): () => void {
                       <p class="hint" data-i18n="settings.export.template_hint">占位符：{date}、{time}、{datetime}、{mode}、{seq}。只影响本地保存的默认文件名。</p>
                     </div>
                   </div>
-                  <input type="text" class="number-input" data-filename-template maxlength="180" spellcheck="false" aria-labelledby="template-label" data-i18n-placeholder="settings.export.template_placeholder" placeholder="例如 shot_{date}_{mode}_{seq}" />
+                  <span class="input-wrap" data-tooltip-wrap><input type="text" class="number-input" data-filename-template maxlength="180" spellcheck="false" aria-labelledby="template-label" data-i18n-placeholder="settings.export.template_placeholder" placeholder="例如 shot_{date}_{mode}_{seq}" /></span>
                 </section>
                 <section class="block" aria-labelledby="beautify-title">
                   <h2 id="beautify-title" data-i18n="settings.export.beautify_title">导出美化</h2>
@@ -386,14 +386,14 @@ export function mountSettings(root: HTMLElement): () => void {
                       <div class="label" id="padding-label" data-i18n="settings.export.padding_label">留白</div>
                       <p class="hint" data-i18n="settings.export.padding_hint">0–240 像素，输出四周各加这么多留白。</p>
                     </div>
-                    <input type="number" class="number-input" data-beautify-padding min="0" max="240" step="1" inputmode="numeric" aria-labelledby="padding-label" />
+                    <span class="input-wrap" data-tooltip-wrap><input type="number" class="number-input" data-beautify-padding min="0" max="240" step="1" inputmode="numeric" aria-labelledby="padding-label" /></span>
                   </div>
                   <div class="setting-row">
                     <div>
                       <div class="label" id="radius-label" data-i18n="settings.export.radius_label">圆角</div>
                       <p class="hint" data-i18n="settings.export.radius_hint">0–160 像素。阴影边距由圆角推导。</p>
                     </div>
-                    <input type="number" class="number-input" data-beautify-radius min="0" max="160" step="1" inputmode="numeric" aria-labelledby="radius-label" />
+                    <span class="input-wrap" data-tooltip-wrap><input type="number" class="number-input" data-beautify-radius min="0" max="160" step="1" inputmode="numeric" aria-labelledby="radius-label" /></span>
                   </div>
                   <p class="error" data-export-error role="alert" hidden></p>
                   <div class="setting-row">
@@ -977,9 +977,10 @@ export function mountSettings(root: HTMLElement): () => void {
       templateEl.value = exportAppearance.filenameTemplate;
     }
     templateEl.disabled = !exportAppearance.useFilenameTemplate;
-    templateEl.dataset.tooltip = exportAppearance.useFilenameTemplate
+    const templateTip = exportAppearance.useFilenameTemplate
       ? t("settings.export.template_label")
       : t("settings.export.template_disabled");
+    templateEl.parentElement?.setAttribute("data-tooltip", templateTip);
     if (document.activeElement !== paddingEl) {
       paddingEl.value = String(exportAppearance.beautify.padding);
     }
@@ -997,9 +998,9 @@ export function mountSettings(root: HTMLElement): () => void {
       : t("settings.export.beautify_disabled");
     for (const element of [paddingEl, radiusEl]) {
       if (beautifyReason) {
-        element.dataset.tooltip = beautifyReason;
+        element.parentElement?.setAttribute("data-tooltip", beautifyReason);
       } else {
-        delete element.dataset.tooltip;
+        element.parentElement?.removeAttribute("data-tooltip");
       }
     }
     syncSwitch(shadowEl, exportAppearance.beautify.shadow);
