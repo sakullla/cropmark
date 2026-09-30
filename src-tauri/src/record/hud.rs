@@ -185,6 +185,9 @@ struct HudRuntime {
     control_screen: Option<ScreenRect>,
     /// 停止后待播放的临时成片。保存前不进入保存目录。
     preview: Option<super::RecordingOutput>,
+    /// R4/R5:chrome 最近一次规划采用的确认矩形(与 `capture` 配对)。
+    /// 更新区域时优先用它比对,避免与前端状态相位错位。
+    confirmed_region: Option<RecordRegion>,
 }
 
 static HUD: Mutex<HudRuntime> = Mutex::new(HudRuntime {
@@ -197,6 +200,7 @@ static HUD: Mutex<HudRuntime> = Mutex::new(HudRuntime {
     capture: None,
     control_screen: None,
     preview: None,
+    confirmed_region: None,
 });
 
 fn hud_lock() -> MutexGuard<'static, HudRuntime> {
@@ -206,6 +210,10 @@ fn hud_lock() -> MutexGuard<'static, HudRuntime> {
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HudRegion {
+    /// R4/R5:确认矩形相对录制监视器的原点(物理像素)。前端拖框以此为
+    /// 基准计算新确认矩形,并回提 `update_recording_region`。
+    pub x: u32,
+    pub y: u32,
     pub width: u32,
     pub height: u32,
     /// 显示器缩放系数:标注层 `AnnotationFrame.scale` 与录制合成使用的
@@ -345,6 +353,7 @@ fn apply_chrome(app: &AppHandle, region: RecordRegion, monitor: &MonitorGeom) {
         hud.control_screen = Some(plan.control);
         hud.control_width = CONTROL_WIDTH;
         hud.control_height = CONTROL_HEIGHT;
+        hud.confirmed_region = Some(region);
     }
     if let Ok(control) = ensure(
         app,
@@ -377,13 +386,53 @@ fn apply_chrome(app: &AppHandle, region: RecordRegion, monitor: &MonitorGeom) {
             x: monitor.physical_x + region.x as i32,
             y: monitor.physical_y + region.y as i32,
         }));
-        let _ = overlay.set_ignore_cursor_events(true);
+        // R4/R5:区域框(确认矩形)内的拖动是移动录制框;标注模式由控制条
+        // 进入,两套输入互斥。就绪态且未进入标注模式时接收鼠标,
+        // 让前端可以拖框;录制中/标注时保持穿透,避免遮挡或抢输入。
+        let draggable = matches!(state_phase(app), Some(RecordingPhase::Ready))
+            && !hud_lock().interactive;
+        let _ = overlay.set_ignore_cursor_events(!draggable);
         if capabilities.live_overlay {
             let _ = overlay.show();
         } else {
             let _ = overlay.hide();
         }
     }
+}
+
+/// 当前会话的对外阶段:HUD 用它决定边框/overlay 是否可拖动。
+fn state_phase(app: &AppHandle) -> Option<RecordingPhase> {
+    session::with_recording(app, |recording| recording.status().phase)
+}
+
+/// R4/R5:重放区域拖动——按已经算好的 chrome plan 同步边框、overlay 与
+/// 控制条位置;`plan`/`monitor` 与写入会话槽位的是同一次计算,保证
+/// 边框跟实际 crop 矩形始终一致。
+fn replay_chrome(app: &AppHandle, region: RecordRegion, monitor: &MonitorGeom, plan: &ChromePlan) {
+    {
+        let mut hud = hud_lock();
+        // 确认矩形跟随拖框:状态里的 region 始终是最新显示框,前端拖框
+        // 基准与 overlay 尺寸都取自它。
+        hud.region = Some(region);
+        hud.capture = Some(plan.capture);
+        hud.control_screen = Some(plan.control);
+        hud.confirmed_region = Some(region);
+    }
+    if let Some(control) = app.get_webview_window(CONTROL) {
+        let _ = place_screen_rect(&control, plan.control);
+    }
+    sync_borders(app, &plan.borders);
+    if let Some(overlay) = app.get_webview_window(OVERLAY) {
+        let _ = overlay.set_size(Size::Physical(PhysicalSize {
+            width: region.width.max(1),
+            height: region.height.max(1),
+        }));
+        let _ = overlay.set_position(Position::Physical(PhysicalPosition {
+            x: monitor.physical_x + region.x as i32,
+            y: monitor.physical_y + region.y as i32,
+        }));
+    }
+    broadcast_state(app);
 }
 
 fn place_screen_rect(window: &WebviewWindow, rect: ScreenRect) {
@@ -410,7 +459,10 @@ fn sync_borders(app: &AppHandle, borders: &[Option<ScreenRect>; 4]) {
             continue;
         };
         let _ = window.set_content_protected(protection);
-        let _ = window.set_ignore_cursor_events(true);
+        // R4/R5:边框窗可命中——把鼠标事件交给前端拖框逻辑(就绪态调整,
+        // 录制中缩放句柄禁用,拖边=移动);前端只承担命中与提交,
+        // 位置写回仍由 Rust 经 `update_recording_region` 完成。
+        let _ = window.set_ignore_cursor_events(false);
         place_screen_rect(&window, rect);
         let _ = window.show();
     }
@@ -433,6 +485,7 @@ pub fn close(app: &AppHandle) {
         hud.capture = None;
         hud.control_screen = None;
         hud.control_height = CONTROL_HEIGHT;
+        hud.confirmed_region = None;
         hud.preview.take()
     };
     if let Some(output) = preview {
@@ -1023,6 +1076,17 @@ pub fn state_snapshot(app: &AppHandle) -> RecordingHudState {
         )
     };
     let status = session::with_recording(app, |recording| recording.status());
+    // R4/R5:overlay 的命中态跟阶段走——就绪/倒计时或标注模式下接收输入
+    // (拖框/绘制),进入录制或结束后归还穿透,避免盖住区域内的鼠标操作。
+    // 倒计时→录制由 worker 内部推进,这里借状态轮询收敛命中态。
+    if let Some(overlay) = app.get_webview_window(OVERLAY) {
+        let draggable = interactive
+            || matches!(
+                status.as_ref().map(|status| status.phase),
+                Some(RecordingPhase::Ready) | Some(RecordingPhase::Countdown)
+            );
+        let _ = overlay.set_ignore_cursor_events(!draggable);
+    }
     let live_preview = parked_preview
         .clone()
         .or_else(|| {
@@ -1046,6 +1110,8 @@ pub fn state_snapshot(app: &AppHandle) -> RecordingHudState {
         interactive,
         has_context: context.is_some(),
         region: context.as_ref().map(|(region, monitor)| HudRegion {
+            x: region.x,
+            y: region.y,
             width: region.width,
             height: region.height,
             scale: monitor.scale,
@@ -1234,6 +1300,7 @@ pub fn present_preview(app: &AppHandle, output: super::RecordingOutput) {
         let mut hud = hud_lock();
         hud.preview = Some(output);
         hud.capture = None;
+        hud.confirmed_region = None;
         hud.interactive = false;
         hud.paused_for_draw = false;
     }
@@ -1494,7 +1561,10 @@ pub fn set_recording_hud_interactive(app: AppHandle, interactive: bool) -> Recor
         });
     }
     if let Some(overlay) = app.get_webview_window(OVERLAY) {
-        let _ = overlay.set_ignore_cursor_events(!interactive);
+        // R4/R5:就绪态未标注时 overlay 保持可命中(拖框移动);标注模式
+        // 本来就要接收输入,录制中退出标注后才回到穿透。
+        let ready_move = matches!(state_phase(&app), Some(RecordingPhase::Ready));
+        let _ = overlay.set_ignore_cursor_events(!interactive && !ready_move);
         if interactive {
             // 降级平台由快照就绪后的 `set_recording_hud_overlay_visible` 显示,
             // 避免不透明绘制层先盖住屏幕再加载底图。
@@ -1564,6 +1634,139 @@ pub fn set_recording_hud_expanded(app: AppHandle, expanded: bool, content_height
     place_control(&control, region, &monitor, control_window_size(requested));
     // 增高后控制条可能从区域外回到内侧底边,标注层要按新矩形重新避让。
     broadcast_state(&app);
+}
+
+/// R4/R5:拖框提交的确认矩形目标(未钳制)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RegionTarget {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+/// 就绪态拖框钳制:确认矩形必须是显示器内有效正尺寸矩形,完全落在显示器内。
+/// 宽/高上限取显示器与格式上限(MP4 3840/2160,WebP 16383)的较小者;
+/// 下限取编码器最小边(MP4 偶数 2,其余 1)。钳制到边界而不是拒绝,
+/// 避免拖到边缘后反弹抖动。
+fn clamp_region_target(
+    target: RegionTarget,
+    monitor: &MonitorGeom,
+    format: RecordFormat,
+) -> Option<RecordRegion> {
+    let mon_w = i32::try_from(monitor.physical_width).ok()?;
+    let mon_h = i32::try_from(monitor.physical_height).ok()?;
+    let min_edge: i32 = if format == RecordFormat::Mp4 { 2 } else { 1 };
+    let (max_w, max_h) = match format {
+        RecordFormat::Gif => (mon_w, mon_h),
+        RecordFormat::Webp => (mon_w.min(16383), mon_h.min(16383)),
+        RecordFormat::Mp4 => (mon_w.min(3840), mon_h.min(2160)),
+    };
+    let width = target.width.clamp(min_edge, max_w.max(min_edge));
+    let height = target.height.clamp(min_edge, max_h.max(min_edge));
+    let x = target.x.clamp(0, (mon_w - width).max(0));
+    let y = target.y.clamp(0, (mon_h - height).max(0));
+    Some(RecordRegion::new(
+        u32::try_from(x).ok()?,
+        u32::try_from(y).ok()?,
+        u32::try_from(width).ok()?,
+        u32::try_from(height).ok()?,
+    ))
+}
+
+/// R4/R5 拖框入口:就绪态接受移动与缩放(宽高经钳制到合法范围),
+/// 录制中只接受移动(宽高沿用现有框,缩放被忽略——编码器宽高建构期定死)。
+/// 其它阶段拒绝。成功后写会话槽位并重放 chrome;输入带显示器内钳制,
+/// 因此不会产生越界 crop。
+#[tauri::command]
+pub fn update_recording_region(
+    app: AppHandle,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+) -> bool {
+    let Some(monitor) = hud_lock().monitor.clone() else {
+        return false;
+    };
+    let Some((phase, display, format, locked)) = session::with_recording(&app, |recording| {
+        let status = recording.status();
+        (
+            status.phase,
+            recording.display_region(),
+            status.format,
+            recording.capture_region(),
+        )
+    }) else {
+        return false;
+    };
+    let spec = chrome_spec_for(&monitor, format);
+    // 录制/暂停:宽高沿用现有框——编码器建构期定死,前端缩放句柄
+    // 按平移提交时直接丢弃宽高分量;就绪/倒计时可改宽高。
+    let target = match phase {
+        RecordingPhase::Ready | RecordingPhase::Countdown => RegionTarget {
+            x,
+            y,
+            width,
+            height,
+        },
+        RecordingPhase::Recording | RecordingPhase::Paused => RegionTarget {
+            x,
+            y,
+            width: display.width as i32,
+            height: display.height as i32,
+        },
+        _ => return false,
+    };
+    let Some(clamped) = clamp_region_target(target, &monitor, format) else {
+        return false;
+    };
+    if clamped == display {
+        return true;
+    }
+    // 就绪态缩放可能让确认矩形在 chrome 让位后过小(例如竖着拉高控制条
+    // 让位宽度不足):压缩回上一个可规划成功的尺寸,而不是整块拒绝。
+    let mut plan = plan_recording_chrome(clamped, &monitor, spec);
+    let mut candidate = clamped;
+    if plan.is_err() && clamped.width > display.width && clamped.height > display.height {
+        // 同时放大两个方向失败:退回只沿拖动方向扩展(单边放大更容易成功)。
+        let narrow = clamp_region_target(
+            RegionTarget {
+                x: target.x,
+                y: target.y,
+                width: target.width.min(display.width as i32),
+                height: target.height.min(display.height as i32),
+            },
+            &monitor,
+            format,
+        );
+        if let Some(fallback) = narrow {
+            if let Ok(trial) = plan_recording_chrome(fallback, &monitor, spec) {
+                candidate = fallback;
+                plan = Ok(trial);
+            }
+        }
+    }
+    let Ok(plan) = plan else {
+        return false;
+    };
+    // 录制中槽位捕获矩形的宽高必须是编码器锁死的尺寸——重放出的 plan
+    // 可能因边框让位差异给出新宽高,但 worker 在编码器打开后只取原点。
+    // 显式保持编码器矩形宽高,避免 status 宽高与成片不一致。
+    let slot_capture = if matches!(phase, RecordingPhase::Recording | RecordingPhase::Paused) {
+        RecordRegion::new(plan.capture.x, plan.capture.y, locked.width, locked.height)
+    } else {
+        plan.capture
+    };
+    if session::with_recording(&app, |recording| {
+        recording.update_region(candidate, slot_capture);
+    })
+    .is_none()
+    {
+        return false;
+    }
+    replay_chrome(&app, candidate, &monitor, &plan);
+    true
 }
 
 /// 收起 HUD(控制条「关闭」)。
@@ -1913,6 +2116,8 @@ mod tests {
             interactive: false,
             has_context: true,
             region: Some(HudRegion {
+                x: 6,
+                y: 8,
                 width: 4,
                 height: 2,
                 scale: 2.0,
@@ -1990,6 +2195,82 @@ mod tests {
                     && label.ends_with(suffix)
             }
         }
+    }
+
+    #[test]
+    fn clamp_region_target_bounds_to_monitor_and_format_edges() {
+        let screen = monitor();
+        // GIF:下限 1,上限为显示器本身。
+        let clamped = clamp_region_target(
+            RegionTarget {
+                x: -40,
+                y: -20,
+                width: 0,
+                height: 0,
+            },
+            &screen,
+            RecordFormat::Gif,
+        )
+        .expect("clamped");
+        assert_eq!((clamped.x, clamped.y), (0, 0));
+        assert_eq!((clamped.width, clamped.height), (1, 1));
+        // MP4:下限偶数 2,上限 3840×2160;1920×1080 显示器取显示器边。
+        let mp4 = clamp_region_target(
+            RegionTarget {
+                x: 0,
+                y: 0,
+                width: 9999,
+                height: 9999,
+            },
+            &screen,
+            RecordFormat::Mp4,
+        )
+        .expect("mp4");
+        assert_eq!((mp4.width, mp4.height), (1920, 1080));
+        // WebP:上限 16383,超过显示器仍按显示器钳。
+        let webp = clamp_region_target(
+            RegionTarget {
+                x: 0,
+                y: 0,
+                width: 20000,
+                height: 20000,
+            },
+            &MonitorGeom::from_physical("big", 0, 0, 20000, 20000, 1.0),
+            RecordFormat::Webp,
+        )
+        .expect("webp");
+        assert_eq!((webp.width, webp.height), (16383, 16383));
+        // 显示器内拖动到边缘:原点被钳回,矩形仍完整。
+        let edge = clamp_region_target(
+            RegionTarget {
+                x: 1900,
+                y: 1070,
+                width: 400,
+                height: 300,
+            },
+            &screen,
+            RecordFormat::Gif,
+        )
+        .expect("edge");
+        assert_eq!((edge.x, edge.y), (1520, 780));
+    }
+
+    #[test]
+    fn region_move_detects_origin_changes() {
+        let current = RecordRegion::new(10, 20, 100, 80);
+        assert_eq!(
+            super::super::region_move(RecordRegion::new(10, 20, 100, 80), current),
+            super::super::RegionMove::Steady
+        );
+        assert_eq!(
+            super::super::region_move(RecordRegion::new(30, 20, 100, 80), current),
+            super::super::RegionMove::Moved { x: 30, y: 20 }
+        );
+        // 录制中忽略宽高:即便槽位宽高漂移,只按原点判定移动。
+        assert_eq!(
+            super::super::region_move(RecordRegion::new(10, 20, 640, 480), current),
+            super::super::RegionMove::Steady
+        );
     }
 
     #[test]

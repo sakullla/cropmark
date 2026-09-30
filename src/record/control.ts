@@ -487,7 +487,9 @@ export function mountRecordControl(root: HTMLElement): () => void {
     const phaseIsReady = status?.phase === "ready" || status?.phase === "countdown";
     time.textContent = status
       ? phaseIsReady
-        ? `${formatLabel} · ${fpsLabel}`
+        ? // 就绪/倒计时带上尺寸:R4/R5 拖框改宽高时 HUD 实时反映最终框
+          // (状态 width/height 是捕获矩形;确认框尺寸在 state.region)。
+          `${formatLabel} · ${fpsLabel} · ${state?.region?.width ?? status.width}×${state?.region?.height ?? status.height}`
         : `${formatDuration(status.elapsedMs)} / ${formatDuration(state?.limitMs ?? 0)} · ${fpsLabel}`
       : preview
         ? `${formatDuration(preview.durationMs)} · ${fpsLabel}`

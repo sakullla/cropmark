@@ -217,6 +217,16 @@ html[data-chrome="border"] #app {
   background: #f43f5e;
 }
 
+/* R4/R5:边框条可命中——横向条用纵向调整光标,竖向条用横向;
+   光标类型在前端按阶段切换(录制中缩放禁用→move)。 */
+.record-border-root.is-side-x {
+  cursor: ew-resize;
+}
+
+.record-border-root.is-side-y {
+  cursor: ns-resize;
+}
+
 .record-pending {
   display: flex;
   flex-direction: column;

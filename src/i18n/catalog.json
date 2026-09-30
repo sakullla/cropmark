@@ -719,6 +719,10 @@
     "zh-CN": "抓帧慢于所选帧率，已拉长上一帧补上这段时间，成片仍覆盖整段录制。",
     "en": "Frames are arriving slower than the selected rate. Each previous frame is held longer so the result still covers the whole recording."
   },
+  "record.hud.resize_disabled": {
+    "zh-CN": "录制中无法调整大小；拖动只能移动录制框。停止并重新开始才能改尺寸。",
+    "en": "Resizing is unavailable while recording; dragging only moves the frame. Stop and start a new recording to change its size."
+  },
   "record.bar.fps": {
     "zh-CN": "{fps} 帧/秒",
     "en": "{fps} fps"

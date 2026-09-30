@@ -17,6 +17,7 @@ pub mod hud;
 mod save;
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -264,6 +265,86 @@ pub struct RecordingOutput {
 /// 到点转 Recording 才抓第一帧。
 pub const COUNTDOWN_MS: u64 = 3000;
 
+fn pack_pair(first: u32, second: u32) -> u64 {
+    u64::from(second) << 32 | u64::from(first)
+}
+
+fn unpack_pair(packed: u64) -> (u32, u32) {
+    (packed as u32, (packed >> 32) as u32)
+}
+
+/// 就绪/录制中区域槽位:控制层(HUD 拖框)写,worker 每 tick 读。
+/// 存两份矩形:确认矩形(用户看到/拖动的框,标注坐标系)与捕获矩形
+/// (chrome 让位后的实际裁剪框,worker 的 crop 目标)。标注 inset 由两者
+/// 原点差值在每 tick 现算,就绪态改尺寸时无需维护额外同步路径。
+///
+/// 写序与读序相反,极端撕裂(新原点配旧尺寸)至多影响一帧,由 `crop_rgba`
+/// 越界错误沿既有跳帧路径吸收,下一 tick 自洽。
+///
+/// 尺寸语义:编码器在建构期定死宽高——录制中槽位的宽高被忽略、只取原点;
+/// 就绪/倒计时中编码器尚未打开,槽位捕获宽高就是将要录制的尺寸。
+#[derive(Debug, Default)]
+pub struct RegionSlot {
+    display_xy: AtomicU64,
+    display_wh: AtomicU64,
+    capture_xy: AtomicU64,
+    capture_wh: AtomicU64,
+}
+
+impl RegionSlot {
+    fn new(display: RecordRegion, capture: RecordRegion) -> Self {
+        let slot = Self::default();
+        slot.store(display, capture);
+        slot
+    }
+
+    /// 写入确认矩形与捕获矩形。
+    pub fn store(&self, display: RecordRegion, capture: RecordRegion) {
+        self.capture_wh
+            .store(pack_pair(capture.width, capture.height), Ordering::Release);
+        self.capture_xy
+            .store(pack_pair(capture.x, capture.y), Ordering::Release);
+        self.display_wh
+            .store(pack_pair(display.width, display.height), Ordering::Release);
+        self.display_xy
+            .store(pack_pair(display.x, display.y), Ordering::Release);
+    }
+
+    /// `(确认矩形, 捕获矩形)`。构造时即写入初始值,读取总是成功。
+    pub fn load(&self) -> (RecordRegion, RecordRegion) {
+        let display_xy = unpack_pair(self.display_xy.load(Ordering::Acquire));
+        let display_wh = unpack_pair(self.display_wh.load(Ordering::Acquire));
+        let capture_xy = unpack_pair(self.capture_xy.load(Ordering::Acquire));
+        let capture_wh = unpack_pair(self.capture_wh.load(Ordering::Acquire));
+        (
+            RecordRegion::new(display_xy.0, display_xy.1, display_wh.0, display_wh.1),
+            RecordRegion::new(capture_xy.0, capture_xy.1, capture_wh.0, capture_wh.1),
+        )
+    }
+}
+
+/// 区域移动应用决策:worker 每 tick 与上次裁剪原点比较。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegionMove {
+    /// 原点没变:帧数据沿用同一矩形。
+    Steady,
+    /// 原点变了:用新 origin crop;标注平移差由调用方另行计算。
+    Moved { x: u32, y: u32 },
+}
+
+/// 纯函数:比较槽位原点与当前 crop 原点,给出是否移动与新的原点。
+/// 尺寸不变(录制中宽高定死),所以判定只需比较 x/y。
+pub fn region_move(slot: RecordRegion, current: RecordRegion) -> RegionMove {
+    if (slot.x, slot.y) == (current.x, current.y) {
+        RegionMove::Steady
+    } else {
+        RegionMove::Moved {
+            x: slot.x,
+            y: slot.y,
+        }
+    }
+}
+
 /// 内部阶段:比对外阶段多一个「停止已请求」。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
@@ -368,6 +449,9 @@ impl Shared {
 /// 录制会话:后台线程按固定帧率抓帧编码,主线程可查询状态、暂停/继续/停止。
 pub struct RecordingSession {
     shared: Arc<Shared>,
+    /// R4/R5 区域原点槽位:worker 每 tick 读位,边框/overlay 就绪期可随拖动
+    /// 更新;录制中沿 [`Self::commit_move`] 递交,位值继续被 worker 消费。
+    region_slot: Arc<RegionSlot>,
     region: RecordRegion,
     /// 确认矩形的物理像素(未让出边框/控制条):就绪态 HUD 边框与 overlay
     /// 按它摆放。`region` 字段则是实际捕获矩形。
@@ -426,14 +510,16 @@ impl RecordingSession {
         if ready {
             shared.lock().phase = Phase::Ready;
         }
+        let region_slot = Arc::new(RegionSlot::new(confirmed, region));
         let worker_shared = Arc::clone(&shared);
-        let worker_inset = annotation_inset;
+        let worker_slot = Arc::clone(&region_slot);
         let worker = std::thread::Builder::new()
             .name("cropmark-record".into())
-            .spawn(move || run_worker(worker_shared, region, worker_inset, config, source))
+            .spawn(move || run_worker(worker_shared, worker_slot, config, source))
             .map_err(|_| RecordError::Thread)?;
         Ok(Self {
             shared,
+            region_slot,
             region,
             confirmed,
             annotation_inset,
@@ -445,6 +531,23 @@ impl RecordingSession {
     /// 选区确认的原始矩形:就绪态 HUD 边框/overlay 仍按它显示。
     pub fn confirmed_region(&self) -> RecordRegion {
         self.confirmed
+    }
+
+    /// 捕获矩形(编码器定死的宽高 + 构造时的原点):录制中成片与它一致。
+    pub fn capture_region(&self) -> RecordRegion {
+        self.region
+    }
+
+    /// 当前确认矩形(用户看到/拖动的框):就绪期拖框后的最新值。
+    pub fn display_region(&self) -> RecordRegion {
+        self.region_slot.load().0
+    }
+
+    /// 更新槽位区域:就绪态宽高可变(编码器在倒计时结束首帧才打开,成片与
+    /// 最终框一致);录制中槽位只取新原点,宽高锁死不回改编码器。调用方负责
+    /// 钳制到合法范围与 chrome(边框/overlay/控制条)重放。
+    pub fn update_region(&self, display: RecordRegion, capture: RecordRegion) {
+        self.region_slot.store(display, capture);
     }
 
     /// 就绪 → 倒计时:倒计时走完后 worker 才抓第一帧。非就绪态幂等返回当前状态。
@@ -500,17 +603,26 @@ impl RecordingSession {
         self.annotation_inset
     }
 
+    /// 对外状态快照用的捕获尺寸:槽位捕获宽高在录制中与编码器一致(移动
+    /// 不改宽高),就绪/倒计时中跟随最近一次 chrome 规划的结果——就绪态
+    /// 拖框实时反映到 HUD 尺寸,开始后成片与它一致。
+    fn status_size(&self) -> (u32, u32) {
+        let (_, capture) = self.region_slot.load();
+        (capture.width, capture.height)
+    }
+
     /// 当前状态快照(HUD 实时时长与阶段)。
     pub fn status(&self) -> RecordingStatus {
         let now = Instant::now();
+        let (width, height) = self.status_size();
         let state = self.shared.lock();
         RecordingStatus {
             phase: state.phase.public(),
             format: self.config.format,
             frame_count: state.frame_count,
             elapsed_ms: millis(state.elapsed(now)),
-            width: self.region.width,
-            height: self.region.height,
+            width,
+            height,
             fps: self.config.fps,
             behind: state.behind,
             auto_stopped: state.auto_stopped,
@@ -715,18 +827,14 @@ fn wait_for_slot(shared: &Shared, deadline: Instant) -> bool {
 
 fn run_worker(
     shared: Arc<Shared>,
-    region: RecordRegion,
-    annotation_inset: (i32, i32),
+    slot: Arc<RegionSlot>,
     config: RecordConfig,
     mut source: impl FrameSource,
 ) {
-    let mut encoder = match encoder::open(&config, region) {
-        Ok(encoder) => encoder,
-        Err(error) => {
-            finish_failed(&shared, error);
-            return;
-        }
-    };
+    // R4/R5:编码器延迟到第一张帧才打开——就绪/倒计时中拖框改的宽高
+    // 才能生效;编码器打开后宽高被 `current` 锁死,槽位只取原点移动。
+    let mut encoder: Option<Box<dyn encoder::FrameEncoder>> = None;
+    let mut current = slot.load().1;
     let interval = Duration::from_micros(1_000_000 / u64::from(config.fps.max(1)));
     let max_duration = Duration::from_millis(config.max_duration_ms);
     // 连续抓帧失败达到约 10 秒:保留已完成内容并中断,避免空转。
@@ -754,10 +862,43 @@ fn run_worker(
             }
             (state.annotations.clone(), millis(elapsed))
         };
+        // R4/R5 调框:每个 tick 读原子位。
+        // - 编码器未打开(倒计时结束首帧):按槽位捕获矩形全量(含宽高)裁剪,
+        //   开始后的成片与最终框一致。
+        // - 编码器已打开(录制中):只取原点移动,宽高锁死不回改编码器;
+        //   `crop_rgba` 越界返回错误计入连续失败,由既有跳帧路径吸收。
+        let (display, capture) = slot.load();
+        let annotation_inset = (
+            capture.x as i32 - display.x as i32,
+            capture.y as i32 - display.y as i32,
+        );
+        if encoder.is_none() {
+            current = capture;
+        } else if let RegionMove::Moved { x, y } = region_move(capture, current) {
+            current = RecordRegion::new(x, y, current.width, current.height);
+        }
+        if encoder.is_none() {
+            // 槽位宽高绕过 spawn 的 for_format 校验(就绪期拖框可写入任意尺寸),
+            // 打开编码器前补一次:MP4 向下收成偶数并校验格式上限。
+            match current.for_format(config.format) {
+                Ok(adjusted) => current = adjusted,
+                Err(error) => {
+                    finish_failed(&shared, error);
+                    return;
+                }
+            }
+            match encoder::open(&config, current) {
+                Ok(opened) => encoder = Some(opened),
+                Err(error) => {
+                    finish_failed(&shared, error);
+                    return;
+                }
+            }
+        }
         let capture_started = Instant::now();
-        let captured = source
-            .capture()
-            .and_then(|full| crop_rgba(&full, region.x, region.y, region.width, region.height));
+        let captured = source.capture().and_then(|full| {
+            crop_rgba(&full, current.x, current.y, current.width, current.height)
+        });
         if capture_started.elapsed() > interval {
             // 慢于间隔:拉长上一帧补上这段时间,并让控制条说明跟不上。
             shared.lock().behind = true;
@@ -786,7 +927,11 @@ fn run_worker(
             )
         };
         let merged = rasterize_lenient(&frame, &annotations);
-        if let Err(error) = encoder.push(&merged, timestamp_ms) {
+        let Some(active) = encoder.as_mut() else {
+            finish_failed(&shared, RecordError::Thread);
+            return;
+        };
+        if let Err(error) = active.push(&merged, timestamp_ms) {
             finish_failed(&shared, error);
             return;
         }
@@ -809,14 +954,19 @@ fn run_worker(
         finish_failed(&shared, error);
         return;
     }
+    let Some(encoder) = encoder else {
+        // 就绪/倒计时内取消:编码器从未打开,没有临时文件要清。
+        finish_failed(&shared, RecordError::Empty);
+        return;
+    };
     let temp_path = encoder.temp_path().to_path_buf();
     match encoder.finish(duration_ms) {
         Ok(()) => {
             let output = RecordingOutput {
                 format: config.format,
                 temp_path,
-                width: region.width,
-                height: region.height,
+                width: current.width,
+                height: current.height,
                 frame_count,
                 duration_ms,
                 fps: config.fps,
@@ -1488,6 +1638,56 @@ mod tests {
         let again = session.begin().expect("second begin");
         assert_eq!(again.phase, RecordingPhase::Countdown);
         session.cancel();
+    }
+
+    #[test]
+    fn ready_resize_waits_for_encoder_open_and_output_matches_final_region() {
+        // R4/R5 就绪态缩放:编码器在倒计时结束首帧才按槽位捕获矩形打开,
+        // 就绪期调宽/高后成片尺寸与最终框一致。
+        let source = SyntheticSource::new(200, 120);
+        let region = RecordRegion::new(2, 2, 48, 32);
+        let session =
+            RecordingSession::start_ready(region, test_config(RecordFormat::Gif, 60_000), source)
+                .expect("start_ready");
+        // 就绪态拖框:确认矩形与捕获矩形同时更新(无 chrome 让位,相等)。
+        let resized = RecordRegion::new(4, 6, 64, 40);
+        session.update_region(resized, resized);
+        session.begin().expect("begin");
+        let recording = wait_until(Duration::from_secs(5), || {
+            session.status().phase == RecordingPhase::Recording
+        });
+        assert!(recording, "countdown must reach recording");
+        run_until_frames(&session, 1);
+        let output = session.stop().expect("stop");
+        assert_eq!(
+            (output.width, output.height),
+            (64, 40),
+            "output must match the resized ready-state region"
+        );
+        let _ = std::fs::remove_file(&output.temp_path);
+    }
+
+    #[test]
+    fn update_region_moves_capture_origin_during_recording() {
+        // R4/R5 录制中移动:槽位原点更新后,后续帧从新位置裁剪;
+        // 宽高锁死(编码器不变),成片尺寸仍是原框。
+        let source = SyntheticSource::new(120, 80);
+        let region = RecordRegion::new(4, 4, 48, 32);
+        let session =
+            RecordingSession::start(region, test_config(RecordFormat::Gif, 60_000), source)
+                .expect("start");
+        run_until_frames(&session, 1);
+        let display = RecordRegion::new(40, 30, 48, 32);
+        let capture = RecordRegion::new(40, 30, 48, 32);
+        session.update_region(display, capture);
+        let before = session.status().frame_count;
+        assert!(wait_until(Duration::from_secs(5), || session
+            .status()
+            .frame_count
+            >= before + 2));
+        let output = session.stop().expect("stop");
+        assert_eq!((output.width, output.height), (48, 32));
+        let _ = std::fs::remove_file(&output.temp_path);
     }
 
     #[test]

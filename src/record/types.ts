@@ -37,6 +37,9 @@ export interface RecordingPreview {
 }
 
 export interface HudRegion {
+  /** R4/R5:确认矩形相对录制监视器的原点(物理像素)。拖框提交基准。 */
+  x: number;
+  y: number;
   width: number;
   height: number;
   /** 显示器缩放系数:标注层 `AnnotationFrame.scale` 用,与录制合成一致。 */

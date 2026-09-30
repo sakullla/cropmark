@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   isAnnotationTool,
   mountAnnotationEditor,
@@ -17,6 +18,278 @@ import type {
   RecordingStatus,
 } from "./types";
 import "./record.css";
+
+/** 拖动会话:按下时的光标屏幕坐标与确认矩形(物理像素)。 */
+interface DragSession {
+  /** 起始光标的屏幕物理坐标(CSS 屏幕坐标 × scaleFactor)。 */
+  startX: number;
+  startY: number;
+  /** 按下时的确认矩形(物理像素,相对录制监视器原点)。 */
+  regionX: number;
+  regionY: number;
+  regionW: number;
+  regionH: number;
+  /** 该次拖动是否允许改尺寸;false 时宽高按开始时的值提交(录制中句柄语义=禁用)。 */
+  resizable: boolean;
+  moved: boolean;
+}
+
+/** 四个边框窗的 label → 拖动方向掩码(N/S/E/W);{0,0} 表示内部拖动=移动。 */
+const BORDER_DRAG_MASK: Record<string, { dx: -1 | 0 | 1; dy: -1 | 0 | 1 }> = {
+  "record-border-top": { dx: 0, dy: -1 },
+  "record-border-right": { dx: 1, dy: 0 },
+  "record-border-bottom": { dx: 0, dy: 1 },
+  "record-border-left": { dx: -1, dy: 0 },
+};
+
+/** 方向掩码对应的光标:就绪态调整尺寸;录制中缩放禁用,拖动=移动。 */
+function dragCursor(direction: { dx: number; dy: number }, resizable: boolean): string {
+  if (!resizable || (direction.dx === 0 && direction.dy === 0)) {
+    return "move";
+  }
+  return direction.dx !== 0 ? "ew-resize" : "ns-resize";
+}
+
+/**
+ * 屏幕物理坐标:鼠标事件 screenX/screenY 是 CSS 像素,乘窗口 scaleFactor 得物理像素。
+ * 录制监视器原点由 hud.region + monitor 相对推导(与 Rust `plan_recording_chrome` 同
+ * 坐标系);本文件不感知多屏绝对原点——差值移动语义下原点在每次按下时以会话矩形为基准。
+ */
+function screenPhysical(
+  event: { screenX: number; screenY: number },
+  scale: number,
+): { x: number; y: number } {
+  return { x: event.screenX * scale, y: event.screenY * scale };
+}
+
+/**
+ * 按拖动方向与物理位移计算目标确认矩形。resizable=false 时原样平移;
+ * resizable=true 时按方向单边跟随光标(固定对边)。结果再由 Rust 钳制/校验。
+ */
+function dragTarget(
+  session: DragSession,
+  dx: -1 | 0 | 1,
+  dy: -1 | 0 | 1,
+  offsetX: number,
+  offsetY: number,
+): { x: number; y: number; width: number; height: number } {
+  if (!session.resizable) {
+    return {
+      x: Math.round(session.regionX + offsetX),
+      y: Math.round(session.regionY + offsetY),
+      width: session.regionW,
+      height: session.regionH,
+    };
+  }
+  let x = session.regionX;
+  let y = session.regionY;
+  let width = session.regionW;
+  let height = session.regionH;
+  if (dx < 0) {
+    // 拖左边/左上角:固定右缘,左缘跟光标。
+    const right = session.regionX + session.regionW;
+    x = session.regionX + offsetX;
+    width = right - x;
+  } else if (dx > 0) {
+    // 拖右边/右下角:固定左缘,右缘跟光标。
+    width = session.regionW + offsetX;
+  }
+  if (dy < 0) {
+    const bottom = session.regionY + session.regionH;
+    y = session.regionY + offsetY;
+    height = bottom - y;
+  } else if (dy > 0) {
+    height = session.regionH + offsetY;
+  }
+  return {
+    x: Math.round(x),
+    y: Math.round(y),
+    width: Math.max(0, Math.round(width)),
+    height: Math.max(0, Math.round(height)),
+  };
+}
+
+/**
+ * 提交一次区域更新。控制层(Rust)负责钳制/校验/重放;失败时静默忽略,
+ * 下一次鼠标移动仍会重试——拖框期间的中间态不报错。
+ */
+async function submitRegion(target: {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}): Promise<boolean> {
+  try {
+    return await invoke<boolean>("update_recording_region", {
+      x: target.x,
+      y: target.y,
+      width: target.width,
+      height: target.height,
+    });
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 绑定一条可拖动的边框/内部表面:按下捕获光标、按方向语义计算目标矩形、
+ * 实时提交 `update_recording_region`。
+ *
+ * @param scale 窗口缩放系数读取(物理像素换算)
+ * @param getRegion 拖动开始时确认矩形(物理像素,相对录制监视器原点)
+ * @param direction 拖动方向掩码;`{0,0}` = 内部拖动=移动
+ * @param canResize 拖动时按当前阶段判定是否允许改尺寸(录制中=false→禁用并交给控制条提示)
+ * @param onDenied 录制中试图缩放时的原因提示回调(交给控制卡说明行)
+ */
+function bindRegionDrag(
+  host: HTMLElement,
+  scaleFactor: () => number,
+  getRegion: () => { x: number; y: number; width: number; height: number } | null,
+  direction: { dx: -1 | 0 | 1; dy: -1 | 0 | 1 },
+  canResize: () => boolean,
+  onDenied: (reason: string) => void,
+): () => void {
+  let session: DragSession | null = null;
+
+  const syncCursor = (): void => {
+    host.style.cursor = dragCursor(direction, canResize());
+  };
+
+  const onPointerDown = (event: PointerEvent): void => {
+    if (event.button !== 0) {
+      return;
+    }
+    const region = getRegion();
+    if (!region) {
+      return;
+    }
+    const resizable = canResize();
+    const factor = scaleFactor();
+    const start = screenPhysical(event, factor);
+    session = {
+      startX: start.x,
+      startY: start.y,
+      regionX: region.x,
+      regionY: region.y,
+      regionW: region.width,
+      regionH: region.height,
+      resizable,
+      moved: false,
+    };
+    host.setPointerCapture(event.pointerId);
+    event.preventDefault();
+    if (!resizable && (direction.dx !== 0 || direction.dy !== 0)) {
+      // 录制中缩放句柄禁用:按下即说明原因,但仍允许拖=移动。
+      onDenied(t("record.hud.resize_disabled"));
+    }
+  };
+
+  const onPointerMove = (event: PointerEvent): void => {
+    if (session === null) {
+      syncCursor();
+      return;
+    }
+    if ((event.buttons & 1) === 0) {
+      return;
+    }
+    const factor = scaleFactor();
+    const now = screenPhysical(event, factor);
+    const offsetX = now.x - session.startX;
+    const offsetY = now.y - session.startY;
+    session.moved = session.moved || Math.abs(offsetX) > 1 || Math.abs(offsetY) > 1;
+    const target = dragTarget(session, direction.dx, direction.dy, offsetX, offsetY);
+    void submitRegion(target);
+  };
+
+  const finish = (event: PointerEvent): void => {
+    if (session !== null) {
+      if (host.hasPointerCapture(event.pointerId)) {
+        host.releasePointerCapture(event.pointerId);
+      }
+      session = null;
+    }
+  };
+
+  host.addEventListener("pointerdown", (event) => void onPointerDown(event));
+  host.addEventListener("pointermove", onPointerMove);
+  host.addEventListener("pointerup", finish);
+  host.addEventListener("pointercancel", finish);
+  host.addEventListener("lostpointercapture", finish);
+
+  return () => {
+    session = null;
+  };
+}
+
+/** 边框窗口的拖动宿主:整窗就是一条边(或角标记),CSS 由 data-side 控制。 */
+function mountBorderView(root: HTMLElement): () => void {
+  document.documentElement.dataset.chrome = "border";
+  const label = getCurrentWindow().label;
+  const direction = BORDER_DRAG_MASK[label] ?? { dx: 0, dy: 0 };
+  const side =
+    direction.dx !== 0 || direction.dy !== 0
+      ? direction.dx !== 0
+        ? "side-x"
+        : "side-y"
+      : "interior";
+  root.className = `record-border-root is-${side}`;
+  root.dataset.dragDirection = `${direction.dx},${direction.dy}`;
+  root.title = "";
+
+  let region: { x: number; y: number; width: number; height: number } | null = null;
+  let resizable = false;
+  const win = getCurrentWindow();
+  // scaleFactor() 返回 Promise,拖动回调里需要同步值——预取一次并缓存;
+  // DPI 改变会重建窗口(由系统重载),缓存值足够。
+  let scaleCache = 1;
+  void win.scaleFactor().then((factor) => {
+    scaleCache = factor;
+  });
+  const scale = (): number => scaleCache;
+
+  const onDenied = (reason: string): void => {
+    void emit(OVERLAY_NOTICE_EVENT, reason);
+  };
+
+  const disposeDrag = bindRegionDrag(
+    root,
+    scale,
+    () => region,
+    direction,
+    () => resizable,
+    onDenied,
+  );
+
+  // 预创建窗口可能错过状态广播(视图重载):挂载即拉一次。
+  void invoke<RecordingHudState>("get_recording_hud_state")
+    .then((state) => {
+      resizable =
+        state.status?.phase === "ready" || state.status?.phase === "countdown";
+      const display = state.region;
+      if (display) {
+        region = display;
+      }
+    })
+    .catch(() => {
+      // 宿主暂不可用:等待下一次 record-hud-state。
+    });
+
+  void listen<RecordingHudState>("record-hud-state", (event) => {
+    const status = event.payload.status;
+    // 就绪/倒计时可改宽高;录制中边框仍接收输入用于移动,缩放被禁用
+    // (按下时交原因提示,delta 按平移语义提交)。
+    resizable = status?.phase === "ready" || status?.phase === "countdown";
+    const display = event.payload.region;
+    if (display) {
+      region = display;
+    }
+  });
+
+  return () => {
+    disposeDrag();
+  };
+}
+
 
 // R3 录制标注层:覆盖录制区域的透明画布 + 标注工具条。
 //
@@ -84,12 +357,10 @@ function messageOf(error: unknown): string {
 }
 
 export function mountRecordOverlay(root: HTMLElement): () => void {
-  // 区域边框是四条不覆盖捕获矩形的细窗,复用标注层页面但不挂编辑器。
+  // 区域边框是四条不覆盖捕获矩形的细窗,复用标注层页面但不挂编辑器;
+  // R4/R5:边框可命中,按下拖动=移动/缩放(录制中缩放按平移提交并给原因)。
   if (new URLSearchParams(location.search).get("chrome") === "border") {
-    document.documentElement.dataset.chrome = "border";
-    root.className = "record-border-root";
-    root.replaceChildren();
-    return () => undefined;
+    return mountBorderView(root);
   }
   root.className = "record-overlay-root";
   root.innerHTML = `
@@ -453,6 +724,26 @@ export function mountRecordOverlay(root: HTMLElement): () => void {
       textSize: event.payload.textSize,
     });
   });
+
+  // R4/R5:就绪态(且未进标注模式)时 overlay 可命中——内部拖动=移动框。
+  // 标注模式或录制中由 Rust 改回穿透,这里的指针事件自然不再到达。
+  const overlayWin = getCurrentWindow();
+  let overlayScale = 1;
+  void overlayWin.scaleFactor().then((factor) => {
+    overlayScale = factor;
+  });
+  bindRegionDrag(
+    root,
+    () => overlayScale,
+    () =>
+      region
+        ? { x: region.x, y: region.y, width: region.width, height: region.height }
+        : null,
+    { dx: 0, dy: 0 },
+    // 内部拖动永远是移动;缩放只走边框句柄,因此 resizable 恒为 false。
+    () => false,
+    (reason) => showNotice(reason),
+  );
 
   editor = mountAnnotationEditor({
     root,
