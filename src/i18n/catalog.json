@@ -619,6 +619,14 @@
     "zh-CN": "已取消保存，本次录制已丢弃。需要时请重新录制。",
     "en": "Save cancelled; this recording was discarded. Record again if needed."
   },
+  "record.status.ready": {
+    "zh-CN": "就绪",
+    "en": "Ready"
+  },
+  "record.status.countdown": {
+    "zh-CN": "倒计时",
+    "en": "Starting"
+  },
   "record.status.recording": {
     "zh-CN": "录制中",
     "en": "Recording"
@@ -658,6 +666,14 @@
   "record.bar.start": {
     "zh-CN": "重新录制",
     "en": "Record again"
+  },
+  "record.bar.start_ready": {
+    "zh-CN": "开始",
+    "en": "Start"
+  },
+  "record.bar.cancel": {
+    "zh-CN": "取消",
+    "en": "Cancel"
   },
   "record.bar.draw": {
     "zh-CN": "标注",

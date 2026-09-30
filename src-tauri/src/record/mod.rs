@@ -206,6 +206,10 @@ impl RecordError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RecordingPhase {
+    /// 就绪:HUD 已就位,等用户按「开始」或空格;不产帧、不计时、不落盘。
+    Ready,
+    /// 倒计时:已确认开始,3-2-1 走完前仍不产帧;期间可取消(无产物)。
+    Countdown,
     Recording,
     Paused,
     Finished,
@@ -231,6 +235,10 @@ pub struct RecordingStatus {
     pub auto_stopped: bool,
     /// 失败或中断时的本地化说明。
     pub error: Option<String>,
+    /// 倒计时剩余毫秒:就绪态无倒计时、录制后为 None。
+    /// `phase == Countdown` 时给出剩余毫秒供前端画 3-2-1。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub countdown_ms: Option<u64>,
 }
 
 /// 停止后的录制产物:临时文件在保存成功或丢弃时删除。
@@ -252,9 +260,17 @@ pub struct RecordingOutput {
     pub interrupted: Option<String>,
 }
 
+/// 确认「开始」后的倒计时长度(墙钟毫秒):record-overlay 画布显示 3-2-1,
+/// 到点转 Recording 才抓第一帧。
+pub const COUNTDOWN_MS: u64 = 3000;
+
 /// 内部阶段:比对外阶段多一个「停止已请求」。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
+    /// 就绪:worker 已spawn但挂起在 wake Condvar,不产帧、不占临时文件以外资源。
+    Ready,
+    /// 倒计时中:到 `Instant` 转 Recording;仍不产帧。
+    Countdown(Instant),
     Recording,
     Paused,
     StopRequested,
@@ -265,6 +281,8 @@ enum Phase {
 impl Phase {
     fn public(self) -> RecordingPhase {
         match self {
+            Self::Ready => RecordingPhase::Ready,
+            Self::Countdown(_) => RecordingPhase::Countdown,
             Self::Recording | Self::StopRequested => RecordingPhase::Recording,
             Self::Paused => RecordingPhase::Paused,
             Self::Finished => RecordingPhase::Finished,
@@ -305,12 +323,21 @@ impl WorkerState {
         }
     }
 
-    /// 当前已录时长(墙钟):录制中随真实时间推进,暂停/停止后取冻结值。
+    /// 当前已录时长(墙钟):录制中随真实时间推进,暂停/停止后取冻结值;
+    /// 就绪与倒计时段不计入(本就冻结为 0)。
     fn elapsed(&self, now: Instant) -> Duration {
         if self.phase == Phase::Recording {
             self.elapsed_frozen + now.saturating_duration_since(self.segment_started_at)
         } else {
             self.elapsed_frozen
+        }
+    }
+
+    /// 倒计时剩余毫秒:只对外展示与前端画布用;非倒计时阶段为 None。
+    fn countdown_remaining_ms(&self, now: Instant) -> Option<u64> {
+        match self.phase {
+            Phase::Countdown(until) => Some(millis(until.saturating_duration_since(now))),
+            _ => None,
         }
     }
 
@@ -342,6 +369,9 @@ impl Shared {
 pub struct RecordingSession {
     shared: Arc<Shared>,
     region: RecordRegion,
+    /// 确认矩形的物理像素(未让出边框/控制条):就绪态 HUD 边框与 overlay
+    /// 按它摆放。`region` 字段则是实际捕获矩形。
+    confirmed: RecordRegion,
     /// 标注仍用确认矩形的坐标系;捕获矩形让出边框或控制条时,合成前平移这段差值。
     annotation_inset: (i32, i32),
     config: RecordConfig,
@@ -350,10 +380,31 @@ pub struct RecordingSession {
 
 impl RecordingSession {
     /// 启动录制。帧源通常为 `MonitorSource`(平台抓屏),测试可注入合成帧源。
+    /// 创建即进入 Recording 并开始抓帧;就绪+倒计时流程用 [`Self::start_ready`]。
     pub fn start(
         region: RecordRegion,
         config: RecordConfig,
         source: impl FrameSource + 'static,
+    ) -> Result<Self, RecordError> {
+        Self::spawn(region, config, source, false)
+    }
+
+    /// 就绪态启动:worker 已创建但挂起在 wake Condvar,不产帧、不计时;
+    /// 用户按「开始」或空格后 [`Self::begin`] 进入 3-2-1 倒计时,
+    /// [`Self::cancel`] 或丢弃会话则干净退出(编码器 Drop 清理临时文件)。
+    pub fn start_ready(
+        region: RecordRegion,
+        config: RecordConfig,
+        source: impl FrameSource + 'static,
+    ) -> Result<Self, RecordError> {
+        Self::spawn(region, config, source, true)
+    }
+
+    fn spawn(
+        region: RecordRegion,
+        config: RecordConfig,
+        source: impl FrameSource + 'static,
+        ready: bool,
     ) -> Result<Self, RecordError> {
         let config = config.sanitized();
         let confirmed = region;
@@ -372,6 +423,9 @@ impl RecordingSession {
             state: Mutex::new(WorkerState::new()),
             wake: Condvar::new(),
         });
+        if ready {
+            shared.lock().phase = Phase::Ready;
+        }
         let worker_shared = Arc::clone(&shared);
         let worker_inset = annotation_inset;
         let worker = std::thread::Builder::new()
@@ -381,10 +435,59 @@ impl RecordingSession {
         Ok(Self {
             shared,
             region,
+            confirmed,
             annotation_inset,
             config,
             worker: Mutex::new(Some(worker)),
         })
+    }
+
+    /// 选区确认的原始矩形:就绪态 HUD 边框/overlay 仍按它显示。
+    pub fn confirmed_region(&self) -> RecordRegion {
+        self.confirmed
+    }
+
+    /// 就绪 → 倒计时:倒计时走完后 worker 才抓第一帧。非就绪态幂等返回当前状态。
+    pub fn begin(&self) -> Result<RecordingStatus, RecordError> {
+        let changed = {
+            let mut state = self.shared.lock();
+            match state.phase {
+                Phase::Ready => {
+                    state.phase =
+                        Phase::Countdown(Instant::now() + Duration::from_millis(COUNTDOWN_MS));
+                    true
+                }
+                _ => false,
+            }
+        };
+        if changed {
+            self.shared.wake.notify_all();
+        }
+        Ok(self.status())
+    }
+
+    /// 就绪/倒计时内取消:让 worker 直接收尾,无帧 → Empty、无产物。
+    /// 已进录制后调用等效于停止请求(由调用方决定是否再取回产物)。
+    pub fn cancel(&self) {
+        {
+            let mut state = self.shared.lock();
+            match state.phase {
+                Phase::Ready | Phase::Countdown(_) => {
+                    state.phase = Phase::StopRequested;
+                }
+                Phase::Recording | Phase::Paused => {
+                    state.freeze_elapsed(Instant::now());
+                    state.phase = Phase::StopRequested;
+                }
+                _ => {}
+            }
+        }
+        self.shared.wake.notify_all();
+    }
+
+    /// 倒计时剩余毫秒:前端画 3-2-1;非倒计时为 None。
+    pub fn countdown_remaining_ms(&self) -> Option<u64> {
+        self.shared.lock().countdown_remaining_ms(Instant::now())
     }
 
     /// 这次会话实际使用的帧率档。
@@ -399,18 +502,20 @@ impl RecordingSession {
 
     /// 当前状态快照(HUD 实时时长与阶段)。
     pub fn status(&self) -> RecordingStatus {
+        let now = Instant::now();
         let state = self.shared.lock();
         RecordingStatus {
             phase: state.phase.public(),
             format: self.config.format,
             frame_count: state.frame_count,
-            elapsed_ms: millis(state.elapsed(Instant::now())),
+            elapsed_ms: millis(state.elapsed(now)),
             width: self.region.width,
             height: self.region.height,
             fps: self.config.fps,
             behind: state.behind,
             auto_stopped: state.auto_stopped,
             error: state.error.as_ref().map(RecordError::user_message),
+            countdown_ms: state.countdown_remaining_ms(now),
         }
     }
 
@@ -531,7 +636,10 @@ impl Drop for RecordingSession {
         // 没有消费方,收尾后直接删除临时文件。
         let abandoned = {
             let mut state = self.shared.lock();
-            if matches!(state.phase, Phase::Recording | Phase::Paused) {
+            if matches!(
+                state.phase,
+                Phase::Ready | Phase::Countdown(_) | Phase::Recording | Phase::Paused
+            ) {
                 state.freeze_elapsed(Instant::now());
                 state.phase = Phase::StopRequested;
                 true
@@ -561,13 +669,36 @@ fn wait_for_slot(shared: &Shared, deadline: Instant) -> bool {
     loop {
         match state.phase {
             Phase::StopRequested => return false,
+            Phase::Finished | Phase::Failed => return false,
+            // 就绪:无限挂起,等 begin/cancel/丢弃唤醒。
+            Phase::Ready => {
+                state = shared
+                    .wake
+                    .wait(state)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+            }
+            // 倒计时:睡到到点转 Recording(到点前仍不产帧);期间唤醒
+            // 重新判定(begin 幂等、cancel/Drop 走 StopRequested)。
+            Phase::Countdown(until) => {
+                let now = Instant::now();
+                if now >= until {
+                    state.phase = Phase::Recording;
+                    state.restart_segment(now);
+                } else {
+                    let (guard, _) = shared
+                        .wake
+                        .wait_timeout(state, until - now)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    state = guard;
+                }
+            }
             Phase::Paused => {
                 state = shared
                     .wake
                     .wait(state)
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
             }
-            _ => {
+            Phase::Recording => {
                 let now = Instant::now();
                 if now >= deadline {
                     return true;
@@ -1269,6 +1400,94 @@ mod tests {
         }
         assert!(has_stroke, "annotation stroke must be encoded into frames");
         let _ = std::fs::remove_file(&output.temp_path);
+    }
+
+    #[test]
+    fn ready_session_produces_no_frames_until_begin() {
+        // 就绪态:worker 挂起,不产帧、不计时。
+        let source = SyntheticSource::new(48, 32);
+        let region = RecordRegion::new(2, 2, 48, 32);
+        let session =
+            RecordingSession::start_ready(region, test_config(RecordFormat::Gif, 60_000), source)
+                .expect("start_ready");
+        assert_eq!(session.status().phase, RecordingPhase::Ready);
+        std::thread::sleep(Duration::from_millis(150));
+        let status = session.status();
+        assert_eq!(status.phase, RecordingPhase::Ready);
+        assert_eq!(status.frame_count, 0);
+        assert_eq!(status.elapsed_ms, 0);
+    }
+
+    #[test]
+    fn countdown_then_records_first_frame() {
+        // 就绪 → begin → 倒计时 → 录制。倒计时期间不产帧。
+        let source = SyntheticSource::new(48, 32);
+        let region = RecordRegion::new(2, 2, 48, 32);
+        let session =
+            RecordingSession::start_ready(region, test_config(RecordFormat::Gif, 60_000), source)
+                .expect("start_ready");
+        let status = session.begin().expect("begin");
+        assert_eq!(status.phase, RecordingPhase::Countdown);
+        // 倒计时剩余毫秒应在 COUNTDOWN_MS 以内。
+        let remaining = session.countdown_remaining_ms().expect("countdown");
+        assert!(remaining <= COUNTDOWN_MS);
+        // 倒计时到点前:仍不产帧。
+        assert_eq!(session.status().frame_count, 0);
+        // 等倒计时走完(上限多一点余量)。
+        let recording = wait_until(Duration::from_secs(5), || {
+            session.status().phase == RecordingPhase::Recording
+        });
+        assert!(recording, "countdown must end in recording");
+        run_until_frames(&session, 1);
+        let output = session.stop().expect("stop");
+        assert!(output.temp_path.exists());
+        let _ = std::fs::remove_file(&output.temp_path);
+    }
+
+    #[test]
+    fn cancel_during_ready_is_clean_and_produces_no_output() {
+        // 就绪态取消:会话收尾,无产物。
+        let source = SyntheticSource::new(48, 32);
+        let region = RecordRegion::new(2, 2, 48, 32);
+        let session =
+            RecordingSession::start_ready(region, test_config(RecordFormat::Gif, 60_000), source)
+                .expect("start_ready");
+        session.cancel();
+        // 等待 worker 收尾。
+        let done = wait_until(Duration::from_secs(5), || {
+            session.status().phase == RecordingPhase::Failed
+        });
+        assert!(done, "cancelled ready session must fail (Empty)");
+        assert!(session.output().is_none());
+    }
+
+    #[test]
+    fn cancel_during_countdown_is_clean_and_produces_no_output() {
+        let source = SyntheticSource::new(48, 32);
+        let region = RecordRegion::new(2, 2, 48, 32);
+        let session =
+            RecordingSession::start_ready(region, test_config(RecordFormat::Gif, 60_000), source)
+                .expect("start_ready");
+        session.begin().expect("begin");
+        session.cancel();
+        let done = wait_until(Duration::from_secs(5), || {
+            session.status().phase == RecordingPhase::Failed
+        });
+        assert!(done, "cancelled countdown session must fail (Empty)");
+        assert!(session.output().is_none());
+    }
+
+    #[test]
+    fn begin_is_idempotent_during_countdown() {
+        let source = SyntheticSource::new(48, 32);
+        let region = RecordRegion::new(2, 2, 48, 32);
+        let session =
+            RecordingSession::start_ready(region, test_config(RecordFormat::Gif, 60_000), source)
+                .expect("start_ready");
+        session.begin().expect("first begin");
+        let again = session.begin().expect("second begin");
+        assert_eq!(again.phase, RecordingPhase::Countdown);
+        session.cancel();
     }
 
     #[test]

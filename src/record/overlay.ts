@@ -9,7 +9,13 @@ import {
 } from "../annotation";
 import { REGION_TOOL_FIELDS, type RegionTools } from "../settings";
 import { t } from "../i18n";
-import type { HudCapabilities, HudRegion, HudSnapshot, RecordingHudState } from "./types";
+import type {
+  HudCapabilities,
+  HudRegion,
+  HudSnapshot,
+  RecordingHudState,
+  RecordingStatus,
+} from "./types";
 import "./record.css";
 
 // R3 录制标注层:覆盖录制区域的透明画布 + 标注工具条。
@@ -23,6 +29,8 @@ import "./record.css";
 
 const POLL_MS = 500;
 const SYNC_MS = 200;
+/** 倒计时画布刷新间隔:倒计时期间用 RAF 频率轮询状态,让 3-2-1 平滑倒数。 */
+const COUNTDOWN_POLL_MS = 80;
 /** 底部提示与工具条、完成条或控制条之间至少留出的间距;再近就把提示交给控制卡片。 */
 const NOTICE_GAP = 8;
 const OVERLAY_NOTICE_EVENT = "record-overlay-notice";
@@ -122,6 +130,8 @@ export function mountRecordOverlay(root: HTMLElement): () => void {
   let raf = 0;
   let timer: number | null = null;
   let syncTimer: number | null = null;
+  let countdownTimer: number | null = null;
+  let status: RecordingStatus | null = null;
   let synced = "[]";
   let noticeMessage = "";
   let publishedNotice = "";
@@ -159,6 +169,30 @@ export function mountRecordOverlay(root: HTMLElement): () => void {
       ctx.drawImage(snapshot, 0, 0, canvas.width, canvas.height);
     }
     editor?.paint(ctx);
+    drawCountdown();
+  };
+
+  /** 倒计时数字:覆盖区域中央、穿透画布不入画(内容保护已排除录制)。 */
+  const drawCountdown = (): void => {
+    const remaining = status?.countdownMs;
+    if (status?.phase !== "countdown" || typeof remaining !== "number" || remaining <= 0) {
+      return;
+    }
+    const n = Math.max(1, Math.ceil(remaining / 1000));
+    const cx = canvas.width / 2;
+    const cy = canvas.height / 2;
+    const size = Math.min(canvas.width, canvas.height) * 0.22;
+    ctx.save();
+    ctx.font = `600 ${size}px system-ui, sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = "rgba(0, 0, 0, 0.42)";
+    ctx.beginPath();
+    ctx.arc(cx, cy, size * 0.78, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#ffffff";
+    ctx.fillText(String(n), cx, cy);
+    ctx.restore();
   };
 
   const scheduleDraw = (): void => {
@@ -308,6 +342,8 @@ export function mountRecordOverlay(root: HTMLElement): () => void {
     if (state.region) {
       region = state.region;
     }
+    status = state.status;
+    syncCountdownTimer();
     if (state.status !== null) {
       // 打开事件可能早于视图挂载(极早期录制/开发重载):见到会话就持续同步。
       startTimers();
@@ -349,6 +385,24 @@ export function mountRecordOverlay(root: HTMLElement): () => void {
     if (syncTimer !== null) {
       window.clearInterval(syncTimer);
       syncTimer = null;
+    }
+    if (countdownTimer !== null) {
+      window.clearInterval(countdownTimer);
+      countdownTimer = null;
+    }
+  };
+
+  /** 倒计时期间提高轮询频率让 3-2-1 平滑;结束后回落到普通轮询。 */
+  const syncCountdownTimer = (): void => {
+    const active = status?.phase === "countdown";
+    if (active && countdownTimer === null) {
+      countdownTimer = window.setInterval(() => void refresh(), COUNTDOWN_POLL_MS);
+    } else if (!active && countdownTimer !== null) {
+      window.clearInterval(countdownTimer);
+      countdownTimer = null;
+    }
+    if (active) {
+      scheduleDraw();
     }
   };
 
@@ -441,6 +495,11 @@ export function mountRecordOverlay(root: HTMLElement): () => void {
     initialized = false;
     interactive = false;
     snapshot = null;
+    status = null;
+    if (countdownTimer !== null) {
+      window.clearInterval(countdownTimer);
+      countdownTimer = null;
+    }
     drawBar.hidden = true;
     showNotice("");
     editor?.clear();

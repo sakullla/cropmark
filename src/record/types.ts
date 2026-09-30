@@ -1,7 +1,13 @@
 // R3 录制 HUD:Rust `record::hud` 载荷的前端镜像。
 // 字段名与 serde camelCase 对齐;时间统一为毫秒。
 
-export type RecordingPhase = "recording" | "paused" | "finished" | "failed";
+export type RecordingPhase =
+  | "ready"
+  | "countdown"
+  | "recording"
+  | "paused"
+  | "finished"
+  | "failed";
 
 export interface RecordingStatus {
   phase: RecordingPhase;
@@ -16,6 +22,8 @@ export interface RecordingStatus {
   behind: boolean;
   autoStopped: boolean;
   error: string | null;
+  /** 倒计时剩余毫秒(phase === "countdown" 时给出,否则省略)。 */
+  countdownMs?: number;
 }
 
 export interface RecordingPreview {
@@ -67,6 +75,8 @@ export interface RecordingHudState {
   preview: RecordingPreview | null;
   /** 未开录时也是当前格式会使用的帧率档。 */
   fps: number;
+  /** 当前格式直给字段:就绪态(尚无 status)也显示格式徽标。 */
+  format: string;
 }
 
 export type StopOutcome =

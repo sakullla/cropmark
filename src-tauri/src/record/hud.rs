@@ -267,6 +267,9 @@ pub struct RecordingHudState {
     pub preview: Option<RecordingPreviewInfo>,
     /// 当前格式实际会使用的帧率档(录制中与会话一致)。
     pub fps: u32,
+    /// 就绪态直给的格式:状态里尚无 status 时控制条也显示格式徽标。
+    /// 与 `settings::current_recording().format` 同步;有 status 时用 status.format。
+    pub format: RecordFormat,
 }
 
 /// 停止后先播放的成片。`temp_path` 只指向临时文件。
@@ -429,6 +432,7 @@ pub fn close(app: &AppHandle) {
         hud.paused_for_draw = false;
         hud.capture = None;
         hud.control_screen = None;
+        hud.control_height = CONTROL_HEIGHT;
         hud.preview.take()
     };
     if let Some(output) = preview {
@@ -1061,6 +1065,7 @@ pub fn state_snapshot(app: &AppHandle) -> RecordingHudState {
         limit_ms: MAX_RECORDING_MS,
         preview: live_preview.as_ref().map(preview_info),
         fps,
+        format: recording_settings.format,
     }
 }
 
@@ -1098,8 +1103,8 @@ pub fn get_recording_hud_state(app: AppHandle) -> RecordingHudState {
     state_snapshot(&app)
 }
 
-/// 暂停/继续/开始控制。开始仅在无活动会话时按上次区域启动;
-/// 已有活动会话时幂等返回当前状态(入口已启动录制)。
+/// 暂停/继续/开始控制。开始在无活动会话时按上次区域启动;已有活动会话时:
+/// 就绪态 → 倒计时(`begin`),其它阶段幂等返回当前状态(防止重复开始)。
 #[tauri::command]
 pub fn recording_control(app: AppHandle, action: String) -> Result<RecordingStatus, String> {
     let result = match action.as_str() {
@@ -1114,7 +1119,15 @@ pub fn recording_control(app: AppHandle, action: String) -> Result<RecordingStat
                 .unwrap_or(Err(RecordError::NotRunning))
                 .map_err(|error| error.user_message())
         }
-        "start" => start_from_hud(&app),
+        "start" => {
+            let existing = session::with_recording(&app, |recording| recording.begin());
+            match existing {
+                Some(Ok(status)) => Ok(status),
+                Some(Err(error)) => Err(error.user_message()),
+                // 无会话:退到「重新录制」路径。
+                None => start_from_hud(&app),
+            }
+        }
         other => Err(i18n::tp(
             "error.record.unknown_action",
             &[("action", other)],
@@ -1157,7 +1170,6 @@ fn start_from_hud(app: &AppHandle) -> Result<RecordingStatus, String> {
     // 绘制内容不会继续显示或被误并入新录制。
     reset_overlay(app);
     session::refresh_tray_menu(app);
-    ui::show_toast_key(app, "toast.recording_started");
     broadcast_state(app);
     session::with_recording(app, |recording| recording.status())
         .ok_or_else(|| RecordError::NotRunning.user_message())
@@ -1165,6 +1177,7 @@ fn start_from_hud(app: &AppHandle) -> Result<RecordingStatus, String> {
 
 /// 停止并先播放(控制条「停止」/托盘停止/自动停止后的收尾)。
 /// 不打开保存对话框,保存目录里也不会出现成品。
+/// 就绪/倒计时内调用按取消处理:直接收尾、无产物、不进入预览。
 #[tauri::command]
 pub async fn stop_recording_from_hud(app: AppHandle) -> RecordingStopOutcome {
     let Some(recording) = session::take_recording_session(&app) else {
@@ -1173,6 +1186,16 @@ pub async fn stop_recording_from_hud(app: AppHandle) -> RecordingStopOutcome {
         }
         return RecordingStopOutcome::Empty;
     };
+    let pre_phase = recording.status().phase;
+    if matches!(pre_phase, RecordingPhase::Ready | RecordingPhase::Countdown) {
+        // 就绪/倒计时取消:不产帧 → stop 必走 Empty;这里只负责干净收尾
+        // (Drop 已删临时文件),收 HUD 并保持无 pending 残留。
+        recording.cancel();
+        let _ = tauri::async_runtime::spawn_blocking(move || drop(recording)).await;
+        close(&app);
+        session::refresh_tray_menu(&app);
+        return RecordingStopOutcome::Discarded;
+    }
     let stopped = tauri::async_runtime::spawn_blocking(move || recording.stop()).await;
     let output = match stopped {
         Ok(Ok(output)) => output,
@@ -1898,6 +1921,7 @@ mod tests {
             limit_ms: MAX_RECORDING_MS,
             preview: None,
             fps: 30,
+            format: RecordFormat::Mp4,
         };
         let json = serde_json::to_value(state).unwrap();
         assert_eq!(json["hasContext"], true);

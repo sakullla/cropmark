@@ -1128,11 +1128,13 @@ fn start_recording_from_selection(
             return Err(CaptureError::api("error.record.region"));
         }
     };
-    // 壳上已确认的标注跟着选区平移到录制区域坐标系,首次抓帧即合并进画面;
-    // 录制中的实时标注由后续 HUD 经 `with_recording` 同步。
+    // 壳上已确认的标注跟着选区平移到录制区域坐标系,开始后首次抓帧即合并进画面;
+    // 录制中的实时标注由 HUD 经 `with_recording` 同步。
     let translated =
         crate::annotate::translated_all(&annotations, -(selection.x as f64), -(selection.y as f64));
-    let recording = match crate::record::RecordingSession::start(
+    // ADR-4 就绪态:确认后不直接开录,session 就绪启动(worker 挂起不产帧),
+    // HUD 按确认矩形展示格式/fps/开始/取消;开始或空格才进倒计时。
+    let recording = match crate::record::RecordingSession::start_ready(
         region,
         config,
         crate::record::MonitorSource::new(monitor.clone()),
@@ -1147,16 +1149,17 @@ fn start_recording_from_selection(
         }
     };
     recording.set_annotations(translated);
+    // HUD 边框与 overlay 按用户确认的原始矩形摆放(不是让出后的捕获矩形):
+    // 就绪态显示的是将要录制的区域,不是内部让位后的裁剪。
+    let display_region = recording.confirmed_region();
     {
         let runtime = app.state::<CaptureRuntime>();
         *lock(&runtime.recording) = Some(recording);
     }
     // 选区会话正常结束(不是取消):隐藏会话窗、恢复产品表面并释放槽位,
-    // 录制在后台独立继续;不广播 capture-cancelled。
+    // 录制会话进入就绪态由 HUD 接管;不广播 capture-cancelled。
     release_capture_for_recording(app, expected);
-    // R3:录制开始即打开控制条与标注层(位置/内容由 record/hud 决定)。
-    crate::record::hud::open(app, region, monitor);
-    ui::show_toast_key(app, "toast.recording_started");
+    crate::record::hud::open(app, display_region, monitor);
     refresh_tray_menu(app);
     Ok(())
 }

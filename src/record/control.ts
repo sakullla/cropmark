@@ -31,6 +31,8 @@ const CONTROL_HEIGHT_EXPANDED = 248;
 const OVERLAY_NOTICE_EVENT = "record-overlay-notice";
 
 const PHASE_KEYS: Record<RecordingStatus["phase"], CatalogKey> = {
+  ready: "record.status.ready",
+  countdown: "record.status.countdown",
   recording: "record.status.recording",
   paused: "record.status.paused",
   finished: "record.status.finished",
@@ -481,14 +483,27 @@ export function mountRecordControl(root: HTMLElement): () => void {
     const fpsLabel = t("record.bar.fps", {
       fps: String(preview?.fps ?? status?.fps ?? state?.fps ?? 0),
     });
+    const formatLabel = (status?.format ?? preview?.format ?? state?.format ?? "").toUpperCase();
+    const phaseIsReady = status?.phase === "ready" || status?.phase === "countdown";
     time.textContent = status
-      ? `${formatDuration(status.elapsedMs)} / ${formatDuration(state?.limitMs ?? 0)} · ${fpsLabel}`
+      ? phaseIsReady
+        ? `${formatLabel} · ${fpsLabel}`
+        : `${formatDuration(status.elapsedMs)} / ${formatDuration(state?.limitMs ?? 0)} · ${fpsLabel}`
       : preview
         ? `${formatDuration(preview.durationMs)} · ${fpsLabel}`
         : state?.fps
-      ? fpsLabel
-      : "--:--";
-    phase.textContent = status ? t(PHASE_KEYS[status.phase]) : "";
+          ? `${formatLabel} · ${fpsLabel}`
+          : "--:--";
+    // 倒计时时阶段行带上剩余秒数:降级平台(overlay 隐藏)也能看到倒数。
+    const countdownLeft =
+      status?.phase === "countdown" && typeof status.countdownMs === "number"
+        ? Math.max(1, Math.ceil(status.countdownMs / 1000))
+        : 0;
+    phase.textContent = status
+      ? countdownLeft > 0
+        ? `${t(PHASE_KEYS[status.phase])} ${countdownLeft}`
+        : t(PHASE_KEYS[status.phase])
+      : "";
     root.dataset.phase = status?.phase ?? (preview ? "finished" : "idle");
     root.classList.toggle("is-paused", status?.phase === "paused");
     root.classList.toggle("is-stopped", reviewing);
@@ -504,7 +519,7 @@ export function mountRecordControl(root: HTMLElement): () => void {
       releasePreview();
     }
 
-    toggle.hidden = !status || reviewing;
+    toggle.hidden = !status || reviewing || phaseIsReady;
     // 标注模式期间暂停/继续不可用:先「完成标注」退出绘制层再控制录制
     // (降级平台的不透明绘制层会在恢复录制后入画)。
     toggle.disabled = busy || state?.interactive === true;
@@ -518,18 +533,22 @@ export function mountRecordControl(root: HTMLElement): () => void {
       toggle.hidden = true;
     }
 
+    // 就绪/倒计时态:停止按钮变成「取消」——stop_recording_from_hud 此时走取消收尾。
+    const cancelling = status?.phase === "ready" || status?.phase === "countdown";
     stop.hidden = !status && !reviewing;
     stop.disabled = busy;
     stop.dataset.action = reviewing ? "save" : "stop";
-    stop.textContent = reviewing
-      ? t("record.bar.save")
-      : status?.phase === "failed"
-        ? t("record.bar.close")
-        : t("record.bar.stop");
+    stop.textContent = cancelling
+      ? t("record.bar.cancel")
+      : reviewing
+        ? t("record.bar.save")
+        : status?.phase === "failed"
+          ? t("record.bar.close")
+          : t("record.bar.stop");
     discard.hidden = !reviewing;
     discard.disabled = busy;
 
-    draw.hidden = !status || reviewing;
+    draw.hidden = !status || reviewing || phaseIsReady;
     const drawCapable = status?.phase === "recording" || status?.phase === "paused";
     draw.disabled = busy || !drawCapable;
     draw.textContent = state?.interactive
@@ -552,8 +571,12 @@ export function mountRecordControl(root: HTMLElement): () => void {
     notice.textContent = noticeInfo.text;
     notice.classList.toggle("is-error", noticeInfo.error);
 
-    start.hidden = status !== null || state?.preview != null || !state?.hasContext;
+    // 就绪态「开始」为独立按钮;倒计时已开始则不重复显示,取消仍可用。
+    const showReadyStart = status?.phase === "ready";
+    const showRestart = status === null && state?.preview == null && state?.hasContext === true;
+    start.hidden = !(showReadyStart || showRestart);
     start.disabled = busy;
+    start.textContent = showReadyStart ? t("record.bar.start_ready") : t("record.bar.start");
     close.hidden = status !== null || state?.preview != null;
     close.disabled = busy;
     renderPending();
@@ -736,6 +759,18 @@ export function mountRecordControl(root: HTMLElement): () => void {
       void savePreview();
     } else {
       void stopRecording();
+    }
+  });
+  window.addEventListener("keydown", (event) => {
+    const phaseNow = state?.status?.phase;
+    if (phaseNow === "ready" || phaseNow === "countdown") {
+      if (event.key === " " || event.code === "Space") {
+        event.preventDefault();
+        void runControl("start");
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        void stopRecording();
+      }
     }
   });
   discard.addEventListener("click", () => void discardPreview());
