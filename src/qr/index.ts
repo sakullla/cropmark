@@ -82,7 +82,7 @@ export function mountQrModel(options: QrModelOptions): QrModel {
       <h2 data-i18n="preview.qr_panel.title">${t("preview.qr_panel.title")}</h2>
       <button type="button" class="icon-btn" data-qr-action="close-panel" data-i18n-aria-label="preview.qr_panel.close" aria-label="${t("preview.qr_panel.close")}">${icons.close}</button>
     </div>
-    <div class="qr-panel-list" data-qr-list></div>
+    <div class="qr-panel-list" data-qr-list role="list"></div>
   `;
   host.append(panel);
 
@@ -170,6 +170,8 @@ export function mountQrModel(options: QrModelOptions): QrModel {
     contents?.forEach((content, index) => {
       const item = document.createElement("div");
       item.className = "qr-item";
+      // R2:list/listitem 语义:辅助技术可逐条枚举结果并报出总数。
+      item.setAttribute("role", "listitem");
       const text = document.createElement("div");
       text.className = "qr-item-text";
       text.textContent = content;

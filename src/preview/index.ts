@@ -89,7 +89,7 @@ export function mountPreview(root: HTMLElement): () => void {
         <span class="mark" aria-hidden="true"></span>
         <span class="name">Cropmark</span>
       </div>
-      <p class="preview-note" data-drag-handle data-tauri-drag-region>${t("preview.copied_clean")}</p>
+      <p class="preview-note" role="status" data-drag-handle data-tauri-drag-region>${t("preview.copied_clean")}</p>
       <button type="button" class="preview-close icon-btn" data-action="close" data-i18n-aria-label="preview.close" aria-label="关闭">${icons.close}</button>
     </header>
     <div class="preview-toolbar" data-preview-toolbar>
@@ -242,6 +242,8 @@ export function mountPreview(root: HTMLElement): () => void {
   let cropCurrent: Point | null = null;
   // R7:长截图预览提供「再来一次」;随 `get_preview_context` 判定并跟随功能开关。
   let longCaptureAgain = false;
+  // R2:录制内容不做旋转/裁剪变换;随会话模式判定,禁用时给出原因词条。
+  let recordingContent = false;
   let transformUndo = false;
   let transformRedo = false;
   const cropEdgeColor = resolveCanvasColor(
@@ -927,13 +929,42 @@ export function mountPreview(root: HTMLElement): () => void {
     qrModel?.activate();
   };
 
+  // R2:禁用原因复用共享 data-tooltip 气泡(与设置页同惯例):hover/聚焦
+  // 可读到当前语言的原因词条;启用时移除,不残留空气泡。
+  const setDisabledReason = (button: HTMLButtonElement, reason: CatalogKey | null): void => {
+    if (reason === null) {
+      delete button.dataset.tooltip;
+    } else {
+      button.dataset.tooltip = t(reason);
+    }
+  };
+
   // R6:裁剪模式的界面状态(工具条按钮、裁剪条与确认可用性)。
   const syncCropUi = (): void => {
     cropBar.hidden = !cropping;
     cropBtn.classList.toggle("active", cropping);
-    rotateLeftBtn.disabled = cropping;
-    rotateRightBtn.disabled = cropping;
+    rotateLeftBtn.disabled = cropping || recordingContent;
+    rotateRightBtn.disabled = cropping || recordingContent;
+    cropBtn.disabled = recordingContent;
     cropConfirmBtn.disabled = !cropping || busy || cropRect() === null;
+    // 裁剪确认的三种禁用态各有原因:未进入裁剪 / 忙 / 未拖出选区。
+    setDisabledReason(
+      cropConfirmBtn,
+      !cropping
+        ? "preview.crop.disabled_idle"
+        : busy
+          ? "preview.crop.disabled_busy"
+          : cropRect() === null
+            ? "preview.crop.disabled_no_selection"
+            : null,
+    );
+    // 录制内容不支持旋转/裁剪;裁剪中禁用旋转属模式互斥,无需原因词条。
+    const transformReason: CatalogKey | null = recordingContent
+      ? "preview.action.recording_disabled"
+      : null;
+    setDisabledReason(rotateLeftBtn, transformReason);
+    setDisabledReason(rotateRightBtn, transformReason);
+    setDisabledReason(cropBtn, transformReason);
     if (cropping) {
       placeCropBar();
     } else {
@@ -957,7 +988,7 @@ export function mountPreview(root: HTMLElement): () => void {
   };
 
   const enterCrop = (): void => {
-    if (cropping || !frame || busy) {
+    if (cropping || !frame || busy || recordingContent) {
       return;
     }
     cropping = true;
@@ -1529,6 +1560,7 @@ export function mountPreview(root: HTMLElement): () => void {
     cropping = false;
     cropStart = null;
     cropCurrent = null;
+    recordingContent = false;
     void (async () => {
       // 再标注模式由会话决定(与帧同源):先取回写目标,再取同一会话的帧,
       // 避免普通截取预览被误判为回写模式。
@@ -1544,10 +1576,14 @@ export function mountPreview(root: HTMLElement): () => void {
         if (generation !== previewLoad) return;
         longCaptureAgain =
           context.mode === "longcapture" && context.longCaptureEnabled === true;
+        recordingContent = context.mode === "recording";
       } catch {
         longCaptureAgain = false;
+        recordingContent = false;
       }
       syncAgainUi();
+      // R2:录制内容的旋转/裁剪禁用态与原因词条随会话模式落位。
+      syncCropUi();
       let bytes: ArrayBuffer;
       try {
         bytes = await invoke<ArrayBuffer>("get_preview_frame");
@@ -1884,6 +1920,8 @@ export function mountPreview(root: HTMLElement): () => void {
   return () => {
     refreshOptionLabels();
     renderNote();
+    // R2:禁用原因词条随语言切换重渲染。
+    syncCropUi();
     placeCropBar();
     requestOverflowLayout();
   };
