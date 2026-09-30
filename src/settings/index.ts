@@ -1,7 +1,9 @@
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { handleRadioGroupKeydown } from "../a11y";
 import { autostartHelp, hotkeyErrorText } from "../errors";
+import { NOTICE_AUTO_HIDE_MS } from "../feedback";
 import type { AnnotationTool } from "../annotation";
 import { t, type CatalogKey } from "../i18n";
 import { icons } from "../icons";
@@ -245,6 +247,7 @@ export function mountSettings(root: HTMLElement): () => void {
         <div class="settings-main">
           <p class="notice" role="alert" hidden></p>
           <p class="notice tray-notice" data-tray-notice role="status" hidden></p>
+          <p class="notice notice-success" data-saved-notice role="status" hidden></p>
           <div class="settings-panels" data-settings-panels>
             <section class="settings-panel" role="tabpanel" id="settings-panel-capture" aria-labelledby="settings-tab-capture" data-panel="capture">
               <section class="card" aria-labelledby="group-capture-title">
@@ -498,6 +501,7 @@ export function mountSettings(root: HTMLElement): () => void {
 
   const noticeEl = root.querySelector(".notice");
   const trayNoticeEl = root.querySelector("[data-tray-notice]");
+  const savedNoticeEl = root.querySelector("[data-saved-notice]");
   const navRoot = root.querySelector("[data-settings-nav]");
   const panelsRoot = root.querySelector("[data-settings-panels]");
   const hotkeyRoot = root.querySelector("[data-hotkeys]");
@@ -536,6 +540,7 @@ export function mountSettings(root: HTMLElement): () => void {
   if (
     !(noticeEl instanceof HTMLElement) ||
     !(trayNoticeEl instanceof HTMLElement) ||
+    !(savedNoticeEl instanceof HTMLElement) ||
     !(navRoot instanceof HTMLElement) ||
     !(panelsRoot instanceof HTMLElement) ||
     !(hotkeyRoot instanceof HTMLElement) ||
@@ -1052,6 +1057,7 @@ export function mountSettings(root: HTMLElement): () => void {
     try {
       const settings = await invoke<UiSettings>("set_export_appearance", { appearance: next });
       render(settings);
+      notifySaved();
     } catch (error) {
       showInvokeError(error);
     } finally {
@@ -1064,6 +1070,20 @@ export function mountSettings(root: HTMLElement): () => void {
     const detail = error instanceof Error ? error.message : String(error);
     noticeEl.hidden = false;
     noticeEl.textContent = t("settings.error.invoke_failed", { detail });
+  };
+
+  // R3:设置写回成功的短暂反馈行;role=status、非模态、不抢焦点,
+  // 按共享时长自动隐藏。只在用户发起的 apply 成功路径置位,
+  // 后台静默刷新(refresh)与失败路径(showInvokeError)均不触发。
+  let savedNoticeTimer = 0;
+  const notifySaved = (): void => {
+    savedNoticeEl.textContent = t("settings.saved");
+    savedNoticeEl.hidden = false;
+    window.clearTimeout(savedNoticeTimer);
+    savedNoticeTimer = window.setTimeout(() => {
+      savedNoticeEl.hidden = true;
+      savedNoticeEl.textContent = "";
+    }, NOTICE_AUTO_HIDE_MS);
   };
 
   const refresh = async (): Promise<void> => {
@@ -1085,6 +1105,7 @@ export function mountSettings(root: HTMLElement): () => void {
           : await invoke<UiSettings>("set_hotkey", { mode: slot, accelerator });
       recording = null;
       render(settings);
+      notifySaved();
     } catch (error) {
       showInvokeError(error);
     } finally {
@@ -1097,6 +1118,7 @@ export function mountSettings(root: HTMLElement): () => void {
     try {
       const settings = await invoke<UiSettings>("set_region_tools", { tools: next });
       render(settings);
+      notifySaved();
     } catch (error) {
       showInvokeError(error);
     } finally {
@@ -1111,6 +1133,7 @@ export function mountSettings(root: HTMLElement): () => void {
         settings: next,
       });
       render(settings);
+      notifySaved();
     } catch (error) {
       showInvokeError(error);
     } finally {
@@ -1125,6 +1148,7 @@ export function mountSettings(root: HTMLElement): () => void {
         settings: next,
       });
       render(settings);
+      notifySaved();
     } catch (error) {
       showInvokeError(error);
     } finally {
@@ -1137,6 +1161,7 @@ export function mountSettings(root: HTMLElement): () => void {
     try {
       const settings = await invoke<UiSettings>("set_pin_settings", { settings: next });
       render(settings);
+      notifySaved();
     } catch (error) {
       showInvokeError(error);
     } finally {
@@ -1150,6 +1175,7 @@ export function mountSettings(root: HTMLElement): () => void {
     try {
       const settings = await invoke<UiSettings>("set_recording_settings", { settings: next });
       render(settings);
+      notifySaved();
     } catch (error) {
       showInvokeError(error);
     } finally {
@@ -1162,6 +1188,7 @@ export function mountSettings(root: HTMLElement): () => void {
     try {
       const settings = await invoke<UiSettings>("set_language", { language });
       render(settings);
+      notifySaved();
     } catch (error) {
       showInvokeError(error);
     } finally {
@@ -1501,44 +1528,7 @@ export function mountSettings(root: HTMLElement): () => void {
     void applyLanguageSetting(value);
   });
 
-  // radio 组方向键漫游(R6):方向键/Home/End 移动焦点并选中目标项,
-  // 选中走既有点击委托,行为与指针完全一致。
-  const handleRadioGroupKeydown = (
-    event: KeyboardEvent,
-    container: HTMLElement,
-    selector: string,
-  ): void => {
-    const keys = ["ArrowLeft", "ArrowUp", "ArrowRight", "ArrowDown", "Home", "End"];
-    if (!keys.includes(event.key)) {
-      return;
-    }
-    const buttons = Array.from(
-      container.querySelectorAll<HTMLButtonElement>(selector),
-    ).filter((button) => !button.disabled);
-    if (buttons.length === 0) {
-      return;
-    }
-    event.preventDefault();
-    const currentIndex = buttons.indexOf(document.activeElement as HTMLButtonElement);
-    let nextIndex: number;
-    if (event.key === "Home") {
-      nextIndex = 0;
-    } else if (event.key === "End") {
-      nextIndex = buttons.length - 1;
-    } else {
-      const delta = event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1;
-      nextIndex =
-        currentIndex < 0
-          ? delta > 0
-            ? 0
-            : buttons.length - 1
-          : (currentIndex + delta + buttons.length) % buttons.length;
-    }
-    const target = buttons[nextIndex];
-    target.focus();
-    target.click();
-  };
-
+  // radio 组方向键漫游(R6)已提取到 src/a11y.ts 共享;此处仅绑定。
   languageRoot.addEventListener("keydown", (event) => {
     handleRadioGroupKeydown(event, languageRoot, "[data-language-value]");
   });
@@ -1566,7 +1556,13 @@ export function mountSettings(root: HTMLElement): () => void {
     const next = switchEl.getAttribute("aria-checked") !== "true";
     setApplying(true);
     void invoke<UiSettings>("set_autostart_enabled", { enabled: next })
-      .then(render)
+      .then((settings) => {
+        render(settings);
+        // 系统要求批准/拒绝等场景后端回带 message,属失败语义,不报成功。
+        if (!settings.autostart.message) {
+          notifySaved();
+        }
+      })
       .catch(showInvokeError)
       .finally(() => {
         setApplying(false);

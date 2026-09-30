@@ -731,6 +731,10 @@
     "zh-CN": "录制中无法调整大小；拖动只能移动录制框。停止并重新开始才能改尺寸。",
     "en": "Resizing is unavailable while recording; dragging only moves the frame. Stop and start a new recording to change its size."
   },
+  "record.hud.keys_hint": {
+    "zh-CN": "空格 暂停/继续 · Esc 停止并保存",
+    "en": "Space pauses or resumes · Esc stops and saves"
+  },
   "record.bar.fps": {
     "zh-CN": "{fps} 帧/秒",
     "en": "{fps} fps"
@@ -1162,6 +1166,14 @@
   "settings.hotkeys.hint": {
     "zh-CN": "点击热键按钮后按下新组合，Esc 取消；改动立即生效。",
     "en": "Click a hotkey button, then press the new combination; press Esc to cancel. Changes take effect immediately."
+  },
+  "settings.hotkey.error_prefix": {
+    "zh-CN": "热键未能应用：{detail}",
+    "en": "The hotkey could not be applied: {detail}"
+  },
+  "settings.saved": {
+    "zh-CN": "设置已保存。",
+    "en": "Settings saved."
   },
   "settings.hotkeys.clipboard_pin_label": {
     "zh-CN": "从剪贴板贴图",
@@ -1987,6 +1999,22 @@
     "zh-CN": "取消",
     "en": "Cancel"
   },
+  "preview.crop.disabled_idle": {
+    "zh-CN": "先点「裁剪」进入裁剪模式",
+    "en": "Enter crop mode first"
+  },
+  "preview.crop.disabled_busy": {
+    "zh-CN": "正在处理，请稍候",
+    "en": "Working, please wait"
+  },
+  "preview.crop.disabled_no_selection": {
+    "zh-CN": "先在画面上拖出要保留的区域",
+    "en": "Drag out the area to keep first"
+  },
+  "preview.action.recording_disabled": {
+    "zh-CN": "录制内容不支持旋转或裁剪",
+    "en": "Recordings cannot be rotated or cropped"
+  },
   "preview.action.delete_annotation": {
     "zh-CN": "删除标注",
     "en": "Delete annotation"
@@ -2062,6 +2090,22 @@
   "preview.note.ocr_running": {
     "zh-CN": "正在识别…",
     "en": "Recognizing…"
+  },
+  "preview.note.ocr_stage.preparing": {
+    "zh-CN": "正在准备识别…",
+    "en": "Preparing recognition…"
+  },
+  "preview.note.ocr_stage.recognizing": {
+    "zh-CN": "正在识别文字…",
+    "en": "Recognizing text…"
+  },
+  "preview.note.ocr_stage.retrying": {
+    "zh-CN": "正在重试识别…",
+    "en": "Retrying recognition…"
+  },
+  "preview.note.ocr_stage.post_processing": {
+    "zh-CN": "正在整理识别结果…",
+    "en": "Organizing the results…"
   },
   "preview.note.ocr_copied": {
     "zh-CN": "已复制「{snippet}」",
@@ -2306,6 +2350,10 @@
   "overlay.hint.region": {
     "zh-CN": "拖出矩形截取区域 · Enter 确认",
     "en": "Drag to select a region · Enter to confirm"
+  },
+  "overlay.hint.region_nudge": {
+    "zh-CN": "拖出矩形截取区域 · Enter 确认 · 方向键微调 · Shift+方向键缩放",
+    "en": "Drag to select a region · Enter to confirm · Arrow keys nudge · Shift+arrow resizes"
   },
   "overlay.hint.workspace": {
     "zh-CN": "可以标注、复制、保存、贴图、取字或识别二维码 · Esc 取消",
@@ -2570,6 +2618,10 @@
   "scroll.status.finishing": {
     "zh-CN": "正在合成…",
     "en": "Stitching…"
+  },
+  "scroll.status.finishing_segments": {
+    "zh-CN": "正在拼接 · {count} 段",
+    "en": "Stitching · {count} strips"
   },
   "scroll.status.failed": {
     "zh-CN": "抓取失败，请确认窗口可见后重试。",
@@ -2926,6 +2978,18 @@
   "history.cleared": {
     "zh-CN": "已清空。",
     "en": "Cleared."
+  },
+  "history.undo.deleted": {
+    "zh-CN": "已删除 {count} 条记录。",
+    "en": "Deleted {count} record(s)."
+  },
+  "history.undo.cleared": {
+    "zh-CN": "已清空 {count} 条记录。",
+    "en": "Cleared {count} record(s)."
+  },
+  "history.undo.action": {
+    "zh-CN": "撤销",
+    "en": "Undo"
   },
   "history.copied": {
     "zh-CN": "已复制到剪贴板。",

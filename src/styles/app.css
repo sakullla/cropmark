@@ -520,6 +520,13 @@ html[data-view="settings"] .hint {
   border-radius: var(--radius-control);
 }
 
+/* R3:设置写回成功的短暂反馈行,复用 .notice 布局,仅换成功配色。 */
+.notice.notice-success {
+  color: var(--ok);
+  background: var(--ok-soft);
+  border-color: var(--ok);
+}
+
 .rows {
   display: flex;
   flex-direction: column;
