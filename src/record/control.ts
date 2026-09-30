@@ -65,6 +65,7 @@ export function mountRecordControl(root: HTMLElement): () => void {
       <div class="record-preview" hidden>
         <img class="record-preview-image" alt="" hidden />
         <video class="record-preview-video" muted autoplay loop playsinline hidden></video>
+        <p class="record-preview-error" role="status" hidden></p>
         <p class="record-preview-meta"></p>
       </div>
       <div class="record-annotate" data-record-annotate hidden></div>
@@ -91,6 +92,7 @@ export function mountRecordControl(root: HTMLElement): () => void {
   const previewBox = root.querySelector(".record-preview");
   const previewImage = root.querySelector(".record-preview-image");
   const previewVideo = root.querySelector(".record-preview-video");
+  const previewErrorRow = root.querySelector(".record-preview-error");
   const previewMeta = root.querySelector(".record-preview-meta");
   const notice = root.querySelector(".record-notice");
   const pending = root.querySelector(".record-pending");
@@ -112,6 +114,7 @@ export function mountRecordControl(root: HTMLElement): () => void {
     !(previewBox instanceof HTMLElement) ||
     !(previewImage instanceof HTMLImageElement) ||
     !(previewVideo instanceof HTMLVideoElement) ||
+    !(previewErrorRow instanceof HTMLElement) ||
     !(previewMeta instanceof HTMLElement) ||
     !(notice instanceof HTMLElement) ||
     !(pending instanceof HTMLElement) ||
@@ -213,9 +216,6 @@ export function mountRecordControl(root: HTMLElement): () => void {
     } else if (lastError) {
       text = lastError;
       error = true;
-    } else if (previewError) {
-      text = previewError;
-      error = true;
     } else if (status?.behind && (status.phase === "recording" || status.phase === "paused")) {
       text = t("record.hud.behind");
     } else if (status?.autoStopped || state?.preview?.autoStopped) {
@@ -224,6 +224,9 @@ export function mountRecordControl(root: HTMLElement): () => void {
       text = t("record.pending.kept");
     } else if (state?.capabilities.noticeKey) {
       text = t(state.capabilities.noticeKey as CatalogKey);
+    } else if (status?.phase === "recording" || status?.phase === "paused") {
+      // 键位提示仅在录制中且没有更要紧的提示时出现;降级说明等优先。
+      text = t("record.hud.keys_hint");
     }
     if (overlayNotice && !text.includes(overlayNotice)) {
       text = text ? `${text}\n${overlayNotice}` : overlayNotice;
@@ -331,10 +334,11 @@ export function mountRecordControl(root: HTMLElement): () => void {
         previewVideo.src = previewUrl;
         previewVideo.hidden = false;
         void previewVideo.play().catch(() => {
+          if (previewKey !== item.tempPath) {
+            return;
+          }
           previewError = t("record.preview.failed");
-          notice.hidden = false;
-          notice.textContent = previewError;
-          notice.classList.add("is-error");
+          render();
         });
       } else {
         previewImage.src = previewUrl;
@@ -516,6 +520,9 @@ export function mountRecordControl(root: HTMLElement): () => void {
     root.classList.toggle("is-failed", status?.phase === "failed" || lastError.length > 0);
 
     previewBox.hidden = preview === null;
+    // 预览加载失败是独立行,不与业务错误 notice 互相覆盖。
+    previewErrorRow.hidden = previewError.length === 0;
+    previewErrorRow.textContent = previewError;
     if (preview) {
       previewMeta.textContent = `${formatDuration(preview.durationMs)} · ${fpsLabel} · ${preview.width}×${preview.height}`;
       void loadPreview(preview);
@@ -795,6 +802,22 @@ export function mountRecordControl(root: HTMLElement): () => void {
       if (event.key === " " || event.code === "Space") {
         event.preventDefault();
         void runControl("start");
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        void stopRecording();
+      }
+      return;
+    }
+    if (phaseNow === "recording" || phaseNow === "paused") {
+      // 标注模式期间暂停/继续本身禁用,工具按钮仍要保留原生空格激活;
+      // busy 期间动作会被吞掉,不抢占键位。
+      if (busy || state?.interactive === true) {
+        return;
+      }
+      if (event.key === " " || event.code === "Space") {
+        // preventDefault 阻止聚焦中的暂停/停止按钮再触发一次 click。
+        event.preventDefault();
+        void runControl(phaseNow === "recording" ? "pause" : "resume");
       } else if (event.key === "Escape") {
         event.preventDefault();
         void stopRecording();

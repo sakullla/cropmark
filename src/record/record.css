@@ -201,6 +201,19 @@ html[data-view="record-overlay"] #app {
   display: none;
 }
 
+/* T4:预览加载失败独立行,与控制条的 record-notice 业务错误分渠道。 */
+.record-preview-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.record-preview-error[hidden] {
+  display: none;
+}
+
 .record-preview-meta {
   margin: 0;
   color: var(--ink);
