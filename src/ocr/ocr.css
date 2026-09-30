@@ -1,161 +1,112 @@
-/* R2:共享取字面板(预览与冻结帧工作区覆盖层共用)。 */
-
-/* R7:识别进行中的阶段化进度行(共享 .progress 旋转圈令牌 + 阶段词条)。
-   固定定位挂在窗口下方居中:预览舞台与冻结帧工作区两种宿主免改宿主布局;
-   纯视觉(aria-hidden),播报由宿主提示条的 notice 通道词条承担。
-   [hidden] 由 app.css 全局规则隐藏。 */
-.ocr-progress {
-  position: fixed;
-  left: 50%;
-  bottom: 28px;
-  transform: translateX(-50%);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0;
-  padding: 6px 12px;
-  border: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
-  border-radius: var(--radius-panel);
-  background: var(--panel);
-  box-shadow: var(--shadow);
-  color: var(--ink);
-  font-size: 12px;
-  line-height: 1.4;
-  white-space: nowrap;
-  z-index: 30;
-  pointer-events: none;
-  -webkit-app-region: no-drag;
-  app-region: no-drag;
-}
-
+/* Shared offline OCR reader: fixed controls, independently scrolling results. */
 .ocr-panel {
   flex: 0 0 auto;
-  /* 窄窗口随舞台宽度弹性收缩,宽窗口仍取 260px。 */
-  width: clamp(180px, 30%, 260px);
+  width: clamp(260px, 44%, 520px);
   min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 10px;
-  border: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+  overflow: hidden;
+  border: 1px solid var(--line);
   border-radius: var(--radius-panel);
-  /* 侧栏贴衬底,不另起一张和主图同等的实底卡片。 */
-  background: color-mix(in srgb, var(--panel) 28%, var(--bg));
-  box-shadow: none;
+  background: var(--panel);
   color: var(--ink);
   -webkit-app-region: no-drag;
   app-region: no-drag;
 }
-
 .ocr-panel-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
   flex: 0 0 auto;
+  padding: 14px 16px 10px;
 }
-
-.ocr-panel-bar h2 {
-  margin: 0;
-  font-size: 13px;
-  font-weight: 650;
-  color: var(--muted);
-}
-
+.ocr-panel-bar h2 { margin: 0; font-size: 16px; font-weight: 650; }
+.ocr-panel-subtitle { margin: 4px 0 0; color: var(--muted); font-size: 11px; }
 .ocr-panel-search {
   display: flex;
-  flex-direction: column;
-  gap: 6px;
+  align-items: center;
   flex: 0 0 auto;
+  gap: 6px;
+  padding: 0 12px 10px;
+  border-bottom: 1px solid var(--line);
 }
-
 .ocr-panel-query {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
+  width: 0;
   height: 32px;
-  min-height: 24px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control-sm);
+  background: var(--control-fill);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  user-select: text;
+}
+.ocr-panel-nav { display: flex; align-items: center; gap: 3px; }
+.ocr-panel-count { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ocr-panel button:not(.icon-btn) {
+  min-height: 32px;
   padding: 0 10px;
   border: 1px solid var(--line);
   border-radius: var(--radius-control-sm);
   background: var(--control-fill);
   color: var(--ink);
   font: inherit;
-  font-size: 13px;
-  transition: var(--control-transition);
-  -webkit-user-select: text;
-  user-select: text;
-}
-
-.ocr-panel-query:hover:not(:disabled) {
-  border-color: var(--control-hover-border);
-  background: var(--control-hover-bg);
-}
-
-.ocr-panel-nav {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.ocr-panel-count {
-  flex: 1;
-  min-width: 0;
-  font-size: 12px;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.ocr-panel-nav button,
-.ocr-panel-actions button {
-  min-width: 24px;
-  min-height: 24px;
-  height: 28px;
-  padding: 0 8px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-control-sm);
-  background: color-mix(in srgb, var(--panel) 80%, transparent);
-  color: var(--ink);
-  font: inherit;
   font-size: 12px;
   cursor: pointer;
 }
-
-.ocr-panel-nav button:hover:not(:disabled),
-.ocr-panel-actions button:hover:not(:disabled) {
-  border-color: var(--control-hover-border);
-  background: var(--control-hover-bg);
-}
-
-.ocr-panel-nav button:active:not(:disabled),
-.ocr-panel-actions button:active:not(:disabled) {
-  filter: var(--control-pressed-filter);
-}
-
-.ocr-panel-nav button:disabled,
-.ocr-panel-actions button:disabled {
-  opacity: var(--control-disabled-opacity);
-  cursor: default;
-}
-
+.ocr-panel-nav button { padding: 0 !important; width: 26px; }
+.ocr-panel button:hover:not(:disabled) { border-color: var(--control-hover-border); background: var(--control-hover-bg); }
+.ocr-panel button:disabled { opacity: var(--control-disabled-opacity); cursor: default; }
+.ocr-panel-actions button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink, #fff); }
+.ocr-panel-actions button.primary:hover:not(:disabled) { filter: brightness(1.08); }
 .ocr-panel-text {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-height: 0;
   overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   margin: 0;
-  padding: 8px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-control-sm);
-  background: color-mix(in srgb, var(--bg) 65%, transparent);
+  padding: 16px;
+  background: var(--bg);
   color: var(--ink);
-  font-size: 13px;
-  line-height: 1.5;
+  font-size: 14px;
+  line-height: 1.8;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   -webkit-user-select: text;
   user-select: text;
   cursor: text;
 }
-
+.ocr-panel-text:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.ocr-panel-footer { flex: 0 0 auto; padding: 10px 12px 12px; border-top: 1px solid var(--line); }
+.ocr-panel-summary { margin: 0 0 8px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.ocr-panel-actions { display: flex; gap: 8px; }
+.ocr-panel-actions button { flex: 1; min-width: 0; }
+.ocr-panel-state {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 24px 16px;
+  text-align: center;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.ocr-panel-state-hint { color: var(--muted); font-size: 12px; line-height: 1.7; }
+.ocr-progress { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 20px 0; }
+.ocr-panel [hidden], .ocr-panel[hidden] { display: none !important; }
+@media (max-height: 400px) {
+  .ocr-panel-bar { padding: 6px 10px; }
+  .ocr-panel-subtitle { display: none; }
+  .ocr-panel-search { padding: 0 8px 6px; }
+  .ocr-panel-footer { padding: 6px 8px; }
+  .ocr-panel-summary { margin-bottom: 4px; }
+  .ocr-panel-text { padding: 8px 12px; }
+}
 /* 三态:搜索命中(弱)/ 当前命中(中)/ 已选内容(强)。 */
 .ocr-panel-text mark {
   background: color-mix(in srgb, var(--ocr-hl) 35%, transparent);
@@ -173,14 +124,4 @@
 
 .ocr-panel-text mark.is-selected {
   background: color-mix(in srgb, var(--ocr-hl-strong) 55%, transparent);
-}
-
-.ocr-panel-actions {
-  display: flex;
-  flex: 0 0 auto;
-  gap: 6px;
-}
-
-.ocr-panel-actions button {
-  flex: 1;
 }

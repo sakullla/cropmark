@@ -268,22 +268,30 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
   panel.setAttribute("aria-label", t("preview.ocr_panel.text"));
   panel.innerHTML = `
     <div class="ocr-panel-bar">
-      <h2 data-i18n="preview.ocr_panel.title">${t("preview.ocr_panel.title")}</h2>
+      <div><h2 data-i18n="preview.ocr_panel.title">${t("preview.ocr_panel.title")}</h2><p class="ocr-panel-subtitle" data-i18n="preview.ocr_panel.subtitle">${t("preview.ocr_panel.subtitle")}</p></div>
       <button type="button" class="icon-btn" data-ocr-action="close-panel" data-i18n-aria-label="preview.ocr_panel.close" aria-label="${t("preview.ocr_panel.close")}">${icons.close}</button>
     </div>
     <div class="ocr-panel-search">
       <input type="search" class="ocr-panel-query" data-ocr-search data-i18n-placeholder="preview.ocr_panel.search" data-i18n-aria-label="preview.ocr_panel.search" placeholder="${t("preview.ocr_panel.search")}" aria-label="${t("preview.ocr_panel.search")}" autocomplete="off" spellcheck="false" />
       <div class="ocr-panel-nav">
         <span class="ocr-panel-count" data-ocr-search-count aria-live="polite"></span>
-        <button type="button" data-ocr-action="prev" data-i18n="preview.ocr_panel.prev" disabled>${t("preview.ocr_panel.prev")}</button>
-        <button type="button" data-ocr-action="next" data-i18n="preview.ocr_panel.next" disabled>${t("preview.ocr_panel.next")}</button>
+        <button type="button" data-ocr-action="prev" data-i18n-aria-label="preview.ocr_panel.prev" aria-label="${t("preview.ocr_panel.prev")}" disabled>↑</button>
+        <button type="button" data-ocr-action="next" data-i18n-aria-label="preview.ocr_panel.next" aria-label="${t("preview.ocr_panel.next")}" disabled>↓</button>
       </div>
     </div>
-    <div class="ocr-panel-text" data-ocr-text tabindex="0"></div>
-    <div class="ocr-panel-actions" data-ocr-actions hidden>
-      <button type="button" data-ocr-action="copy-selected" data-i18n="preview.ocr_panel.copy_selected">${t("preview.ocr_panel.copy_selected")}</button>
-      <button type="button" data-ocr-action="copy-all" data-i18n="preview.ocr_panel.copy_all">${t("preview.ocr_panel.copy_all")}</button>
+    <div class="ocr-panel-state" data-ocr-state hidden>
+      <p data-ocr-state-title></p>
+      <p class="ocr-panel-state-hint" data-i18n="preview.ocr_panel.empty_hint">${t("preview.ocr_panel.empty_hint")}</p>
+      <button type="button" data-ocr-action="retry" data-i18n="preview.ocr_panel.retry">${t("preview.ocr_panel.retry")}</button>
     </div>
+    <div class="ocr-panel-text" data-ocr-text tabindex="0"></div>
+    <footer class="ocr-panel-footer">
+      <p class="ocr-panel-summary" data-ocr-summary></p>
+      <div class="ocr-panel-actions" data-ocr-actions hidden>
+        <button type="button" data-ocr-action="copy-selected" data-i18n="preview.ocr_panel.copy_selected">${t("preview.ocr_panel.copy_selected")}</button>
+        <button type="button" class="primary" data-ocr-action="copy-all" data-i18n="preview.ocr_panel.copy_all">${t("preview.ocr_panel.copy_all")}</button>
+      </div>
+    </footer>
   `;
   host.append(panel);
 
@@ -295,9 +303,15 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
   progressNote.setAttribute("aria-hidden", "true");
   progressNote.hidden = true;
   progressNote.innerHTML = '<span class="progress"></span><span class="ocr-progress-text"></span>';
-  host.append(progressNote);
+  panel.querySelector("[data-ocr-state]")!.prepend(progressNote);
   const progressText = progressNote.querySelector(".ocr-progress-text") as HTMLElement;
 
+  const stateView = panel.querySelector("[data-ocr-state]") as HTMLElement;
+  const stateTitle = panel.querySelector("[data-ocr-state-title]") as HTMLElement;
+  const stateHint = panel.querySelector(".ocr-panel-state-hint") as HTMLElement;
+  const retryBtn = panel.querySelector("[data-ocr-action=retry]") as HTMLButtonElement;
+  const summary = panel.querySelector("[data-ocr-summary]") as HTMLElement;
+  const searchRow = panel.querySelector(".ocr-panel-search") as HTMLElement;
   const searchInput = panel.querySelector("[data-ocr-search]") as HTMLInputElement;
   const searchCount = panel.querySelector("[data-ocr-search-count]") as HTMLElement;
   const panelText = panel.querySelector("[data-ocr-text]") as HTMLElement;
@@ -323,6 +337,7 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
   let active = false;
   let doc: OcrDocument | null = null;
   let running = false;
+  let recognitionError: string | null = null;
   let generation = 0;
   let searchGen = 0;
   let selected: number[] = [];
@@ -394,7 +409,7 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
     panel.hidden = true;
   };
 
-  const hasDocument = (): boolean => doc !== null && doc.spans.length > 0;
+  const hasDocument = (): boolean => doc !== null && doc.fullText.trim().length > 0;
 
   const panelSelectionText = (): string | null => {
     const selection = window.getSelection();
@@ -402,7 +417,7 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
       return null;
     }
     const node = selection.anchorNode;
-    if (!node || !panelText.contains(node)) {
+    if (!node || !panelText.contains(node) || !selection.focusNode || !panelText.contains(selection.focusNode)) {
       return null;
     }
     const text = selection.toString().replace(/\r\n/g, "\n");
@@ -470,7 +485,12 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
       index = end;
     }
     const first = panelText.querySelector("mark.is-selected") ?? panelText.querySelector("mark.is-current");
-    first?.scrollIntoView({ block: "nearest" });
+    if (first) {
+      const item = first.getBoundingClientRect();
+      const viewport = panelText.getBoundingClientRect();
+      if (item.top < viewport.top) panelText.scrollTop += item.top - viewport.top - 8;
+      else if (item.bottom > viewport.bottom) panelText.scrollTop += item.bottom - viewport.bottom + 8;
+    }
   };
 
   const syncSearchStatus = (): void => {
@@ -485,6 +505,7 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
         total: matches.length,
       });
     }
+    searchCount.hidden = !query;
     const canStep = matches.length > 0;
     prevBtn.disabled = !canStep;
     nextBtn.disabled = !canStep;
@@ -501,24 +522,35 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
   };
 
   const renderPanel = (): void => {
-    const visible = active && !panelDismissed && hasDocument();
+    const visible = active && !panelDismissed;
     if (!visible) {
       panel.hidden = true;
       syncActions();
       return;
     }
     panel.hidden = false;
-    if (!panelHasDomSelection()) {
+    const ready = hasDocument() && !running;
+    panelText.hidden = !ready;
+    searchRow.hidden = !ready;
+    stateView.hidden = ready;
+    progressNote.hidden = !running;
+    stateTitle.hidden = running;
+    stateHint.hidden = running;
+    retryBtn.hidden = running;
+    stateTitle.textContent = recognitionError ?? t("preview.error.no_text");
+    panel.setAttribute("aria-busy", String(running));
+    summary.textContent = ready && doc
+      ? t("preview.ocr_panel.count", { count: Array.from(doc.fullText).length, lines: doc.fullText.split("\n").length })
+      : t("preview.ocr_panel.subtitle");
+    summary.title = t("preview.ocr_panel.selection_hint");
+    if (ready && !panelHasDomSelection()) {
       paintPanel();
     }
     syncActions();
   };
 
   const closePanel = (): void => {
-    panelDismissed = true;
-    clearPanelView();
-    window.getSelection()?.removeAllRanges();
-    syncActions();
+    deactivate();
   };
 
   const applySearch = async (): Promise<void> => {
@@ -531,6 +563,7 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
       paintPanel();
       syncSearchStatus();
       syncActions();
+      emitChange();
       return;
     }
     try {
@@ -543,6 +576,7 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
       paintPanel();
       syncSearchStatus();
       syncActions();
+      emitChange();
     } catch (error) {
       if (token !== searchGen) {
         return;
@@ -564,14 +598,16 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
   const runRecognition = async (): Promise<void> => {
     const token = ++generation;
     running = true;
+    recognitionError = null;
     doc = null;
     spanOffsets = [];
-    panelDismissed = true;
+    panelDismissed = false;
     clearSelection();
     clearDrag();
     clearPanelView();
     setNoticeKey("preview.note.ocr_running", "progress");
     showProgressStage("preview.note.ocr_running");
+    renderPanel();
     emitChange();
     // R7:识别期间订阅后端阶段事件(准备/识别/重试/后处理)映射词条;
     // 订阅失败或事件丢失时保持上面的「识别中」常驻兜底,不阻塞识别。
@@ -614,10 +650,10 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
       }
       doc = null;
       spanOffsets = [];
-      panelDismissed = true;
+      recognitionError = invokeError(error, t("preview.error.ocr_fallback"));
       clearPanelView();
       if (active) {
-        setNoticeText(invokeError(error, t("preview.error.ocr_fallback")), "error");
+        setNoticeText(recognitionError, "error");
       }
     } finally {
       unlistenStage?.();
@@ -637,7 +673,11 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
     active = true;
     clearSelection();
     clearDrag();
-    if (!doc || panelDismissed) {
+    panelDismissed = false;
+    if (running) {
+      showProgressStage(stageKey);
+      renderPanel();
+    } else if (!doc) {
       void runRecognition();
     } else {
       renderPanel();
@@ -685,6 +725,7 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
   const setDocument = (next: OcrDocument | null): void => {
     generation += 1;
     running = false;
+    recognitionError = null;
     clearSelection();
     clearDrag();
     hideProgressStage();
@@ -692,7 +733,7 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
       doc = null;
       spanOffsets = [];
       clearPanelView();
-      syncActions();
+      renderPanel();
       emitChange();
       return;
     }
@@ -707,6 +748,7 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
     if (!active || !doc || doc.spans.length === 0) {
       return;
     }
+    window.getSelection()?.removeAllRanges();
     selected = doc.spans
       .map((span, index) => ({ span, index }))
       .filter(({ span }) => span.text.trim().length > 0)
@@ -1013,13 +1055,15 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
   panel.addEventListener("click", (event) => {
     const target = event.target;
     const button = target instanceof Element ? target.closest("[data-ocr-action]") : null;
-    if (!(button instanceof HTMLButtonElement) || button.hidden) {
+    if (!(button instanceof HTMLButtonElement) || button.hidden || button.disabled) {
       return;
     }
     event.preventDefault();
     event.stopPropagation();
     const action = button.dataset.ocrAction;
-    if (action === "close-panel") {
+    if (action === "retry") {
+      if (!running) void runRecognition();
+    } else if (action === "close-panel") {
       closePanel();
     } else if (action === "copy-selected") {
       void copySelected();
@@ -1077,10 +1121,14 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
     const next = spansInRange(range);
     if (!sameIndices(next, selected)) {
       applySelection(next, text ? { kind: "fragment", text } : null);
+    } else {
+      selectionSource = text ? { kind: "fragment", text } : null;
+      syncActions();
     }
   });
 
   const refreshLabels = (): void => {
+    renderPanel();
     syncSearchStatus();
     if (lastNotice?.key) {
       notice(t(lastNotice.key, lastNotice.params), lastNotice.kind);

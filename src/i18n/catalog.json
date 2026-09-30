@@ -732,8 +732,8 @@
     "en": "Resizing is unavailable while recording; dragging only moves the frame. Stop and start a new recording to change its size."
   },
   "record.hud.keys_hint": {
-    "zh-CN": "空格 暂停/继续 · Esc 停止并保存",
-    "en": "Space pauses or resumes · Esc stops and saves"
+    "zh-CN": "空格 暂停/继续 · Esc 停止并保存（录制中这两个键由 HUD 接管）",
+    "en": "Space pauses or resumes · Esc stops and saves (HUD takes these keys while recording)"
   },
   "record.bar.fps": {
     "zh-CN": "{fps} 帧/秒",
@@ -1811,6 +1811,18 @@
     "zh-CN": "工具模式",
     "en": "Tool mode"
   },
+  "preview.zoom.label": {
+    "zh-CN": "预览缩放",
+    "en": "Preview zoom"
+  },
+  "preview.zoom.fit": {
+    "zh-CN": "适应窗口",
+    "en": "Fit"
+  },
+  "preview.zoom.actual": {
+    "zh-CN": "原始像素（100%），滚动查看细节",
+    "en": "Actual pixels (100%); scroll to view details"
+  },
   "preview.style.zoom": {
     "zh-CN": "倍率",
     "en": "Zoom"
@@ -1984,12 +1996,12 @@
     "en": "Crop"
   },
   "preview.action.crop_title": {
-    "zh-CN": "裁剪：拖选要保留的区域后确认",
-    "en": "Crop: drag the area to keep, then confirm"
+    "zh-CN": "裁剪：拖选要保留的区域，松开鼠标完成",
+    "en": "Crop: drag the area to keep and release to crop"
   },
   "preview.crop.hint": {
-    "zh-CN": "拖选要保留的区域 · Enter 确认 · Esc 取消",
-    "en": "Drag the area to keep · Enter confirms · Esc cancels"
+    "zh-CN": "拖选要保留的区域 · 松开鼠标裁剪 · Esc 取消",
+    "en": "Drag the area to keep · Release to crop · Esc cancels"
   },
   "preview.crop.confirm": {
     "zh-CN": "确认裁剪",
@@ -3182,5 +3194,29 @@
   "guide.done": {
     "zh-CN": "知道了",
     "en": "Got it"
+  },
+  "preview.ocr_panel.resize": {
+    "zh-CN": "调整图片和文字区域宽度",
+    "en": "Resize image and text panes"
+  },
+  "preview.ocr_panel.subtitle": {
+    "zh-CN": "图文对照 · 离线识别",
+    "en": "Image & text · Offline OCR"
+  },
+  "preview.ocr_panel.retry": {
+    "zh-CN": "重新识别",
+    "en": "Recognize again"
+  },
+  "preview.ocr_panel.empty_hint": {
+    "zh-CN": "可以重新识别，或换一张文字更清晰的截图。",
+    "en": "Try again, or capture a clearer image of the text."
+  },
+  "preview.ocr_panel.count": {
+    "zh-CN": "{count} 字符 · {lines} 行",
+    "en": "{count} characters · {lines} lines"
+  },
+  "preview.ocr_panel.selection_hint": {
+    "zh-CN": "拖选文字，或在图片上框选后复制",
+    "en": "Select text here or drag over text in the image"
   }
 }

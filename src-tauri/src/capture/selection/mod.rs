@@ -325,6 +325,11 @@ pub struct AnnotationOverlay<'a> {
     pub text_size: f32,
     /// 平台壳文本输入能力(决定工具条是否含文字工具)。
     pub text_input: bool,
+    pub options: &'a AnnotationOptions,
+    pub magnifier_zoom: f64,
+    pub spotlight_dim: f64,
+    pub sticker_id: &'a str,
+    pub erase_color: Option<&'a str>,
 }
 
 /// 选区壳能力集(默认全开);操作条/菜单动作集由此决定。
@@ -833,6 +838,11 @@ impl SelectionEngine {
             color: self.options.color_rgba(),
             text_size: self.resolved_text_size(),
             text_input: self.options.text_input,
+            options: &self.options,
+            magnifier_zoom: self.magnifier_zoom,
+            spotlight_dim: self.spotlight_dim,
+            sticker_id: &self.sticker_id,
+            erase_color: self.erase_color.as_deref(),
         }
     }
 
@@ -896,6 +906,9 @@ impl SelectionEngine {
                 }
                 // 与 on_left_down 一致:面板在横条之上,先判面板。
                 if self.hit_more_panel(x, y).is_some() {
+                    return CursorHint::Pointer;
+                }
+                if self.hit_style(x, y).is_some() {
                     return CursorHint::Pointer;
                 }
                 if self.toolbar_visible() && self.hit_toolbar(x, y).is_some() {
@@ -3753,6 +3766,96 @@ mod tests {
 
     fn drag_selection(engine: &mut SelectionEngine, from: (i32, i32), to: (i32, i32)) {
         drag(engine, from, to);
+    }
+
+    /// 原生配置条的命中、选中反馈和局部重绘在常见 DPI 下保持一致。
+    #[test]
+    fn native_style_controls_hit_and_repaint_at_multiple_scales() {
+        for scale in [1.0, 1.5, 2.0] {
+            let mut engine = inline_engine(1600, 1000).with_scale(scale);
+            drag_selection(&mut engine, (300, 180), (1100, 550));
+            let frame = crate::capture::buffer::Frame {
+                width: 1600,
+                height: 1000,
+                rgba: [240, 240, 240, 255].repeat(1600 * 1000),
+                scale,
+            };
+            let composer = composer::Composer::new(&frame).unwrap();
+            let mut pixels = vec![0; frame.rgba.len()];
+            let mut previous = engine.scene();
+            composer.compose_into_dirty(&previous, &engine.annotation_overlay(), &mut pixels, None);
+            engine.handle_event(InputEvent::Key {
+                key: LogicalKey::Mode(ToolMode::Line),
+                shift: false,
+            });
+            let toolbar = engine.unified_toolbar().unwrap();
+            assert!(toolbar
+                .buttons
+                .iter()
+                .all(|(_, rect)| rect.width == engine.metrics().bar_button));
+            let strip = composer::style_strip(
+                engine.metrics(),
+                toolbar.panel,
+                engine.selection().unwrap(),
+                engine.size(),
+                AnnotationTool::Arrow,
+            )
+            .unwrap();
+            for chip in [
+                composer::StyleChip::Mode(ToolMode::Arrow),
+                composer::StyleChip::Mode(ToolMode::Line),
+                composer::StyleChip::Width(5.0),
+            ] {
+                let (_, rect) = strip
+                    .chips
+                    .iter()
+                    .find(|(candidate, _)| *candidate == chip)
+                    .unwrap();
+                let (x, y) = rect.center();
+                assert_eq!(engine.cursor_for(x, y), CursorHint::Pointer);
+                let selection = engine.selection();
+                engine.handle_event(InputEvent::LeftDown { x, y });
+                engine.handle_event(InputEvent::LeftUp { x, y });
+                assert_eq!(engine.selection(), selection);
+                assert_eq!(engine.state, EngineState::Selected);
+                let scene = engine.scene();
+                let overlay = engine.annotation_overlay();
+                let before = pixels.clone();
+                let dirty =
+                    composer.compose_into_dirty(&scene, &overlay, &mut pixels, Some(&previous));
+                let expected = composer.compose_with_overlay(&scene, &overlay);
+                assert!(
+                    pixels == expected,
+                    "style repaint differs from full composition at {scale}"
+                );
+                assert!(
+                    dirty.contains(rect.x, rect.y)
+                        && dirty.contains(rect.right() - 1, rect.bottom() - 1)
+                );
+                assert!(
+                    pixels != before,
+                    "style selection must have visible feedback"
+                );
+                previous = scene;
+            }
+            assert_eq!(engine.options.stroke_width, Some(5.0));
+            assert_eq!(engine.annotation_overlay().mode, Some(ToolMode::Line));
+            engine.handle_event(InputEvent::Key {
+                key: LogicalKey::Escape,
+                shift: false,
+            });
+            let scene = engine.scene();
+            composer.compose_into_dirty(
+                &scene,
+                &engine.annotation_overlay(),
+                &mut pixels,
+                Some(&previous),
+            );
+            assert!(
+                pixels == composer.compose_with_overlay(&scene, &engine.annotation_overlay()),
+                "closing styles must erase the old strip"
+            );
+        }
     }
 
     /// 点击统一横条主行上指定动作的按钮中心,返回本次点击的引擎结果。

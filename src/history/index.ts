@@ -259,13 +259,20 @@ export function mountHistory(root: HTMLElement): () => void {
     if (undoTimer !== undefined) {
       window.clearTimeout(undoTimer);
     }
+    const remaining = pending.expiresAt - Date.now();
+    if (remaining <= 0) {
+      // 窗口已过期(筛选/语言切换等本地重绘携带的陈旧 pendingUndo):
+      // 直接保持隐藏,不先显示再 0ms 隐藏造成单帧闪现。
+      undoEl.hidden = true;
+      undoTimer = undefined;
+      return;
+    }
     undoTextEl.textContent = t(
       pending.kind === "clear" ? "history.undo.cleared" : "history.undo.deleted",
       { count: pending.count },
     );
     undoEl.hidden = false;
-    const remaining = pending.expiresAt - Date.now();
-    undoTimer = window.setTimeout(hideUndo, Math.max(remaining, 0));
+    undoTimer = window.setTimeout(hideUndo, remaining);
   };
 
   const confirmMessage = (pending: PendingConfirm): string =>

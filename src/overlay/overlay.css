@@ -224,6 +224,10 @@
   right: auto;
 }
 
+.overlay-root > .ocr-panel {
+  height: min(600px, calc(100% - 92px));
+}
+
 .overlay-root > .ocr-panel .ocr-panel-text,
 .overlay-root > .qr-panel .qr-panel-list {
   flex: 1 1 auto;

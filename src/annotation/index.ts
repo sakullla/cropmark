@@ -1898,8 +1898,8 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     const insetY = parseFloat(editorStyle.paddingTop) + parseFloat(editorStyle.borderTopWidth);
     const fontSize = baseFontSize * scale.y;
     editor.value = text;
-    editor.style.left = `${snapDevicePx(canvasRect.left - hostRect.left + origin.x * scale.x - insetX)}px`;
-    editor.style.top = `${snapDevicePx(canvasRect.top - hostRect.top + origin.y * scale.y - insetY)}px`;
+    editor.style.left = `${snapDevicePx(canvasRect.left - hostRect.left + textHost.scrollLeft + origin.x * scale.x - insetX)}px`;
+    editor.style.top = `${snapDevicePx(canvasRect.top - hostRect.top + textHost.scrollTop + origin.y * scale.y - insetY)}px`;
     editor.style.fontSize = `${snapDevicePx(fontSize)}px`;
     editor.style.width = `${Math.max(160, fontSize * 12)}px`;
     editor.classList.add("is-open");

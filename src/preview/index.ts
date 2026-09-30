@@ -18,6 +18,7 @@ import { icons } from "../icons";
 import { mountOcrModel, type OcrDocument, type OcrModel } from "../ocr";
 import { REGION_TOOL_FIELDS, type RegionTools } from "../settings";
 import { mountQrModel, type QrModel } from "../qr";
+import { mountOcrLayout } from "./ocr-layout";
 import "./preview.css";
 
 interface PreviewFrame {
@@ -83,6 +84,7 @@ const SAVE_QUALITIES: Array<{
 export function mountPreview(root: HTMLElement): () => void {
   root.className = "preview-root";
   root.dataset.tool = "arrow";
+  root.dataset.previewZoom = "fit";
   root.innerHTML = `
     <header class="preview-titlebar">
       <div class="brand" data-drag-handle data-tauri-drag-region>
@@ -111,7 +113,7 @@ export function mountPreview(root: HTMLElement): () => void {
           <button type="button" class="preview-named" data-action="update-pin" data-i18n-title="preview.action.update_pin_title" data-i18n-aria-label="preview.action.update_pin" aria-label="更新贴图" hidden data-tauri-drag-region="false">${icons.annotate}<span class="tool-label" data-i18n="preview.action.update_pin">更新贴图</span></button>
           <div class="preview-save" data-save-quality-root>
             <div class="preview-save-split">
-              <button type="button" class="preview-named" data-action="save" data-i18n-title="preview.action.save_title" data-tauri-drag-region="false">${icons.save}<span class="tool-label" data-i18n="preview.action.save">保存</span></button>
+              <button type="button" class="preview-named" data-action="save" data-i18n-title="preview.action.save_title" data-tauri-drag-region="false">${icons.save}<span data-i18n="preview.action.save">保存</span></button>
               <button type="button" class="preview-save-caret preview-named" data-action="toggle-quality" data-i18n-title="preview.quality.group" data-i18n-aria-label="preview.quality.group" aria-label="保存质量" aria-haspopup="true" aria-expanded="false" data-tauri-drag-region="false">${icons.chevronDown}</button>
             </div>
             <div class="preview-quality-panel" data-save-quality-panel hidden>
@@ -126,21 +128,26 @@ export function mountPreview(root: HTMLElement): () => void {
           </div>
         </div>
       </div>
-      <button type="button" class="primary preview-named" data-action="copy" data-i18n-title="preview.action.copy_title" data-tauri-drag-region="false">${icons.copy}<span class="tool-label" data-i18n="preview.action.copy">复制</span></button>
+      <button type="button" class="primary preview-named" data-action="copy" data-i18n-title="preview.action.copy_title" data-tauri-drag-region="false">${icons.copy}<span data-i18n="preview.action.copy">复制</span></button>
       <div class="preview-overflow" data-preview-overflow hidden>
         <button type="button" class="preview-named" data-action="preview-more" data-i18n-title="preview.tool.more_title" data-i18n-aria-label="preview.tool.more" aria-label="更多" aria-haspopup="menu" aria-expanded="false" data-tauri-drag-region="false">${icons.more}<span class="tool-label" data-i18n="preview.tool.more">更多</span></button>
         <div class="preview-overflow-menu" data-preview-overflow-menu role="menu" hidden></div>
       </div>
     </div>
     <div class="preview-stage">
-      <div class="preview-frame">
-        <div class="preview-output" data-beautify-output>
-          <canvas></canvas>
+      <div class="preview-image-pane">
+        <div class="preview-frame">
+          <div class="preview-output" data-beautify-output>
+            <canvas></canvas>
+          </div>
+          <div class="preview-crop-bar" data-crop-bar hidden>
+            <span class="preview-crop-hint" data-i18n="preview.crop.hint">${t("preview.crop.hint")}</span>
+            <button type="button" data-crop-action="cancel" data-i18n="preview.crop.cancel">${t("preview.crop.cancel")}</button>
+          </div>
         </div>
-        <div class="preview-crop-bar" data-crop-bar hidden>
-          <span class="preview-crop-hint" data-i18n="preview.crop.hint">${t("preview.crop.hint")}</span>
-          <button type="button" class="primary" data-crop-action="confirm" data-i18n="preview.crop.confirm">${t("preview.crop.confirm")}</button>
-          <button type="button" data-crop-action="cancel" data-i18n="preview.crop.cancel">${t("preview.crop.cancel")}</button>
+        <div class="preview-zoom" role="group" data-i18n-aria-label="preview.zoom.label">
+          <button type="button" data-preview-zoom="fit" aria-pressed="true" data-i18n="preview.zoom.fit">适应窗口</button>
+          <button type="button" data-preview-zoom="actual" aria-pressed="false" data-i18n-title="preview.zoom.actual">100%</button>
         </div>
       </div>
     </div>
@@ -168,7 +175,7 @@ export function mountPreview(root: HTMLElement): () => void {
   const cropBtn = root.querySelector("[data-action=crop]");
   const againBtn = root.querySelector("[data-action=capture-again]");
   const cropBar = root.querySelector("[data-crop-bar]");
-  const cropConfirmBtn = root.querySelector("[data-crop-action=confirm]");
+  const cropCancelBtn = root.querySelector("[data-crop-action=cancel]");
   const pinBtn = root.querySelector("[data-action=pin]");
   const updatePinBtn = root.querySelector("[data-action=update-pin]");
   const saveQualityRoot = root.querySelector("[data-save-quality-root]");
@@ -197,7 +204,7 @@ export function mountPreview(root: HTMLElement): () => void {
     !(cropBtn instanceof HTMLButtonElement) ||
     !(againBtn instanceof HTMLButtonElement) ||
     !(cropBar instanceof HTMLElement) ||
-    !(cropConfirmBtn instanceof HTMLButtonElement) ||
+    !(cropCancelBtn instanceof HTMLButtonElement) ||
     !(pinBtn instanceof HTMLButtonElement) ||
     !(updatePinBtn instanceof HTMLButtonElement) ||
     !(saveQualityRoot instanceof HTMLElement) ||
@@ -238,6 +245,7 @@ export function mountPreview(root: HTMLElement): () => void {
   // R6:预览旋转/裁剪。裁剪为画布拖选 + 确认/取消;变换由 Rust 按同一仿射
   // 重基帧、标注与取字;撤销/重做在标注编辑器栈为空时回退会话级快照。
   let cropping = false;
+  let cropDragging = false;
   let cropStart: Point | null = null;
   let cropCurrent: Point | null = null;
   // R7:长截图预览提供「再来一次」;随 `get_preview_context` 判定并跟随功能开关。
@@ -391,12 +399,14 @@ export function mountPreview(root: HTMLElement): () => void {
 
   // 取字/二维码工具按钮与顶部「复制全部」随共享模型状态同步;退出识别后把
   // 画布工具标记与工具条高亮还给标注编辑器当前工具,并撤掉识别提示。
+  const ocrLayout = mountOcrLayout(stageEl);
   let ocrWasActive = false;
   let qrWasActive = false;
   let recognitionNoticeActive = false;
   const syncRecognitionToolbar = (): void => {
     const ocrActive = ocrModel?.active === true;
     const qrActive = qrModel?.active === true;
+    ocrLayout.sync(ocrActive);
     ocrBtn.classList.toggle("active", ocrActive);
     qrBtn.classList.toggle("active", qrActive);
     copyAllBtn.hidden = !ocrActive || (ocrModel?.document()?.spans.length ?? 0) === 0;
@@ -486,8 +496,8 @@ export function mountPreview(root: HTMLElement): () => void {
     };
     const edge = intersectsCrop(bottomTop) ? "top" : "bottom";
     const top = edge === "top" ? topTop : bottomTop;
-    const leftPx = `${left}px`;
-    const topPx = `${top}px`;
+    const leftPx = `${left + frameEl.scrollLeft}px`;
+    const topPx = `${top + frameEl.scrollTop}px`;
     if (
       cropBar.style.left !== leftPx ||
       cropBar.style.top !== topPx ||
@@ -513,21 +523,32 @@ export function mountPreview(root: HTMLElement): () => void {
     delete cropBar.dataset.cropEdge;
   };
 
+  frameEl.addEventListener("scroll", placeCropBar);
+
+  let actualSize = false;
   const applyBeautifyChrome = (): void => {
+    const pixelScale = 1 / Math.max(window.devicePixelRatio, 1);
+    // clientWidth/clientHeight 会取整,在分数 DPI 下可能比实际空间大。
+    // 使用不受滚动条显隐影响的精确边界,并向下对齐物理像素。
+    const viewport = frameEl.getBoundingClientRect();
+    const availableWidth = Math.floor(viewport.width / pixelScale) * pixelScale;
+    const availableHeight = Math.floor(viewport.height / pixelScale) * pixelScale;
+    const displayScale = (width: number, height: number): number => actualSize
+      ? pixelScale
+      : Math.min(pixelScale, availableWidth / width, availableHeight / height);
     if (!applyBeautify || !frame) {
       root.dataset.beautify = "off";
       outputEl.removeAttribute("style");
-      canvas.style.width = "";
-      canvas.style.height = "";
+      const scale = frame ? displayScale(frame.width, frame.height) : 1;
+      canvas.style.width = frame ? `${frame.width * scale}px` : "";
+      canvas.style.height = frame ? `${frame.height * scale}px` : "";
       canvas.style.borderRadius = "";
       canvas.style.boxShadow = "";
       placeCropBar();
       return;
     }
     const layout = beautifyLayout(frame.width, frame.height, beautifyOptions);
-    const availW = Math.max(frameEl.clientWidth, 1);
-    const availH = Math.max(frameEl.clientHeight, 1);
-    const scale = Math.min(availW / layout.outputWidth, availH / layout.outputHeight);
+    const scale = displayScale(layout.outputWidth, layout.outputHeight);
     if (!Number.isFinite(scale) || scale <= 0) {
       placeCropBar();
       return;
@@ -550,6 +571,20 @@ export function mountPreview(root: HTMLElement): () => void {
     }
     placeCropBar();
   };
+
+  root.querySelectorAll<HTMLButtonElement>("[data-preview-zoom]").forEach((button) => {
+    button.addEventListener("click", () => {
+      actualSize = button.dataset.previewZoom === "actual";
+      root.dataset.previewZoom = actualSize ? "actual" : "fit";
+      if (!actualSize) {
+        frameEl.scrollTo(0, 0);
+      }
+      root.querySelectorAll<HTMLButtonElement>("[data-preview-zoom]").forEach((option) => {
+        option.setAttribute("aria-pressed", String((option.dataset.previewZoom === "actual") === actualSize));
+      });
+      applyBeautifyChrome();
+    });
+  });
 
   const syncSaveQuality = (): void => {
     saveQualityRoot.querySelectorAll<HTMLButtonElement>("[data-save-quality]").forEach((button) => {
@@ -614,7 +649,7 @@ export function mountPreview(root: HTMLElement): () => void {
     // R2/R4/R6:取字、二维码与裁剪任一激活时画布输入只走对应宿主分支,
     // 标注编辑暂停。裁剪拖选不得绘制/移动/放置标注,确认与取消保持列表不变。
     isEditable: () =>
-      !cropping && ocrModel?.active !== true && qrModel?.active !== true,
+      !busy && !cropping && ocrModel?.active !== true && qrModel?.active !== true,
     onToolHint: (hint) => {
       if (hint) {
         setNoteKey(hint.key, hint.params);
@@ -747,6 +782,12 @@ export function mountPreview(root: HTMLElement): () => void {
   };
 
   const placeOverflowMenu = (): void => {
+    const box = overflowToggle.getBoundingClientRect();
+    const margin = 8;
+    const below = Math.max(0, window.innerHeight - margin - box.bottom - 6);
+    const above = Math.max(0, box.top - margin - 6);
+    const openAbove = below < 120 && above > below;
+    overflowMenu.style.maxHeight = `${Math.min(420, openAbove ? above : below)}px`;
     overflowMenu.style.position = "fixed";
     overflowMenu.style.right = "auto";
     overflowMenu.style.bottom = "auto";
@@ -754,21 +795,14 @@ export function mountPreview(root: HTMLElement): () => void {
     overflowMenu.style.top = "0px";
     const width = overflowMenu.offsetWidth;
     const height = overflowMenu.offsetHeight;
-    const box = overflowToggle.getBoundingClientRect();
-    const margin = 8;
     const maxLeft = Math.max(margin, window.innerWidth - margin - width);
     const maxTop = Math.max(margin, window.innerHeight - margin - height);
     let left = box.right - width;
-    let top = box.bottom + 6;
-    if (top > maxTop) {
-      top = Math.max(margin, box.top - 6 - height);
-    }
+    let top = openAbove ? box.top - 6 - height : box.bottom + 6;
     left = Math.min(Math.max(left, margin), maxLeft);
     top = Math.min(Math.max(top, margin), maxTop);
     overflowMenu.style.left = `${Math.round(left)}px`;
     overflowMenu.style.top = `${Math.round(top)}px`;
-    const room = Math.max(120, window.innerHeight - margin * 2);
-    overflowMenu.style.maxHeight = `${Math.min(room, 480)}px`;
   };
 
   closeOverflowMenu = (): void => {
@@ -814,7 +848,7 @@ export function mountPreview(root: HTMLElement): () => void {
     const moreHome = toolbarEl.querySelector("[data-more-root]");
     const tools = overflowItems.filter((item) => item.kind === "tool").sort((a, b) => a.order - b.order);
     if (moreHome instanceof HTMLElement) {
-      for (const item of [...tools].reverse()) {
+      for (const item of tools) {
         toolbarEl.insertBefore(item.node, moreHome);
       }
     }
@@ -827,7 +861,21 @@ export function mountPreview(root: HTMLElement): () => void {
     overflowRoot.hidden = true;
     overflowMenu.hidden = true;
     overflowMenu.replaceChildren();
-    const fits = (): boolean => toolbarRow.scrollWidth <= toolbarRow.clientWidth + 1;
+    syncGroupSeps();
+    // Chromium 把 flex 子项的 margin-left:auto 计入滚动溢出:output 组的 auto
+    // 边距会让 scrollWidth 恒大于 clientWidth,宽窗也判定「放不下」而把按钮
+    // 全部收进菜单。改用最后一个可见子元素的右缘判定真实溢出。
+    const fits = (): boolean => {
+      const rowRight = toolbarRow.getBoundingClientRect().right;
+      const kids = toolbarRow.children;
+      for (let i = kids.length - 1; i >= 0; i -= 1) {
+        const el = kids[i];
+        if (el instanceof HTMLElement && !el.hidden) {
+          return el.getBoundingClientRect().right <= rowRight + 1;
+        }
+      }
+      return true;
+    };
     const moved: OverflowItem[] = [];
     if (!fits()) {
       overflowRoot.hidden = false;
@@ -840,6 +888,7 @@ export function mountPreview(root: HTMLElement): () => void {
         }
         item.node.remove();
         moved.push(item);
+        syncGroupSeps();
       }
       moved.sort((a, b) => a.order - b.order);
       overflowMenu.append(...moved.map((item) => item.node));
@@ -901,10 +950,16 @@ export function mountPreview(root: HTMLElement): () => void {
         applyRegionTools(PREVIEW_TOOL_DEFAULTS);
       });
   };
+  let overflowLayoutFrame = 0;
   const overflowObserver = new ResizeObserver(() => {
-    layoutOverflow();
+    cancelAnimationFrame(overflowLayoutFrame);
+    overflowLayoutFrame = requestAnimationFrame(() => {
+      layoutOverflow();
+      if (!saveQualityPanel.hidden) clampFloatingPanel(saveQualityPanel);
+    });
   });
-  overflowObserver.observe(toolbarRow);
+  // 观察稳定的外层宽度,避免「更多」出现/消失改变被观察元素并触发循环。
+  overflowObserver.observe(toolbarRow.parentElement!);
   loadRegionTools();
 
   const activateOcr = (): void => {
@@ -930,34 +985,31 @@ export function mountPreview(root: HTMLElement): () => void {
   };
 
   // R2:禁用原因复用共享 data-tooltip 气泡(与设置页同惯例):hover/聚焦
-  // 可读到当前语言的原因词条;启用时移除,不残留空气泡。
+  // 可读到当前语言的原因词条;启用时恢复共享 i18n 机制维护的动作提示
+  // (applyTranslations 会向同一 dataset.tooltip 写 data-i18n-title 词条),
+  // 无动作提示的按钮才移除属性,不残留空气泡。
   const setDisabledReason = (button: HTMLButtonElement, reason: CatalogKey | null): void => {
     if (reason === null) {
-      delete button.dataset.tooltip;
+      const titleKey = button.dataset.i18nTitle as CatalogKey | undefined;
+      if (titleKey) {
+        button.dataset.tooltip = t(titleKey);
+      } else {
+        delete button.dataset.tooltip;
+      }
     } else {
       button.dataset.tooltip = t(reason);
     }
   };
 
-  // R6:裁剪模式的界面状态(工具条按钮、裁剪条与确认可用性)。
+  // 裁剪模式的界面状态:松开即提交,处理期间禁止重复裁剪或取消。
   const syncCropUi = (): void => {
     cropBar.hidden = !cropping;
     cropBtn.classList.toggle("active", cropping);
     rotateLeftBtn.disabled = cropping || recordingContent;
     rotateRightBtn.disabled = cropping || recordingContent;
-    cropBtn.disabled = recordingContent;
-    cropConfirmBtn.disabled = !cropping || busy || cropRect() === null;
-    // 裁剪确认的三种禁用态各有原因:未进入裁剪 / 忙 / 未拖出选区。
-    setDisabledReason(
-      cropConfirmBtn,
-      !cropping
-        ? "preview.crop.disabled_idle"
-        : busy
-          ? "preview.crop.disabled_busy"
-          : cropRect() === null
-            ? "preview.crop.disabled_no_selection"
-            : null,
-    );
+    cropBtn.disabled = recordingContent || busy;
+    cropCancelBtn.disabled = busy;
+    setDisabledReason(cropCancelBtn, busy ? "preview.crop.disabled_busy" : null);
     // 录制内容不支持旋转/裁剪;裁剪中禁用旋转属模式互斥,无需原因词条。
     const transformReason: CatalogKey | null = recordingContent
       ? "preview.action.recording_disabled"
@@ -974,10 +1026,11 @@ export function mountPreview(root: HTMLElement): () => void {
   };
 
   const exitCrop = (): void => {
-    if (!cropping) {
+    if (!cropping || busy) {
       return;
     }
     cropping = false;
+    cropDragging = false;
     cropStart = null;
     cropCurrent = null;
     // 恢复标注工具条高亮(enterCrop 为进入裁剪清掉了)。
@@ -992,6 +1045,7 @@ export function mountPreview(root: HTMLElement): () => void {
       return;
     }
     cropping = true;
+    cropDragging = false;
     cropStart = null;
     cropCurrent = null;
     ocrModel?.deactivate();
@@ -1152,11 +1206,12 @@ export function mountPreview(root: HTMLElement): () => void {
 
   // 裁剪拖选优先;取字/二维码识别期间交给共享模型,画布不接受标注输入。
   canvas.addEventListener("mousedown", (event) => {
-    if (event.button !== 0 || !frame) {
+    if (event.button !== 0 || !frame || busy) {
       return;
     }
     if (cropping) {
       event.preventDefault();
+      cropDragging = true;
       cropStart = physicalPoint(event);
       cropCurrent = cropStart;
       syncCropUi();
@@ -1177,7 +1232,7 @@ export function mountPreview(root: HTMLElement): () => void {
 
   window.addEventListener("mousemove", (event) => {
     if (cropping) {
-      if (!cropStart) {
+      if (!cropDragging || !cropStart || busy) {
         return;
       }
       cropCurrent = physicalPoint(event);
@@ -1191,9 +1246,15 @@ export function mountPreview(root: HTMLElement): () => void {
     ocrModel.pointerMove(physicalPoint(event));
   });
 
-  window.addEventListener("mouseup", () => {
+  window.addEventListener("mouseup", (event) => {
     if (cropping) {
-      syncCropUi();
+      if (event.button !== 0 || !cropDragging || busy) {
+        return;
+      }
+      cropDragging = false;
+      cropCurrent = physicalPoint(event);
+      redraw();
+      void confirmCrop();
       return;
     }
     if (ocrModel?.active !== true) {
@@ -1202,14 +1263,17 @@ export function mountPreview(root: HTMLElement): () => void {
     ocrModel.pointerUp();
   });
 
+  window.addEventListener("blur", () => {
+    // 在窗口外松开或切换应用后,普通鼠标移动不得继续改变选框。
+    cropDragging = false;
+  });
+
   cropBar.addEventListener("click", (event) => {
     const button = event.target instanceof Element ? event.target.closest("[data-crop-action]") : null;
     if (!(button instanceof HTMLButtonElement) || button.disabled) {
       return;
     }
-    if (button.dataset.cropAction === "confirm") {
-      void confirmCrop();
-    } else if (button.dataset.cropAction === "cancel") {
+    if (button.dataset.cropAction === "cancel") {
       exitCrop();
     }
   });
@@ -1558,6 +1622,7 @@ export function mountPreview(root: HTMLElement): () => void {
     transformUndo = false;
     transformRedo = false;
     cropping = false;
+    cropDragging = false;
     cropStart = null;
     cropCurrent = null;
     recordingContent = false;
@@ -1752,6 +1817,14 @@ export function mountPreview(root: HTMLElement): () => void {
     result: PreviewTransformResult,
     feedbackKey: CatalogKey,
   ): Promise<void> => {
+    if (
+      !result ||
+      !Number.isInteger(result.width) || result.width <= 0 ||
+      !Number.isInteger(result.height) || result.height <= 0 ||
+      !Array.isArray(result.annotations)
+    ) {
+      throw new Error(t("preview.error.transform_fallback"));
+    }
     const generation = ++previewLoad;
     transformUndo = result.canUndo;
     transformRedo = result.canRedo;
@@ -1759,15 +1832,20 @@ export function mountPreview(root: HTMLElement): () => void {
     canvas.width = result.width;
     canvas.height = result.height;
     cropping = false;
+    cropDragging = false;
     cropStart = null;
     cropCurrent = null;
     editor?.setAnnotations(result.annotations);
     ocrModel?.setDocument(result.ocr);
-    await loadFramePixels(generation);
+    const loaded = await loadFramePixels(generation);
     if (generation !== previewLoad) {
       return;
     }
     syncCropUi();
+    if (!loaded) {
+      return;
+    }
+    editor?.setTool(editor.tool());
     setNoteKey(feedbackKey, undefined, "success");
     redraw();
   };
@@ -1814,6 +1892,7 @@ export function mountPreview(root: HTMLElement): () => void {
     if (!cropping || busy) {
       return;
     }
+    cropDragging = false;
     const rect = cropRect();
     if (!rect) {
       return;
@@ -1834,7 +1913,6 @@ export function mountPreview(root: HTMLElement): () => void {
         height: rect.height,
         annotations: editor?.annotations() ?? [],
       });
-      exitCrop();
       await applyTransformResult(result, "preview.note.cropped");
     } catch (error) {
       setNote(invokeError(error, t("preview.error.transform_fallback")), "error");
@@ -1871,8 +1949,10 @@ export function mountPreview(root: HTMLElement): () => void {
     reloadAppearance();
   });
 
+  let chromeLayoutFrame = 0;
   const chromeObserver = new ResizeObserver(() => {
-    applyBeautifyChrome();
+    cancelAnimationFrame(chromeLayoutFrame);
+    chromeLayoutFrame = requestAnimationFrame(applyBeautifyChrome);
   });
   chromeObserver.observe(frameEl);
 
@@ -1881,6 +1961,7 @@ export function mountPreview(root: HTMLElement): () => void {
     transformUndo = false;
     transformRedo = false;
     cropping = false;
+    cropDragging = false;
     cropStart = null;
     cropCurrent = null;
     // 新帧可能带入选区即时标注(R21):列表随帧在 loadPreview 中恢复,

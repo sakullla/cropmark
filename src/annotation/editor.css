@@ -2,7 +2,8 @@
    工具条按钮、样式面板、文字编辑器与右键菜单;容器定位(悬浮位置/背景)
    由各视图样式负责,`annotation-tools` 类由标注模块加到宿主容器上。 */
 
-.annotation-tools button {
+.annotation-tools button,
+button.annotation-chrome {
   border: 1px solid transparent;
   background: transparent;
   color: var(--muted);
@@ -24,14 +25,17 @@
   transition: var(--control-transition);
 }
 
-.annotation-tools button svg {
+/* 图标尺寸挂在按钮类上而不是 .annotation-tools 祖先:收纳/溢出菜单会把按钮
+   移出工具条容器,祖先选择器会失效导致 SVG 按原始尺寸撑破菜单。 */
+.annotation-tools button svg,
+button.annotation-chrome svg {
   width: 18px;
   height: 18px;
   display: block;
   flex: 0 0 auto;
 }
 
-/* 名称默认不占位。预览在自己的顶栏里再显示短名称。 */
+/* 名称默认不占位(选区覆盖层工具条只显示图标)。预览窗在自己的顶栏里显示短名称。 */
 .annotation-tools .tool-label {
   display: none;
 }

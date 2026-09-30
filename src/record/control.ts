@@ -814,6 +814,10 @@ export function mountRecordControl(root: HTMLElement): () => void {
       if (busy || state?.interactive === true) {
         return;
       }
+      // 长按空格的自动重复不翻转暂停态:每次 IPC 往返完成后 repeat 会再次触发。
+      if (event.repeat) {
+        return;
+      }
       if (event.key === " " || event.code === "Space") {
         // preventDefault 阻止聚焦中的暂停/停止按钮再触发一次 click。
         event.preventDefault();

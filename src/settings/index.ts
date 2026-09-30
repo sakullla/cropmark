@@ -1645,6 +1645,8 @@ export function mountSettings(root: HTMLElement): () => void {
   // 重渲染动态行(热键/开关/历史/语言选项/美化预设),再从后端重取一次
   // (热键错误/开机启动/无托盘提示由后端按新语言重新解析)。
   return () => {
+    // 重渲染/卸载路径不再让成功提示定时器对着旧元素触发。
+    window.clearTimeout(savedNoticeTimer);
     renderLogPath();
     if (lastSettings) {
       render(lastSettings);

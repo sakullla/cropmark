@@ -459,14 +459,9 @@ pub fn current_menu_items(
     menu_items(flags)
 }
 
-/// 名称按钮宽度。高度仍是 `bar_button`,不低于 40。
-pub fn toolbar_button_width(metrics: ChromeMetrics, action: SelectionAction) -> i32 {
-    let label = action_label(action);
-    let measured = text::measure_width(&label, metrics.bar_font)
-        .unwrap_or(metrics.bar_font * label.chars().count() as f32);
-    let text_w = measured.ceil() as i32;
-    (metrics.bar_pad_x + metrics.bar_icon + metrics.bar_gap + text_w + metrics.bar_pad_x)
-        .max(metrics.bar_button)
+/// 主行只显示图标;名称保留在悬停提示和更多菜单中。
+pub fn toolbar_button_width(metrics: ChromeMetrics, _action: SelectionAction) -> i32 {
+    metrics.bar_button
 }
 
 fn row_width(metrics: ChromeMetrics, actions: &[SelectionAction]) -> i32 {
@@ -1163,6 +1158,8 @@ pub struct Composer {
     dimmed: Vec<u8>,
     /// 即时标注的选区烘焙缓存(逐笔重绘不重复应用已确认图元)。
     annotation_cache: RefCell<Option<AnnotationCache>>,
+    /// 样式条位于主行外侧,工具切换/关闭时必须同时擦除上一帧的位置。
+    previous_style_bounds: RefCell<Option<IntRect>>,
 }
 
 /// 跟当前工具走的样式控件。没选中工具时不出现。
@@ -1178,6 +1175,22 @@ pub enum StyleChip {
     Dim(f64),
     Sticker(&'static str),
     Erase(Option<&'static str>),
+}
+
+impl StyleChip {
+    fn selected(self, overlay: &AnnotationOverlay) -> bool {
+        match self {
+            Self::Mode(mode) => overlay.mode == Some(mode),
+            Self::Color(color) => overlay.options.color == color,
+            Self::Width(width) => overlay.options.stroke_width == Some(width),
+            Self::TextSize(size) => overlay.options.text_size == Some(size),
+            Self::Zoom(zoom) => overlay.magnifier_zoom == zoom,
+            Self::Dim(dim) => overlay.spotlight_dim == dim,
+            Self::Sticker(id) => overlay.sticker_id == id,
+            Self::Erase(color) => overlay.erase_color == color,
+            Self::NumberStep(_) => false,
+        }
+    }
 }
 
 const STYLE_COLORS: [&str; 5] = ["#e11d48", "#2563eb", "#f59e0b", "#10b981", "#111827"];
@@ -1313,6 +1326,10 @@ pub fn style_strip(
     let mut count = chips.len();
     while count > 0 {
         let width: i32 = widths.iter().take(count).sum();
+        if width > sw {
+            count -= 1;
+            continue;
+        }
         let mut panel = IntRect {
             x: toolbar.x.clamp(0, (sw - width).max(0)),
             y: 0,
@@ -1384,6 +1401,7 @@ impl Composer {
             original: frame.rgba.clone(),
             dimmed,
             annotation_cache: RefCell::new(None),
+            previous_style_bounds: RefCell::new(None),
         })
     }
 
@@ -1448,7 +1466,17 @@ impl Composer {
     ) -> IntRect {
         let screen = (self.width as i32, self.height as i32);
         let annotating = overlay.draft.is_some() || overlay.text.is_some();
-        let dirty = self.dirty_rect(scene, Some(overlay), prev, screen, annotating);
+        let mut dirty = self.dirty_rect(scene, Some(overlay), prev, screen, annotating);
+        let style_bounds = self.style_bounds(scene, overlay);
+        for bounds in [
+            self.previous_style_bounds.replace(style_bounds),
+            style_bounds,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            dirty = dirty.union(bounds.inflate(2)).clamp_to(screen);
+        }
         let cursor_follow = !annotating
             && prev.is_some_and(|prev| {
                 prev.selection == scene.selection
@@ -1684,6 +1712,11 @@ impl Composer {
                     text_input,
                 ) {
                     bounds = bounds.union(toolbar.panel);
+                    if let Some(strip) =
+                        overlay.and_then(|overlay| self.style_bounds(scene, overlay))
+                    {
+                        bounds = bounds.union(strip);
+                    }
                     if scene.more_open {
                         let items = toolbar.menu.clone();
                         if !items.is_empty() {
@@ -1893,6 +1926,29 @@ impl Composer {
         }
     }
 
+    fn style_bounds(&self, scene: &Scene, overlay: &AnnotationOverlay) -> Option<IntRect> {
+        if !scene.toolbar_visible {
+            return None;
+        }
+        let selection = scene.selection?;
+        let screen = (self.width, self.height);
+        let toolbar = unified_toolbar(
+            self.metrics,
+            selection,
+            screen,
+            scene.flags,
+            overlay.text_input,
+        )?;
+        style_strip(
+            self.metrics,
+            toolbar.panel,
+            selection,
+            screen,
+            overlay.tool?,
+        )
+        .map(|strip| strip.panel.union(toolbar.panel))
+    }
+
     fn draw_style_strip(
         &self,
         rgba: &mut [u8],
@@ -1900,13 +1956,19 @@ impl Composer {
         h: u32,
         toolbar: IntRect,
         selection: PhysicalRect,
-        tool: AnnotationTool,
+        overlay: &AnnotationOverlay,
     ) {
+        let Some(tool) = overlay.tool else {
+            return;
+        };
         let Some(strip) = style_strip(self.metrics, toolbar, selection, (w, h), tool) else {
             return;
         };
         draw_panel_chrome(rgba, w, h, strip.panel, self.metrics.panel_radius);
         for (chip, rect) in strip.chips {
+            if chip.selected(overlay) {
+                fill_round(rgba, w, h, inset(rect, 2), 4, ACCENT);
+            }
             let label = style_chip_label(chip);
             let color = match chip {
                 StyleChip::Color(color) | StyleChip::Erase(Some(color)) => {
@@ -1927,6 +1989,8 @@ impl Composer {
                 self.metrics.bar_font,
                 if matches!(chip, StyleChip::Color(_) | StyleChip::Erase(Some(_))) {
                     [0, 0, 0, 0]
+                } else if chip.selected(overlay) {
+                    ON_ACCENT
                 } else {
                     CHROME_TEXT
                 },
@@ -1934,7 +1998,7 @@ impl Composer {
         }
     }
 
-    /// 统一横条:浅蓝灰面板 + 图标和短名称。仅复制为实心强调填充;
+    /// 统一横条:浅蓝灰面板 + 图标。仅复制为实心强调填充;
     /// 当前工具保留浅底选中态,墨色与普通按钮相同;hover 软底;工具组与动作组之间画
     /// 1px 分隔线。「更多」展开时在其按钮上方弹出动作列表面板(图标+名称,
     /// 与右键菜单同构)。
@@ -1979,30 +2043,9 @@ impl Composer {
             } else if selected_tool || hover {
                 fill_round_blend(rgba, w, h, inset(*rect, 2), radius, ACTIVE_BG);
             }
-            let icon_cx = rect.x + metrics.bar_pad_x + metrics.bar_icon / 2;
+            let icon_cx = rect.x + rect.width / 2;
             let icon_cy = rect.y + rect.height / 2;
-            self.draw_action_icon(
-                rgba,
-                w,
-                h,
-                *action,
-                icon_cx,
-                icon_cy,
-                metrics.bar_icon,
-                ink,
-            );
-            let label = action_label(*action);
-            let text_x = rect.x + metrics.bar_pad_x + metrics.bar_icon + metrics.bar_gap;
-            text::draw_text(
-                rgba,
-                w,
-                h,
-                text_x as f32,
-                text::y_for_center(icon_cy as f32, metrics.bar_font),
-                &label,
-                metrics.bar_font,
-                ink,
-            );
+            self.draw_action_icon(rgba, w, h, *action, icon_cx, icon_cy, metrics.bar_icon, ink);
             let group_break = match (previous, *action) {
                 (Some(SelectionAction::Tool(_)), SelectionAction::Undo) => true,
                 (Some(SelectionAction::Undo | SelectionAction::Redo), SelectionAction::Pin)
@@ -2020,8 +2063,8 @@ impl Composer {
             }
             previous = Some(*action);
         }
-        if let Some(tool) = overlay.and_then(|overlay| overlay.tool) {
-            self.draw_style_strip(rgba, w, h, toolbar.panel, selection, tool);
+        if let Some(overlay) = overlay {
+            self.draw_style_strip(rgba, w, h, toolbar.panel, selection, overlay);
         }
         // 「更多」展开:带名称的列表,内容和右键菜单相同。
         if !scene.more_open {
@@ -3025,6 +3068,8 @@ mod tests {
         tool: Option<AnnotationTool>,
         revision: u64,
     ) -> AnnotationOverlay<'a> {
+        static OPTIONS: std::sync::LazyLock<super::super::AnnotationOptions> =
+            std::sync::LazyLock::new(super::super::AnnotationOptions::default);
         AnnotationOverlay {
             annotations,
             draft,
@@ -3035,6 +3080,11 @@ mod tests {
             color: [225, 29, 72, 255],
             text_size: 22.0,
             text_input: true,
+            options: &OPTIONS,
+            magnifier_zoom: 2.0,
+            spotlight_dim: 0.55,
+            sticker_id: "",
+            erase_color: None,
         }
     }
 
