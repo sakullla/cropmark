@@ -5,7 +5,7 @@
 //! 边框和压暗不会进到拼接结果里。
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
@@ -16,17 +16,18 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{GetCurrentProcessId, GetCurrentThreadId};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetAncestor, GetMessageW,
-    GetWindow, GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId, IsWindowVisible,
-    PostMessageW, PostThreadMessageW, RegisterClassExW, SetTimer, SetWindowDisplayAffinity,
-    ShowWindow, TranslateMessage, UpdateLayeredWindow, WindowFromPoint, CS_HREDRAW, CS_VREDRAW,
-    GA_ROOT, GWL_EXSTYLE, GW_HWNDNEXT, HCURSOR, HICON, HTTRANSPARENT, MSG, SW_SHOWNOACTIVATE,
-    ULW_ALPHA, WINDOW_DISPLAY_AFFINITY, WM_MOUSEHWHEEL, WM_MOUSEWHEEL, WM_NCHITTEST, WM_QUIT,
+    CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetAncestor,
+    GetMessageW, GetWindow, GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId,
+    IsWindowVisible, PostMessageW, PostThreadMessageW, RegisterClassExW, SetTimer,
+    SetWindowDisplayAffinity, SetWindowsHookExW, ShowWindow, TranslateMessage, UnhookWindowsHookEx,
+    UpdateLayeredWindow, WindowFromPoint, CS_HREDRAW, CS_VREDRAW, GA_ROOT, GWL_EXSTYLE,
+    GW_HWNDNEXT, HCURSOR, HICON, HTTRANSPARENT, MSG, SW_SHOWNOACTIVATE, ULW_ALPHA,
+    WH_MOUSE_LL, WINDOW_DISPLAY_AFFINITY, WM_MOUSEHWHEEL, WM_MOUSEWHEEL, WM_NCHITTEST, WM_QUIT,
     WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
     WS_EX_TRANSPARENT, WS_POPUP,
 };
 
-use super::CaptureAxis;
+use super::{CaptureAxis, SCROLL_SESSION_STARTED};
 use crate::capture::geometry::MonitorGeom;
 use crate::capture::session::RegionSelection;
 
@@ -40,6 +41,50 @@ static AXIS: AtomicU8 = AtomicU8::new(0);
 /// (见 `scroll::auto_scroll_start_allowed`)。关闸时定时器不发送任何滚轮
 /// 消息,首个内容变化不会在用户能选方向之前发生。
 static AUTO_SCROLL_ARMED: AtomicBool = AtomicBool::new(false);
+
+/// 就绪期框内滚轮推导开始:`value` 记录方向(同 `CaptureAxis`),
+/// 255 = 无请求。就绪期低级鼠标钩子只观察不拦截:滚轮事件照进内容窗
+/// (真实滚动会发生),会话线程取走请求后置 started 并锁方向。
+static WHEEL_START_REQUEST: AtomicU8 = AtomicU8::new(0xFF);
+
+/// 就绪期范围框的物理边界;由 `Guard::open` 每次会话登记,
+/// 钩子据此判断滚轮是否落在框内(控制窗按放置契约与选区不相交,
+/// 不用额外排除)。
+static ACTIVE_REGION: Mutex<Option<ActiveRegion>> = Mutex::new(None);
+
+/// 就绪期监控矩形:滚轮落在范围框内时记一次开始请求。
+pub(crate) struct ActiveRegion {
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+}
+
+/// 会话期间登记就绪期监控矩形;`None` 时钩子不再记请求。
+fn set_active_region(region: Option<ActiveRegion>) {
+    *ACTIVE_REGION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = region;
+}
+
+impl ActiveRegion {
+    fn new(region: &RegionSelection, monitor: &MonitorGeom) -> Self {
+        Self {
+            x: monitor.physical_x + region.x as i32,
+            y: monitor.physical_y + region.y as i32,
+            w: region.width as i32,
+            h: region.height as i32,
+        }
+    }
+
+    /// 滚轮落点在范围框内部才接管。
+    fn contains(&self, pt: POINT) -> bool {
+        pt.x >= self.x
+            && pt.y >= self.y
+            && pt.x < self.x + self.w
+            && pt.y < self.y + self.h
+    }
+}
 
 /// 打开自动滚动闸门:首个 nudge 前的方向选择宽限结束(或用户已点选方向)。
 pub(crate) fn arm_auto_scroll() {
@@ -81,8 +126,10 @@ impl Guard {
         axis: CaptureAxis,
     ) -> Option<Self> {
         AXIS.store(axis.as_u8(), Ordering::SeqCst);
-        // 新会话先关闸:首个 nudge 由会话线程在方向选择落定后开闸。
+        // 新会话先关闸:首个 nudge 由会话线程在方向选择落定后开闸;
+        // 就绪期滚轮请求一并清掉,防上一次会话残留。
         AUTO_SCROLL_ARMED.store(false, Ordering::SeqCst);
+        WHEEL_START_REQUEST.store(0xFF, Ordering::SeqCst);
         let width = monitor.physical_width.max(1);
         let height = monitor.physical_height.max(1);
         let origin_x = monitor.physical_x;
@@ -116,6 +163,8 @@ impl Guard {
             region_w: region.width,
             region_h: region.height,
         };
+        // 就绪期滚轮监控范围:钩子在会话开始前只在这块矩形里记开始请求。
+        set_active_region(Some(ActiveRegion::new(region, monitor)));
         guard.paint(base_length(axis, region));
         Some(guard)
     }
@@ -161,6 +210,7 @@ impl Guard {
 
 impl Drop for Guard {
     fn drop(&mut self) {
+        set_active_region(None);
         unsafe {
             let _ = PostThreadMessageW(self.tid, WM_QUIT, WPARAM(0), LPARAM(0));
         }
@@ -185,6 +235,12 @@ fn ui_thread(
         let _ = ready.send(None);
         return;
     };
+    // 就绪期框内滚轮由低级鼠标钩子观察(不拦截,点击与滚轮照常落到
+    // 内容窗);线程内安装,消息循环退出时摘掉。
+    let hook = unsafe {
+        SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook), None, 0)
+    }
+    .ok();
     // 每 400ms 由定时器尝试一次自动滚动(未开闸时为空操作)。不抢焦点,
     // 编辑光标就不会闪。
     unsafe {
@@ -193,6 +249,9 @@ fn ui_thread(
     let tid = unsafe { GetCurrentThreadId() };
     if ready.send(Some((hwnd.0 as isize, tid))).is_err() {
         unsafe {
+            if let Some(hook) = hook {
+                let _ = UnhookWindowsHookEx(hook);
+            }
             let _ = DestroyWindow(hwnd);
         }
         return;
@@ -202,6 +261,9 @@ fn ui_thread(
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
+        }
+        if let Some(hook) = hook {
+            let _ = UnhookWindowsHookEx(hook);
         }
         let _ = DestroyWindow(hwnd);
     }
@@ -486,6 +548,74 @@ unsafe extern "system" fn wnd_proc(
         return LRESULT(0);
     }
     DefWindowProcW(hwnd, msg, wparam, lparam)
+}
+
+/// 会话线程每轮取一次就绪期滚轮方向请求;取走后清位,防止重复触发。
+pub(crate) fn take_wheel_start_request() -> Option<CaptureAxis> {
+    match WHEEL_START_REQUEST.swap(0xFF, Ordering::SeqCst) {
+        0xFF => None,
+        value => Some(CaptureAxis::from_u8(value)),
+    }
+}
+
+/// 就绪期低级鼠标钩子:只观察不拦截。滚轮落在范围框内(且不在控制窗上)
+/// 时推导方向并记一次开始请求——横向滚轮或 Shift+纵向滚=横向,其余=纵向;
+/// 真实滚动由系统照常发给内容窗,后续由会话线程拼接。
+unsafe extern "system" fn mouse_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if code >= 0 && !SCROLL_SESSION_STARTED.load(Ordering::SeqCst) {
+        let msg = wparam.0 as u32;
+        if msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL {
+            // lparam 指向 MSLLHOOKSTRUCT{pt, mouseData, flags, time, dwExtraInfo};
+            // pt 在最前面,flags 里的 LLMHF_INJECTED 标记合成事件
+            // (我们自己 nudge 出来的滚轮不算用户开始)。
+            let hook = lparam.0 as *const MSLLHOOKSTRUCT;
+            if !hook.is_null() {
+                let pt = (*hook).pt;
+                let injected = (*hook).flags & LLMHF_INJECTED != 0;
+                if !injected {
+                    let inside = ACTIVE_REGION
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .as_ref()
+                        .is_some_and(|region| region.contains(pt));
+                    if inside {
+                        let axis = if msg == WM_MOUSEHWHEEL || shift_down() {
+                            CaptureAxis::Horizontal
+                        } else {
+                            CaptureAxis::Vertical
+                        };
+                        WHEEL_START_REQUEST.store(axis.as_u8(), Ordering::SeqCst);
+                    }
+                }
+            }
+        }
+    }
+    CallNextHookEx(None, code, wparam, lparam)
+}
+
+/// MSLLHOOKSTRUCT 的最小镜像(只用到 pt/flags/mouseData 的低位 Shift 态;
+/// windows crate 0.61 未导出该结构体,布局按公开文档手工对齐)。
+#[repr(C)]
+struct MSLLHOOKSTRUCT {
+    pt: POINT,
+    mouse_data: u32,
+    flags: u32,
+    time: u32,
+    extra: usize,
+}
+
+/// MSLLHOOKSTRUCT.flags 的合成事件位:自动 nudge(PostMessage 注入)带此位,
+/// 不把自动滚动误当用户开始。
+const LLMHF_INJECTED: u32 = 0x01;
+
+fn shift_down() -> bool {
+    unsafe {
+        windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(
+            windows::Win32::UI::Input::KeyboardAndMouse::VK_SHIFT.0 as i32,
+        ) as u16
+            & 0x8000
+            != 0
+    }
 }
 
 static SCROLL_X: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);

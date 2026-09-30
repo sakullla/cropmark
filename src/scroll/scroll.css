@@ -183,6 +183,18 @@ html[data-view="scroll"] #app {
   filter: var(--control-pressed-filter);
 }
 
+.scroll-actions .scroll-start {
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.scroll-actions .scroll-start:hover:not(:disabled) {
+  color: var(--on-accent);
+  background: var(--accent);
+  filter: var(--control-hover-filter);
+}
+
 .scroll-actions .scroll-finish {
   color: var(--on-accent);
   background: var(--accent);

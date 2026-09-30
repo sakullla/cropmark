@@ -371,6 +371,7 @@ pub fn run() {
             record::hud::set_recording_hud_expanded,
             record::hud::get_recording_hud_snapshot,
             record::hud::close_recording_hud,
+            capture::scroll::start_scroll_capture,
             capture::scroll::finish_scroll_capture,
             capture::scroll::cancel_scroll_capture,
             capture::scroll::get_scroll_status,

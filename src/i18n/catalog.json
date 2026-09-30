@@ -2412,8 +2412,8 @@
     "en": "Horizontal"
   },
   "scroll.axis.locked": {
-    "zh-CN": "已开始拼接，方向已锁定",
-    "en": "Direction locked once stitching starts"
+    "zh-CN": "已开始，方向已锁定",
+    "en": "Direction locked once capture starts"
   },
   "scroll.hint": {
     "zh-CN": "蓝色框会自己向下滚，也可以自己用滚轮滚。数字是加长的像素，不是段数。框外不会进图。",
@@ -2422,6 +2422,10 @@
   "scroll.hint.horizontal": {
     "zh-CN": "蓝色框会自己向右滚，也可以自己用滚轮滚。数字是加宽的像素，不是段数。框外不会进图。",
     "en": "The blue frame scrolls right on its own; you can also use the wheel. The number is added pixels, not strips. Outside the frame is not captured."
+  },
+  "scroll.start": {
+    "zh-CN": "开始",
+    "en": "Start"
   },
   "scroll.finish": {
     "zh-CN": "完成",
@@ -2438,6 +2442,10 @@
   "scroll.height": {
     "zh-CN": "已拼接 {height} px",
     "en": "Stitched {height} px"
+  },
+  "scroll.status.ready": {
+    "zh-CN": "就绪：点开始按钮，或直接在框内滚动。",
+    "en": "Ready: press Start, or scroll inside the frame."
   },
   "scroll.status.running": {
     "zh-CN": "正在让蓝色框里的内容向下滚。",
@@ -2498,6 +2506,10 @@
   "scroll.action.finish_failed": {
     "zh-CN": "完成失败，请重试。",
     "en": "Finish failed. Try again."
+  },
+  "scroll.action.start_failed": {
+    "zh-CN": "开始失败，请重试。",
+    "en": "Could not start. Try again."
   },
   "scroll.action.axis_failed": {
     "zh-CN": "切换方向失败，请重试。",

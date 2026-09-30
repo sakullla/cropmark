@@ -16,6 +16,7 @@ interface ScrollStatus {
 }
 
 const STATUS_KEYS: Record<string, CatalogKey> = {
+  ready: "scroll.status.ready",
   running: "scroll.status.running",
   unchanged: "scroll.status.unchanged",
   fast: "scroll.status.fast",
@@ -81,6 +82,7 @@ export function mountScroll(root: HTMLElement): () => void {
         <p class="scroll-hint"></p>
       </div>
       <div class="scroll-actions">
+        <button type="button" class="scroll-start" data-i18n="scroll.start"></button>
         <button type="button" class="scroll-finish" data-i18n="scroll.finish"></button>
         <button type="button" class="scroll-cancel" data-i18n="scroll.cancel"></button>
       </div>
@@ -90,6 +92,7 @@ export function mountScroll(root: HTMLElement): () => void {
   const hint = root.querySelector(".scroll-hint");
   const lock = root.querySelector(".scroll-lock");
   const finish = root.querySelector(".scroll-finish");
+  const start = root.querySelector(".scroll-start");
   const cancel = root.querySelector(".scroll-cancel");
   const axisButtons = Array.from(root.querySelectorAll(".scroll-axis-option")).filter(
     (button): button is HTMLButtonElement => button instanceof HTMLButtonElement,
@@ -100,6 +103,7 @@ export function mountScroll(root: HTMLElement): () => void {
     !(hint instanceof HTMLElement) ||
     !(lock instanceof HTMLElement) ||
     !(finish instanceof HTMLButtonElement) ||
+    !(start instanceof HTMLButtonElement) ||
     !(cancel instanceof HTMLButtonElement) ||
     axisButtons.length !== 2
   ) {
@@ -107,7 +111,7 @@ export function mountScroll(root: HTMLElement): () => void {
   }
 
   let last: ScrollStatus | null = null;
-  // 取消/完成请求进行中:期间按钮禁用,进行中文案持续显示直到结果替换(ADR-2)。
+  // 取消/完成/开始请求进行中:期间按钮禁用,进行中文案持续显示直到结果替换(ADR-2)。
   let actionBusy = false;
   // 方向切换请求进行中:期间方向按钮禁用,避免连点覆盖。
   let axisBusy = false;
@@ -116,13 +120,14 @@ export function mountScroll(root: HTMLElement): () => void {
   let readySent = false;
 
   const axisOf = (payload: ScrollStatus | null): CaptureAxis => payload?.axis ?? "vertical";
-  /** 首个内容变化后方向锁定(Rust 侧同样拒绝切换)。 */
+  /** 显式开始后方向锁定(与 Rust `axis_switch_allowed` 同口径)。 */
   const axisLocked = (payload: ScrollStatus | null): boolean =>
-    payload !== null && payload.appended > 0;
+    payload !== null && payload.state !== "ready";
 
   const render = (): void => {
     const axis = axisOf(last);
     const locked = axisLocked(last);
+    const ready = last !== null && last.state === "ready";
     const axisDisabled =
       last === null || locked || actionBusy || axisBusy || last.state === "finishing";
     for (const button of axisButtons) {
@@ -148,22 +153,25 @@ export function mountScroll(root: HTMLElement): () => void {
 
     if (!last) {
       status.classList.remove("is-error");
-      status.textContent = t(statusKey("running", axis));
+      status.textContent = t(statusKey("ready", axis));
       size.textContent = "";
-      return;
+    } else {
+      status.classList.toggle("is-error", last.state === "failed");
+      status.textContent = t(statusKey(last.state, last.axis));
+      // 尺寸一直显示：这就是正在截的那一块，滚动后沿轴变长。
+      const parts = [t("scroll.watching", { width: last.width, height: last.height })];
+      if (last.appended > 0) {
+        const appendedKey: CatalogKey =
+          last.axis === "horizontal" ? "scroll.appended.horizontal" : "scroll.appended";
+        parts.push(t(appendedKey, { count: last.appended }));
+      }
+      size.textContent = parts.join(" · ");
     }
-    status.classList.toggle("is-error", last.state === "failed");
-    status.textContent = t(statusKey(last.state, last.axis));
-    // 尺寸一直显示：这就是正在截的那一块，滚动后沿轴变长。
-    const parts = [t("scroll.watching", { width: last.width, height: last.height })];
-    if (last.appended > 0) {
-      const appendedKey: CatalogKey =
-        last.axis === "horizontal" ? "scroll.appended.horizontal" : "scroll.appended";
-      parts.push(t(appendedKey, { count: last.appended }));
-    }
-    size.textContent = parts.join(" · ");
-    const busy = actionBusy || last.state === "finishing";
-    finish.disabled = busy;
+    // 开始按钮只在就绪态出现;开始后被开始信号接管,不保留入口。
+    start.hidden = !ready;
+    start.disabled = actionBusy;
+    const busy = actionBusy || last?.state === "finishing";
+    finish.disabled = busy || !last;
     cancel.disabled = busy;
   };
 
@@ -187,6 +195,7 @@ export function mountScroll(root: HTMLElement): () => void {
     axisBusy = false;
     readySent = false;
     finish.disabled = false;
+    start.disabled = false;
     cancel.disabled = false;
     apply(null);
     void invoke<ScrollStatus | null>("get_scroll_status").then(apply);
@@ -195,6 +204,7 @@ export function mountScroll(root: HTMLElement): () => void {
   const showError = (message: string): void => {
     actionBusy = false;
     finish.disabled = false;
+    start.disabled = false;
     cancel.disabled = false;
     status.textContent = message;
     status.classList.add("is-error");
@@ -249,12 +259,29 @@ export function mountScroll(root: HTMLElement): () => void {
     });
   });
 
+  const startCapture = (): void => {
+    if (actionBusy || last?.state !== "ready") {
+      return;
+    }
+    actionBusy = true;
+    start.disabled = true;
+    void invoke("start_scroll_capture")
+      .then(() => {
+        actionBusy = false;
+      })
+      .catch(() => {
+        showActionError("scroll.action.start_failed");
+      });
+  };
+  start.addEventListener("click", startCapture);
+
   const cancelCapture = (): void => {
     if (actionBusy) {
       return;
     }
     actionBusy = true;
     finish.disabled = true;
+    start.disabled = true;
     cancel.disabled = true;
     status.classList.remove("is-error");
     status.textContent = t("scroll.action.canceling");
