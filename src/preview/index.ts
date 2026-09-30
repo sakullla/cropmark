@@ -102,6 +102,7 @@ export function mountPreview(root: HTMLElement): () => void {
           <button type="button" class="preview-named" data-action="rotate-left" data-i18n-title="preview.action.rotate_left_title" data-i18n-aria-label="preview.action.rotate_left" aria-label="左旋 90°" data-tauri-drag-region="false">${icons.rotateLeft}<span class="tool-label" data-i18n="preview.action.rotate_left">左旋 90°</span></button>
           <button type="button" class="preview-named" data-action="rotate-right" data-i18n-title="preview.action.rotate_right_title" data-i18n-aria-label="preview.action.rotate_right" aria-label="右旋 90°" data-tauri-drag-region="false">${icons.rotateRight}<span class="tool-label" data-i18n="preview.action.rotate_right">右旋 90°</span></button>
           <button type="button" class="preview-named" data-action="crop" data-i18n-title="preview.action.crop_title" data-i18n-aria-label="preview.action.crop" aria-label="裁剪" data-tauri-drag-region="false">${icons.crop}<span class="tool-label" data-i18n="preview.action.crop">裁剪</span></button>
+          <button type="button" class="preview-named" data-action="capture-again" hidden data-i18n-title="preview.action.again_title" data-i18n-aria-label="preview.action.again" aria-label="再来一次" data-tauri-drag-region="false">${icons.redo}<span class="tool-label" data-i18n="preview.action.again">再来一次</span></button>
           <button type="button" class="preview-named" data-action="copy-ocr-all" hidden data-i18n-title="preview.action.copy_all" data-i18n-aria-label="preview.action.copy_all" aria-label="复制全部" data-tauri-drag-region="false">${icons.copy}<span class="tool-label" data-i18n="preview.action.copy_all">复制全部</span></button>
         </div>
         <span class="preview-group-sep" data-preview-sep="picture" aria-hidden="true"></span>
@@ -165,6 +166,7 @@ export function mountPreview(root: HTMLElement): () => void {
   const rotateLeftBtn = root.querySelector("[data-action=rotate-left]");
   const rotateRightBtn = root.querySelector("[data-action=rotate-right]");
   const cropBtn = root.querySelector("[data-action=crop]");
+  const againBtn = root.querySelector("[data-action=capture-again]");
   const cropBar = root.querySelector("[data-crop-bar]");
   const cropConfirmBtn = root.querySelector("[data-crop-action=confirm]");
   const pinBtn = root.querySelector("[data-action=pin]");
@@ -193,6 +195,7 @@ export function mountPreview(root: HTMLElement): () => void {
     !(rotateLeftBtn instanceof HTMLButtonElement) ||
     !(rotateRightBtn instanceof HTMLButtonElement) ||
     !(cropBtn instanceof HTMLButtonElement) ||
+    !(againBtn instanceof HTMLButtonElement) ||
     !(cropBar instanceof HTMLElement) ||
     !(cropConfirmBtn instanceof HTMLButtonElement) ||
     !(pinBtn instanceof HTMLButtonElement) ||
@@ -237,6 +240,8 @@ export function mountPreview(root: HTMLElement): () => void {
   let cropping = false;
   let cropStart: Point | null = null;
   let cropCurrent: Point | null = null;
+  // R7:长截图预览提供「再来一次」;随 `get_preview_context` 判定并跟随功能开关。
+  let longCaptureAgain = false;
   let transformUndo = false;
   let transformRedo = false;
   const cropEdgeColor = resolveCanvasColor(
@@ -410,6 +415,12 @@ export function mountPreview(root: HTMLElement): () => void {
   const syncWritebackUi = (): void => {
     updatePinBtn.hidden = writebackLabel === null;
     pinBtn.hidden = writebackLabel !== null;
+    requestOverflowLayout();
+  };
+
+  // R7:「再来一次」只在长截图预览出现;功能关闭或普通截图时保持隐藏。
+  const syncAgainUi = (): void => {
+    againBtn.hidden = !longCaptureAgain;
     requestOverflowLayout();
   };
 
@@ -1046,6 +1057,24 @@ export function mountPreview(root: HTMLElement): () => void {
   };
 
   // 贴图:当前标注合成图钉成置顶小窗;预览保持打开,可继续标注/再贴。
+  // R7:一键重新进入长截图选区;不记忆选区坐标,后端按当前会话模式与
+  // 功能开关守卫,拒绝时回本地化错误而不是静默。
+  const captureAgain = async (): Promise<void> => {
+    if (busy) {
+      return;
+    }
+    busy = true;
+    try {
+      await invoke("capture_again_long");
+    } catch (error) {
+      setNote(invokeError(error, t("preview.error.again_fallback")), "error");
+    } finally {
+      // dispatch 为 fire-and-forget:受理后由隐藏前置把预览窗收起;
+      // 被拒绝(会话占用/功能关闭)时恢复交互让提示条错误可见。
+      busy = false;
+    }
+  };
+
   const pin = async (): Promise<void> => {
     if (busy || cropping) {
       if (busy) {
@@ -1234,6 +1263,8 @@ export function mountPreview(root: HTMLElement): () => void {
       void save();
     } else if (button.dataset.action === "pin") {
       void pin();
+    } else if (button.dataset.action === "capture-again") {
+      void captureAgain();
     } else if (button.dataset.action === "update-pin") {
       void updatePin();
     } else if (button.dataset.action === "close") {
@@ -1505,6 +1536,18 @@ export function mountPreview(root: HTMLElement): () => void {
       if (generation !== previewLoad) return;
       writebackLabel = writeback;
       syncWritebackUi();
+      // R7:会话模式与帧同源;功能开关在加载时重读,关闭即隐藏入口。
+      try {
+        const context = await invoke<{ mode: string; longCaptureEnabled: boolean }>(
+          "get_preview_context",
+        );
+        if (generation !== previewLoad) return;
+        longCaptureAgain =
+          context.mode === "longcapture" && context.longCaptureEnabled === true;
+      } catch {
+        longCaptureAgain = false;
+      }
+      syncAgainUi();
       let bytes: ArrayBuffer;
       try {
         bytes = await invoke<ArrayBuffer>("get_preview_frame");
@@ -1813,6 +1856,9 @@ export function mountPreview(root: HTMLElement): () => void {
     syncCropUi();
     // 携带说明随新帧重算(image.onload);先清空,避免加载失败时残留旧前缀。
     carriedNoteSource = null;
+    // R7:入口随新帧的会话模式重算,先隐藏避免跨帧误显。
+    longCaptureAgain = false;
+    syncAgainUi();
     // 样式默认只在首次加载，不在 reload 重置。工具开关每次重载都重读。
     loadRegionTools();
     loadPreview();

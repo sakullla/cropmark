@@ -73,6 +73,7 @@ export function mountRecordControl(root: HTMLElement): () => void {
         <div class="record-pending-head">
           <span class="record-pending-title"></span>
           <button type="button" class="record-btn record-start" data-i18n="record.bar.start" hidden></button>
+          <button type="button" class="record-btn record-again" data-i18n="record.bar.again" hidden></button>
           <button type="button" class="record-btn record-close" data-i18n="record.bar.close" hidden></button>
         </div>
         <ul class="record-pending-list"></ul>
@@ -96,6 +97,7 @@ export function mountRecordControl(root: HTMLElement): () => void {
   const pendingTitle = root.querySelector(".record-pending-title");
   const pendingList = root.querySelector(".record-pending-list");
   const start = root.querySelector(".record-start");
+  const again = root.querySelector(".record-again");
   const close = root.querySelector(".record-close");
   if (
     !(card instanceof HTMLElement) ||
@@ -116,6 +118,7 @@ export function mountRecordControl(root: HTMLElement): () => void {
     !(pendingTitle instanceof HTMLElement) ||
     !(pendingList instanceof HTMLElement) ||
     !(start instanceof HTMLButtonElement) ||
+    !(again instanceof HTMLButtonElement) ||
     !(close instanceof HTMLButtonElement)
   ) {
     return () => undefined;
@@ -579,6 +582,10 @@ export function mountRecordControl(root: HTMLElement): () => void {
     start.hidden = !(showReadyStart || showRestart);
     start.disabled = busy;
     start.textContent = showReadyStart ? t("record.bar.start_ready") : t("record.bar.start");
+    // R7:「重新录制」回到选区壳重新框选(不记忆选区);保存/丢弃或失败收场后
+    // 与就地「开始」(沿用上次区域)并列出现,录制预览播放中不抢占。
+    again.hidden = !(status === null && state?.preview == null);
+    again.disabled = busy;
     close.hidden = status !== null || state?.preview != null;
     close.disabled = busy;
     renderPending();
@@ -633,6 +640,24 @@ export function mountRecordControl(root: HTMLElement): () => void {
     }
     busy = false;
     await refresh();
+  };
+
+  // R7:重新进入选区壳重录(不沿用上次区域);后端 `record_again` 沿用
+  // 托盘入口同一 dispatch 链路,受理后 HUD 由隐藏前置收起。
+  const recordAgain = async (): Promise<void> => {
+    if (busy) {
+      return;
+    }
+    busy = true;
+    lastError = "";
+    render();
+    try {
+      await invoke("record_again");
+    } catch (error) {
+      lastError = messageOf(error);
+      busy = false;
+      render();
+    }
   };
 
   const savePreview = async (): Promise<void> => {
@@ -778,6 +803,7 @@ export function mountRecordControl(root: HTMLElement): () => void {
   discard.addEventListener("click", () => void discardPreview());
   draw.addEventListener("click", () => void toggleDraw());
   start.addEventListener("click", () => void runControl("start"));
+  again.addEventListener("click", () => void recordAgain());
   close.addEventListener("click", () => {
     stopPolling();
     void invoke("close_recording_hud");

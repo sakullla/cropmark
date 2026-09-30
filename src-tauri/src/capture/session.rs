@@ -1843,6 +1843,22 @@ pub fn current_capture_mode(app: &AppHandle) -> Option<CaptureMode> {
     with_session(app, |session| session.as_ref().map(|current| current.mode))
 }
 
+/// R7:预览帧的前端镜像载荷:当前会话的采集模式 + 长截图功能开关。
+/// 前端据此决定是否提供「再来一次」入口(功能关闭或本次不是长截图时隐藏)。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewContext {
+    pub mode: CaptureMode,
+    pub long_capture_enabled: bool,
+}
+
+pub fn preview_context(app: &AppHandle) -> PreviewContext {
+    PreviewContext {
+        mode: current_capture_mode(app).unwrap_or(CaptureMode::Region),
+        long_capture_enabled: crate::settings::current_capture(app).long_capture,
+    }
+}
+
 pub fn current_preview_frame(app: &AppHandle) -> Result<Frame, CaptureError> {
     let now = Instant::now();
     with_session_mut(app, |session| {
@@ -3325,6 +3341,39 @@ pub async fn redo_preview_transform(
     run_preview_history(app, true).await
 }
 
+/// R7:预览页「再来一次」可见性依据:模式与长截图开关随帧同源,语言切换/
+/// 设置改动后重读不影响已打开帧的归属判断。
+#[tauri::command]
+pub fn get_preview_context(app: AppHandle) -> PreviewContext {
+    preview_context(&app)
+}
+
+/// R7:预览页「再来一次」:不记忆选区,按当前配置重新进入长截图选区壳。
+/// 仅当当前预览属于长截图会话且功能仍开启时才受理,其余返回明确的
+/// 用户文案而不产生新会话(代际守卫沿用 `dispatch_capture` 既有链路)。
+#[tauri::command]
+pub fn capture_again_long(app: AppHandle) -> Result<(), String> {
+    let context = preview_context(&app);
+    if context.mode != CaptureMode::LongCapture || !context.long_capture_enabled {
+        return Err(crate::i18n::t("error.capture.again_unavailable"));
+    }
+    crate::dispatch_capture(&app, CaptureMode::LongCapture);
+    Ok(())
+}
+
+/// R7:录制 HUD「重新录制」:与选区壳、托盘入口同一条
+/// `dispatch_capture(Recording)` 链路(隐藏前置 → 选区壳 → 确认),不记忆
+/// 上次的确认矩形。进行中的录制/新会话被会话代际守卫拒绝时回 `busy`
+/// 文案,不抢占;无 HUD 上下文也可直接受理(选区壳是完整入口)。
+#[tauri::command]
+pub fn record_again(app: AppHandle) -> Result<(), String> {
+    if !crate::settings::current_recording(&app).enabled {
+        return Err(crate::i18n::t("error.record.disabled"));
+    }
+    super::dispatch_recording(&app);
+    Ok(())
+}
+
 fn with_session<R>(app: &AppHandle, f: impl FnOnce(&Option<ActiveSession>) -> R) -> R {
     let runtime = app.state::<CaptureRuntime>();
     let guard = lock(&runtime.inner);
@@ -4266,6 +4315,26 @@ mod tests {
             crop_selection_with_annotations(&freeze, &selection, &[]).unwrap();
         assert!(translated.is_empty());
         assert_eq!(cropped.rgba, vec![7; 10 * 10 * 4]);
+    }
+
+    #[test]
+    fn preview_context_serializes_camel_case() {
+        // R7:「再来一次」入口的判定载荷;前端按 mode==="longcapture" +
+        // longCaptureEnabled 判定,字段名固定 camelCase。
+        let context = PreviewContext {
+            mode: CaptureMode::LongCapture,
+            long_capture_enabled: true,
+        };
+        let value = serde_json::to_value(&context).expect("serialize");
+        assert_eq!(value["mode"], serde_json::json!("longcapture"));
+        assert_eq!(value["longCaptureEnabled"], serde_json::json!(true));
+
+        let region = PreviewContext {
+            mode: CaptureMode::Region,
+            long_capture_enabled: true,
+        };
+        let value = serde_json::to_value(&region).expect("serialize");
+        assert_eq!(value["mode"], serde_json::json!("region"));
     }
 
     #[test]

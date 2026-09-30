@@ -491,6 +491,10 @@
     "zh-CN": "长截图已关闭。可在设置的采集里打开。",
     "en": "Scrolling capture is off. Turn it on in Capture settings."
   },
+  "error.capture.again_unavailable": {
+    "zh-CN": "当前预览不能再来一次：只有长截图结果提供此入口，且长截图需在设置中保持开启。",
+    "en": "Cannot capture again from this preview: the entry is only available for scrolling captures, and scrolling capture must stay enabled in settings."
+  },
   "error.capture.scroll_unsupported": {
     "zh-CN": "当前会话不支持长截图：Wayland 下无法持续获取屏幕内容。请在 X11 会话或 Windows / macOS 上使用。",
     "en": "Scrolling capture is unavailable in this session: continuous screen grabs are not possible on Wayland. Use an X11 session or Windows / macOS."
@@ -670,6 +674,10 @@
   "record.bar.start_ready": {
     "zh-CN": "开始",
     "en": "Start"
+  },
+  "record.bar.again": {
+    "zh-CN": "重新框选录制",
+    "en": "Select area & record"
   },
   "record.bar.cancel": {
     "zh-CN": "取消",
@@ -1359,6 +1367,18 @@
     "zh-CN": "通用",
     "en": "General"
   },
+  "settings.recording.disabled_reason": {
+    "zh-CN": "开启「启用录屏」后可选",
+    "en": "Enable recording first to choose"
+  },
+  "settings.export.template_disabled": {
+    "zh-CN": "开启「套用文件名模板」后可编辑",
+    "en": "Enable filename template first to edit"
+  },
+  "settings.export.beautify_disabled": {
+    "zh-CN": "开启「套用美化」后可设置",
+    "en": "Enable beautify first to configure"
+  },
   "settings.section.naming": {
     "zh-CN": "保存与命名",
     "en": "Saving & naming"
@@ -1911,6 +1931,14 @@
     "zh-CN": "向右旋转 90°",
     "en": "Rotate 90° to the right"
   },
+  "preview.action.again": {
+    "zh-CN": "再来一次",
+    "en": "Capture again"
+  },
+  "preview.action.again_title": {
+    "zh-CN": "重新进入长截图选区",
+    "en": "Re-enter the scrolling capture selection"
+  },
   "preview.action.crop": {
     "zh-CN": "裁剪",
     "en": "Crop"
@@ -2182,6 +2210,10 @@
   "preview.error.update_pin_fallback": {
     "zh-CN": "无法更新贴图。",
     "en": "Could not update the pin."
+  },
+  "preview.error.again_fallback": {
+    "zh-CN": "无法重新进入选区。",
+    "en": "Could not re-enter the selection."
   },
   "preview.error.close_fallback": {
     "zh-CN": "无法关闭预览。",
