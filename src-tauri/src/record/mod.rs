@@ -1397,8 +1397,8 @@ mod tests {
 
     #[test]
     fn fullscreen_session_capture_matches_the_yielded_chrome_rect() {
-        let monitor = MonitorGeom::from_physical("m", 10, 20, 240, 180, 1.0);
-        let region = RecordRegion::new(0, 0, 240, 180);
+        let monitor = MonitorGeom::from_physical("m", 10, 20, 240, 240, 1.0);
+        let region = RecordRegion::new(0, 0, 240, 240);
         let config = RecordConfig {
             format: RecordFormat::Gif,
             fps: 10,
@@ -1413,7 +1413,7 @@ mod tests {
         .expect("plan");
         assert!(plan.yielded);
         let source = MonitoredSource {
-            inner: SyntheticSource::new(240, 180),
+            inner: SyntheticSource::new(240, 240),
             monitor: monitor.clone(),
         };
         let session = RecordingSession::start(region, config, source).expect("start");
