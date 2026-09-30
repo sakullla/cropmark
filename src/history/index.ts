@@ -704,11 +704,31 @@ export function mountHistory(root: HTMLElement): () => void {
     hideConfirm();
   });
 
-  // Esc 等同取消,不执行删除。
+  // Esc 分层(R9 与 settings/guide/preview 一致):确认条打开时等同取消,
+  // 输入框内先失焦,其余情况关闭历史窗;任何分支都不执行删除。
   window.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && pendingConfirm && !busy) {
-      hideConfirm();
+    if (event.key !== "Escape" || event.defaultPrevented || event.isComposing || event.keyCode === 229) {
+      return;
     }
+    if (pendingConfirm) {
+      if (!busy) {
+        event.preventDefault();
+        hideConfirm();
+      }
+      return;
+    }
+    const active = document.activeElement;
+    if (
+      active instanceof HTMLInputElement ||
+      active instanceof HTMLTextAreaElement ||
+      active instanceof HTMLSelectElement
+    ) {
+      event.preventDefault();
+      active.blur();
+      return;
+    }
+    event.preventDefault();
+    void getCurrentWindow().close();
   });
 
   closeEl.addEventListener("click", () => {

@@ -17,6 +17,8 @@ html[data-view="toast"] #app {
   justify-content: center;
   padding: 0 14px;
   user-select: none;
+  /* 窗高固定 44px（Rust 侧 TOAST_HEIGHT）：超长文案在窗内截断而非撑出圆角边界。 */
+  overflow: hidden;
   background: #1b1f26;
   border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: 10px;

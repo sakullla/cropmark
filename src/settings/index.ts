@@ -772,6 +772,10 @@ export function mountSettings(root: HTMLElement): () => void {
       button.classList.toggle("selected", selected);
       // 开关关闭时格式仍可见；disabled 后点击与方向键都不改写格式。
       button.disabled = !settings.enabled;
+      // R9:禁用原因与就地 hint 同源,悬停/聚焦可读到,不出现「点了没反应」。
+      button.dataset.tooltip = settings.enabled
+        ? t(item.labelKey)
+        : t("settings.recording.disabled_reason");
       // 漫游 tabindex:与语言/预设组一致的 radio 组键盘行为。
       button.tabIndex = selected ? 0 : -1;
       recordingFormatsEl.append(button);
@@ -804,6 +808,9 @@ export function mountSettings(root: HTMLElement): () => void {
       button.setAttribute("aria-checked", selected ? "true" : "false");
       button.classList.toggle("selected", selected);
       button.disabled = !settings.enabled;
+      button.dataset.tooltip = settings.enabled
+        ? t("settings.recording.fps_option", { fps: String(fps) })
+        : t("settings.recording.disabled_reason");
       button.tabIndex = selected ? 0 : -1;
       recordingFpsEl.append(button);
     }
@@ -970,6 +977,9 @@ export function mountSettings(root: HTMLElement): () => void {
       templateEl.value = exportAppearance.filenameTemplate;
     }
     templateEl.disabled = !exportAppearance.useFilenameTemplate;
+    templateEl.dataset.tooltip = exportAppearance.useFilenameTemplate
+      ? t("settings.export.template_label")
+      : t("settings.export.template_disabled");
     if (document.activeElement !== paddingEl) {
       paddingEl.value = String(exportAppearance.beautify.padding);
     }
@@ -979,6 +989,19 @@ export function mountSettings(root: HTMLElement): () => void {
     paddingEl.disabled = !exportAppearance.applyBeautify;
     radiusEl.disabled = !exportAppearance.applyBeautify;
     shadowEl.disabled = !exportAppearance.applyBeautify;
+    shadowEl.dataset.tooltip = exportAppearance.applyBeautify
+      ? t("settings.export.shadow_label")
+      : t("settings.export.beautify_disabled");
+    const beautifyReason = exportAppearance.applyBeautify
+      ? null
+      : t("settings.export.beautify_disabled");
+    for (const element of [paddingEl, radiusEl]) {
+      if (beautifyReason) {
+        element.dataset.tooltip = beautifyReason;
+      } else {
+        delete element.dataset.tooltip;
+      }
+    }
     syncSwitch(shadowEl, exportAppearance.beautify.shadow);
     // 预设按钮每次重建:方向键漫游后焦点落在被替换节点上,这里记住并还原。
     const activePreset =
@@ -1000,6 +1023,9 @@ export function mountSettings(root: HTMLElement): () => void {
       button.classList.toggle("selected", selected);
       // 漫游 tabindex:与语言组一致的 radio 组键盘行为。
       button.tabIndex = selected ? 0 : -1;
+      button.dataset.tooltip = exportAppearance.applyBeautify
+        ? t(item.labelKey)
+        : t("settings.export.beautify_disabled");
       const chip = document.createElement("span");
       chip.setAttribute("aria-hidden", "true");
       chip.style.display = "inline-block";
@@ -1583,6 +1609,26 @@ export function mountSettings(root: HTMLElement): () => void {
       return;
     }
     void applyHotkey(recording, accelerator);
+  });
+
+  // Esc 分层(R9,对齐 preview):热键录制中 Esc 已由上面的捕获型监听器
+  // 取消录制;这里处理常态语义——输入框内先失焦,其余情况关闭设置窗。
+  window.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || event.defaultPrevented || recording || event.isComposing || event.keyCode === 229) {
+      return;
+    }
+    const active = document.activeElement;
+    if (
+      active instanceof HTMLInputElement ||
+      active instanceof HTMLTextAreaElement ||
+      active instanceof HTMLSelectElement
+    ) {
+      event.preventDefault();
+      active.blur();
+      return;
+    }
+    event.preventDefault();
+    void getCurrentWindow().close();
   });
 
   // R19:关于组显示当前版本;读取失败时保持占位符,不阻塞其余设置。
