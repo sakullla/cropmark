@@ -13,6 +13,8 @@ interface ScrollStatus {
   width: number;
   height: number;
   appended: number;
+  /** 回退段栈非空:栈空时禁用回退按钮(首帧不可回退)。 */
+  canUndo: boolean;
 }
 
 const STATUS_KEYS: Record<string, CatalogKey> = {
@@ -45,7 +47,7 @@ function axisFromDataset(value: string | undefined): CaptureAxis {
 }
 
 /** 命令失败时优先展示服务端本地化文案,否则用通用失败文案。 */
-function messageOf(error: unknown): string {
+function messageOf(error: unknown, fallback: CatalogKey = "scroll.action.axis_failed"): string {
   if (typeof error === "string" && error.trim().length > 0) {
     return error;
   }
@@ -55,7 +57,7 @@ function messageOf(error: unknown): string {
       return message;
     }
   }
-  return t("scroll.action.axis_failed");
+  return t(fallback);
 }
 
 /**
@@ -83,6 +85,7 @@ export function mountScroll(root: HTMLElement): () => void {
       </div>
       <div class="scroll-actions">
         <button type="button" class="scroll-start" data-i18n="scroll.start"></button>
+        <button type="button" class="scroll-undo" data-i18n="scroll.undo"></button>
         <button type="button" class="scroll-finish" data-i18n="scroll.finish"></button>
         <button type="button" class="scroll-cancel" data-i18n="scroll.cancel"></button>
       </div>
@@ -93,6 +96,7 @@ export function mountScroll(root: HTMLElement): () => void {
   const lock = root.querySelector(".scroll-lock");
   const finish = root.querySelector(".scroll-finish");
   const start = root.querySelector(".scroll-start");
+  const undo = root.querySelector(".scroll-undo");
   const cancel = root.querySelector(".scroll-cancel");
   const axisButtons = Array.from(root.querySelectorAll(".scroll-axis-option")).filter(
     (button): button is HTMLButtonElement => button instanceof HTMLButtonElement,
@@ -104,6 +108,7 @@ export function mountScroll(root: HTMLElement): () => void {
     !(lock instanceof HTMLElement) ||
     !(finish instanceof HTMLButtonElement) ||
     !(start instanceof HTMLButtonElement) ||
+    !(undo instanceof HTMLButtonElement) ||
     !(cancel instanceof HTMLButtonElement) ||
     axisButtons.length !== 2
   ) {
@@ -170,6 +175,15 @@ export function mountScroll(root: HTMLElement): () => void {
     // 开始按钮只在就绪态出现;开始后被开始信号接管,不保留入口。
     start.hidden = !ready;
     start.disabled = actionBusy;
+    // 回退:栈空(只剩首帧/未开始)、finishing 或动作进行中禁用并附原因。
+    const undoDisabled =
+      !last || !last.canUndo || actionBusy || last.state === "finishing";
+    undo.disabled = undoDisabled;
+    if (last && !last.canUndo) {
+      undo.dataset.tooltip = t("scroll.undo.empty");
+    } else {
+      delete undo.dataset.tooltip;
+    }
     const busy = actionBusy || last?.state === "finishing";
     finish.disabled = busy || !last;
     cancel.disabled = busy;
@@ -196,6 +210,7 @@ export function mountScroll(root: HTMLElement): () => void {
     readySent = false;
     finish.disabled = false;
     start.disabled = false;
+    undo.disabled = false;
     cancel.disabled = false;
     apply(null);
     void invoke<ScrollStatus | null>("get_scroll_status").then(apply);
@@ -205,6 +220,7 @@ export function mountScroll(root: HTMLElement): () => void {
     actionBusy = false;
     finish.disabled = false;
     start.disabled = false;
+    undo.disabled = false;
     cancel.disabled = false;
     status.textContent = message;
     status.classList.add("is-error");
@@ -251,6 +267,7 @@ export function mountScroll(root: HTMLElement): () => void {
     }
     actionBusy = true;
     finish.disabled = true;
+    undo.disabled = true;
     cancel.disabled = true;
     status.classList.remove("is-error");
     status.textContent = t("scroll.status.finishing");
@@ -258,6 +275,27 @@ export function mountScroll(root: HTMLElement): () => void {
       showActionError("scroll.action.finish_failed");
     });
   });
+
+  const undoSegment = (): void => {
+    if (actionBusy || !last || !last.canUndo || last.state === "finishing") {
+      return;
+    }
+    undo.disabled = true;
+    void invoke("undo_scroll_segment")
+      .then(() => {
+        // 回退结果由下一次 scroll-status 事件带回(尺寸/已追加长度回拨)。
+        void invoke<ScrollStatus | null>("get_scroll_status")
+          .then(apply)
+          .catch(() => undefined);
+      })
+      .catch((error) => {
+        showError(messageOf(error, "scroll.action.undo_failed"));
+      })
+      .finally(() => {
+        render();
+      });
+  };
+  undo.addEventListener("click", undoSegment);
 
   const startCapture = (): void => {
     if (actionBusy || last?.state !== "ready") {
@@ -282,6 +320,7 @@ export function mountScroll(root: HTMLElement): () => void {
     actionBusy = true;
     finish.disabled = true;
     start.disabled = true;
+    undo.disabled = true;
     cancel.disabled = true;
     status.classList.remove("is-error");
     status.textContent = t("scroll.action.canceling");

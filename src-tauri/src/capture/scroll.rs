@@ -77,6 +77,9 @@ const MIN_APPEND_DELTA: u32 = 4;
 pub(crate) const UNCHANGED_HINT_AFTER: u32 = 12;
 /// 沿滚动轴的拼接长度上限(物理像素):达到后自动完成并提示。
 pub(crate) const MAX_STITCH_LENGTH: u32 = 12_000;
+/// R2:可回退段数上限。每段多存一帧锚点,溢出丢弃最旧段——回退深度受限
+/// 是接受取舍,更早的已拼接内容留在图里不再可回退。
+const MAX_UNDO_SEGMENTS: usize = 64;
 /// 拼接像素总量上限:限制超长区域的内存占用(长度上限随之收紧)。
 pub(crate) const MAX_STITCH_PIXELS: u64 = 40_000_000;
 
@@ -112,6 +115,9 @@ static SCROLL_AXIS_CHOSEN: AtomicBool = AtomicBool::new(false);
 /// 兜底任一到达后置位,方向随之锁定、Windows 自动 nudge 才开始按宽限
 /// 规则发出。
 pub(crate) static SCROLL_SESSION_STARTED: AtomicBool = AtomicBool::new(false);
+/// R2:控制窗排队的回退次数。命令线程只计数,会话线程在下一轮循环串行
+/// 执行 `Stitcher::undo_last_segment`,避免跨线程触碰拼接器。
+static SCROLL_UNDO_REQUESTS: AtomicU64 = AtomicU64::new(0);
 
 /// R5:长截图滚动轴。默认纵向;控制窗在首个内容变化前可切换为横向。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -140,7 +146,8 @@ impl CaptureAxis {
 }
 
 /// 控制窗状态载荷:前端按 `state` 映射词条,`axis` 显示方向与锁定状态,
-/// `width`/`height` 为当前拼接结果尺寸(横向时宽度增长)。
+/// `width`/`height` 为当前拼接结果尺寸(横向时宽度增长),`can_undo`
+/// 表示回退栈非空(栈空时前端禁用回退按钮)。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScrollStatus {
@@ -150,16 +157,26 @@ pub struct ScrollStatus {
     pub height: u32,
     /// 已追加的像素数(不含初始区域)。
     pub appended: u32,
+    /// 回退段栈非空:至少有一段可回退。
+    pub can_undo: bool,
 }
 
 impl ScrollStatus {
-    fn new(state: &str, axis: CaptureAxis, width: u32, height: u32, appended: u32) -> Self {
+    fn new(
+        state: &str,
+        axis: CaptureAxis,
+        width: u32,
+        height: u32,
+        appended: u32,
+        can_undo: bool,
+    ) -> Self {
         Self {
             state: state.to_string(),
             axis,
             width,
             height,
             appended,
+            can_undo,
         }
     }
 }
@@ -373,6 +390,14 @@ pub(crate) fn match_strip_offset(prev: &Frame, next: &Frame, axis: CaptureAxis) 
     Some(best_at as u32)
 }
 
+/// R2 回退段:一次 append 的像素量与追加前的锚帧。回退时恢复锚帧,
+/// 让 RESYNC 换锚后的 prev 也一致回拨到该段追加前的状态。
+#[derive(Debug)]
+struct Segment {
+    amount: u32,
+    anchor: Frame,
+}
+
 /// 垂直拼接器:持有初始区域与最近一帧,按位移追加新内容。
 pub(crate) struct Stitcher {
     axis: CaptureAxis,
@@ -381,6 +406,8 @@ pub(crate) struct Stitcher {
     rgba: Vec<u8>,
     height: u32,
     prev: Frame,
+    /// per-append 回退栈(锚帧按追加前快照入栈;上限 `MAX_UNDO_SEGMENTS`)。
+    segments: Vec<Segment>,
     /// 沿滚动轴的拼接长度上限(纵向 = 高度,横向 = 宽度)。
     cap_length: u32,
     appended: u32,
@@ -404,6 +431,7 @@ impl Stitcher {
             height,
             prev: initial,
             cap_length: cap_length.max(1),
+            segments: Vec::new(),
             appended: 0,
             unchanged_ticks: 0,
             no_match_ticks: 0,
@@ -460,6 +488,11 @@ impl Stitcher {
         self.limit_reached
     }
 
+    /// 回退段栈非空(首帧不在栈里,天然不可回退)。
+    pub(crate) fn can_undo(&self) -> bool {
+        !self.segments.is_empty()
+    }
+
     /// 当前对齐锚帧(就绪期兜底用它判断内容是否已变化,不消费帧)。
     pub(crate) fn anchor(&self) -> &Frame {
         &self.prev
@@ -498,6 +531,14 @@ impl Stitcher {
         self.scrolled = true;
         let remaining = self.cap_length.saturating_sub(self.axis_length());
         let append = delta.min(remaining);
+        if self.segments.len() >= MAX_UNDO_SEGMENTS {
+            // 栈满丢弃最旧段:回退深度受限,更早已拼接的内容留在图里。
+            self.segments.remove(0);
+        }
+        self.segments.push(Segment {
+            amount: append,
+            anchor: self.prev.clone(),
+        });
         self.append_axis(&next, append);
         let fast = delta > prev_length / 2;
         self.prev = next;
@@ -542,6 +583,42 @@ impl Stitcher {
             }
         }
         self.appended += amount;
+    }
+
+    /// 回退最近一次追加:纵向截断尾部行、横向重建去掉末尾列,并同步回拨
+    /// `appended`、锚帧 `prev`(恢复到该段追加前的帧,RESYNC 换锚也一致回拨)
+    /// 与 `limit_reached`。栈空(只剩首帧)返回 false。回退后下一次拼接从
+    /// 恢复的锚帧重新估计位移,段内已回退的内容按新位移正常续接。
+    pub(crate) fn undo_last_segment(&mut self) -> bool {
+        let Some(segment) = self.segments.pop() else {
+            return false;
+        };
+        match self.axis {
+            CaptureAxis::Vertical => {
+                let stride = self.width as usize * 4;
+                let remove = segment.amount as usize * stride;
+                self.rgba.truncate(self.rgba.len() - remove);
+                self.height -= segment.amount;
+            }
+            CaptureAxis::Horizontal => {
+                let old_stride = self.width as usize * 4;
+                let new_width = self.width - segment.amount;
+                let new_stride = new_width as usize * 4;
+                let mut rgba = vec![0u8; new_stride * self.height as usize];
+                for y in 0..self.height as usize {
+                    rgba[y * new_stride..y * new_stride + new_stride]
+                        .copy_from_slice(&self.rgba[y * old_stride..y * old_stride + new_stride]);
+                }
+                self.rgba = rgba;
+                self.width = new_width;
+            }
+        }
+        self.appended -= segment.amount;
+        self.prev = segment.anchor;
+        self.limit_reached = false;
+        self.unchanged_ticks = 0;
+        self.no_match_ticks = 0;
+        true
     }
 
     pub(crate) fn into_frame(self) -> Frame {
@@ -865,7 +942,7 @@ pub(crate) fn start(
     // 范围框内滚轮或就绪期内容变化兜底任一触发。
     emit_status(
         app,
-        ScrollStatus::new("ready", axis, initial.width, initial.height, 0),
+        ScrollStatus::new("ready", axis, initial.width, initial.height, 0, false),
     );
     let handle = app.clone();
     let spawn = std::thread::Builder::new()
@@ -1043,6 +1120,23 @@ fn run_session(
             release_state(generation);
             return;
         }
+        // R2:回退请求按会话线程串行执行;回退成功则以最新尺寸/追加量
+        // 推送一次状态,让控制卡的尺寸行与回退按钮同步回拨。
+        let pending_undo = SCROLL_UNDO_REQUESTS.swap(0, Ordering::SeqCst);
+        if pending_undo > 0 {
+            let mut undone = false;
+            for _ in 0..pending_undo {
+                undone = stitcher.undo_last_segment() || undone;
+            }
+            if undone {
+                let state = if SCROLL_SESSION_STARTED.load(Ordering::SeqCst) {
+                    "running"
+                } else {
+                    "ready"
+                };
+                emit_status(&app, status_from(&stitcher, state));
+            }
+        }
         // R5:控制窗的方向选择在显式开始前自由切换;开始后锁定并把请求
         // 回退到实际方向,用状态事件把控制窗的选择回正。
         #[cfg(windows)]
@@ -1163,6 +1257,7 @@ fn status_from(stitcher: &Stitcher, state: &str) -> ScrollStatus {
         stitcher.width(),
         stitcher.height(),
         stitcher.appended(),
+        stitcher.can_undo(),
     )
 }
 
@@ -1236,8 +1331,9 @@ pub fn finish_scroll_capture(app: AppHandle) -> Result<(), CaptureError> {
         Ordering::SeqCst,
     ) {
         Ok(_) => {
-            let last = get_scroll_status()
-                .unwrap_or_else(|| ScrollStatus::new("running", CaptureAxis::default(), 0, 0, 0));
+            let last = get_scroll_status().unwrap_or_else(|| {
+                ScrollStatus::new("running", CaptureAxis::default(), 0, 0, 0, false)
+            });
             emit_status(
                 &app,
                 ScrollStatus {
@@ -1250,6 +1346,17 @@ pub fn finish_scroll_capture(app: AppHandle) -> Result<(), CaptureError> {
         Err(STATE_FINISH) | Err(STATE_FINISHING) => Ok(()),
         Err(_) => Err(CaptureError::api("error.capture.scroll_missing")),
     }
+}
+
+/// 控制窗前端消息:回退最近一段拼接(仅运行中且未进入完成流程可调;
+/// 就绪态栈为空时为 no-op)。实际回退由会话线程在下一轮循环执行。
+#[tauri::command]
+pub fn undo_scroll_segment() -> Result<(), CaptureError> {
+    if SCROLL_STATE.load(Ordering::SeqCst) != STATE_RUNNING {
+        return Err(CaptureError::api("error.capture.scroll_missing"));
+    }
+    SCROLL_UNDO_REQUESTS.fetch_add(1, Ordering::SeqCst);
+    Ok(())
 }
 
 /// 控制窗前端消息:在显式开始前切换滚动方向;开始后(按钮/滚轮/内容
@@ -2019,6 +2126,7 @@ mod tests {
             10,
             10,
             0,
+            false,
         ));
         drop(status);
         SCROLL_AXIS_REQUEST.store(CaptureAxis::Vertical.as_u8(), Ordering::SeqCst);
@@ -2041,6 +2149,7 @@ mod tests {
             10,
             10,
             0,
+            false,
         ));
         drop(status);
         assert!(set_scroll_axis(CaptureAxis::Vertical).is_err());
@@ -2053,6 +2162,152 @@ mod tests {
         drop(status);
         SCROLL_STATE.store(previous_state, Ordering::SeqCst);
         SCROLL_SESSION_STARTED.store(previous_started, Ordering::SeqCst);
+    }
+
+    /// R2:追加一段后可回退——长度、appended、锚帧同步回拨,首帧不可回退;
+    /// 回退后继续滚动按恢复的锚帧正常续接,不重复不错位。
+    #[test]
+    fn undo_last_segment_rewinds_the_stitch_and_resumes_cleanly() {
+        let page = page(72, 400, 11);
+        let mut stitcher = Stitcher::new(viewport(&page, 0, 100), CaptureAxis::Vertical, 1000);
+        // 首帧不可回退(栈空)。
+        assert!(!stitcher.undo_last_segment());
+        assert!(!stitcher.can_undo());
+        let mut top = 0u32;
+        for delta in [20u32, 7, 33] {
+            top += delta;
+            assert_eq!(
+                stitcher.tick(viewport(&page, top, 100)),
+                ScrollTick::Appended { fast: false }
+            );
+        }
+        assert!(stitcher.can_undo());
+        assert_eq!(stitcher.height(), 100 + 60);
+        assert_eq!(stitcher.appended(), 60);
+        // 回退最后一段(33px):锚帧恢复到该段追加前的帧。
+        assert!(stitcher.undo_last_segment());
+        assert_eq!(stitcher.height(), 100 + 27);
+        assert_eq!(stitcher.appended(), 27);
+        // 从 top-33 之后的位置续接:新帧与恢复的锚帧之间位移按真实滚动估计。
+        let resume = top - 33 + 12;
+        assert_eq!(
+            stitcher.tick(viewport(&page, resume, 100)),
+            ScrollTick::Appended { fast: false }
+        );
+        let stitched = stitcher.into_frame();
+        let expected = crop_rgba(&page, 0, 0, 72, 100 + resume).unwrap();
+        assert_eq!(stitched.rgba, expected.rgba);
+    }
+
+    /// R2:连续回退到只剩首帧后栈空,再回退返回 false 且状态不变。
+    #[test]
+    fn undo_drains_the_segment_stack_then_stops() {
+        let page = page(64, 300, 3);
+        let mut stitcher = Stitcher::new(viewport(&page, 0, 100), CaptureAxis::Vertical, 1000);
+        for top in [20u32, 40] {
+            stitcher.tick(viewport(&page, top, 100));
+        }
+        assert!(stitcher.undo_last_segment());
+        assert!(stitcher.undo_last_segment());
+        assert_eq!(stitcher.height(), 100);
+        assert_eq!(stitcher.appended(), 0);
+        // scrolled 语义不因回退改变(已有过滚动内容);can_undo 为假。
+        assert!(stitcher.scrolled());
+        assert!(!stitcher.can_undo());
+        assert!(!stitcher.undo_last_segment());
+        assert_eq!(stitcher.height(), 100);
+    }
+
+    /// R2:上限触顶(limit_reached)后回退一段,上限状态与 appended 同步回拨。
+    #[test]
+    fn undo_after_the_cap_rewinds_limit_reached() {
+        let page = page(48, 400, 9);
+        let cap = 100 + 30;
+        let mut stitcher =
+            Stitcher::new(viewport(&page, 0, 100), CaptureAxis::Vertical, cap);
+        assert_eq!(
+            stitcher.tick(viewport(&page, 50, 100)),
+            ScrollTick::LimitReached
+        );
+        assert!(stitcher.limit_reached());
+        assert_eq!(stitcher.appended(), 30);
+        assert!(stitcher.undo_last_segment());
+        assert_eq!(stitcher.height(), 100);
+        assert_eq!(stitcher.appended(), 0);
+        assert!(!stitcher.limit_reached());
+    }
+
+    /// R2:RESYNC 换锚本身不入栈,也不破坏既有段栈:追加若干段后换锚,
+    /// 逐段回退仍把 prev 恢复到各段追加前的锚帧,且尺寸/appended 逐步回拨。
+    /// (换锚后能否再追加取决于新锚内容,不影响本契约:段锚随 append 记录。)
+    #[test]
+    fn undo_restores_the_anchor_before_a_resync() {
+        let page_a = page(64, 260, 0);
+        let mut stitcher =
+            Stitcher::new(viewport(&page_a, 0, 120), CaptureAxis::Vertical, 5000);
+        // 两段纹理追加,各自的段锚为 prev(初帧、追加一后的帧)。
+        assert_eq!(
+            stitcher.tick(viewport(&page_a, 20, 120)),
+            ScrollTick::Appended { fast: false }
+        );
+        assert_eq!(
+            stitcher.tick(viewport(&page_a, 35, 120)),
+            ScrollTick::Appended { fast: false }
+        );
+        // RESYNC 换锚:连续对不齐,prev 换成无关帧。换锚本身不入栈。
+        let resynced = flat(64, 120, 200);
+        for _ in 0..RESYNC_AFTER {
+            assert_eq!(stitcher.tick(resynced.clone()), ScrollTick::NoMatch);
+        }
+        assert_eq!(stitcher.anchor().rgba, resynced.rgba);
+        // 回退末段:prev 恢复为该段追加前的锚(page_a@20 帧),而不是换锚后的
+        // flat 帧——段锚在追加时快照,与之后的换锚无关。
+        assert!(stitcher.undo_last_segment());
+        assert_eq!(stitcher.anchor().rgba, viewport(&page_a, 20, 120).rgba);
+        assert_eq!(stitcher.height(), 140);
+        assert_eq!(stitcher.appended(), 20);
+        // 再退一段:恢复到初始帧,栈空。
+        assert!(stitcher.undo_last_segment());
+        assert_eq!(stitcher.anchor().rgba, viewport(&page_a, 0, 120).rgba);
+        assert_eq!(stitcher.height(), 120);
+        assert!(!stitcher.can_undo());
+    }
+
+    /// R2:横向追加段同样可回退——宽度与 appended 回拨,像素逐字节一致。
+    #[test]
+    fn horizontal_undo_last_segment_rewinds_columns() {
+        let page = wide_page(400, 72, 11);
+        let mut stitcher = Stitcher::new(
+            horizontal_viewport(&page, 0, 100),
+            CaptureAxis::Horizontal,
+            1000,
+        );
+        for left in [20u32, 40] {
+            stitcher.tick(horizontal_viewport(&page, left, 100));
+        }
+        assert_eq!(stitcher.width(), 140);
+        assert!(stitcher.undo_last_segment());
+        assert_eq!(stitcher.width(), 120);
+        assert_eq!(stitcher.appended(), 20);
+        assert!(stitcher.undo_last_segment());
+        assert_eq!(stitcher.width(), 100);
+        assert_eq!(stitcher.appended(), 0);
+        assert!(!stitcher.can_undo());
+    }
+
+    /// R2:回退命令门:仅 RUNNING(且未进入完成流程)接受,其他状态拒绝;
+    /// 栈空语义下首个内容变化前调用也是 no-op 而不报错(门只看会话状态)。
+    #[test]
+    fn undo_scroll_segment_requires_a_running_session() {
+        let previous_state = SCROLL_STATE.swap(STATE_IDLE, Ordering::SeqCst);
+        assert!(undo_scroll_segment().is_err());
+        SCROLL_STATE.store(STATE_FINISH, Ordering::SeqCst);
+        assert!(undo_scroll_segment().is_err());
+        SCROLL_STATE.store(STATE_FINISHING, Ordering::SeqCst);
+        assert!(undo_scroll_segment().is_err());
+        SCROLL_STATE.store(STATE_RUNNING, Ordering::SeqCst);
+        assert!(undo_scroll_segment().is_ok());
+        SCROLL_STATE.store(previous_state, Ordering::SeqCst);
     }
 
     #[test]
@@ -2256,6 +2511,7 @@ mod tests {
             640,
             1200,
             90,
+            true,
         ))
         .unwrap();
         assert_eq!(json["state"], "unchanged");
@@ -2263,6 +2519,7 @@ mod tests {
         assert_eq!(json["width"], 640);
         assert_eq!(json["height"], 1200);
         assert_eq!(json["appended"], 90);
+        assert_eq!(json["canUndo"], true);
     }
 
     #[test]

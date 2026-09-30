@@ -374,6 +374,7 @@ pub fn run() {
             capture::scroll::start_scroll_capture,
             capture::scroll::finish_scroll_capture,
             capture::scroll::cancel_scroll_capture,
+            capture::scroll::undo_scroll_segment,
             capture::scroll::get_scroll_status,
             capture::scroll::set_scroll_axis,
             capture::scroll::scroll_control_ready,

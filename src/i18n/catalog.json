@@ -2451,6 +2451,14 @@
     "zh-CN": "取消",
     "en": "Cancel"
   },
+  "scroll.undo": {
+    "zh-CN": "回退",
+    "en": "Undo"
+  },
+  "scroll.undo.empty": {
+    "zh-CN": "还没有可回退的拼接段",
+    "en": "Nothing to undo yet"
+  },
   "scroll.watching": {
     "zh-CN": "捕获范围 {width}×{height}",
     "en": "Capturing {width}×{height}"
@@ -2530,6 +2538,10 @@
   "scroll.action.axis_failed": {
     "zh-CN": "切换方向失败，请重试。",
     "en": "Could not change direction. Try again."
+  },
+  "scroll.action.undo_failed": {
+    "zh-CN": "回退失败，请重试。",
+    "en": "Could not undo. Try again."
   },
   "error.title": {
     "zh-CN": "无法截取",
