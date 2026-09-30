@@ -453,12 +453,40 @@
   min-height: 0;
 }
 
+.delay-root .count-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .delay-root .count {
   flex-shrink: 0;
   font-size: 18px;
   font-weight: 700;
   line-height: 1.2;
   font-variant-numeric: tabular-nums;
+}
+
+/* R7:倒计时环形进度,随剩余时间收敛到 0(--ring 由脚本按已流逝时间写入);
+   prefers-reduced-motion 下退化为静态文本+数字。 */
+.delay-root .count-ring {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: conic-gradient(
+    var(--accent) calc(var(--ring, 1) * 1turn),
+    var(--line) 0
+  );
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 0);
+  mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .delay-root .count-ring {
+    display: none;
+  }
 }
 
 .delay-root .hint,

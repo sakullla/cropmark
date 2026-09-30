@@ -11,6 +11,7 @@ import {
 import { t, type CatalogKey } from "../i18n";
 import { mountOcrModel, type OcrModel } from "../ocr";
 import { mountQrModel, type QrModel } from "../qr";
+import { NOTICE_AUTO_HIDE_MS } from "../feedback";
 import { canvasGeometry } from "./geometry";
 import "./overlay.css";
 
@@ -353,7 +354,7 @@ export function mountOverlay(root: HTMLElement): () => void {
   };
 
   // ADR-2:进行中提示(persistent)不自动消失,直到完成/失败文案替换;
-  // 瞬态结果提示仍可 3.6s 自动隐藏。
+  // 瞬态结果提示按共享常量自动隐藏(R1:与贴图/设置一致)。
   const showNotice = (message: string, persistent = false): void => {
     notice.textContent = message;
     notice.hidden = false;
@@ -365,7 +366,7 @@ export function mountOverlay(root: HTMLElement): () => void {
       noticeTimer = window.setTimeout(() => {
         noticeTimer = 0;
         notice.hidden = true;
-      }, 3600);
+      }, NOTICE_AUTO_HIDE_MS);
     }
   };
 
@@ -488,7 +489,7 @@ export function mountOverlay(root: HTMLElement): () => void {
           ? t("overlay.hint.snap")
           : reduced
             ? t("overlay.hint.reduced")
-            : t("overlay.hint.region");
+            : t("overlay.hint.region_nudge");
   };
 
   // 画布几何由 `canvasGeometry` 唯一决定:fixed 工作区是帧的等比显示框,
@@ -1070,6 +1071,48 @@ export function mountOverlay(root: HTMLElement): () => void {
     }
   };
 
+  /// R4:方向键微调:移动选区 1 物理像素/次,Shift+方向键以左上角为锚缩放
+  /// 1 物理像素/次。每次修改后经 roundedRect() 规范化(帧内 clamp、录屏让位、
+  /// 偶数收边)写回,尺寸徽标与 confirm_region 的裁剪同源更新;缩到 2px 以下
+  /// 由 Enter 确认时的既有 too_small 提示接住。
+  const nudgeSelection = (event: KeyboardEvent): void => {
+    if (!selection) {
+      return;
+    }
+    let deltaX = 0;
+    let deltaY = 0;
+    if (event.key === "ArrowLeft") {
+      deltaX = -1;
+    } else if (event.key === "ArrowRight") {
+      deltaX = 1;
+    } else if (event.key === "ArrowUp") {
+      deltaY = -1;
+    } else if (event.key === "ArrowDown") {
+      deltaY = 1;
+    } else {
+      return;
+    }
+    event.preventDefault();
+    if (event.shiftKey) {
+      selection = {
+        ...selection,
+        width: Math.max(0, selection.width + deltaX),
+        height: Math.max(0, selection.height + deltaY),
+      };
+    } else {
+      selection = {
+        ...selection,
+        x: selection.x + deltaX,
+        y: selection.y + deltaY,
+      };
+    }
+    const normalized = roundedRect();
+    if (normalized) {
+      selection = normalized;
+    }
+    scheduleDraw();
+  };
+
   const showWorkspaceActions = (current: OverlayFrame): void => {
     actionsEl.hidden = false;
     const caps = current.capabilities;
@@ -1582,8 +1625,9 @@ export function mountOverlay(root: HTMLElement): () => void {
     },
   });
 
-  // 标注层已在缺失能力说明里给出替代路径(R13);键盘只处理选区确认/取消与
-  // 取字/二维码识别(Esc 退出、Ctrl+A 全选、Ctrl+C 复制所选),标注层先消费其它按键。
+  // 标注层已在缺失能力说明里给出替代路径(R13);键盘只处理选区确认/取消、
+  // 选区方向键微调与取字/二维码识别(Esc 退出、Ctrl+A 全选、Ctrl+C 复制所选),
+  // 标注层先消费其它按键。
   window.addEventListener("keydown", (event) => {
     if (event.defaultPrevented || editor?.isTextEditing()) {
       return;
@@ -1652,6 +1696,27 @@ export function mountOverlay(root: HTMLElement): () => void {
       void finishRegion();
       return;
     }
+    // R4:方向键微调选区(移动/Shift 缩放,1 物理像素/次);降级平台保留
+    // 现状说明(Wayland 覆盖层无此能力),拖选进行中不抢指针路径。
+    if (event.key.startsWith("Arrow")) {
+      if (
+        !frame ||
+        frame.fixed ||
+        !isRegionSelectionMode(frame.mode) ||
+        !selection ||
+        dragging ||
+        snapClickPending
+      ) {
+        return;
+      }
+      if (frame.reducedCapabilities) {
+        event.preventDefault();
+        showNotice(t(NUDGE_NOTICE_KEY));
+        return;
+      }
+      nudgeSelection(event);
+      return;
+    }
     if (!frame || !frame.reducedCapabilities || !isRegionSelectionMode(frame.mode)) {
       return;
     }
@@ -1659,11 +1724,6 @@ export function mountOverlay(root: HTMLElement): () => void {
     if (event.key === "c" || event.key === "C") {
       event.preventDefault();
       showNotice(t(COLOR_NOTICE_KEY));
-      return;
-    }
-    if (event.key.startsWith("Arrow") && selection) {
-      event.preventDefault();
-      showNotice(t(NUDGE_NOTICE_KEY));
     }
   });
 

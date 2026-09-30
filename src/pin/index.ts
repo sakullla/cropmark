@@ -3,13 +3,11 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { t, type CatalogKey } from "../i18n";
 import { icons } from "../icons";
+import { NOTICE_AUTO_HIDE_MS } from "../feedback";
 import "./pin.css";
 
 // 透明度档位以 1 → 0.75 → 0.5 → 0.25 循环;与 Rust 侧 alpha 乘算一致。
 const OPACITY_STEPS = [1, 0.75, 0.5, 0.25];
-
-// 结果提示的自动隐藏时长(ADR-2:只有结果提示自动消失,进行中型提示不用它)。
-const NOTE_AUTO_HIDE_MS = 2200;
 
 const ICONS = {
   copy: icons.copy,
@@ -163,9 +161,11 @@ export function mountPin(root: HTMLElement): () => void {
     note.classList.toggle("is-error", stateToShow.isError);
     note.hidden = false;
     window.clearTimeout(noteTimer);
+    // R1:结果提示按共享常量 3.6s 自动隐藏(原 2.2s),与 overlay/设置一致;
+    // 贴图提示均为终态反馈,无常驻进行中分支(ADR-2)。
     noteTimer = window.setTimeout(() => {
       note.hidden = true;
-    }, NOTE_AUTO_HIDE_MS);
+    }, NOTICE_AUTO_HIDE_MS);
   };
 
   const showNote = (text: string, isError = false): void => {
