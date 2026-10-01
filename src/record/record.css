@@ -254,6 +254,13 @@ html[data-chrome="border"] #app {
   display: none;
 }
 
+/* 列表为空但块因开始/重录/关闭按钮可见时,标题与列表单独隐藏
+   (ul 是 flex,UA 的 hidden 不生效,必须显式置 none)。 */
+.record-pending-title[hidden],
+.record-pending-list[hidden] {
+  display: none;
+}
+
 .record-pending-head {
   display: flex;
   align-items: center;

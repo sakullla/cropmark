@@ -240,7 +240,12 @@ export function mountRecordControl(root: HTMLElement): () => void {
     // 列表每秒轮询多次:签名不变时保留现有按钮,避免点击中途被替换;
     // 语言切换会改变按钮文案,因此签名带上当前语言。
     const signature = `${currentLanguage()}#${items.map((item) => item.tempPath).join("|")}#${busy}`;
-    pending.hidden = items.length === 0;
+    // 容器跟着任一可见内容走:就绪态「开始」、无会话的「重新录制/关闭」也
+    // 住在这块,只按待保存列表开关会把开始按钮一起藏掉,卡死就绪态。
+    pending.hidden =
+      items.length === 0 && start.hidden && again.hidden && close.hidden;
+    pendingTitle.hidden = items.length === 0;
+    pendingList.hidden = items.length === 0;
     if (signature === pendingView.signature) {
       return;
     }
