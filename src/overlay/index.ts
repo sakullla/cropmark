@@ -244,6 +244,7 @@ export function mountOverlay(root: HTMLElement): () => void {
   let selection: Selection | null = null;
   let hoverId: string | null = null;
   let finishing = false;
+  let loadGeneration = 0;
   let raf = 0;
   let noticeTimer = 0;
   /// R7:命中栈(光标下重叠窗口,自顶层到底层)与当前高亮层级。
@@ -383,6 +384,16 @@ export function mountOverlay(root: HTMLElement): () => void {
   // 不再只是静默忽略重复点击。
   const setFinishing = (value: boolean): void => {
     finishing = value;
+    root.setAttribute("aria-busy", String(value));
+    toolsEl.inert = value;
+    list.inert = value;
+    if (value) {
+      showNotice(t("overlay.notice.processing"), true);
+      notice.classList.add("is-progress");
+    } else if (notice.classList.contains("is-progress")) {
+      notice.classList.remove("is-progress");
+      hideNotice();
+    }
     actionsEl.querySelectorAll("button").forEach((el) => {
       if (el instanceof HTMLButtonElement) {
         el.disabled = value;
@@ -939,8 +950,13 @@ export function mountOverlay(root: HTMLElement): () => void {
   };
 
   const load = async (): Promise<void> => {
+    const generation = ++loadGeneration;
+    setFinishing(true);
+    showNotice(t("overlay.notice.loading"), true);
     try {
-      frame = await invoke<OverlayFrame>("get_overlay_frame");
+      const next = await invoke<OverlayFrame>("get_overlay_frame");
+      if (generation !== loadGeneration) return;
+      frame = next;
       // R2/R4:新会话先清掉上一帧的取字全文、二维码结果与选择。
       ocrModel?.reset();
       qrModel?.reset();
@@ -959,14 +975,12 @@ export function mountOverlay(root: HTMLElement): () => void {
       clearSnap();
       clearBadge();
       pointer = null;
-      setFinishing(false);
       // 旧帧位图先摘除,避免重置标注会话触发的重绘读到未加载的新图。
       image = null;
       annotationBase = null;
       resetAnnotationSession();
       const reduced = frame.reducedCapabilities === true;
       capabilityToggle.hidden = !reduced;
-      hideNotice();
       setCapabilityPanel(false);
       if (reduced) {
         renderCapabilityPanel();
@@ -982,9 +996,26 @@ export function mountOverlay(root: HTMLElement): () => void {
           void finishWindow(id);
         });
       }
-      image = new Image();
-      image.onload = () => scheduleDraw();
-      image.src = `data:image/jpeg;base64,${frame.pngBase64}`;
+      const loadedImage = new Image();
+      image = loadedImage;
+      loadedImage.onload = () => {
+        if (generation !== loadGeneration) return;
+        setFinishing(false);
+        scheduleDraw();
+        // 自动识别在图像就绪后启动,避免被加载期间的 finishing 守卫吞掉。
+        if (next.fixed && next.capabilities?.workspaceActions !== false) {
+          if (next.pendingOcr) activateWorkspaceOcr();
+          else if (next.pendingQr) activateWorkspaceQr();
+        }
+      };
+      loadedImage.onerror = () => {
+        if (generation !== loadGeneration) return;
+        setFinishing(false);
+        showFailure(t("preview.note.image_failed"), () => void load());
+      };
+      loadedImage.src = `data:image/jpeg;base64,${frame.pngBase64}`;
+      // JPEG 字符串已交给解码器,不在长驻窗口中额外保留整份 base64。
+      frame.pngBase64 = "";
       // 跨会话样式(R8):每次会话重读设置页保存的颜色/线宽/字号/起始序号;
       // 会话已重置,不存在覆盖本次编辑的问题。
       if (frame.fixed) {
@@ -1000,21 +1031,15 @@ export function mountOverlay(root: HTMLElement): () => void {
           toolsEl.hidden = !inlineEnabled;
           root.classList.toggle("has-tools", inlineEnabled);
           editor?.setAnnotations(frame.annotations ?? []);
-          // 壳上的取字动作:工作区打开后自动进入取字,不写剪贴板。
-          if (frame.pendingOcr) {
-            activateWorkspaceOcr();
-          }
-          // 壳上的识别二维码动作:工作区打开后自动开始识别,不写剪贴板。
-          if (frame.pendingQr) {
-            activateWorkspaceQr();
-          }
         }
       }
       // R9:标注工具去门控常开,这里只恢复跨会话样式。
       void loadAnnotationDefaults().then((style) => {
-        editor?.setStyle(style);
+        if (generation === loadGeneration) editor?.setStyle(style);
       });
     } catch (error) {
+      if (generation !== loadGeneration) return;
+      setFinishing(false);
       // 无进行中的会话(cancelled)是预创建/隐藏时的正常路径,静默返回。
       if (isCancelledError(error)) {
         return;
@@ -1070,6 +1095,27 @@ export function mountOverlay(root: HTMLElement): () => void {
       });
     }
   };
+
+  // 键盘和鼠标共用高亮与确认路径,无需精确点中屏幕上的窗口。
+  list.addEventListener("focusin", (event) => {
+    const button = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-window-id]") : null;
+    if (!button || !frame || finishing) return;
+    hoverId = button.dataset.windowId ?? null;
+    markActiveWindow(list, hoverId);
+    scheduleDraw();
+  });
+  list.addEventListener("keydown", (event) => {
+    if (finishing || !["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+    const buttons = Array.from(list.querySelectorAll<HTMLButtonElement>(".window-item"));
+    if (!buttons.length) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const current = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    const index = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1
+      : (current + (event.key === "ArrowUp" ? -1 : 1) + buttons.length) % buttons.length;
+    buttons[index].focus();
+    buttons[index].scrollIntoView({ block: "nearest" });
+  });
 
   /// R4:方向键微调:移动选区 1 物理像素/次,Shift+方向键以左上角为锚缩放
   /// 1 物理像素/次。每次修改后经 roundedRect() 规范化(帧内 clamp、录屏让位、
@@ -1484,6 +1530,7 @@ export function mountOverlay(root: HTMLElement): () => void {
   });
 
   const cancel = (): void => {
+    loadGeneration += 1;
     dragging = false;
     void invoke("cancel_capture");
   };
@@ -1698,6 +1745,8 @@ export function mountOverlay(root: HTMLElement): () => void {
       return;
     }
     if (event.key === "Enter") {
+      // 聚焦按钮时让浏览器执行该按钮,包括窗口列表和取消,不抢成悬停确认。
+      if (event.target instanceof Element && event.target.closest("button")) return;
       event.preventDefault();
       // Enter 等同鼠标确认路径:区域模式确认当前选区(与松开确认同一
       // finishRegion,无选区/选区太小会得到提示),窗口模式确认悬停窗口;
@@ -1750,6 +1799,15 @@ export function mountOverlay(root: HTMLElement): () => void {
     scheduleDraw();
   });
 
+  // 顶部操作区在窄屏/英文界面可能换行,窗口列表始终从其下方开始。
+  const chrome = root.querySelector<HTMLElement>(".overlay-chrome");
+  if (chrome) {
+    const chromeObserver = new ResizeObserver(() => {
+      root.style.setProperty("--overlay-chrome-bottom", `${chrome.offsetTop + chrome.offsetHeight + 12}px`);
+    });
+    chromeObserver.observe(chrome);
+  }
+
   void listen("overlay-reload", () => {
     void load();
   });
@@ -1779,6 +1837,7 @@ function markActiveWindow(root: HTMLElement, activeId: string | null): void {
   root.querySelectorAll(".window-item").forEach((item) => {
     const button = item as HTMLElement;
     button.classList.toggle("active", button.dataset.windowId === activeId);
+    button.setAttribute("aria-current", String(button.dataset.windowId === activeId));
   });
 }
 
@@ -1802,6 +1861,7 @@ function renderWindowList(
     button.type = "button";
     button.className = "window-item";
     button.dataset.windowId = item.id;
+    button.title = item.title;
     if (item.id === activeId) {
       button.classList.add("active");
     }

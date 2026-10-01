@@ -8,7 +8,7 @@ import {
   type AnnotationEditor,
   type AnnotationTool,
 } from "../annotation";
-import { REGION_TOOL_FIELDS, type RegionTools } from "../settings";
+import { REGION_TOOL_FIELDS, type RegionTools } from "../settings/region-tools";
 import { t } from "../i18n";
 import type {
   HudCapabilities,

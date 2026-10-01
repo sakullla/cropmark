@@ -24,9 +24,9 @@ use crate::i18n;
 // ---- 配色:冷灰浮层 + 与选区描边相同的蓝。只有一个实心主动作。----
 
 /// 复制按钮、手柄环、放大镜准星。与浅色选区描边同一蓝,避免青绿和蓝两套强调色。
-pub const ACCENT: [u8; 4] = [0x1D, 0x4E, 0xD8, 255];
-/// 选区描边浅色,与网页 `--accent` 相同(#1d4ed8)。系统配色不可用时用此值。
-const ACCENT_LIGHT: [u8; 4] = [0x1D, 0x4E, 0xD8, 255];
+pub const ACCENT: [u8; 4] = [0x24, 0x57, 0xDB, 255];
+/// 选区描边浅色,与网页 `--accent` 相同(#2457db)。系统配色不可用时用此值。
+const ACCENT_LIGHT: [u8; 4] = [0x24, 0x57, 0xDB, 255];
 /// 选区描边深色,与网页暗色 `--accent` 相同(#93c5fd)。
 const ACCENT_DARK: [u8; 4] = [0x93, 0xC5, 0xFD, 255];
 /// 选区晕边浅色,与网页 `--focus-gap` 相同(#ffffff)。
@@ -38,10 +38,10 @@ const ACCENT_DEEP: [u8; 4] = [0x1E, 0x40, 0xAF, 255];
 /// 实心强调按钮上的字形,与网页浅色 `--on-accent` 相同(#f8fafc)。
 /// 横条始终铺浅色强调填充,不改用深色 `--on-accent`。
 const ON_ACCENT: [u8; 4] = [0xF8, 0xFA, 0xFC, 255];
-/// 浮层底 #e4ebf6,不透明的浅蓝灰。纯白贴在截图上没有层次,半透明又会发灰。
-const CHROME_BG: [u8; 4] = [0xE4, 0xEB, 0xF6, 255];
-/// 正文 #1c2128。
-const CHROME_TEXT: [u8; 4] = [0x1C, 0x21, 0x28, 255];
+/// 浮层底 #f8fafc,与网页工作区的中性浅色表面一致。
+const CHROME_BG: [u8; 4] = [0xF8, 0xFA, 0xFC, 255];
+/// 正文 #192335。
+const CHROME_TEXT: [u8; 4] = [0x19, 0x23, 0x35, 255];
 /// 1px 边 rgba(28,33,40,0.16),让面板在杂乱画面上仍有边。
 const CHROME_BORDER: [u8; 4] = [28, 33, 40, 41];
 /// 底部 2px 偏移,模拟浮层阴影。
@@ -1798,7 +1798,13 @@ impl Composer {
         if overlay.annotations.is_empty() && overlay.draft.is_none() && overlay.text.is_none() {
             return;
         }
-        let mut region = self.baked_region(selection, overlay);
+        let cached = self.baked_region(selection, overlay);
+        if overlay.draft.is_none() && overlay.text.is_none() {
+            self.blit_region(rgba, selection, &cached);
+            return;
+        }
+        // 只有草稿/文字编辑会修改缓存副本;普通悬停直接借用已烘焙像素。
+        let mut region = cached.to_vec();
         if let Some(draft) = overlay.draft {
             let local =
                 crate::annotate::translated(draft, -(selection.x as f64), -(selection.y as f64));
@@ -1817,14 +1823,18 @@ impl Composer {
     }
 
     /// 选区区域的已确认图元烘焙:revision + 选区矩形不变时复用缓存。
-    fn baked_region(&self, selection: PhysicalRect, overlay: &AnnotationOverlay) -> Vec<u8> {
-        {
-            let cache = self.annotation_cache.borrow();
-            if let Some(cache) = cache.as_ref() {
-                if cache.revision == overlay.revision && cache.selection == selection {
-                    return cache.region.clone();
-                }
-            }
+    fn baked_region(
+        &self,
+        selection: PhysicalRect,
+        overlay: &AnnotationOverlay,
+    ) -> std::cell::Ref<'_, Vec<u8>> {
+        let valid = self.annotation_cache.borrow().as_ref().is_some_and(|cache| {
+            cache.revision == overlay.revision && cache.selection == selection
+        });
+        if valid {
+            return std::cell::Ref::map(self.annotation_cache.borrow(), |cache| {
+                &cache.as_ref().unwrap().region
+            });
         }
         let mut region = self.copy_selection(selection);
         if !overlay.annotations.is_empty() {
@@ -1844,9 +1854,11 @@ impl Composer {
         *self.annotation_cache.borrow_mut() = Some(AnnotationCache {
             revision: overlay.revision,
             selection,
-            region: region.clone(),
+            region,
         });
-        region
+        std::cell::Ref::map(self.annotation_cache.borrow(), |cache| {
+            &cache.as_ref().unwrap().region
+        })
     }
 
     /// 从冻结帧原件取出选区像素。
@@ -3088,6 +3100,50 @@ mod tests {
         }
     }
 
+    #[test]
+    #[ignore = "manual cached annotation benchmark; run with --ignored --nocapture"]
+    fn benchmark_cached_annotation_present() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        for (width, height) in [(1920, 1080), (3840, 2160)] {
+            let frame = solid_frame(width, height, [60, 80, 100, 255]);
+            let composer = Composer::new(&frame).unwrap();
+            let selection = PhysicalRect {
+                x: 0,
+                y: 0,
+                width,
+                height,
+            };
+            let annotations = [Annotation::Rect {
+                x: 100.0,
+                y: 100.0,
+                width: 300.0,
+                height: 200.0,
+                color: "#e11d48".into(),
+                stroke_width: Some(4.0),
+            }];
+            let overlay = annotation_overlay(&annotations, None, None, 1);
+            let mut output = frame.rgba.clone();
+            composer.draw_annotations(&mut output, selection, &overlay);
+            let expected = output.clone();
+            let mut copied = std::time::Duration::ZERO;
+            let mut borrowed = std::time::Duration::ZERO;
+            // 交替测量旧的复制后呈现与新的借用呈现,两者输出须逐像素一致。
+            for _ in 0..20 {
+                let start = Instant::now();
+                let region = black_box(composer.baked_region(selection, &overlay).to_vec());
+                composer.blit_region(black_box(&mut output), selection, &region);
+                copied += start.elapsed();
+                let start = Instant::now();
+                composer.draw_annotations(black_box(&mut output), selection, &overlay);
+                borrowed += start.elapsed();
+            }
+            assert_eq!(output, expected);
+            eprintln!("{width}x{height} cached annotation, 20 frames: copy={copied:?}, borrow={borrowed:?}; allocation avoided per frame={} bytes", frame.rgba.len());
+        }
+    }
+
     /// R7:悬停吸附高亮在无选区时绘制(边界描边 + 尺寸徽标),脏矩形合成
     /// 与整帧合成逐像素一致,高亮消失后能恢复暗幕。
     #[test]
@@ -4217,7 +4273,7 @@ mod tests {
         assert_eq!(accent_for_scheme(None), ACCENT_LIGHT);
         assert_eq!(accent_for_scheme(Some(false)), ACCENT_LIGHT);
         assert_eq!(accent_for_scheme(Some(true)), ACCENT_DARK);
-        assert_eq!(ACCENT_LIGHT, [0x1D, 0x4E, 0xD8, 255]);
+        assert_eq!(ACCENT_LIGHT, [0x24, 0x57, 0xDB, 255]);
         assert_eq!(ACCENT_DARK, [0x93, 0xC5, 0xFD, 255]);
         assert_eq!(ACCENT_LIGHT, ACCENT);
         assert_ne!(ACCENT_DARK, ACCENT);
@@ -4286,8 +4342,8 @@ mod tests {
 
     #[test]
     fn chrome_palette_uses_cool_surface_and_shared_accent() {
-        assert_eq!(CHROME_BG, [0xE4, 0xEB, 0xF6, 255]);
-        assert_eq!(CHROME_TEXT, [0x1C, 0x21, 0x28, 255]);
+        assert_eq!(CHROME_BG, [0xF8, 0xFA, 0xFC, 255]);
+        assert_eq!(CHROME_TEXT, [0x19, 0x23, 0x35, 255]);
         assert_eq!(CHROME_BORDER, [28, 33, 40, 41]);
         assert_eq!(ACTIVE_BG, [0x1D, 0x4E, 0xD8, 36]);
         assert_eq!(ACCENT, ACCENT_LIGHT);

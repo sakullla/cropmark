@@ -16,7 +16,7 @@ import {
 import { applyTranslations, t, type CatalogKey } from "../i18n";
 import { icons } from "../icons";
 import { mountOcrModel, type OcrDocument, type OcrModel } from "../ocr";
-import { REGION_TOOL_FIELDS, type RegionTools } from "../settings";
+import { REGION_TOOL_FIELDS, type RegionTools } from "../settings/region-tools";
 import { mountQrModel, type QrModel } from "../qr";
 import { mountOcrLayout } from "./ocr-layout";
 import "./preview.css";
@@ -91,7 +91,7 @@ export function mountPreview(root: HTMLElement): () => void {
         <span class="mark" aria-hidden="true"></span>
         <span class="name">Cropmark</span>
       </div>
-      <p class="preview-note" role="status" data-drag-handle data-tauri-drag-region>${t("preview.copied_clean")}</p>
+      <p class="preview-note" role="status" data-drag-handle data-tauri-drag-region>${t("preview.note.loading")}</p>
       <button type="button" class="preview-close icon-btn" data-action="close" data-i18n-aria-label="preview.close" aria-label="关闭">${icons.close}</button>
     </header>
     <div class="preview-toolbar" data-preview-toolbar>
@@ -137,6 +137,11 @@ export function mountPreview(root: HTMLElement): () => void {
     <div class="preview-stage">
       <div class="preview-image-pane">
         <div class="preview-frame">
+          <div class="preview-load-state" data-preview-load-state role="status">
+            <span class="progress" data-load-spinner aria-hidden="true"></span>
+            <span data-load-label data-i18n="preview.note.loading">${t("preview.note.loading")}</span>
+            <button type="button" data-action="retry-preview" data-i18n="overlay.retry" hidden>${t("overlay.retry")}</button>
+          </div>
           <div class="preview-output" data-beautify-output>
             <canvas></canvas>
           </div>
@@ -146,6 +151,7 @@ export function mountPreview(root: HTMLElement): () => void {
           </div>
         </div>
         <div class="preview-zoom" role="group" data-i18n-aria-label="preview.zoom.label">
+          <span class="preview-dimensions" data-preview-dimensions></span>
           <button type="button" data-preview-zoom="fit" aria-pressed="true" data-i18n="preview.zoom.fit">适应窗口</button>
           <button type="button" data-preview-zoom="actual" aria-pressed="false" data-i18n-title="preview.zoom.actual">100%</button>
         </div>
@@ -226,6 +232,7 @@ export function mountPreview(root: HTMLElement): () => void {
   // R4:二维码识别走共享 QR 模型(与冻结帧工作区同一实现,互斥激活)。
   let qrModel: QrModel | null = null;
   let busy = false;
+  let loading = true;
   // 提示条的来源:词条键可在语言切换后重渲染,不透明文案(宿主错误串)保持原样。
   let noteSource: { key: CatalogKey | null; params?: Record<string, string | number>; text: string } | null =
     null;
@@ -370,7 +377,8 @@ export function mountPreview(root: HTMLElement): () => void {
     setNoteKey("preview.error.action", { message: reason.slice(0, 80) }, "error");
   });
 
-  const redraw = (): void => {
+  let paintFrame = 0;
+  const paint = (): void => {
     if (!source) {
       return;
     }
@@ -380,6 +388,14 @@ export function mountPreview(root: HTMLElement): () => void {
     applyBeautifyChrome();
     ocrModel?.paint(ctx);
     paintCropOverlay();
+  };
+  // 输入与模型通知可能在同一帧触发多次,只按显示器刷新节奏绘制最新状态。
+  const redraw = (): void => {
+    if (paintFrame) return;
+    paintFrame = requestAnimationFrame(() => {
+      paintFrame = 0;
+      paint();
+    });
   };
 
   const physicalPoint = (event: MouseEvent): Point => {
@@ -526,11 +542,21 @@ export function mountPreview(root: HTMLElement): () => void {
   frameEl.addEventListener("scroll", placeCropBar);
 
   let actualSize = false;
+  let chromeLayoutKey = "";
   const applyBeautifyChrome = (): void => {
     const pixelScale = 1 / Math.max(window.devicePixelRatio, 1);
     // clientWidth/clientHeight 会取整,在分数 DPI 下可能比实际空间大。
     // 使用不受滚动条显隐影响的精确边界,并向下对齐物理像素。
     const viewport = frameEl.getBoundingClientRect();
+    const key = JSON.stringify([viewport.width, viewport.height, pixelScale, actualSize,
+      frame?.width, frame?.height, applyBeautify, beautifyOptions]);
+    if (key === chromeLayoutKey) {
+      placeCropBar();
+      return;
+    }
+    chromeLayoutKey = key;
+    const dimensions = root.querySelector("[data-preview-dimensions]");
+    if (dimensions) dimensions.textContent = frame ? `${frame.width} × ${frame.height}` : "";
     const availableWidth = Math.floor(viewport.width / pixelScale) * pixelScale;
     const availableHeight = Math.floor(viewport.height / pixelScale) * pixelScale;
     const displayScale = (width: number, height: number): number => actualSize
@@ -649,7 +675,7 @@ export function mountPreview(root: HTMLElement): () => void {
     // R2/R4/R6:取字、二维码与裁剪任一激活时画布输入只走对应宿主分支,
     // 标注编辑暂停。裁剪拖选不得绘制/移动/放置标注,确认与取消保持列表不变。
     isEditable: () =>
-      !busy && !cropping && ocrModel?.active !== true && qrModel?.active !== true,
+      !busy && !loading && source !== null && !cropping && ocrModel?.active !== true && qrModel?.active !== true,
     onToolHint: (hint) => {
       if (hint) {
         setNoteKey(hint.key, hint.params);
@@ -963,7 +989,7 @@ export function mountPreview(root: HTMLElement): () => void {
   loadRegionTools();
 
   const activateOcr = (): void => {
-    if (ocrBtn.hidden || ocrModel?.active) {
+    if (busy || loading || ocrBtn.hidden || ocrModel?.active) {
       return;
     }
     qrModel?.deactivate();
@@ -974,7 +1000,7 @@ export function mountPreview(root: HTMLElement): () => void {
   };
 
   const activateQr = (): void => {
-    if (qrBtn.hidden || qrModel?.active) {
+    if (busy || loading || qrBtn.hidden || qrModel?.active) {
       return;
     }
     ocrModel?.deactivate();
@@ -1005,8 +1031,8 @@ export function mountPreview(root: HTMLElement): () => void {
   const syncCropUi = (): void => {
     cropBar.hidden = !cropping;
     cropBtn.classList.toggle("active", cropping);
-    rotateLeftBtn.disabled = cropping || recordingContent;
-    rotateRightBtn.disabled = cropping || recordingContent;
+    rotateLeftBtn.disabled = cropping || recordingContent || busy;
+    rotateRightBtn.disabled = cropping || recordingContent || busy;
     cropBtn.disabled = recordingContent || busy;
     cropCancelBtn.disabled = busy;
     setDisabledReason(cropCancelBtn, busy ? "preview.crop.disabled_busy" : null);
@@ -1023,6 +1049,21 @@ export function mountPreview(root: HTMLElement): () => void {
       clearCropBarPlacement();
     }
     syncToolDataset();
+  };
+
+  const syncActivity = (): void => {
+    const active = busy || loading;
+    root.setAttribute("aria-busy", String(active));
+    root.classList.toggle("is-loading", loading);
+    root.classList.toggle("is-working", busy);
+    const toolbar = root.querySelector<HTMLElement>("[data-preview-toolbar]");
+    if (toolbar) toolbar.inert = active || !source;
+    note.classList.toggle("is-progress", active);
+    syncCropUi();
+  };
+  const setBusy = (value: boolean): void => {
+    busy = value;
+    syncActivity();
   };
 
   const exitCrop = (): void => {
@@ -1083,12 +1124,13 @@ export function mountPreview(root: HTMLElement): () => void {
   };
 
   const copy = async (): Promise<void> => {
-    if (busy) {
+    if (!source) return;
+    if (busy || loading) {
       setNoteKey("preview.note.busy");
       return;
     }
     editor?.commitText();
-    busy = true;
+    setBusy(true);
     setNoteKey("preview.note.copying");
     try {
       const annotations = editor?.exportList() ?? [];
@@ -1104,17 +1146,18 @@ export function mountPreview(root: HTMLElement): () => void {
     } catch (error) {
       setNote(invokeError(error, t("preview.error.copy_fallback")), "error");
     } finally {
-      busy = false;
+      setBusy(false);
     }
   };
 
   const save = async (): Promise<void> => {
-    if (busy) {
+    if (!source) return;
+    if (busy || loading) {
       setNoteKey("preview.note.busy");
       return;
     }
     editor?.commitText();
-    busy = true;
+    setBusy(true);
     // 进行中提示不自动消失:由成功/取消/失败文案替换(ADR-2)。
     setNoteKey("preview.note.saving");
     try {
@@ -1137,7 +1180,7 @@ export function mountPreview(root: HTMLElement): () => void {
     } catch (error) {
       setNote(invokeError(error, t("preview.error.save_fallback")), "error");
     } finally {
-      busy = false;
+      setBusy(false);
     }
   };
 
@@ -1145,10 +1188,10 @@ export function mountPreview(root: HTMLElement): () => void {
   // R7:一键重新进入长截图选区;不记忆选区坐标,后端按当前会话模式与
   // 功能开关守卫,拒绝时回本地化错误而不是静默。
   const captureAgain = async (): Promise<void> => {
-    if (busy) {
+    if (busy || loading) {
       return;
     }
-    busy = true;
+    setBusy(true);
     try {
       await invoke("capture_again_long");
     } catch (error) {
@@ -1156,19 +1199,19 @@ export function mountPreview(root: HTMLElement): () => void {
     } finally {
       // dispatch 为 fire-and-forget:受理后由隐藏前置把预览窗收起;
       // 被拒绝(会话占用/功能关闭)时恢复交互让提示条错误可见。
-      busy = false;
+      setBusy(false);
     }
   };
 
   const pin = async (): Promise<void> => {
-    if (busy || cropping) {
-      if (busy) {
+    if (busy || loading || cropping) {
+      if (busy || loading) {
         setNoteKey("preview.note.busy");
       }
       return;
     }
     editor?.commitText();
-    busy = true;
+    setBusy(true);
     setNoteKey("preview.note.pinning");
     try {
       await invoke("pin_current", { annotations: editor?.exportList() ?? [] });
@@ -1176,25 +1219,25 @@ export function mountPreview(root: HTMLElement): () => void {
     } catch (error) {
       setNote(invokeError(error, t("preview.error.pin_fallback")), "error");
     } finally {
-      busy = false;
+      setBusy(false);
     }
   };
 
   // 再标注确认:把当前标注写回来源贴图,Rust 更新源图并通知贴图窗换图;
   // 成功后预览由 Rust 关闭。取消(直接关闭预览)不改动贴图内容。
   const updatePin = async (): Promise<void> => {
-    if (busy || cropping || writebackLabel === null) {
+    if (busy || loading || cropping || writebackLabel === null) {
       return;
     }
     editor?.commitText();
-    busy = true;
+    setBusy(true);
     setNoteKey("preview.note.updating_pin");
     try {
       await invoke("update_pin_from_preview", { annotations: editor?.exportList() ?? [] });
     } catch (error) {
       setNote(invokeError(error, t("preview.error.update_pin_fallback")), "error");
     } finally {
-      busy = false;
+      setBusy(false);
     }
   };
 
@@ -1299,6 +1342,10 @@ export function mountPreview(root: HTMLElement): () => void {
   root.addEventListener("click", (event) => {
     const button = event.target instanceof Element ? event.target.closest("button") : null;
     if (!(button instanceof HTMLButtonElement)) {
+      return;
+    }
+    if (button.dataset.action === "retry-preview") {
+      loadPreview();
       return;
     }
     if (button.dataset.action === "preview-more") {
@@ -1618,6 +1665,35 @@ export function mountPreview(root: HTMLElement): () => void {
   };
   const loadPreview = (): void => {
     const generation = ++previewLoad;
+    loading = true;
+    source = null;
+    frame = null;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    setNoteKey("preview.note.loading");
+    syncActivity();
+    const loadState = root.querySelector<HTMLElement>("[data-preview-load-state]")!;
+    const loadLabel = root.querySelector<HTMLElement>("[data-load-label]")!;
+    const loadSpinner = root.querySelector<HTMLElement>("[data-load-spinner]")!;
+    const loadRetry = root.querySelector<HTMLButtonElement>("[data-action=retry-preview]")!;
+    loadState.hidden = false;
+    loadLabel.dataset.i18n = "preview.note.loading";
+    loadLabel.textContent = t("preview.note.loading");
+    loadSpinner.hidden = false;
+    loadRetry.hidden = true;
+    const finishLoading = (failed = false): void => {
+      if (generation !== previewLoad) return;
+      if (failed) {
+        source = null;
+        frame = null;
+      }
+      loading = false;
+      loadState.hidden = !failed;
+      loadSpinner.hidden = true;
+      loadRetry.hidden = !failed;
+      loadLabel.dataset.i18n = "preview.note.image_failed";
+      loadLabel.textContent = t("preview.note.image_failed");
+      syncActivity();
+    };
     // R6:新帧对应新坐标系,变换历史与裁剪模式一并复位。
     transformUndo = false;
     transformRedo = false;
@@ -1627,37 +1703,35 @@ export function mountPreview(root: HTMLElement): () => void {
     cropCurrent = null;
     recordingContent = false;
     void (async () => {
-      // 再标注模式由会话决定(与帧同源):先取回写目标,再取同一会话的帧,
-      // 避免普通截取预览被误判为回写模式。
-      const writeback = await loadWriteback();
-      if (generation !== previewLoad) return;
-      writebackLabel = writeback;
-      syncWritebackUi();
-      // R7:会话模式与帧同源;功能开关在加载时重读,关闭即隐藏入口。
-      try {
-        const context = await invoke<{ mode: string; longCaptureEnabled: boolean }>(
-          "get_preview_context",
-        );
-        if (generation !== previewLoad) return;
-        longCaptureAgain =
-          context.mode === "longcapture" && context.longCaptureEnabled === true;
-        recordingContent = context.mode === "recording";
-      } catch {
-        longCaptureAgain = false;
-        recordingContent = false;
-      }
-      syncAgainUi();
-      // R2:录制内容的旋转/裁剪禁用态与原因词条随会话模式落位。
-      syncCropUi();
+      // 独立 IPC 并行读取,本次加载的代际校验仍覆盖全部结果。
       let bytes: ArrayBuffer;
+      let writeback: string | null;
       try {
-        bytes = await invoke<ArrayBuffer>("get_preview_frame");
+        const [label, context, pixels] = await Promise.all([
+          loadWriteback(),
+          invoke<{ mode: string; longCaptureEnabled: boolean }>("get_preview_context")
+            .catch(() => ({ mode: "", longCaptureEnabled: false })),
+          invoke<ArrayBuffer>("get_preview_frame"),
+        ]);
+        if (generation !== previewLoad) return;
+        writeback = label;
+        bytes = pixels;
+        writebackLabel = label;
+        longCaptureAgain = context.mode === "longcapture" && context.longCaptureEnabled;
+        recordingContent = context.mode === "recording";
+        syncWritebackUi();
+        syncAgainUi();
+        syncCropUi();
       } catch (error) {
-        if (generation === previewLoad) setNote(invokeError(error, t("preview.error.preview_missing")), "error");
+        if (generation === previewLoad) {
+          finishLoading(true);
+          setNote(invokeError(error, t("preview.error.preview_missing")), "error");
+        }
         return;
       }
       if (generation !== previewLoad) return;
       if (bytes.byteLength <= 24) {
+        finishLoading(true);
         setNoteKey("preview.note.image_incomplete", undefined, "error");
         return;
       }
@@ -1669,6 +1743,7 @@ export function mountPreview(root: HTMLElement): () => void {
       const annotationsLength = header.getUint32(20, true);
       const pngOffset = 24 + annotationsLength;
       if (pngOffset > bytes.byteLength) {
+        finishLoading(true);
         setNoteKey("preview.note.image_incomplete", undefined, "error");
         return;
       }
@@ -1692,7 +1767,7 @@ export function mountPreview(root: HTMLElement): () => void {
       canvas.width = payload.width;
       canvas.height = payload.height;
       const image = new Image();
-      const imageUrl = URL.createObjectURL(new Blob([bytes.slice(pngOffset)], { type: "image/png" }));
+      const imageUrl = URL.createObjectURL(new Blob([new Uint8Array(bytes, pngOffset)], { type: "image/png" }));
       image.onload = () => {
         URL.revokeObjectURL(imageUrl);
         if (generation !== previewLoad) return;
@@ -1701,10 +1776,12 @@ export function mountPreview(root: HTMLElement): () => void {
         source.height = payload.height;
         const sourceCtx = source.getContext("2d");
         if (!sourceCtx) {
+          finishLoading(true);
           setNoteKey("preview.note.image_failed", undefined, "error");
           return;
         }
         sourceCtx.drawImage(image, 0, 0, payload.width, payload.height);
+        finishLoading();
         // 选区即时标注并入可编辑列表:撤销栈从零开始,序号继续递增。
         editor?.setAnnotations(carried);
         void invoke<boolean>("take_pending_preview_ocr")
@@ -1739,6 +1816,7 @@ export function mountPreview(root: HTMLElement): () => void {
       };
       image.onerror = () => {
         URL.revokeObjectURL(imageUrl);
+        finishLoading(true);
         if (generation === previewLoad) setNoteKey("preview.note.image_failed", undefined, "error");
       };
       image.src = imageUrl;
@@ -1779,7 +1857,7 @@ export function mountPreview(root: HTMLElement): () => void {
         }
         const image = new Image();
         const imageUrl = URL.createObjectURL(
-          new Blob([bytes.slice(pngOffset)], { type: "image/png" }),
+          new Blob([new Uint8Array(bytes, pngOffset)], { type: "image/png" }),
         );
         image.onload = () => {
           URL.revokeObjectURL(imageUrl);
@@ -1854,7 +1932,7 @@ export function mountPreview(root: HTMLElement): () => void {
     request: () => Promise<PreviewTransformResult>,
     feedbackKey: CatalogKey,
   ): Promise<void> => {
-    if (busy) {
+    if (busy || loading) {
       setNoteKey("preview.note.busy");
       return;
     }
@@ -1862,7 +1940,7 @@ export function mountPreview(root: HTMLElement): () => void {
       return;
     }
     editor?.commitText();
-    busy = true;
+    setBusy(true);
     syncCropUi();
     setNoteKey("preview.note.transforming");
     try {
@@ -1871,7 +1949,7 @@ export function mountPreview(root: HTMLElement): () => void {
     } catch (error) {
       setNote(invokeError(error, t("preview.error.transform_fallback")), "error");
     } finally {
-      busy = false;
+      setBusy(false);
       syncCropUi();
     }
   };
@@ -1902,7 +1980,7 @@ export function mountPreview(root: HTMLElement): () => void {
       return;
     }
     editor?.commitText();
-    busy = true;
+    setBusy(true);
     syncCropUi();
     setNoteKey("preview.note.transforming");
     try {
@@ -1917,7 +1995,7 @@ export function mountPreview(root: HTMLElement): () => void {
     } catch (error) {
       setNote(invokeError(error, t("preview.error.transform_fallback")), "error");
     } finally {
-      busy = false;
+      setBusy(false);
       syncCropUi();
     }
   };

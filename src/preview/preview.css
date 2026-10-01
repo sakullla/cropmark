@@ -21,7 +21,8 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 10px 14px 8px 14px;
+  padding: 12px 16px;
+  background: var(--card);
   border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
   -webkit-app-region: no-drag;
   app-region: no-drag;
@@ -129,7 +130,8 @@
   flex-wrap: nowrap;
   gap: 6px;
   min-width: 0;
-  padding: 6px 10px;
+  padding: 10px 12px;
+  background: var(--panel);
   border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
   flex: 0 0 auto;
   overflow: visible;
@@ -456,7 +458,7 @@
   justify-content: flex-start;
   /* 衬底用页面底色，和上方平坦工具区分开，主图才是这一层里被抬起的对象。 */
   background: var(--bg);
-  padding: 10px;
+  padding: 16px;
   gap: 10px;
 }
 
@@ -482,6 +484,29 @@
   overflow: hidden;
 }
 
+.preview-load-state {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.preview-load-state .progress { width: 24px; height: 24px; }
+.preview-load-state button {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control-sm);
+  padding: 8px 20px;
+  background: var(--card);
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+}
+
 /* 适应窗口时不创建滚动条,避免滚动条改变尺寸后反复触发缩放。 */
 .preview-root[data-preview-zoom="actual"] .preview-frame {
   overflow: auto;
@@ -489,13 +514,57 @@
 
 .preview-zoom {
   flex: 0 0 auto;
-  align-self: flex-end;
+  align-self: stretch;
   display: flex;
+  align-items: center;
   gap: 4px;
-  padding: 4px;
-  border: 1px solid var(--line);
+  padding: 6px 0 0;
+  border: 0;
   border-radius: var(--radius-control);
-  background: var(--card);
+  background: transparent;
+}
+
+.preview-dimensions {
+  margin-right: auto;
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.preview-zoom button {
+  white-space: nowrap;
+}
+
+.preview-root.is-working .preview-toolbar,
+.preview-root.is-loading .preview-toolbar {
+  opacity: 0.55;
+}
+
+.preview-root.is-loading .preview-frame canvas {
+  visibility: hidden;
+}
+
+.preview-note.is-progress::before {
+  content: "";
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 8px;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  vertical-align: -2px;
+  animation: app-progress-spin 800ms linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .preview-note.is-progress::before { animation: none; }
+}
+
+@media (max-width: 600px) {
+  .preview-stage { padding: 10px; }
+  .preview-titlebar { padding: 10px 12px; }
 }
 
 .preview-stage.has-ocr { gap: 0; }

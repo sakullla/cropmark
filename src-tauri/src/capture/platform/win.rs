@@ -372,16 +372,18 @@ unsafe fn dibits_to_frame(
             PlatformFailure::BufferUninitialized,
         ));
     }
-    let mut rgba = vec![0u8; bgra.len()];
-    for (src, dst) in bgra.chunks_exact(4).zip(rgba.chunks_exact_mut(4)) {
-        dst[0] = src[2];
-        dst[1] = src[1];
-        dst[2] = src[0];
-        dst[3] = 255;
-    }
-    let mut frame = accept_buffer(RawBuffer::ready(width, height, rgba))?;
+    // GDI 的 alpha 未定义;在原缓冲内交换通道并设为不透明,省去整帧分配。
+    bgra_to_opaque_rgba(&mut bgra);
+    let mut frame = accept_buffer(RawBuffer::ready(width, height, bgra))?;
     frame.scale = scale;
     Ok(frame)
+}
+
+fn bgra_to_opaque_rgba(pixels: &mut [u8]) {
+    for pixel in pixels.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+        pixel[3] = 255;
+    }
 }
 
 unsafe fn capture_hwnd(
@@ -558,6 +560,13 @@ mod tests {
     use super::*;
     use crate::capture::error::CaptureErrorKind;
     use windows::Win32::Foundation::ERROR_INVALID_HANDLE;
+
+    #[test]
+    fn gdi_conversion_preserves_color_and_replaces_undefined_alpha() {
+        let mut pixels = [30, 20, 10, 0, 255, 80, 5, 128, 0, 0, 0, 0];
+        bgra_to_opaque_rgba(&mut pixels);
+        assert_eq!(pixels, [10, 20, 30, 255, 5, 80, 255, 255, 0, 0, 0, 255]);
+    }
 
     #[test]
     fn access_denied_is_permission_with_windows_hint() {

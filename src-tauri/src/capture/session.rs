@@ -1467,7 +1467,10 @@ fn grab_pointer_screen(app: &AppHandle) -> Result<(Frame, MonitorGeom), CaptureE
         eprintln!("Cropmark capture: grab start");
     }
     let started = Instant::now();
-    let monitor = tauri_pointer_monitor(app).unwrap_or(platform::pointer_monitor()?);
+    let monitor = match tauri_pointer_monitor(app) {
+        Some(monitor) => monitor,
+        None => platform::pointer_monitor()?,
+    };
     let cursor = cursor_mode(app);
     let (frame, outcome) = platform::capture_monitor_with_cursor(&monitor, cursor)?;
     note_cursor(app, outcome);

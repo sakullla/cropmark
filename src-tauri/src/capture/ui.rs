@@ -273,10 +273,16 @@ pub fn overlay_payload(
     // 否则非显示器尺寸定帧(裁剪/窗口/上次区域/长截图)会先被压成显示器比例。
     // 前端按"帧→画布"映射呈现,图像与取字层共用同一几何。
     let (width, height) = fit_display(frame.width, frame.height, OVERLAY_PAYLOAD_MAX_EDGE);
-    let overlay = super::buffer::resize_rgba(frame, width, height)?;
+    let resized;
+    let overlay = if (width, height) == (frame.width, frame.height) {
+        frame
+    } else {
+        resized = super::buffer::resize_rgba(frame, width, height)?;
+        &resized
+    };
     Ok(OverlayPayload {
         mode,
-        png_base64: STANDARD.encode(super::buffer::encode_jpeg(&overlay, 70)?),
+        png_base64: STANDARD.encode(super::buffer::encode_jpeg(overlay, 70)?),
         width: frame.width,
         height: frame.height,
         scale: frame.scale,

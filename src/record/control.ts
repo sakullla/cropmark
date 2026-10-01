@@ -7,7 +7,7 @@ import {
   STYLE_WIDTHS,
   type AnnotationTool,
 } from "../annotation";
-import { REGION_TOOL_FIELDS, type RegionTools } from "../settings";
+import { REGION_TOOL_FIELDS, type RegionTools } from "../settings/region-tools";
 import { currentLanguage, t, type CatalogKey } from "../i18n";
 import {
   formatDuration,

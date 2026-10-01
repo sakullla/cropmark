@@ -1,4 +1,16 @@
 {
+  "preview.note.loading": {
+    "zh-CN": "正在加载截图…",
+    "en": "Loading capture…"
+  },
+  "overlay.notice.loading": {
+    "zh-CN": "正在准备画面…",
+    "en": "Preparing capture…"
+  },
+  "overlay.notice.processing": {
+    "zh-CN": "正在处理，请稍候…",
+    "en": "Processing, please wait…"
+  },
   "tray.capture": {
     "zh-CN": "截取",
     "en": "Capture"

@@ -1,17 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
-import { mountHistory } from "./history";
 import { applyTranslations, initI18n, onLanguageChanged } from "./i18n";
-import { mountOnboarding } from "./onboarding";
-import { mountDelay } from "./overlay/delay";
-import { mountCaptureError } from "./overlay/error";
-import { mountOverlay } from "./overlay/index";
-import { mountPin } from "./pin";
-import { mountPreview } from "./preview";
-import { mountRecordControl } from "./record/control";
-import { mountRecordOverlay } from "./record/overlay";
-import { mountScroll } from "./scroll";
-import { mountSettings } from "./settings";
-import { mountToast } from "./toast";
 
 // 视图标记必须在挂载前同步写上。覆盖层背景等选择器依赖 data-view，
 // 且不能留在 HTML 内联脚本里，否则会被 script-src 'self' 拦住。
@@ -31,32 +19,33 @@ void (async () => {
   if (!(root instanceof HTMLElement)) {
     return;
   }
+  // 每个原生窗口只加载自己的视图,避免预创建浮层同时解析设置/历史/录屏界面。
   const view = requestedView ?? "settings";
   let applyLanguage: () => void = () => undefined;
   if (view === "settings") {
-    applyLanguage = mountSettings(root);
+    applyLanguage = (await import("./settings")).mountSettings(root);
   } else if (view === "overlay") {
-    applyLanguage = mountOverlay(root);
+    applyLanguage = (await import("./overlay/index")).mountOverlay(root);
   } else if (view === "preview") {
-    applyLanguage = mountPreview(root);
+    applyLanguage = (await import("./preview")).mountPreview(root);
   } else if (view === "delay") {
-    applyLanguage = mountDelay(root);
+    applyLanguage = (await import("./overlay/delay")).mountDelay(root);
   } else if (view === "error") {
-    applyLanguage = mountCaptureError(root);
+    applyLanguage = (await import("./overlay/error")).mountCaptureError(root);
   } else if (view === "toast") {
-    applyLanguage = mountToast(root);
+    applyLanguage = (await import("./toast")).mountToast(root);
   } else if (view === "pin") {
-    applyLanguage = mountPin(root);
+    applyLanguage = (await import("./pin")).mountPin(root);
   } else if (view === "history") {
-    applyLanguage = mountHistory(root);
+    applyLanguage = (await import("./history")).mountHistory(root);
   } else if (view === "scroll") {
-    applyLanguage = mountScroll(root);
+    applyLanguage = (await import("./scroll")).mountScroll(root);
   } else if (view === "record-control") {
-    applyLanguage = mountRecordControl(root);
+    applyLanguage = (await import("./record/control")).mountRecordControl(root);
   } else if (view === "record-overlay") {
-    applyLanguage = mountRecordOverlay(root);
+    applyLanguage = (await import("./record/overlay")).mountRecordOverlay(root);
   } else if (view === "guide") {
-    applyLanguage = mountOnboarding(root);
+    applyLanguage = (await import("./onboarding")).mountOnboarding(root);
   }
   const renderLanguage = (): void => {
     applyTranslations(root);

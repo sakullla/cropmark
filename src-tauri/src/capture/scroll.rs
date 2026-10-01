@@ -551,14 +551,14 @@ impl Stitcher {
             // 栈满丢弃最旧段:回退深度受限,更早已拼接的内容留在图里。
             self.segments.remove(0);
         }
-        self.segments.push(Segment {
-            amount: append,
-            anchor: self.prev.clone(),
-        });
         self.strips += 1;
         self.append_axis(&next, append);
         let fast = delta > prev_length / 2;
-        self.prev = next;
+        // 上一帧此后只供撤销使用,直接转移所有权,不逐段复制整幅选区。
+        self.segments.push(Segment {
+            amount: append,
+            anchor: std::mem::replace(&mut self.prev, next),
+        });
         if append < delta || self.axis_length() >= self.cap_length {
             self.limit_reached = true;
             return ScrollTick::LimitReached;

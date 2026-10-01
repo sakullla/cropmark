@@ -21,6 +21,27 @@
   cursor: pointer;
 }
 
+.overlay-root[aria-busy="true"] canvas {
+  cursor: progress;
+}
+
+.overlay-notice.is-progress::before {
+  content: "";
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 8px;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  vertical-align: -2px;
+  animation: app-progress-spin 800ms linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .overlay-notice.is-progress::before { animation: none; }
+}
+
 /* 尺寸与位置由脚本按帧几何写入(canvasGeometry):选择阶段画布铺满窗口,
    工作区画布是帧的等比显示框(居中,不超过 1:1 物理像素)。 */
 .overlay-root canvas {
@@ -34,7 +55,13 @@
   left: 0;
   right: 0;
   /* 定宽后长提示才能在屏内换行。容器不接事件，透明空隙不挡选区。 */
-  width: calc(100% - 32px);
+  width: fit-content;
+  max-width: calc(100% - 32px);
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+  background: var(--panel);
+  box-shadow: var(--shadow);
   margin-inline: auto;
   z-index: 3;
   display: flex;
@@ -56,8 +83,8 @@
   padding: 8px 14px;
   border-radius: var(--radius-pill);
   background: var(--panel);
-  border: 1px solid var(--line);
-  box-shadow: var(--shadow);
+  border: 0;
+  box-shadow: none;
   color: var(--ink);
   font-size: 13px;
   font-weight: 650;
@@ -71,7 +98,7 @@
   pointer-events: auto;
   cursor: pointer;
   border: 1px solid var(--line);
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-control-sm);
   min-width: 24px;
   min-height: 24px;
   padding: 8px 14px;
@@ -80,7 +107,7 @@
   font: inherit;
   font-size: 13px;
   font-weight: 650;
-  box-shadow: var(--shadow);
+  box-shadow: none;
   transition: var(--control-transition);
 }
 
@@ -107,7 +134,7 @@
 .overlay-actions button {
   cursor: pointer;
   border: 1px solid var(--line);
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-control-sm);
   min-width: 24px;
   min-height: 24px;
   padding: 8px 12px;
@@ -116,7 +143,7 @@
   font: inherit;
   font-size: 13px;
   font-weight: 650;
-  box-shadow: var(--shadow);
+  box-shadow: none;
   transition: var(--control-transition);
 }
 
@@ -364,22 +391,27 @@
 
 .window-list {
   position: absolute;
-  top: 64px;
+  top: var(--overlay-chrome-bottom, 84px);
   right: 18px;
   width: min(280px, 36vw);
-  max-height: calc(100% - 92px);
+  max-height: calc(100% - var(--overlay-chrome-bottom, 84px) - 18px);
   overflow: auto;
   z-index: 2;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 4px;
+  padding: 6px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--shadow);
   pointer-events: auto;
 }
 
 .window-item {
   text-align: left;
-  border: 1px solid var(--line);
-  background: var(--panel);
+  border: 1px solid transparent;
+  background: transparent;
   color: var(--ink);
   border-radius: var(--radius-menu);
   min-width: 24px;

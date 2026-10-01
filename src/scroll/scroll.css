@@ -24,7 +24,7 @@ html[data-view="scroll"] #app {
   min-height: 0;
   padding: var(--panel-padding);
   overflow: hidden;
-  background: var(--panel);
+  background: var(--card);
   border: 1px solid var(--line);
   border-radius: var(--radius-panel);
   box-shadow: var(--shadow);
@@ -48,14 +48,18 @@ html[data-view="scroll"] #app {
   justify-content: space-between;
   gap: 8px;
   flex-shrink: 0;
-  background: var(--panel);
+  background: transparent;
 }
 
 /* 方向选择:默认纵向,首个内容变化后锁定。当前项保持填充;锁定原因见 .scroll-lock。 */
 .scroll-axis {
   display: flex;
   flex-shrink: 0;
-  gap: 6px;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--bg);
 }
 
 .scroll-axis-option {
@@ -64,8 +68,8 @@ html[data-view="scroll"] #app {
   min-width: 0;
   color: var(--ink);
   font-size: 12px;
-  background: var(--control-fill);
-  border: 1px solid var(--line);
+  background: transparent;
+  border: 1px solid transparent;
   border-radius: var(--radius-control-sm);
   cursor: pointer;
   transition: var(--control-transition);
@@ -81,9 +85,10 @@ html[data-view="scroll"] #app {
 }
 
 .scroll-axis-option.is-active {
-  color: var(--on-accent);
-  background: var(--accent);
-  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--card);
+  border-color: var(--line);
+  box-shadow: var(--shadow-soft);
 }
 
 .scroll-axis-option.is-active:hover:not(:disabled) {
@@ -120,7 +125,7 @@ html[data-view="scroll"] #app {
   flex-shrink: 0;
   margin: 0;
   min-height: 32px;
-  background: var(--panel);
+  background: transparent;
   color: var(--ink);
   font-size: 13px;
   font-weight: 650;
@@ -140,7 +145,7 @@ html[data-view="scroll"] #app {
 .scroll-hint {
   flex-shrink: 0;
   margin: 0;
-  background: var(--panel);
+  background: transparent;
   color: var(--muted);
   font-size: 11px;
   line-height: 1.35;
@@ -162,7 +167,7 @@ html[data-view="scroll"] #app {
   display: flex;
   flex-shrink: 0;
   gap: 8px;
-  background: var(--panel);
+  background: transparent;
 }
 
 .scroll-actions button {

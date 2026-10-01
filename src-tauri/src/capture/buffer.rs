@@ -272,6 +272,7 @@ pub fn fit_display(width: u32, height: u32, max_edge: u32) -> (u32, u32) {
 }
 
 pub fn resize_rgba(frame: &Frame, width: u32, height: u32) -> Result<Frame, CaptureError> {
+    validate_frame(frame)?;
     if width == 0 || height == 0 {
         return Err(CaptureError::invalid_buffer(
             "error.capture.buffer_zero_size",
@@ -280,8 +281,15 @@ pub fn resize_rgba(frame: &Frame, width: u32, height: u32) -> Result<Frame, Capt
     if frame.width == width && frame.height == height {
         return Ok(frame.clone());
     }
+    // 借用原始像素,避免每次生成浮层/缩略图都复制完整 4K 冻结帧。
+    let source = image::ImageBuffer::<image::Rgba<u8>, _>::from_raw(
+        frame.width,
+        frame.height,
+        frame.rgba.as_slice(),
+    )
+    .ok_or_else(|| CaptureError::invalid_buffer("error.capture.buffer_uninitialized"))?;
     let resized = image::imageops::resize(
-        &rgba_image(frame)?,
+        &source,
         width,
         height,
         image::imageops::FilterType::Triangle,
@@ -292,11 +300,6 @@ pub fn resize_rgba(frame: &Frame, width: u32, height: u32) -> Result<Frame, Capt
         rgba: resized.into_raw(),
         scale: frame.scale,
     })
-}
-
-fn rgba_image(frame: &Frame) -> Result<image::RgbaImage, CaptureError> {
-    image::RgbaImage::from_raw(frame.width, frame.height, frame.rgba.clone())
-        .ok_or_else(|| CaptureError::invalid_buffer("error.capture.buffer_uninitialized"))
 }
 
 /// 任意编码图像字节解码为 RGBA 像素(图标资产解码共用此入口)。
@@ -319,6 +322,26 @@ pub fn decode_png(bytes: &[u8]) -> Result<Frame, CaptureError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn borrowed_resize_matches_owned_pixels_and_preserves_source() {
+        let frame = Frame {
+            width: 3,
+            height: 2,
+            rgba: vec![
+                255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 0, 20, 40, 60, 255, 200, 80,
+                40, 255, 5, 10, 15, 255,
+            ],
+            scale: 1.5,
+        };
+        let original = frame.rgba.clone();
+        let owned = image::RgbaImage::from_raw(3, 2, original.clone()).unwrap();
+        let expected = image::imageops::resize(&owned, 2, 1, image::imageops::FilterType::Triangle);
+        let resized = resize_rgba(&frame, 2, 1).unwrap();
+        assert_eq!(resized.rgba, expected.into_raw());
+        assert_eq!(resized.scale, 1.5);
+        assert_eq!(frame.rgba, original);
+    }
 
     #[test]
     fn png_roundtrip_keeps_native_dimensions_and_every_rgba_pixel() {
