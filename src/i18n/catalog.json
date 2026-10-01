@@ -1207,6 +1207,10 @@
     "zh-CN": "按下新热键…",
     "en": "Press new hotkey…"
   },
+  "settings.hotkey.recording_partial": {
+    "zh-CN": "{keys} + …",
+    "en": "{keys} + …"
+  },
   "settings.hotkey.title": {
     "zh-CN": "点击后按下新组合，Esc 取消",
     "en": "Click, then press the new combination; Esc to cancel"
@@ -2368,12 +2372,12 @@
     "en": "Drag to select a region · Enter to confirm · Arrow keys nudge · Shift+arrow resizes"
   },
   "overlay.hint.workspace": {
-    "zh-CN": "可以标注、复制、保存、贴图、取字或识别二维码 · Esc 取消",
-    "en": "Annotate, copy, save, pin, extract text, or read a QR code · Esc to cancel"
+    "zh-CN": "Ctrl+C 复制 · Ctrl+S 保存 · 可标注、贴图、取字或识别二维码 · Esc 取消",
+    "en": "Ctrl+C copy · Ctrl+S save · annotate, pin, extract text, or read a QR code · Esc to cancel"
   },
   "overlay.hint.annotate": {
-    "zh-CN": "在画面上绘制标注 · Esc 取消",
-    "en": "Draw on the capture · Esc to cancel"
+    "zh-CN": "在画面上绘制标注 · Ctrl+C 复制 · Ctrl+S 保存 · Esc 取消",
+    "en": "Draw on the capture · Ctrl+C copy · Ctrl+S save · Esc to cancel"
   },
   "overlay.hint.ocr": {
     "zh-CN": "取字中:点选或划选文字 · Ctrl+A 全选 · Ctrl+C 复制所选 · Esc 退出取字",

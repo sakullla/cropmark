@@ -367,7 +367,7 @@ export function mountSettings(root: HTMLElement): () => void {
                       <p class="hint" data-i18n="settings.export.template_hint">占位符：{date}、{time}、{datetime}、{mode}、{seq}。只影响本地保存的默认文件名。</p>
                     </div>
                   </div>
-                  <span class="input-wrap" data-tooltip-wrap><input type="text" class="number-input" data-filename-template maxlength="180" spellcheck="false" aria-labelledby="template-label" data-i18n-placeholder="settings.export.template_placeholder" placeholder="例如 shot_{date}_{mode}_{seq}" /></span>
+                  <span class="input-wrap template-wrap" data-tooltip-wrap><input type="text" class="number-input" data-filename-template maxlength="180" spellcheck="false" aria-labelledby="template-label" data-i18n-placeholder="settings.export.template_placeholder" placeholder="例如 shot_{date}_{mode}_{seq}" /></span>
                 </section>
                 <section class="block" aria-labelledby="beautify-title">
                   <h2 id="beautify-title" data-i18n="settings.export.beautify_title">导出美化</h2>
@@ -580,6 +580,9 @@ export function mountSettings(root: HTMLElement): () => void {
   }
 
   let recording: HotkeySlot | null = null;
+  // 录制中已按住的修饰键(按键顺序归一):按钮实时回显「Ctrl+Alt+…」,
+  // 避免按下修饰键期间看起来像没有反应。
+  let heldModifiers: string[] = [];
   let applying = false;
   // 切换写回进行中:开关给共享 busy 可视态(app.css button[aria-busy])并阻止点击。
   const setApplying = (value: boolean): void => {
@@ -778,9 +781,12 @@ export function mountSettings(root: HTMLElement): () => void {
       // 开关关闭时格式仍可见；disabled 后点击与方向键都不改写格式。
       button.disabled = !settings.enabled;
       // R9:禁用原因与就地 hint 同源,悬停/聚焦可读到,不出现「点了没反应」。
-      button.dataset.tooltip = settings.enabled
-        ? t(item.labelKey)
-        : t("settings.recording.disabled_reason");
+      // 可用时不再重复按钮自身文案。
+      if (settings.enabled) {
+        button.removeAttribute("data-tooltip");
+      } else {
+        button.dataset.tooltip = t("settings.recording.disabled_reason");
+      }
       // 漫游 tabindex:与语言/预设组一致的 radio 组键盘行为。
       button.tabIndex = selected ? 0 : -1;
       recordingFormatsEl.append(button);
@@ -813,9 +819,11 @@ export function mountSettings(root: HTMLElement): () => void {
       button.setAttribute("aria-checked", selected ? "true" : "false");
       button.classList.toggle("selected", selected);
       button.disabled = !settings.enabled;
-      button.dataset.tooltip = settings.enabled
-        ? t("settings.recording.fps_option", { fps: String(fps) })
-        : t("settings.recording.disabled_reason");
+      if (settings.enabled) {
+        button.removeAttribute("data-tooltip");
+      } else {
+        button.dataset.tooltip = t("settings.recording.disabled_reason");
+      }
       button.tabIndex = selected ? 0 : -1;
       recordingFpsEl.append(button);
     }
@@ -894,7 +902,7 @@ export function mountSettings(root: HTMLElement): () => void {
             : t("settings.hotkeys.unbound"),
       );
       button.textContent =
-        recording === slot ? t("settings.hotkey.recording") : display;
+        recording === slot ? recordingButtonLabel() : display;
       if (recording === slot) {
         button.classList.add("recording");
       }
@@ -1029,9 +1037,11 @@ export function mountSettings(root: HTMLElement): () => void {
       button.classList.toggle("selected", selected);
       // 漫游 tabindex:与语言组一致的 radio 组键盘行为。
       button.tabIndex = selected ? 0 : -1;
-      button.dataset.tooltip = exportAppearance.applyBeautify
-        ? t(item.labelKey)
-        : t("settings.export.beautify_disabled");
+      if (exportAppearance.applyBeautify) {
+        button.removeAttribute("data-tooltip");
+      } else {
+        button.dataset.tooltip = t("settings.export.beautify_disabled");
+      }
       const chip = document.createElement("span");
       chip.setAttribute("aria-hidden", "true");
       chip.style.display = "inline-block";
@@ -1104,6 +1114,7 @@ export function mountSettings(root: HTMLElement): () => void {
           ? await invoke<UiSettings>("set_pin_clipboard_hotkey", { accelerator })
           : await invoke<UiSettings>("set_hotkey", { mode: slot, accelerator });
       recording = null;
+      heldModifiers = [];
       render(settings);
       notifySaved();
     } catch (error) {
@@ -1584,8 +1595,48 @@ export function mountSettings(root: HTMLElement): () => void {
       return;
     }
     recording = button.dataset.mode as HotkeySlot;
+    heldModifiers = [];
     void refresh();
   });
+
+  const modifierParts = (event: KeyboardEvent): string[] => {
+    const parts: string[] = [];
+    if (event.ctrlKey) {
+      parts.push("Ctrl");
+    }
+    if (event.altKey) {
+      parts.push("Alt");
+    }
+    if (event.shiftKey) {
+      parts.push("Shift");
+    }
+    if (event.metaKey) {
+      parts.push("Super");
+    }
+    return parts;
+  };
+
+  const recordingButtonLabel = (): string =>
+    heldModifiers.length > 0
+      ? t("settings.hotkey.recording_partial", { keys: heldModifiers.join("+") })
+      : t("settings.hotkey.recording");
+
+  // 只更新录制按钮文案,不走整表重渲染(整表会重建热键行)。
+  const updateRecordingLabel = (): void => {
+    if (!recording) {
+      return;
+    }
+    const button = hotkeyRoot.querySelector<HTMLButtonElement>(`[data-mode="${recording}"]`);
+    if (button) {
+      button.textContent = recordingButtonLabel();
+    }
+  };
+
+  const stopRecording = (): void => {
+    recording = null;
+    heldModifiers = [];
+    void refresh();
+  };
 
   window.addEventListener("keydown", (event) => {
     if (!recording) {
@@ -1597,15 +1648,33 @@ export function mountSettings(root: HTMLElement): () => void {
       return;
     }
     if (event.key === "Escape") {
-      recording = null;
-      void refresh();
+      stopRecording();
       return;
     }
     const accelerator = acceleratorFromEvent(event);
     if (!accelerator) {
+      // 纯修饰键不提交,只在按钮上实时回显已按下的组合。
+      heldModifiers = modifierParts(event);
+      updateRecordingLabel();
       return;
     }
     void applyHotkey(recording, accelerator);
+  });
+
+  // 松开修饰键时同步预览(其它键仍按住则显示剩余组合,全松开回到占位文案)。
+  window.addEventListener("keyup", (event) => {
+    if (!recording) {
+      return;
+    }
+    heldModifiers = modifierParts(event);
+    updateRecordingLabel();
+  });
+
+  // 窗口失焦即退出录制:覆盖层截图/Alt+Tab 切走时不把下一个按键留在录制态里。
+  window.addEventListener("blur", () => {
+    if (recording) {
+      stopRecording();
+    }
   });
 
   // Esc 分层(R9,对齐 preview):热键录制中 Esc 已由上面的捕获型监听器

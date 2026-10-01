@@ -411,6 +411,8 @@ html[data-view="settings"] .settings-panels {
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
+  /* 右缘控件的悬停提示是定位元素;横向滚动条会露馅,提示本身已右对齐收敛。 */
+  overflow-x: hidden;
   padding: 16px;
 }
 
@@ -455,6 +457,12 @@ html[data-view="settings"] .card > h1 {
   text-transform: none;
   color: var(--ink);
   overflow-wrap: anywhere;
+}
+
+/* 节标题与行内标签之间需要可见层级:放大一档并保留正文色。 */
+html[data-view="settings"] .block h2 {
+  font-size: 14px;
+  font-weight: 700;
 }
 
 /* R19:一级分组内的小节用发丝线分隔,分组标题(h1)与节标题(h2)形成层级,
@@ -525,6 +533,18 @@ html[data-view="settings"] .hint {
   color: var(--ok);
   background: var(--ok-soft);
   border-color: var(--ok);
+}
+
+/* 设置页保存反馈改为浮层药丸:不再推挤面板高度,连续点开关不会让控件
+   从指针下挪走;error/tray 提示仍走行内 notice。 */
+html[data-view="settings"] .notice.notice-success {
+  position: absolute;
+  right: 20px;
+  bottom: 20px;
+  z-index: 30;
+  margin: 0;
+  box-shadow: var(--shadow);
+  pointer-events: none;
 }
 
 .rows {
@@ -635,7 +655,9 @@ html[data-view="settings"] .hint {
 
 .setting-row > :first-child:not(:last-child),
 .autostart-row > :first-child:not(:last-child) {
-  flex: 1 1 auto;
+  /* 基线给 50% 而非 auto:长说明的 max-content 会撑过整行,把开关/按钮
+     挤到下一行;定值基线让两者同行,grow 仍会填满剩余宽度。 */
+  flex: 1 1 50%;
   min-width: 0;
 }
 
@@ -644,6 +666,15 @@ html[data-view="settings"] .hint {
   flex-shrink: 0;
   max-width: 100%;
   margin-left: auto;
+}
+
+/* 右侧控制贴近面板右缘,居中展开的悬停提示会越界出横向滚动条;右对齐收敛。 */
+.setting-row > :last-child[data-tooltip]::after,
+.setting-row > .input-wrap:last-child[data-tooltip]::after,
+.autostart-row > :last-child[data-tooltip]::after {
+  left: auto;
+  right: 0;
+  transform: none;
 }
 
 .setting-row .label {
@@ -891,9 +922,28 @@ input[data-filename-template] {
   display: inline-flex;
 }
 
+/* 文件名模板框独占一整行:input-wrap 默认收缩贴合,模板需要铺满卡片宽。 */
+.template-wrap {
+  display: flex;
+  width: 100%;
+}
+
 .input-wrap .number-input {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+/* 日志路径按等宽列出,整段可选;折行不越行宽。 */
+html[data-view="settings"] [data-log-path] {
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 11.5px;
+}
+
+/* 选区工具等按压式开关:选中态在着色之外加 ✓,色彩之外多一层判读线索。 */
+html[data-view="settings"] [data-region-tools] .choice.selected::before {
+  content: "✓";
+  margin-right: 4px;
+  font-weight: 700;
 }
 
 /* 热键按钮贴近卡片右缘,提示右对齐,避免长文案被窗口右缘裁切。 */

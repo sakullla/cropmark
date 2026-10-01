@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { NOTICE_AUTO_HIDE_MS } from "../feedback";
 import { localeTag, t, type CatalogKey } from "../i18n";
 import { icons } from "../icons";
 import "./history.css";
@@ -161,6 +162,9 @@ export function mountHistory(root: HTMLElement): () => void {
           <button type="button" class="history-filter-clear" data-action="clear-filters" data-i18n="history.filter.clear" disabled>清除筛选</button>
         </div>
         <p class="notice" data-notice role="alert" hidden></p>
+        <div class="history-list" data-list></div>
+        <p class="history-loading" data-loading role="status"><span class="progress" aria-hidden="true"></span><span data-i18n="history.loading">正在加载历史记录…</span></p>
+        <p class="history-empty" data-empty data-i18n="history.empty" hidden>暂无历史记录。截图完成后会自动出现在这里。</p>
         <p class="history-status" data-status role="status" hidden></p>
         <p class="history-undo" data-undo role="status" hidden>
           <span class="history-undo-text" data-undo-text></span>
@@ -173,9 +177,6 @@ export function mountHistory(root: HTMLElement): () => void {
             <button type="button" class="history-btn history-btn-quiet" data-confirm-cancel data-i18n="history.cancel">取消</button>
           </div>
         </div>
-        <div class="history-list" data-list></div>
-        <p class="history-loading" data-loading role="status"><span class="progress" aria-hidden="true"></span><span data-i18n="history.loading">正在加载历史记录…</span></p>
-        <p class="history-empty" data-empty data-i18n="history.empty" hidden>暂无历史记录。截图完成后会自动出现在这里。</p>
       </main>
     </div>
   `;
@@ -332,14 +333,39 @@ export function mountHistory(root: HTMLElement): () => void {
     statusEl.classList.toggle("is-error", statusState.isError);
   };
 
+  // 结果态(已复制/已收藏)按共享时长自动隐藏(ADR-2);错误常驻直到下一次操作覆盖。
+  let statusTimer = 0;
+  const scheduleStatusHide = (): void => {
+    if (statusTimer) {
+      window.clearTimeout(statusTimer);
+      statusTimer = 0;
+    }
+    statusTimer = window.setTimeout(() => {
+      statusTimer = 0;
+      statusState = { key: null, text: "", isError: false };
+      renderStatus();
+    }, NOTICE_AUTO_HIDE_MS);
+  };
+
   const setStatusKey = (key: CatalogKey, isError = false): void => {
     statusState = { key, text: "", isError };
     renderStatus();
+    if (isError) {
+      if (statusTimer) {
+        window.clearTimeout(statusTimer);
+        statusTimer = 0;
+      }
+    } else {
+      scheduleStatusHide();
+    }
   };
 
   const setStatusText = (text: string, isError = false): void => {
     statusState = { key: null, text, isError };
     renderStatus();
+    if (!isError) {
+      scheduleStatusHide();
+    }
   };
 
   const errorMessage = (error: unknown): string =>
@@ -379,24 +405,64 @@ export function mountHistory(root: HTMLElement): () => void {
     return { label, title };
   };
 
+  // 缩略图按记录 id 缓存 blob URL:筛选输入、备注保存、聚焦刷新都会整表
+  // 重绘,不缓存则每次都重取一遍并闪空。容量上限内先进先出回收。
+  const thumbUrls = new Map<string, string>();
+  const thumbFailures = new Set<string>();
+  const THUMB_CACHE_LIMIT = 64;
+
+  const rememberThumb = (id: string, url: string): void => {
+    if (thumbUrls.size >= THUMB_CACHE_LIMIT && !thumbUrls.has(id)) {
+      const oldest = thumbUrls.keys().next().value;
+      if (oldest !== undefined) {
+        URL.revokeObjectURL(thumbUrls.get(oldest)!);
+        thumbUrls.delete(oldest);
+      }
+    }
+    thumbUrls.set(id, url);
+  };
+
   const loadThumbnail = (id: string, holder: HTMLElement): void => {
+    const attach = (url: string): void => {
+      const image = document.createElement("img");
+      image.alt = "";
+      image.draggable = false;
+      image.src = url;
+      holder.replaceChildren(image);
+    };
+    const markMissing = (): void => {
+      thumbFailures.add(id);
+      holder.classList.add("missing");
+      holder.textContent = t("history.thumb_missing");
+    };
+    const cached = thumbUrls.get(id);
+    if (cached !== undefined) {
+      attach(cached);
+      return;
+    }
+    if (thumbFailures.has(id)) {
+      markMissing();
+      return;
+    }
     void invoke<ArrayBuffer>("get_history_thumbnail", { id })
       .then((bytes) => {
         if (bytes.byteLength === 0) {
-          throw new Error("empty");
+          markMissing();
+          return;
         }
         const url = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
-        const image = document.createElement("img");
-        image.alt = "";
-        image.draggable = false;
-        image.onload = () => URL.revokeObjectURL(url);
-        image.onerror = () => URL.revokeObjectURL(url);
-        image.src = url;
-        holder.replaceChildren(image);
+        rememberThumb(id, url);
+        // 渲染之间 holder 可能已被换走,只有仍在树中的才写入。
+        if (holder.isConnected) {
+          attach(url);
+        }
       })
       .catch(() => {
-        holder.classList.add("missing");
-        holder.textContent = t("history.thumb_missing");
+        // IPC 失败按暂缺展示但不进失败缓存,下次重绘仍可重试。
+        if (holder.isConnected) {
+          holder.classList.add("missing");
+          holder.textContent = t("history.thumb_missing");
+        }
       });
   };
 
@@ -438,6 +504,10 @@ export function mountHistory(root: HTMLElement): () => void {
       holder.classList.add("missing");
       holder.textContent = t("history.thumb_missing");
     } else {
+      if (!entry.imageMissing) {
+        // 双击缩略图即再编辑,提示与按钮同一文案。
+        holder.dataset.tooltip = t("history.reedit");
+      }
       loadThumbnail(entry.id, holder);
     }
 
@@ -713,6 +783,26 @@ export function mountHistory(root: HTMLElement): () => void {
     void runAction(action, id, button);
   });
 
+  // 双击缩略图/时间区 = 再编辑(最高频动作);落在按钮或输入框上的双击不触发。
+  listEl.addEventListener("dblclick", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) {
+      return;
+    }
+    if (target.closest("button, input, select, textarea, a")) {
+      return;
+    }
+    const row = target.closest("[data-entry-id]");
+    if (!(row instanceof HTMLElement)) {
+      return;
+    }
+    const reedit = row.querySelector<HTMLButtonElement>('[data-entry-action="reedit"]');
+    const id = row.dataset.entryId;
+    if (id && reedit && !reedit.disabled) {
+      void runAction("reedit", id, reedit);
+    }
+  });
+
   const resetFilters = (): void => {
     timeRange = "all";
     modeFilter = "all";
@@ -779,6 +869,23 @@ export function mountHistory(root: HTMLElement): () => void {
 
   confirmCancelEl.addEventListener("click", () => {
     hideConfirm();
+  });
+
+  // Ctrl+F 聚焦备注搜索(筛选开启时);焦点在任何输入控件内不抢。
+  window.addEventListener("keydown", (event) => {
+    if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) {
+      return;
+    }
+    if (event.key.toLowerCase() !== "f" || filtersEl.hidden) {
+      return;
+    }
+    const active = document.activeElement;
+    if (active instanceof HTMLInputElement && active !== searchEl) {
+      return;
+    }
+    event.preventDefault();
+    searchEl.focus();
+    searchEl.select();
   });
 
   // Esc 分层(R9 与 settings/guide/preview 一致):确认条打开时等同取消,

@@ -271,6 +271,11 @@
   text-align: center;
 }
 
+/* 双击缩略图即再编辑;可点的给指针光标。 */
+.history-thumb[data-tooltip] {
+  cursor: pointer;
+}
+
 /* 英文整句宽于单行内容区。折进 96×72，避免居中后被 overflow 裁掉两端。 */
 .history-thumb.missing {
   flex-direction: column;

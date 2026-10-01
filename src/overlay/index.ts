@@ -1677,6 +1677,24 @@ export function mountOverlay(root: HTMLElement): () => void {
         void qrModel.copy(0);
         return;
       }
+      // 冻结帧工作区与预览同一组键位:Ctrl+C 复制、Ctrl+S 保存;
+      // 按钮被能力裁剪隐藏或确认进行中时不触发。
+      if (frame?.fixed === true && !finishing) {
+        const workspaceReady = (name: string): boolean => {
+          const button = actionsEl.querySelector<HTMLButtonElement>(`[data-workspace=${name}]`);
+          return !!button && !button.hidden && !button.disabled;
+        };
+        if (key === "c" && workspaceReady("copy")) {
+          event.preventDefault();
+          void copyWorkspace();
+          return;
+        }
+        if (key === "s" && workspaceReady("save")) {
+          event.preventDefault();
+          void saveWorkspace();
+          return;
+        }
+      }
       return;
     }
     if (event.key === "Enter") {
