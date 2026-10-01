@@ -882,7 +882,7 @@ fn map_virtual_key(vk: u32) -> Option<LogicalKey> {
     }
 }
 
-/// 单次合成耗时(仅 Redraw 路径调用;ADR-007 护栏的可观察基线)。
+/// 单次合成耗时(首帧及 Redraw 路径调用;ADR-007 护栏的可观察基线)。
 fn compose_canvas(canvas: &mut Canvas) -> Option<(Duration, composer::IntRect)> {
     let started = Instant::now();
     let (w, h) = canvas.composer.size();
@@ -1278,9 +1278,13 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         WM_PAINT => {
-            // 直接呈现缓存位图,不重合成(合成只发生在引擎 Redraw 时)。
+            // 建窗时还没有输入事件,必须先合成首帧,否则零填充缓存会铺满黑屏。
+            // 后续 WM_PAINT 复用缓存,只在引擎 Redraw 时更新合成。
             STATE.with(|slot| {
-                if let Some(state) = slot.borrow().as_ref() {
+                if let Some(state) = slot.borrow_mut().as_mut() {
+                    if state.canvas.last_scene.is_none() {
+                        compose_canvas(&mut state.canvas);
+                    }
                     blit(
                         hwnd,
                         state.canvas.width,
@@ -2548,6 +2552,56 @@ mod tests {
             composer::rgb_readout(pixel)
         );
         assert_eq!(text, "#2DD4BF R 45 G 212 B 191");
+    }
+
+    #[test]
+    #[ignore = "需要 Windows 交互桌面,会短暂显示选区窗口"]
+    fn native_first_paint_displays_frame_and_escape_cancels() {
+        use windows::Win32::Graphics::Gdi::GetPixel;
+
+        STATE.with(|slot| *slot.borrow_mut() = Some(test_state(320, 200)));
+        unsafe {
+            let hwnd = create_overlay_window(0, 0, 320, 200, 1.0).unwrap();
+            // 建窗中的 UpdateWindow 已触发首帧,尚未派发任何鼠标消息。
+            let dc = GetDC(Some(hwnd));
+            let pixel = GetPixel(dc, 300, 180);
+            let _ = ReleaseDC(Some(hwnd), dc);
+            wnd_proc(hwnd, WM_KEYDOWN, WPARAM(VK_ESCAPE as usize), LPARAM(0));
+            let _ = DestroyWindow(hwnd);
+            drain_thread_quit();
+            let state = STATE.with(|slot| slot.borrow_mut().take().unwrap());
+            assert_eq!(pixel.0, 0x001f1f1f, "首帧应显示冻结背景而非黑屏");
+            assert_eq!(state.outcome, Some(RegionOutcome::Cancelled));
+        }
+    }
+
+    #[test]
+    fn first_paint_composes_frozen_frame_without_input() {
+        let state = test_state(320, 200);
+        STATE.with(|slot| *slot.borrow_mut() = Some(state));
+        unsafe {
+            wnd_proc(HWND::default(), WM_PAINT, WPARAM(0), LPARAM(0));
+        }
+        let state = STATE.with(|slot| slot.borrow_mut().take().unwrap());
+        assert!(state.canvas.last_scene.is_some(), "首帧必须在鼠标输入前合成");
+        // 远离左上角放大镜的冻结帧背景:60 * 52% = 31,且 alpha 不透明。
+        let pixel = ((180 * 320 + 300) * 4) as usize;
+        assert_eq!(&state.canvas.present_buf[pixel..pixel + 4], &[31, 31, 31, 255]);
+    }
+
+    #[test]
+    fn repaint_preserves_composed_frame_without_input() {
+        let mut state = test_state(320, 200);
+        compose_canvas(&mut state.canvas).unwrap();
+        // 缓存标记:后续 WM_PAINT 应原样呈现,不能重复合成。
+        state.canvas.present_buf[0..4].copy_from_slice(&[1, 2, 3, 255]);
+        let expected = state.canvas.present_buf.clone();
+        STATE.with(|slot| *slot.borrow_mut() = Some(state));
+        unsafe {
+            wnd_proc(HWND::default(), WM_PAINT, WPARAM(0), LPARAM(0));
+        }
+        let state = STATE.with(|slot| slot.borrow_mut().take().unwrap());
+        assert_eq!(state.canvas.present_buf, expected);
     }
 
     #[test]
