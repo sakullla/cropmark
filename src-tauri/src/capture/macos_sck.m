@@ -779,6 +779,14 @@ int32_t cropmark_snap_windows_at(double px, double py, CropmarkSnapWindow *out, 
       continue;
     }
     CFDictionaryRef info = (CFDictionaryRef)item;
+    // Dock 的透明全屏窗口仍可能报告 alpha=1、onscreen=true,且
+    // kCGWindowListExcludeDesktopElements 不会排除它。保留普通/浮动/模态
+    // 应用窗口,跳过桌面及 Dock/菜单/状态栏等系统层,避免全屏命中遮住目标。
+    int32_t layer = cropmark_snap_int_value(CFDictionaryGetValue(info, kCGWindowLayer),
+                                           kCGNormalWindowLevel);
+    if (layer < kCGNormalWindowLevel || layer >= kCGDockWindowLevel) {
+      continue;
+    }
     CFTypeRef bounds_value = CFDictionaryGetValue(info, kCGWindowBounds);
     CGRect bounds = CGRectNull;
     if (!bounds_value || CFGetTypeID(bounds_value) != CFDictionaryGetTypeID() ||

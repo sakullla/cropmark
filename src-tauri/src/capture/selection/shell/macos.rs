@@ -558,6 +558,11 @@ define_class!(
             forward_mouse(self, event, MouseInput::RightDown);
         }
 
+        #[unsafe(method(scrollWheel:))]
+        fn scroll_wheel(&self, event: &NSEvent) {
+            forward_mouse(self, event, MouseInput::Scroll);
+        }
+
         #[unsafe(method(keyDown:))]
         fn key_down(&self, event: &NSEvent) {
             handle_key(self, event);
@@ -1039,6 +1044,7 @@ const INPUT_EVENT_MASK: NSEventMask = NSEventMask(
         | NSEventMask::LeftMouseDragged.0
         | NSEventMask::RightMouseDown.0
         | NSEventMask::MouseMoved.0
+        | NSEventMask::ScrollWheel.0
         | NSEventMask::KeyDown.0,
 );
 
@@ -1214,7 +1220,7 @@ fn forward_mouse(view: &SelectionView, event: &NSEvent, kind: MouseInput) {
     let input = match kind {
         // 向上滚(父级方向)为正,与 Windows WM_MOUSEWHEEL 语义一致。
         MouseInput::Scroll => InputEvent::Wheel {
-            delta: event.scrollingDeltaY().round() as i32,
+            delta: wheel_delta(event.scrollingDeltaY()),
         },
         _ => {
             let (x, y) = event_point(view, event);
@@ -1228,6 +1234,17 @@ fn forward_mouse(view: &SelectionView, event: &NSEvent, kind: MouseInput) {
         }
     };
     dispatch_input(view, input);
+}
+
+/// 引擎只消费滚动方向;精细触控板增量不能被 round 丢成 0。
+fn wheel_delta(delta: f64) -> i32 {
+    if !delta.is_finite() || delta == 0.0 {
+        0
+    } else if delta > 0.0 {
+        1
+    } else {
+        -1
+    }
 }
 
 /// 事件→引擎像素:先把窗口点转到视图 backing,再按抓屏缓冲尺寸映射。
@@ -1842,6 +1859,70 @@ const _: () = {
 mod tests {
     use super::*;
     use crate::capture::buffer::{accept_buffer, RawBuffer};
+    use crate::capture::snap::{
+        SnapCapability, SnapContext, SnapHit, SnapKind, SnapProvider, SnapRect, SnapStack,
+    };
+
+    #[derive(Debug)]
+    struct ScrollSnapProvider;
+
+    impl SnapProvider for ScrollSnapProvider {
+        fn capability(&self) -> SnapCapability {
+            SnapCapability::Full
+        }
+
+        fn hit(&self, _context: SnapContext, _x: i32, _y: i32) -> SnapStack {
+            SnapStack::new(vec![
+                SnapHit {
+                    kind: SnapKind::Control,
+                    rect: SnapRect::new(20, 20, 40, 30),
+                    label: None,
+                },
+                SnapHit {
+                    kind: SnapKind::Window,
+                    rect: SnapRect::new(10, 10, 200, 150),
+                    label: None,
+                },
+            ])
+        }
+    }
+
+    #[test]
+    fn scroll_events_reach_the_local_input_monitor() {
+        assert_ne!(INPUT_EVENT_MASK.0 & NSEventMask::ScrollWheel.0, 0);
+    }
+
+    #[test]
+    fn precise_trackpad_scroll_switches_snap_levels() {
+        let mut engine = SelectionEngine::new(400, 300, FeatureFlags::default())
+            .with_snap(&ScrollSnapProvider, SnapContext::new((0, 0), (0, 0), 1.0));
+        engine.handle_event(InputEvent::PointerMove { x: 30, y: 30 });
+        let control = engine.snap_highlight().unwrap();
+        engine.handle_event(InputEvent::Wheel {
+            delta: wheel_delta(0.1),
+        });
+        let window = engine.snap_highlight().unwrap();
+        assert_eq!(
+            window,
+            PhysicalRect {
+                x: 10,
+                y: 10,
+                width: 200,
+                height: 150,
+            }
+        );
+        assert_ne!(window, control);
+        for delta in [0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            engine.handle_event(InputEvent::Wheel {
+                delta: wheel_delta(delta),
+            });
+            assert_eq!(engine.snap_highlight(), Some(window));
+        }
+        engine.handle_event(InputEvent::Wheel {
+            delta: wheel_delta(-0.1),
+        });
+        assert_eq!(engine.snap_highlight(), Some(control));
+    }
 
     #[test]
     fn key_codes_map_to_engine_logical_keys() {

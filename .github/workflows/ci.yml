@@ -68,6 +68,13 @@ jobs:
           save-if: ${{ github.event_name != 'pull_request' }}
       - run: npm ci --prefer-offline --no-audit --no-fund
       - run: npm run build
+      - name: Test macOS window hit testing
+        if: runner.os == 'macOS'
+        run: |
+          clang -fobjc-arc -framework AppKit -framework ApplicationServices \
+            -framework CoreGraphics -framework ScreenCaptureKit \
+            src-tauri/tests/macos_snap.m -o "$RUNNER_TEMP/cropmark-macos-snap-test"
+          "$RUNNER_TEMP/cropmark-macos-snap-test"
       - name: Test backend
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml
       # Existing platform-specific dead code and style warnings are not errors.
