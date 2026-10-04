@@ -14,16 +14,22 @@ export function mountDelay(root: HTMLElement): () => void {
     <div>
       <div class="count-row">
         <span class="count-ring" aria-hidden="true" hidden></span>
-        <div class="count" data-i18n="delay.preparing" aria-live="polite">准备截取</div>
+        <div class="count" data-i18n="delay.preparing" aria-hidden="true">准备截取</div>
       </div>
       <p class="hint" data-i18n="delay.hint">倒计时期间可操作其它应用，到期截取当时屏幕。</p>
+      <div class="sr-only" role="status" data-delay-status></div>
     </div>
     <button type="button" data-action="cancel" data-i18n="delay.cancel">取消</button>
   `;
   const count = root.querySelector(".count");
   const ring = root.querySelector(".count-ring");
   const cancel = root.querySelector("[data-action=cancel]");
-  if (!(count instanceof HTMLElement) || !(cancel instanceof HTMLButtonElement)) {
+  const status = root.querySelector("[data-delay-status]");
+  if (
+    !(count instanceof HTMLElement) ||
+    !(cancel instanceof HTMLButtonElement) ||
+    !(status instanceof HTMLElement)
+  ) {
     return () => undefined;
   }
 
@@ -93,6 +99,8 @@ export function mountDelay(root: HTMLElement): () => void {
       }, 1000);
     }
     render();
+    // 视觉倒数逐秒变化,对屏幕阅读器只播报一次开始状态,不逐秒打扰。
+    status.textContent = t("delay.countdown", { seconds: remaining });
   };
 
   void invoke<DelayPayload>("get_delay_state").then(apply);

@@ -188,12 +188,12 @@ export function mountOverlay(root: HTMLElement): () => void {
       <div class="overlay-hint"></div>
       <button type="button" class="overlay-retry" data-i18n="overlay.retry" hidden>重试</button>
       <div class="overlay-actions" hidden>
-        <button type="button" data-workspace="ocr" data-i18n="overlay.action.ocr">取字</button>
-        <button type="button" data-workspace="qr" data-i18n="overlay.action.qr">识别二维码</button>
-        <button type="button" data-workspace="pin" data-i18n="overlay.action.pin">贴图</button>
-        <button type="button" data-workspace="save" data-i18n="overlay.action.save">保存</button>
-        <button type="button" class="primary" data-workspace="copy" data-i18n="overlay.action.copy">复制</button>
-        <button type="button" data-workspace="edit" data-i18n="overlay.action.edit">进一步编辑</button>
+        <button type="button" data-workspace="ocr" data-i18n="overlay.action.ocr" data-i18n-title="overlay.action.ocr_title" data-tooltip="${t("overlay.action.ocr_title")}">取字</button>
+        <button type="button" data-workspace="qr" data-i18n="overlay.action.qr" data-i18n-title="overlay.action.qr_title" data-tooltip="${t("overlay.action.qr_title")}">识别二维码</button>
+        <button type="button" data-workspace="pin" data-i18n="overlay.action.pin" data-i18n-title="overlay.action.pin_title" data-tooltip="${t("overlay.action.pin_title")}">贴图</button>
+        <button type="button" data-workspace="save" data-i18n="overlay.action.save" data-i18n-title="overlay.action.save_title" data-tooltip="${t("overlay.action.save_title")}">保存</button>
+        <button type="button" class="primary" data-workspace="copy" data-i18n="overlay.action.copy" data-i18n-title="overlay.action.copy_title" data-tooltip="${t("overlay.action.copy_title")}">复制</button>
+        <button type="button" data-workspace="edit" data-i18n="overlay.action.edit" data-i18n-title="overlay.action.edit_title" data-tooltip="${t("overlay.action.edit_title")}">进一步编辑</button>
       </div>
       <button type="button" class="overlay-capabilities" aria-haspopup="dialog" aria-controls="overlay-capability-panel" aria-expanded="false" data-i18n="overlay.capabilities" hidden>能力说明</button>
       <button type="button" class="overlay-cancel" data-i18n="overlay.cancel">取消 Esc</button>
@@ -402,9 +402,11 @@ export function mountOverlay(root: HTMLElement): () => void {
   };
 
   // 加载/确认失败除改写 hint 外提供重试入口;成功路径经 renderHint/load 收起。
+  // is-error 给失败文案危险色,与正常中性提示视觉区分(同 settings .notice)。
   let retryAction: (() => void) | null = null;
   const showFailure = (message: string, retry: () => void): void => {
     hint.textContent = message;
+    hint.classList.add("is-error");
     retryAction = retry;
     retryBtn.hidden = false;
   };
@@ -470,9 +472,10 @@ export function mountOverlay(root: HTMLElement): () => void {
     if (!frame) {
       return;
     }
-    // 恢复正常提示即收起失败重试入口。
+    // 恢复正常提示即收起失败重试入口与失败配色。
     retryBtn.hidden = true;
     retryAction = null;
+    hint.classList.remove("is-error");
     const reduced = frame.reducedCapabilities === true;
     if (frame.fixed) {
       // R2/R4:取字/二维码识别中提示退出方式;退出后恢复工作区/标注提示。
@@ -1617,6 +1620,7 @@ export function mountOverlay(root: HTMLElement): () => void {
     const action = retryAction;
     retryBtn.hidden = true;
     retryAction = null;
+    hint.classList.remove("is-error");
     action?.();
   });
 
@@ -1665,6 +1669,12 @@ export function mountOverlay(root: HTMLElement): () => void {
     onContextMenuMiss: () => {
       if (frame?.reducedCapabilities) {
         showNotice(t(TOOLBAR_NOTICE_KEY));
+      }
+    },
+    // 与预览一致地消费工具用法提示(取字/马赛克/聚光灯等),不再静默丢弃。
+    onToolHint: (hint) => {
+      if (hint) {
+        showNotice(t(hint.key, hint.params));
       }
     },
     onError: (error) => {

@@ -1944,8 +1944,8 @@
     "en": "Copy all"
   },
   "preview.action.pin_title": {
-    "zh-CN": "贴图",
-    "en": "Pin"
+    "zh-CN": "贴图 (I)",
+    "en": "Pin (I)"
   },
   "preview.action.pin": {
     "zh-CN": "贴图",
@@ -1988,16 +1988,16 @@
     "en": "Rotate left 90°"
   },
   "preview.action.rotate_left_title": {
-    "zh-CN": "向左旋转 90°",
-    "en": "Rotate 90° to the left"
+    "zh-CN": "向左旋转 90° (,)",
+    "en": "Rotate 90° to the left (,)"
   },
   "preview.action.rotate_right": {
     "zh-CN": "右旋 90°",
     "en": "Rotate right 90°"
   },
   "preview.action.rotate_right_title": {
-    "zh-CN": "向右旋转 90°",
-    "en": "Rotate 90° to the right"
+    "zh-CN": "向右旋转 90° (.)",
+    "en": "Rotate 90° to the right (.)"
   },
   "preview.action.again": {
     "zh-CN": "再来一次",
@@ -2012,12 +2012,16 @@
     "en": "Crop"
   },
   "preview.action.crop_title": {
-    "zh-CN": "裁剪：拖选要保留的区域，松开鼠标完成",
-    "en": "Crop: drag the area to keep and release to crop"
+    "zh-CN": "裁剪 (V)：拖选要保留的区域，Enter 或确认按钮完成",
+    "en": "Crop (V): drag the area to keep, then Enter or the Crop button"
   },
   "preview.crop.hint": {
-    "zh-CN": "拖选要保留的区域 · 松开鼠标裁剪 · Esc 取消",
-    "en": "Drag the area to keep · Release to crop · Esc cancels"
+    "zh-CN": "拖选要保留的区域 · Enter 或点「确认裁剪」提交 · Esc 取消",
+    "en": "Drag the area to keep · Enter or Crop to apply · Esc cancels"
+  },
+  "preview.canvas_label": {
+    "zh-CN": "截图预览",
+    "en": "Screenshot preview"
   },
   "preview.crop.confirm": {
     "zh-CN": "确认裁剪",
@@ -2359,10 +2363,6 @@
     "zh-CN": "重试",
     "en": "Retry"
   },
-  "overlay.confirm": {
-    "zh-CN": "确认 Enter",
-    "en": "Confirm Enter"
-  },
   "overlay.hint.window": {
     "zh-CN": "点击要截取的窗口 · 滚轮切换重叠窗口",
     "en": "Click the window to capture · Scroll to switch overlapping windows"
@@ -2374,10 +2374,6 @@
   "overlay.hint.reduced": {
     "zh-CN": "拖出矩形截取区域 · Enter 确认 · Esc 取消",
     "en": "Drag to select a region · Enter to confirm · Esc to cancel"
-  },
-  "overlay.hint.region": {
-    "zh-CN": "拖出矩形截取区域 · Enter 确认",
-    "en": "Drag to select a region · Enter to confirm"
   },
   "overlay.hint.region_nudge": {
     "zh-CN": "拖出矩形截取区域 · Enter 确认 · 方向键微调 · Shift+方向键缩放",
@@ -2456,6 +2452,30 @@
     "en": "QR code"
   },
   "overlay.action.edit": {
+    "zh-CN": "进一步编辑",
+    "en": "Edit further"
+  },
+  "overlay.action.copy_title": {
+    "zh-CN": "复制 (Ctrl+C)",
+    "en": "Copy (Ctrl+C)"
+  },
+  "overlay.action.save_title": {
+    "zh-CN": "保存 (Ctrl+S)",
+    "en": "Save (Ctrl+S)"
+  },
+  "overlay.action.pin_title": {
+    "zh-CN": "贴图",
+    "en": "Pin"
+  },
+  "overlay.action.ocr_title": {
+    "zh-CN": "取字",
+    "en": "Extract text"
+  },
+  "overlay.action.qr_title": {
+    "zh-CN": "识别二维码",
+    "en": "Read QR code"
+  },
+  "overlay.action.edit_title": {
     "zh-CN": "进一步编辑",
     "en": "Edit further"
   },

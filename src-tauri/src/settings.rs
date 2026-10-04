@@ -771,8 +771,10 @@ pub fn open_settings(app: &AppHandle) -> Result<(), String> {
     )
     .title("Cropmark")
     // R8:宽版设置页 = 左侧分类导航 + 右侧单列独立滚动,宽度约为旧版两倍。
+    // 允许调整大小以容纳长文案(本地化提示),下限保住两栏布局。
     .inner_size(840.0, 560.0)
-    .resizable(false)
+    .min_inner_size(640.0, 480.0)
+    .resizable(true)
     .maximizable(false)
     .minimizable(false)
     .decorations(false)

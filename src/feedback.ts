@@ -2,3 +2,6 @@
 /// 仅用于「已复制/已保存」这类终态反馈;进行中提示(正在复制/识别中)常驻,
 /// 直到被终态替换(ADR-2 旧约束)。Rust 侧原生 toast 时长不属于本常量管辖。
 export const NOTICE_AUTO_HIDE_MS = 3600;
+
+/// 按钮级「已复制」闪烁时长:短于结果提示,只作一次操作确认,不做常驻状态。
+export const BUTTON_FLASH_MS = 1600;

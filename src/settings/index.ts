@@ -208,6 +208,7 @@ export function mountSettings(root: HTMLElement): () => void {
         </nav>
         <div class="settings-main">
           <p class="notice" role="alert" hidden></p>
+          <p class="notice invoke-notice" data-invoke-notice role="alert" hidden></p>
           <p class="notice tray-notice" data-tray-notice role="status" hidden></p>
           <p class="notice notice-success" data-saved-notice role="status" hidden></p>
           <div class="settings-panels" data-settings-panels>
@@ -226,9 +227,9 @@ export function mountSettings(root: HTMLElement): () => void {
                       <div class="label" id="delay-label" data-i18n="settings.capture.delay_label">延时秒数</div>
                       <p class="hint" data-i18n="settings.capture.delay_hint">0–60 秒，热键与托盘截取按此倒计时；0 为立即截取。</p>
                     </div>
-                    <input type="number" class="number-input" data-capture="delay" min="0" max="60" step="1" inputmode="numeric" aria-labelledby="delay-label" />
+                    <input type="number" class="number-input" data-capture="delay" min="0" max="60" step="1" inputmode="numeric" aria-labelledby="delay-label" aria-describedby="delay-error" />
                   </div>
-                  <p class="error" data-capture-error role="alert" hidden></p>
+                  <p class="error" id="delay-error" data-capture-error role="alert" hidden></p>
                   <div class="setting-row">
                     <div>
                       <div class="label" id="capture-cursor-label" data-i18n="settings.capture.cursor_label">包含鼠标指针</div>
@@ -303,9 +304,9 @@ export function mountSettings(root: HTMLElement): () => void {
                       <div class="label" id="history-limit-label" data-i18n="settings.history.limit_label">记录上限</div>
                       <p class="hint" data-i18n="settings.history.limit_hint">5–200 条，超出上限时自动淘汰最旧记录。</p>
                     </div>
-                    <input type="number" class="number-input" data-history="limit" min="5" max="200" step="1" inputmode="numeric" aria-labelledby="history-limit-label" />
+                    <input type="number" class="number-input" data-history="limit" min="5" max="200" step="1" inputmode="numeric" aria-labelledby="history-limit-label" aria-describedby="history-limit-error" />
                   </div>
-                  <p class="error" data-history-error role="alert" hidden></p>
+                  <p class="error" id="history-limit-error" data-history-error role="alert" hidden></p>
                   <div class="setting-row">
                     <div>
                       <div class="label" id="history-open-label" data-i18n="settings.history.open_label">浏览历史</div>
@@ -351,16 +352,16 @@ export function mountSettings(root: HTMLElement): () => void {
                       <div class="label" id="padding-label" data-i18n="settings.export.padding_label">留白</div>
                       <p class="hint" data-i18n="settings.export.padding_hint">0–240 像素，输出四周各加这么多留白。</p>
                     </div>
-                    <span class="input-wrap" data-tooltip-wrap><input type="number" class="number-input" data-beautify-padding min="0" max="240" step="1" inputmode="numeric" aria-labelledby="padding-label" /></span>
+                    <span class="input-wrap" data-tooltip-wrap><input type="number" class="number-input" data-beautify-padding min="0" max="240" step="1" inputmode="numeric" aria-labelledby="padding-label" aria-describedby="export-error" /></span>
                   </div>
                   <div class="setting-row">
                     <div>
                       <div class="label" id="radius-label" data-i18n="settings.export.radius_label">圆角</div>
                       <p class="hint" data-i18n="settings.export.radius_hint">0–160 像素。阴影边距由圆角推导。</p>
                     </div>
-                    <span class="input-wrap" data-tooltip-wrap><input type="number" class="number-input" data-beautify-radius min="0" max="160" step="1" inputmode="numeric" aria-labelledby="radius-label" /></span>
+                    <span class="input-wrap" data-tooltip-wrap><input type="number" class="number-input" data-beautify-radius min="0" max="160" step="1" inputmode="numeric" aria-labelledby="radius-label" aria-describedby="export-error" /></span>
                   </div>
-                  <p class="error" data-export-error role="alert" hidden></p>
+                  <p class="error" id="export-error" data-export-error role="alert" hidden></p>
                   <div class="setting-row">
                     <div>
                       <div class="label" id="shadow-label" data-i18n="settings.export.shadow_label">阴影</div>
@@ -462,6 +463,7 @@ export function mountSettings(root: HTMLElement): () => void {
   `;
 
   const noticeEl = root.querySelector(".notice");
+  const invokeNoticeEl = root.querySelector("[data-invoke-notice]");
   const trayNoticeEl = root.querySelector("[data-tray-notice]");
   const savedNoticeEl = root.querySelector("[data-saved-notice]");
   const navRoot = root.querySelector("[data-settings-nav]");
@@ -501,6 +503,7 @@ export function mountSettings(root: HTMLElement): () => void {
   const versionEl = root.querySelector("[data-version]");
   if (
     !(noticeEl instanceof HTMLElement) ||
+    !(invokeNoticeEl instanceof HTMLElement) ||
     !(trayNoticeEl instanceof HTMLElement) ||
     !(savedNoticeEl instanceof HTMLElement) ||
     !(navRoot instanceof HTMLElement) ||
@@ -1038,10 +1041,12 @@ export function mountSettings(root: HTMLElement): () => void {
   };
 
   // invoke 失败给本地化提示,后接后端细节(ADR-5);不直出英文原文。
+  // 与后端下发的 settings.notice 分属不同元素:render() 重绘不再覆盖错误,
+  // 错误也不会掩盖后端通知。
   const showInvokeError = (error: unknown): void => {
     const detail = error instanceof Error ? error.message : String(error);
-    noticeEl.hidden = false;
-    noticeEl.textContent = t("settings.error.invoke_failed", { detail });
+    invokeNoticeEl.hidden = false;
+    invokeNoticeEl.textContent = t("settings.error.invoke_failed", { detail });
   };
 
   // R3:设置写回成功的短暂反馈行;role=status、非模态、不抢焦点,
@@ -1359,8 +1364,8 @@ export function mountSettings(root: HTMLElement): () => void {
   loadLogDirectory();
   openLogsEl.addEventListener("click", () => {
     void invoke("open_log_directory").catch(() => {
-      noticeEl.hidden = false;
-      noticeEl.textContent = t("settings.logs.open_failed");
+      invokeNoticeEl.hidden = false;
+      invokeNoticeEl.textContent = t("settings.logs.open_failed");
     });
   });
 
@@ -1670,7 +1675,13 @@ export function mountSettings(root: HTMLElement): () => void {
       });
   }
 
-  void refresh();
+  // 首次读取完成前面板禁用并标 busy:控件不再按硬编码默认值闪现后被 refresh 改写。
+  panelsRoot.inert = true;
+  root.setAttribute("aria-busy", "true");
+  void refresh().finally(() => {
+    panelsRoot.inert = false;
+    root.setAttribute("aria-busy", "false");
+  });
 
   // 语言切换:静态标签由 main 的 applyTranslations 更新;这里先按当前状态
   // 重渲染动态行(热键/开关/历史/语言选项/美化预设),再从后端重取一次

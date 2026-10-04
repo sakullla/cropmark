@@ -1903,6 +1903,9 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     editor.style.fontSize = `${snapDevicePx(fontSize)}px`;
     editor.style.width = `${Math.max(160, fontSize * 12)}px`;
     editor.classList.add("is-open");
+    // 大字号下编辑框可能溢出视口右/下缘;与菜单/面板一样钳回界内。
+    editor.style.maxWidth = `${window.innerWidth - FLOATING_PANEL_MARGIN * 2}px`;
+    clampFloatingPanel(editor);
     syncUndo();
     window.setTimeout(() => {
       editor.focus();

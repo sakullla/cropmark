@@ -13,6 +13,16 @@
   border-radius: var(--radius-window);
   box-shadow: var(--shadow);
   overflow: hidden;
+  /* 画布绘制裁剪遮罩/美化阴影只认颜色字符串,经 resolveCanvasColor 读这两个令牌。 */
+  --crop-dim: rgba(2, 6, 23, 0.55);
+  --beautify-shadow: rgba(15, 23, 42, 0.38);
+}
+
+@media (prefers-color-scheme: dark) {
+  .preview-root {
+    --crop-dim: rgba(0, 0, 0, 0.62);
+    --beautify-shadow: rgba(0, 0, 0, 0.55);
+  }
 }
 
 .preview-titlebar {
@@ -118,6 +128,11 @@
   color: var(--danger);
   white-space: normal;
   overflow-wrap: anywhere;
+  /* 错误详情要可选中复制:退出拖拽区并恢复文本光标。 */
+  user-select: text;
+  cursor: text;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
 }
 
 .preview-toolbar {

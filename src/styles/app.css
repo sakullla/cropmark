@@ -98,6 +98,19 @@ html[data-view="history"] .shell {
   box-sizing: border-box;
 }
 
+/* 仅辅助技术可见:视觉倒数等逐秒变化的内容不再逐次播报,由它播一次开始状态。 */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* hidden 属性必须始终生效:作者规则的 display:flex 等会覆盖 UA 的 [hidden] 规则。 */
 [hidden] {
   display: none !important;
@@ -741,6 +754,8 @@ input[data-filename-template] {
   position: relative;
   cursor: pointer;
   flex: 0 0 auto;
+  /* 底色随开关态过渡,与 knob 滑动一致;reduced-motion 由共享 kill-switch 关闭。 */
+  transition: var(--control-transition);
 }
 
 .switch:hover:not(:disabled) {

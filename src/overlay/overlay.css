@@ -93,6 +93,13 @@
   text-align: center;
 }
 
+/* 失败提示与正常中性提示视觉区分:危险令牌同 settings .notice。 */
+.overlay-hint.is-error {
+  background: var(--danger-soft);
+  color: var(--danger);
+  box-shadow: inset 0 0 0 1px var(--danger);
+}
+
 .overlay-cancel,
 .overlay-retry {
   pointer-events: auto;
@@ -454,6 +461,35 @@
   font-size: 12px;
   line-height: 1.5;
   overflow-wrap: anywhere;
+}
+
+/* 浮层出现态统一淡入:hidden 硬切太突兀;仅 opacity,不触碰脚本写入的 left/top。
+   隐藏路径不动,避免影响截图时序。 */
+@keyframes overlay-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.overlay-tools,
+.overlay-notice,
+.size-badge,
+.capability-panel,
+.window-list {
+  animation: overlay-fade-in 120ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .overlay-tools,
+  .overlay-notice,
+  .size-badge,
+  .capability-panel,
+  .window-list {
+    animation: none;
+  }
 }
 
 .delay-root {

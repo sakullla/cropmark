@@ -14,6 +14,7 @@ import {
   type AnnotationTool,
 } from "../annotation";
 import { applyTranslations, t, type CatalogKey } from "../i18n";
+import { BUTTON_FLASH_MS } from "../feedback";
 import { icons } from "../icons";
 import { mountOcrModel, type OcrDocument, type OcrModel } from "../ocr";
 import { REGION_TOOL_FIELDS, type RegionTools } from "../settings/region-tools";
@@ -62,7 +63,8 @@ const PREVIEW_TOOL_DEFAULTS: RegionTools = {
 };
 /** 裁剪确认条离画面边缘的间距,与样式里的 12px 悬浮一致。 */
 const CROP_BAR_INSET = 12;
-const FALLBACK_CROP_EDGE = "#0ea5e9";
+/** 与 app.css 亮色 --accent 一致;令牌缺失时的最终回退。 */
+const FALLBACK_CROP_EDGE = "#2457db";
 
 type NoteKind = "success" | "feedback" | "error";
 
@@ -114,14 +116,14 @@ export function mountPreview(root: HTMLElement): () => void {
           <div class="preview-save" data-save-quality-root>
             <div class="preview-save-split">
               <button type="button" class="preview-named" data-action="save" data-i18n-title="preview.action.save_title" data-tauri-drag-region="false">${icons.save}<span data-i18n="preview.action.save">保存</span></button>
-              <button type="button" class="preview-save-caret preview-named" data-action="toggle-quality" data-i18n-title="preview.quality.group" data-i18n-aria-label="preview.quality.group" aria-label="保存质量" aria-haspopup="true" aria-expanded="false" data-tauri-drag-region="false">${icons.chevronDown}</button>
+              <button type="button" class="preview-save-caret preview-named" data-action="toggle-quality" data-i18n-title="preview.quality.group" data-i18n-aria-label="preview.quality.group" aria-label="保存质量" aria-haspopup="menu" aria-expanded="false" data-tauri-drag-region="false">${icons.chevronDown}</button>
             </div>
             <div class="preview-quality-panel" data-save-quality-panel hidden>
               <span class="style-label" data-i18n="preview.quality.label">质量</span>
-              <div class="style-options" role="group" data-i18n-aria-label="preview.quality.group" aria-label="保存质量">
+              <div class="style-options" role="menu" data-i18n-aria-label="preview.quality.group" aria-label="保存质量">
                 ${SAVE_QUALITIES.map(
                   ({ value, labelKey, titleKey }) =>
-                    `<button type="button" data-save-quality="${value}" data-tooltip="${t(titleKey)}">${t(labelKey)}</button>`,
+                    `<button type="button" role="menuitemradio" aria-checked="${value === "high"}" data-save-quality="${value}" data-tooltip="${t(titleKey)}">${t(labelKey)}</button>`,
                 ).join("")}
               </div>
             </div>
@@ -143,15 +145,16 @@ export function mountPreview(root: HTMLElement): () => void {
             <button type="button" data-action="retry-preview" data-i18n="overlay.retry" hidden>${t("overlay.retry")}</button>
           </div>
           <div class="preview-output" data-beautify-output>
-            <canvas></canvas>
+            <canvas role="img" data-i18n-aria-label="preview.canvas_label" aria-label="截图预览"></canvas>
           </div>
           <div class="preview-crop-bar" data-crop-bar hidden>
             <span class="preview-crop-hint" data-i18n="preview.crop.hint">${t("preview.crop.hint")}</span>
+            <button type="button" data-crop-action="confirm" data-i18n="preview.crop.confirm">${t("preview.crop.confirm")}</button>
             <button type="button" data-crop-action="cancel" data-i18n="preview.crop.cancel">${t("preview.crop.cancel")}</button>
           </div>
         </div>
         <div class="preview-zoom" role="group" data-i18n-aria-label="preview.zoom.label">
-          <span class="preview-dimensions" data-preview-dimensions></span>
+          <span class="preview-dimensions" data-preview-dimensions aria-live="polite"></span>
           <button type="button" data-preview-zoom="fit" aria-pressed="true" data-i18n="preview.zoom.fit">适应窗口</button>
           <button type="button" data-preview-zoom="actual" aria-pressed="false" data-i18n-title="preview.zoom.actual">100%</button>
         </div>
@@ -181,6 +184,7 @@ export function mountPreview(root: HTMLElement): () => void {
   const cropBtn = root.querySelector("[data-action=crop]");
   const againBtn = root.querySelector("[data-action=capture-again]");
   const cropBar = root.querySelector("[data-crop-bar]");
+  const cropConfirmBtn = root.querySelector("[data-crop-action=confirm]");
   const cropCancelBtn = root.querySelector("[data-crop-action=cancel]");
   const pinBtn = root.querySelector("[data-action=pin]");
   const updatePinBtn = root.querySelector("[data-action=update-pin]");
@@ -210,6 +214,7 @@ export function mountPreview(root: HTMLElement): () => void {
     !(cropBtn instanceof HTMLButtonElement) ||
     !(againBtn instanceof HTMLButtonElement) ||
     !(cropBar instanceof HTMLElement) ||
+    !(cropConfirmBtn instanceof HTMLButtonElement) ||
     !(cropCancelBtn instanceof HTMLButtonElement) ||
     !(pinBtn instanceof HTMLButtonElement) ||
     !(updatePinBtn instanceof HTMLButtonElement) ||
@@ -265,6 +270,14 @@ export function mountPreview(root: HTMLElement): () => void {
     getComputedStyle(root).getPropertyValue("--accent"),
     FALLBACK_CROP_EDGE,
   );
+  const cropDimColor = resolveCanvasColor(
+    getComputedStyle(root).getPropertyValue("--crop-dim"),
+    "rgba(2, 6, 23, 0.55)",
+  );
+  const beautifyShadowColor = resolveCanvasColor(
+    getComputedStyle(root).getPropertyValue("--beautify-shadow"),
+    "rgba(15, 23, 42, 0.38)",
+  );
 
   // 画布工具标记:裁剪 > 取字 > 二维码 > 标注当前工具(与按钮高亮一致)。
   const syncToolDataset = (): void => {
@@ -298,7 +311,7 @@ export function mountPreview(root: HTMLElement): () => void {
       return;
     }
     ctx.save();
-    ctx.fillStyle = "rgba(2, 6, 23, 0.55)";
+    ctx.fillStyle = cropDimColor;
     const rect = cropRect();
     if (!rect) {
       ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -591,7 +604,7 @@ export function mountPreview(root: HTMLElement): () => void {
     if (beautifyOptions.shadow && layout.shadowMargin > 0) {
       const blur = Math.max(1, layout.shadowMargin * 0.45) * scale;
       const offsetY = Math.max(1, layout.shadowMargin * 0.2) * scale;
-      canvas.style.boxShadow = `0 ${offsetY}px ${blur}px rgba(15, 23, 42, 0.38)`;
+      canvas.style.boxShadow = `0 ${offsetY}px ${blur}px ${beautifyShadowColor}`;
     } else {
       canvas.style.boxShadow = "none";
     }
@@ -614,7 +627,9 @@ export function mountPreview(root: HTMLElement): () => void {
 
   const syncSaveQuality = (): void => {
     saveQualityRoot.querySelectorAll<HTMLButtonElement>("[data-save-quality]").forEach((button) => {
-      button.classList.toggle("active", button.dataset.saveQuality === saveQuality);
+      const selected = button.dataset.saveQuality === saveQuality;
+      button.classList.toggle("active", selected);
+      button.setAttribute("aria-checked", String(selected));
     });
   };
 
@@ -857,6 +872,31 @@ export function mountPreview(root: HTMLElement): () => void {
     }
   };
 
+  // role=menu 的键盘契约:方向键在可见项间循环移动焦点,Home/End 跳首尾。
+  // Esc 关闭与焦点还原由全局 keydown / toggleOverflowMenu 处理。
+  overflowMenu.addEventListener("keydown", (event) => {
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+      return;
+    }
+    const items = Array.from(
+      overflowMenu.querySelectorAll<HTMLElement>("button:not([hidden]):not(:disabled)"),
+    );
+    if (items.length === 0) {
+      return;
+    }
+    event.preventDefault();
+    const current = items.indexOf(document.activeElement as HTMLElement);
+    let next = 0;
+    if (event.key === "ArrowDown") {
+      next = current < 0 ? 0 : (current + 1) % items.length;
+    } else if (event.key === "ArrowUp") {
+      next = current < 0 ? items.length - 1 : (current - 1 + items.length) % items.length;
+    } else if (event.key === "End") {
+      next = items.length - 1;
+    }
+    items[next]?.focus();
+  });
+
   let layoutEpoch = 0;
   let layoutToken = "";
   let layingOut = false;
@@ -875,12 +915,15 @@ export function mountPreview(root: HTMLElement): () => void {
     const tools = overflowItems.filter((item) => item.kind === "tool").sort((a, b) => a.order - b.order);
     if (moreHome instanceof HTMLElement) {
       for (const item of tools) {
+        // 回到主行即恢复普通按钮语义;仅在溢出菜单内才是 menuitem。
+        item.node.removeAttribute("role");
         toolbarEl.insertBefore(item.node, moreHome);
       }
     }
     for (const kind of ["tail", "picture", "output"] as const) {
       const home = kind === "tail" ? toolbarEl : kind === "picture" ? pictureGroup : outputGroup;
       for (const item of overflowItems.filter((entry) => entry.kind === kind).sort((a, b) => a.order - b.order)) {
+        item.node.removeAttribute("role");
         home.append(item.node);
       }
     }
@@ -917,6 +960,9 @@ export function mountPreview(root: HTMLElement): () => void {
         syncGroupSeps();
       }
       moved.sort((a, b) => a.order - b.order);
+      for (const item of moved) {
+        item.node.setAttribute("role", "menuitem");
+      }
       overflowMenu.append(...moved.map((item) => item.node));
       if (moved.length === 0) {
         overflowRoot.hidden = true;
@@ -1027,13 +1073,19 @@ export function mountPreview(root: HTMLElement): () => void {
     }
   };
 
-  // 裁剪模式的界面状态:松开即提交,处理期间禁止重复裁剪或取消。
+  // 裁剪模式的界面状态:松开仅暂存选区,确认按钮/Enter 提交,处理期间禁止重复操作。
   const syncCropUi = (): void => {
     cropBar.hidden = !cropping;
     cropBtn.classList.toggle("active", cropping);
     rotateLeftBtn.disabled = cropping || recordingContent || busy;
     rotateRightBtn.disabled = cropping || recordingContent || busy;
     cropBtn.disabled = recordingContent || busy;
+    const cropReady = cropRect() !== null;
+    cropConfirmBtn.disabled = busy || !cropReady;
+    setDisabledReason(
+      cropConfirmBtn,
+      busy ? "preview.crop.disabled_busy" : cropReady ? null : "preview.crop.disabled_no_selection",
+    );
     cropCancelBtn.disabled = busy;
     setDisabledReason(cropCancelBtn, busy ? "preview.crop.disabled_busy" : null);
     // 录制内容不支持旋转/裁剪;裁剪中禁用旋转属模式互斥,无需原因词条。
@@ -1114,7 +1166,7 @@ export function mountPreview(root: HTMLElement): () => void {
     copyReset = window.setTimeout(() => {
       copyBtn.classList.remove("is-copied");
       applyTranslations(copyBtn);
-    }, 1600);
+    }, BUTTON_FLASH_MS);
   };
 
   const pulseNote = (): void => {
@@ -1294,10 +1346,11 @@ export function mountPreview(root: HTMLElement): () => void {
       if (event.button !== 0 || !cropDragging || busy) {
         return;
       }
+      // 松开只暂存选区:确认按钮/Enter 才提交,误拖可重新拖选或取消。
       cropDragging = false;
       cropCurrent = physicalPoint(event);
+      syncCropUi();
       redraw();
-      void confirmCrop();
       return;
     }
     if (ocrModel?.active !== true) {
@@ -1318,6 +1371,8 @@ export function mountPreview(root: HTMLElement): () => void {
     }
     if (button.dataset.cropAction === "cancel") {
       exitCrop();
+    } else if (button.dataset.cropAction === "confirm") {
+      void confirmCrop();
     }
   });
 
@@ -1588,6 +1643,27 @@ export function mountPreview(root: HTMLElement): () => void {
       }
       event.preventDefault();
       activateOcr();
+      return;
+    }
+    // 与工具条按钮同条件:隐藏/禁用即不响应,快捷键只是同一动作的键盘入口。
+    if (key === "i" && !pinBtn.hidden && !pinBtn.disabled) {
+      event.preventDefault();
+      void pin();
+      return;
+    }
+    if (key === "v" && !cropBtn.hidden && !cropBtn.disabled) {
+      event.preventDefault();
+      enterCrop();
+      return;
+    }
+    if (key === "," && !rotateLeftBtn.hidden && !rotateLeftBtn.disabled) {
+      event.preventDefault();
+      void rotate("left");
+      return;
+    }
+    if (key === "." && !rotateRightBtn.hidden && !rotateRightBtn.disabled) {
+      event.preventDefault();
+      void rotate("right");
       return;
     }
     // 取字/二维码识别时，单键切回仍启用的标注工具。关闭的工具不响应。
