@@ -88,7 +88,7 @@
 | 平台 | 格式 | 说明 |
 | --- | --- | --- |
 | Windows x64 | NSIS `.exe` | 安装包,显示名 Cropmark |
-| macOS (Apple Silicon) | `.dmg` | macOS 14+;长生效自签证书,未做公证 |
+| macOS (Apple Silicon) | `.dmg` | macOS 14+;使用固定的自签证书,不提交 Apple 公证 |
 | Linux x64 | `.AppImage` / `.deb` | X11 直接可用;Wayland 走 xdg-desktop-portal |
 
 > **macOS 首次使用**:在「系统设置 › 隐私与安全性 › 屏幕录制」中允许 Cropmark;首次打开安装包如被拦,在「隐私与安全性」里点「仍要打开」。
