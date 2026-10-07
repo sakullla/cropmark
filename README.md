@@ -7,6 +7,26 @@
 ![Offline](https://img.shields.io/badge/OCR-100%25%20offline-orange)
 [![Release](https://img.shields.io/github/v/release/sakullla/cropmark)](https://github.com/sakullla/cropmark/releases)
 
+![Cropmark：截图、标注、贴图、长截图、录屏与中英文离线 OCR，支持 Windows、macOS 和 Linux](assets/readme/hero.png)
+
+[**下载最新版本**](https://github.com/sakullla/cropmark/releases) · [查看功能图示](#功能图示) · [快速上手](#快速上手)
+
+## 功能图示
+
+### 截图、标注，再分享
+
+用箭头、高亮和文字标出重点，添加留白、圆角与背景，再复制或导出。
+
+![标注与美化功能示意：在虚构便签上添加边框、高亮和箭头，并以留白背景展示](assets/readme/annotation.png)
+
+### 图片里的文字，离线提取
+
+中文与英文模型随安装包提供，选中识别文字即可复制，全程在本机完成。
+
+![离线 OCR 功能示意：从虚构中英文便签中选择文字并提取为可复制文本](assets/readme/offline-ocr.png)
+
+*以上为使用虚构内容制作的功能示意图，非实机截图；界面以实际版本为准。*
+
 ## 为什么选 Cropmark
 
 - **三大桌面平台全覆盖**:同一产品、同一交互,Windows、macOS、Linux 都有安装包。截图 + 贴图 + 长截图 + 录屏 + OCR 这一档功能里,同时支持三平台的选择几乎没有。
@@ -144,21 +164,6 @@ bash scripts/build-linux.sh
 [CI 工作流](.github/workflows/ci.yml) 在 PR 和 `main` 推送时检查前端构建、版本一致性、离线模型完整性、发布脚本测试,并在 Windows / macOS / Linux 三平台运行 Rust 测试和 Clippy。
 
 发布遵循:同步 `package.json`、`package-lock.json`(两处根版本)、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock` 的 `cropmark` 条目、`src-tauri/tauri.conf.json` 的版本号 → `node .github/scripts/release.mjs check vX.Y.Z` 校验 → 提交并推送 `main` → 创建并推送 annotated tag。[发布工作流](.github/workflows/release.yml) 自动构建三平台安装包、校验 macOS 签名与四类附件完整性后发布 Release。详细研发与发布约定见 [AGENTS.md](AGENTS.md)。
-
-## English
-
-Cropmark is an open-source (GPL-3.0), fully offline, cross-platform screenshot suite for Windows, macOS, and Linux. It captures regions, windows, and screens via global hotkeys, and covers the full workflow in one tray-resident app:
-
-- **Capture**: region / window / fullscreen, element snapping (UIA on Windows, AX on macOS, X11 window stack on Linux), magnifier, delay capture, multi-monitor DPI aware, original-resolution lossless output
-- **Scrolling capture**: vertical and horizontal stitching with explicit per-segment control and rollback
-- **Screen recording**: streaming GIF / WebP / MP4 with a HUD (countdown, pause, stop) and live annotation
-- **Pin**: pin captures on top with zoom, opacity, and click-through
-- **Annotate**: rect, ellipse, arrow, ink, highlighter, text, numbering, bubbles, mosaic, blur, spotlight, erase, crop, rotate
-- **OCR & QR**: offline printed Chinese + English recognition with bundled models and coordinate-based text picking; local QR decoding
-- **Export & beautify**: PNG / JPEG / WebP with quality and filename templates; one-click padding, rounded corners, shadow, and gradient backgrounds
-- **History**: thumbnails, re-copy, save, delete with timed undo
-
-Installers (Windows NSIS, macOS DMG, Linux AppImage/DEB) are on the [Releases](https://github.com/sakullla/cropmark/releases) page. No account, no cloud, no telemetry — everything stays on your machine. See the sections above for build instructions, or run `npm run tauri -- dev` after `npm install`.
 
 ## 许可
 
