@@ -39,9 +39,40 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 const STAR_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.6 14.7 9.1 20.7 9.9 16.3 14.1 17.4 20.1 12 17.2 6.6 20.1 7.7 14.1 3.3 9.9 9.3 9.1Z"/></svg>`;
 
+// 时间格式化器按 locale + 选项缓存为模块级单例:整表重绘每行都要格式化
+// 时间,不缓存则每次 render 每行新建 2-3 个 Intl.DateTimeFormat;语言切换
+// 时缓存 key 不同,自动重建。
+const timeFormatters = new Map<string, Intl.DateTimeFormat>();
+
+function cachedFormatter(tag: string, options: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
+  const key = `${tag}:${JSON.stringify(options)}`;
+  let formatter = timeFormatters.get(key);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat(tag, options);
+    timeFormatters.set(key, formatter);
+  }
+  return formatter;
+}
+
 function startOfLocalDay(ms: number): number {
   const date = new Date(ms);
   return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+}
+
+/** 行内动作按钮的焦点锚点:条目 id + 动作名,用于整表重建后重新定位焦点。 */
+type EntryActionFocus = { id: string; action: string };
+
+function entryActionFocus(element: Element | null): EntryActionFocus | null {
+  if (!(element instanceof HTMLButtonElement)) {
+    return null;
+  }
+  const action = element.dataset.entryAction;
+  const row = element.closest("[data-entry-id]");
+  if (!action || !(row instanceof HTMLElement)) {
+    return null;
+  }
+  const id = row.dataset.entryId;
+  return id ? { id, action } : null;
 }
 
 /** 今天按本地日历日;最近 7/30 天按滚动窗口,含当前时刻。 */
@@ -284,9 +315,15 @@ export function mountHistory(root: HTMLElement): () => void {
   const filtersActive = (): boolean =>
     timeRange !== "all" || modeFilter !== "all" || noteQuery.trim().length > 0;
 
-  // busy 期间操作按钮给禁用可视态;因图像缺失而常驻禁用的按钮保持禁用。
+  // busy 期间操作按钮给禁用可视态;因图像缺失而常驻禁用的按钮保持禁用;
+  // 空列表时清空按钮同样禁用,不再弹「清空全部历史记录?」空确认。
+  // 按钮被禁用的瞬间浏览器会把落在其上的焦点移走,render 读 activeElement
+  // 已拿不到:禁用前记下「条目 id + 动作名」,render 重建后据此还原焦点。
+  let disabledFocus: EntryActionFocus | null = null;
+
   const syncBusy = (): void => {
-    clearEl.disabled = busy;
+    disabledFocus = busy ? entryActionFocus(document.activeElement) : null;
+    clearEl.disabled = busy || (lastPayload?.entries.length ?? 0) === 0;
     confirmAcceptEl.disabled = busy;
     undoBtn.disabled = busy;
     listEl
@@ -377,8 +414,9 @@ export function mountHistory(root: HTMLElement): () => void {
       const unknown = t("history.unknown_time");
       return { label: unknown, title: unknown };
     }
-    const title = date.toLocaleString(localeTag());
-    const clock = new Intl.DateTimeFormat(localeTag(), {
+    const tag = localeTag();
+    const title = cachedFormatter(tag, {}).format(date);
+    const clock = cachedFormatter(tag, {
       hour: "2-digit",
       minute: "2-digit",
     }).format(date);
@@ -395,7 +433,7 @@ export function mountHistory(root: HTMLElement): () => void {
       return { label: t("history.yesterday", { time: clock }), title };
     }
     const sameYear = date.getFullYear() === now.getFullYear();
-    const label = new Intl.DateTimeFormat(localeTag(), {
+    const label = cachedFormatter(tag, {
       year: sameYear ? undefined : "numeric",
       month: "numeric",
       day: "numeric",
@@ -406,10 +444,13 @@ export function mountHistory(root: HTMLElement): () => void {
   };
 
   // 缩略图按记录 id 缓存 blob URL:筛选输入、备注保存、聚焦刷新都会整表
-  // 重绘,不缓存则每次都重取一遍并闪空。容量上限内先进先出回收。
+  // 重绘,不缓存则每次都重取一遍并闪空。容量上限内先进先出回收。上限 200
+  // 与设置允许的最大历史保留条数(5-200)对齐:调高保留条数的用户聚焦/筛选
+  // 时不再有上百条缩略图反复走 get_history_thumbnail IPC + 解码 + 整批闪白;
+  // 200 张缩略图 blob URL 的内存量级在几 MB 内,超出部分仍按先进先出回收。
   const thumbUrls = new Map<string, string>();
   const thumbFailures = new Set<string>();
-  const THUMB_CACHE_LIMIT = 64;
+  const THUMB_CACHE_LIMIT = 200;
 
   const rememberThumb = (id: string, url: string): void => {
     if (thumbUrls.size >= THUMB_CACHE_LIMIT && !thumbUrls.has(id)) {
@@ -638,12 +679,31 @@ export function mountHistory(root: HTMLElement): () => void {
       modeFilter,
       noteQuery,
     );
+    const active = document.activeElement;
     const activeNote =
-      document.activeElement instanceof HTMLInputElement && document.activeElement.dataset.noteId
-        ? document.activeElement
-        : null;
+      active instanceof HTMLInputElement && active.dataset.noteId ? active : null;
     const editingId = activeNote?.dataset.noteId ?? null;
     const selectionStart = activeNote?.selectionStart ?? null;
+    // 焦点还原从备注输入框推广到行内按钮:重建前记下条目 id + 动作名,
+    // 重建后重新定位并聚焦,键盘用户按 Enter 收藏后 Tab 序保持连续。
+    // busy 中按钮被禁用导致焦点已被移走时,退回禁用前的快照。
+    const activeAction = entryActionFocus(active) ?? (busy ? disabledFocus : null);
+    // 滚动锚定:记下视口顶缘的第一行(列表与行同为 static,offsetTop 相对
+    // 页面根,故用视口坐标比较),重建后把滚动位置对回该条目;条目被过滤
+    // 掉时回退为原滚动位置。聚焦/截新图触发的整表刷新不再把浏览位置打回顶部。
+    const prevScrollTop = listEl.scrollTop;
+    const listTop = listEl.getBoundingClientRect().top;
+    let anchorId: string | null = null;
+    for (const child of listEl.children) {
+      if (
+        child instanceof HTMLElement &&
+        child.dataset.entryId !== undefined &&
+        child.getBoundingClientRect().top >= listTop
+      ) {
+        anchorId = child.dataset.entryId;
+        break;
+      }
+    }
     applyingDom = true;
     try {
       listEl.replaceChildren();
@@ -653,6 +713,14 @@ export function mountHistory(root: HTMLElement): () => void {
     } finally {
       applyingDom = false;
     }
+    if (anchorId !== null) {
+      const anchorRow = listEl.querySelector<HTMLElement>(`[data-entry-id="${anchorId}"]`);
+      if (anchorRow) {
+        listEl.scrollTop += anchorRow.getBoundingClientRect().top - listEl.getBoundingClientRect().top;
+      } else {
+        listEl.scrollTop = prevScrollTop;
+      }
+    }
     if (editingId) {
       const next = listEl.querySelector<HTMLInputElement>(`[data-note-id="${editingId}"]`);
       if (next) {
@@ -660,6 +728,21 @@ export function mountHistory(root: HTMLElement): () => void {
         if (selectionStart !== null) {
           next.setSelectionRange(selectionStart, selectionStart);
         }
+      }
+    } else if (activeAction) {
+      const selector = `[data-entry-id="${activeAction.id}"] [data-entry-action="${activeAction.action}"]`;
+      const restoreFocus = (): void => {
+        const next = listEl.querySelector<HTMLButtonElement>(selector);
+        if (next && !next.disabled) {
+          next.focus();
+        }
+      };
+      if (busy) {
+        // busy 中重建的按钮暂为禁用(禁用按钮 focus 无效);本轮同步代码
+        // (runAction finally 的 setBusy(false))结束后再还原。
+        queueMicrotask(restoreFocus);
+      } else {
+        restoreFocus();
       }
     }
     const noHistory = payload.entries.length === 0;
@@ -671,6 +754,7 @@ export function mountHistory(root: HTMLElement): () => void {
       toolsEnabled && filtersActive()
         ? t("history.count_filtered", { count: visible.length, total: payload.entries.length })
         : t("history.count", { count: payload.entries.length });
+    clearEl.disabled = busy || payload.entries.length === 0;
     if (payload.pendingUndo) {
       showUndo(payload.pendingUndo);
     } else {

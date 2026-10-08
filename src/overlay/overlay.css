@@ -93,6 +93,11 @@
   text-align: center;
 }
 
+/* 首个会话从未写入内容时不显示空胶囊(模板保持无空白文本节点)。 */
+.overlay-hint:empty {
+  display: none;
+}
+
 /* 失败提示与正常中性提示视觉区分:危险令牌同 settings .notice。 */
 .overlay-hint.is-error {
   background: var(--danger-soft);
@@ -274,19 +279,21 @@
   display: none;
 }
 
-/* Wayland 网页覆盖层的能力说明入口(R13):不伪造操作条/放大镜/取色。*/
+/* Wayland 网页覆盖层的能力说明入口(R13):不伪造操作条/放大镜/取色。
+   基态与同一 chrome 行的取消/重试按钮同形(control-sm 圆角 + 650 字重 + ink)。*/
 .overlay-capabilities {
   pointer-events: auto;
   cursor: pointer;
   border: 1px solid var(--line);
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-control-sm);
   min-width: 24px;
   min-height: 24px;
   padding: 8px 12px;
   background: var(--panel);
-  color: var(--muted);
+  color: var(--ink);
   font: inherit;
   font-size: 13px;
+  font-weight: 650;
   box-shadow: var(--shadow);
   transition: var(--control-transition);
 }
@@ -475,6 +482,7 @@
 }
 
 .overlay-tools,
+.overlay-actions,
 .overlay-notice,
 .size-badge,
 .capability-panel,
@@ -484,6 +492,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .overlay-tools,
+  .overlay-actions,
   .overlay-notice,
   .size-badge,
   .capability-panel,

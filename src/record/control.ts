@@ -9,6 +9,7 @@ import {
 } from "../annotation";
 import { REGION_TOOL_FIELDS, type RegionTools } from "../settings/region-tools";
 import { currentLanguage, t, type CatalogKey } from "../i18n";
+import { NOTICE_AUTO_HIDE_MS } from "../feedback";
 import {
   formatDuration,
   type PendingRecording,
@@ -29,6 +30,8 @@ const CONTROL_HEIGHT = 64;
 const CONTROL_HEIGHT_EXPANDED = 248;
 /** 区域太矮时,标注层把提示改写进控制卡片的说明行。 */
 const OVERLAY_NOTICE_EVENT = "record-overlay-notice";
+/** 破坏性丢弃的两段式确认窗口:首次点击挂起改文案,窗口内二次点击才执行。 */
+const DISCARD_CONFIRM_MS = 3000;
 
 const PHASE_KEYS: Record<RecordingStatus["phase"], CatalogKey> = {
   ready: "record.status.ready",
@@ -54,6 +57,7 @@ export function mountRecordControl(root: HTMLElement): () => void {
       <div class="record-row">
         <span class="record-pulse" aria-hidden="true"></span>
         <span class="record-time" data-i18n-title="record.bar.time_title"></span>
+        <span class="progress" aria-hidden="true" hidden></span>
         <span class="record-phase"></span>
         <div class="record-actions">
           <button type="button" class="record-btn record-toggle" data-i18n-title="record.bar.toggle_title" data-i18n-aria-label="record.bar.toggle_title" hidden></button>
@@ -83,6 +87,7 @@ export function mountRecordControl(root: HTMLElement): () => void {
   const card = root.querySelector(".record-card");
   const row = root.querySelector(".record-row");
   const time = root.querySelector(".record-time");
+  const spinner = row?.querySelector(".progress") ?? null;
   const phase = root.querySelector(".record-phase");
   const toggle = root.querySelector(".record-toggle");
   const stop = root.querySelector(".record-stop");
@@ -105,6 +110,7 @@ export function mountRecordControl(root: HTMLElement): () => void {
     !(card instanceof HTMLElement) ||
     !(row instanceof HTMLElement) ||
     !(time instanceof HTMLElement) ||
+    !(spinner instanceof HTMLElement) ||
     !(phase instanceof HTMLElement) ||
     !(toggle instanceof HTMLButtonElement) ||
     !(stop instanceof HTMLButtonElement) ||
@@ -134,6 +140,7 @@ export function mountRecordControl(root: HTMLElement): () => void {
   let previewKey = "";
   let previewUrl = "";
   let overlayNotice = "";
+  let overlayNoticeTimer: number | null = null;
   let appliedHeight = -1;
   let timer: number | null = null;
   let annotateToken = 0;
@@ -142,6 +149,41 @@ export function mountRecordControl(root: HTMLElement): () => void {
   const strokeTools = new Set<AnnotationTool>(["arrow", "rect", "ellipse", "highlighter"]);
   const textTools = new Set<AnnotationTool>(["text", "number", "bubble"]);
   const pendingView = { signature: "" };
+  /** 两段式丢弃的挂起定时器:按钮 → 超时句柄;执行/还原/重建时清除。 */
+  const discardTimers = new Map<HTMLButtonElement, number>();
+
+  /** 还原按钮的待确认态:清定时器、去标记、恢复默认文案。 */
+  const resetDiscardConfirm = (button: HTMLButtonElement): void => {
+    const handle = discardTimers.get(button);
+    if (handle !== undefined) {
+      window.clearTimeout(handle);
+      discardTimers.delete(button);
+    }
+    if (button.dataset.armed !== undefined) {
+      delete button.dataset.armed;
+    }
+    button.textContent = t("record.pending.discard");
+  };
+
+  /** 丢弃是后端立即删 temp 文件且不可撤销的动作:首次点击只挂起并切换
+      确认文案,DISCARD_CONFIRM_MS 内二次点击才真正执行,超时自动还原。 */
+  const armDiscardConfirm = (button: HTMLButtonElement, onConfirm: () => void): void => {
+    if (button.dataset.armed === "true") {
+      resetDiscardConfirm(button);
+      onConfirm();
+      return;
+    }
+    button.dataset.armed = "true";
+    button.textContent = t("record.pending.discard_confirm");
+    discardTimers.set(
+      button,
+      window.setTimeout(() => {
+        discardTimers.delete(button);
+        delete button.dataset.armed;
+        button.textContent = t("record.pending.discard");
+      }, DISCARD_CONFIRM_MS),
+    );
+  };
 
   const readPx = (value: string): number => {
     const parsed = Number.parseFloat(value);
@@ -229,8 +271,8 @@ export function mountRecordControl(root: HTMLElement): () => void {
       text = t("record.hud.keys_hint");
     }
     if (overlayNotice && !text.includes(overlayNotice)) {
+      // 降级/拖框类说明是中性信息:不染红整段(含键位提示),错误色留给 lastError。
       text = text ? `${text}\n${overlayNotice}` : overlayNotice;
-      error = true;
     }
     return { text, error };
   };
@@ -277,7 +319,11 @@ export function mountRecordControl(root: HTMLElement): () => void {
         discard.textContent = t("record.pending.discard");
         discard.disabled = busy;
         discard.dataset.tooltip = t("record.pending.discard_title");
-        discard.addEventListener("click", () => void discardPending(item));
+        // 两段式确认:首次点击挂起改文案,3 秒内二次点击才丢弃。
+        // busy/语言切换会改签名重建按钮,挂起态随之自然复位。
+        discard.addEventListener("click", () => {
+          armDiscardConfirm(discard, () => void discardPending(item));
+        });
         row.append(meta, retry, discard);
         return row;
       }),
@@ -301,7 +347,14 @@ export function mountRecordControl(root: HTMLElement): () => void {
     }
     previewKey = item.tempPath;
     previewError = "";
-    releasePreview();
+    // 只换数据不动可见性:render 已按 format 展开目标元素并用 aspect-ratio
+    // 撑住占位,这里 hidden 的翻转会把占位高度先收掉再弹回。
+    if (previewUrl) {
+      URL.revokeObjectURL(previewUrl);
+      previewUrl = "";
+    }
+    previewImage.removeAttribute("src");
+    previewVideo.removeAttribute("src");
     try {
       const parts: Uint8Array[] = [];
       let offset = 0;
@@ -337,7 +390,6 @@ export function mountRecordControl(root: HTMLElement): () => void {
       previewUrl = URL.createObjectURL(blob);
       if (item.format === "mp4") {
         previewVideo.src = previewUrl;
-        previewVideo.hidden = false;
         void previewVideo.play().catch(() => {
           if (previewKey !== item.tempPath) {
             return;
@@ -347,7 +399,6 @@ export function mountRecordControl(root: HTMLElement): () => void {
         });
       } else {
         previewImage.src = previewUrl;
-        previewImage.hidden = false;
       }
     } catch {
       if (previewKey === item.tempPath) {
@@ -383,6 +434,10 @@ export function mountRecordControl(root: HTMLElement): () => void {
     annotateHost.querySelectorAll<HTMLElement>("[data-style-text]").forEach((node) => {
       node.hidden = !showStyle || !text;
     });
+    const styleButton = annotateHost.querySelector("[data-annotate-style]");
+    if (styleButton instanceof HTMLButtonElement) {
+      styleButton.setAttribute("aria-expanded", String(showStyle));
+    }
     markAnnotateTool();
   };
 
@@ -442,16 +497,21 @@ export function mountRecordControl(root: HTMLElement): () => void {
     styleButton.type = "button";
     styleButton.dataset.annotateStyle = "true";
     styleButton.textContent = t("preview.tool.style_title");
+    styleButton.setAttribute("aria-haspopup", "true");
     styleButton.addEventListener("click", () => {
       styleOpen = !styleOpen;
       syncAnnotateStyle();
     });
     append(styleButton);
+    // 色块/线宽/字号按钮:样式值经 emit 单向下发、绘制层无回执,
+    // 「当前选中」标记本轮无法回传,先只补可访问名称与提示。
     for (const color of STYLE_COLORS) {
       const button = document.createElement("button");
       button.type = "button";
       button.dataset.styleColor = color;
       button.style.setProperty("--swatch", color);
+      button.setAttribute("aria-label", t("preview.style.color_aria", { color }));
+      button.dataset.tooltip = t("preview.style.color_aria", { color });
       button.hidden = true;
       button.addEventListener("click", () => {
         void emit("record-annotate-style", { color });
@@ -523,6 +583,10 @@ export function mountRecordControl(root: HTMLElement): () => void {
     root.classList.toggle("is-paused", status?.phase === "paused");
     root.classList.toggle("is-stopped", reviewing);
     root.classList.toggle("is-failed", status?.phase === "failed" || lastError.length > 0);
+    // 共享 busy 语义:aria-busy 触发全局 cursor:progress,旋转圈给出
+    // 可见进行中指示,长录制成片封装期间可区分「正在保存」与「卡死」。
+    card.setAttribute("aria-busy", String(busy));
+    spinner.hidden = !busy;
 
     previewBox.hidden = preview === null;
     // 预览加载失败是独立行,不与业务错误 notice 互相覆盖。
@@ -530,6 +594,16 @@ export function mountRecordControl(root: HTMLElement): () => void {
     previewErrorRow.textContent = previewError;
     if (preview) {
       previewMeta.textContent = `${formatDuration(preview.durationMs)} · ${fpsLabel} · ${preview.width}×${preview.height}`;
+      // 预览从出现起就按已知成片尺寸预留占位(mp4→video,否则 img):
+      // 空元素以背景色撑满 aspect-ratio 盒,媒体到达不再撑高卡片/窗口;
+      // 宽高非法(0/缺省)时跳过,退回加载后定高。另一格式元素维持隐藏。
+      const target = preview.format === "mp4" ? previewVideo : previewImage;
+      const other = preview.format === "mp4" ? previewImage : previewVideo;
+      if (preview.width > 0 && preview.height > 0) {
+        target.style.aspectRatio = `${preview.width} / ${preview.height}`;
+      }
+      target.hidden = false;
+      other.hidden = true;
       void loadPreview(preview);
     } else if (previewKey) {
       previewKey = "";
@@ -565,6 +639,16 @@ export function mountRecordControl(root: HTMLElement): () => void {
           : t("record.bar.stop");
     discard.hidden = !reviewing;
     discard.disabled = busy;
+    // 预览态丢弃的两段式文案由 render 回填:语言切换时 data-i18n 重译会
+    // 覆盖一次文本,render 按挂起态重写;预览离开时复位挂起标记与定时器。
+    if (reviewing) {
+      discard.textContent =
+        discard.dataset.armed === "true"
+          ? t("record.pending.discard_confirm")
+          : t("record.pending.discard");
+    } else if (discard.dataset.armed !== undefined) {
+      resetDiscardConfirm(discard);
+    }
 
     draw.hidden = !status || reviewing || phaseIsReady;
     const drawCapable = status?.phase === "recording" || status?.phase === "paused";
@@ -833,7 +917,10 @@ export function mountRecordControl(root: HTMLElement): () => void {
       }
     }
   });
-  discard.addEventListener("click", () => void discardPreview());
+  // 预览态丢弃同样两段式:按钮常驻 DOM,挂起态由 render 回填/复位(见 render)。
+  discard.addEventListener("click", () => {
+    armDiscardConfirm(discard, () => void discardPreview());
+  });
   draw.addEventListener("click", () => void toggleDraw());
   start.addEventListener("click", () => void runControl("start"));
   again.addEventListener("click", () => void recordAgain());
@@ -851,6 +938,10 @@ export function mountRecordControl(root: HTMLElement): () => void {
   void listen("record-hud-close", () => {
     stopPolling();
     overlayNotice = "";
+    if (overlayNoticeTimer !== null) {
+      window.clearTimeout(overlayNoticeTimer);
+      overlayNoticeTimer = null;
+    }
     appliedHeight = -1;
   });
   void listen<{ tool?: string }>("record-annotate-active", (event) => {
@@ -867,6 +958,21 @@ export function mountRecordControl(root: HTMLElement): () => void {
       return;
     }
     overlayNotice = text;
+    // 信息性提示限时展示:与 feedback 的结果类提示共用自动隐藏时长,
+    // 新事件到达时重置计时;真错误(lastError/status.error)不走本定时器。
+    if (overlayNoticeTimer !== null) {
+      window.clearTimeout(overlayNoticeTimer);
+      overlayNoticeTimer = null;
+    }
+    if (text) {
+      overlayNoticeTimer = window.setTimeout(() => {
+        overlayNoticeTimer = null;
+        if (overlayNotice) {
+          overlayNotice = "";
+          render();
+        }
+      }, NOTICE_AUTO_HIDE_MS);
+    }
     render();
   });
   const resizeObserver = new ResizeObserver(() => {

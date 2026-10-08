@@ -30,7 +30,8 @@ html[data-view="scroll"] #app {
   box-shadow: var(--shadow);
 }
 
-/* 状态和尺寸在此滚动;完成和取消在这一层之外。 */
+/* 状态和尺寸在此滚动;完成和取消在这一层之外。
+   scrollbar-gutter 稳定预留经典滚动条槽位,内容高度临界时滚动条显隐不再整卡横跳。 */
 .scroll-body {
   display: flex;
   flex: 1 1 auto;
@@ -39,6 +40,7 @@ html[data-view="scroll"] #app {
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 
 .scroll-head {
@@ -120,11 +122,13 @@ html[data-view="scroll"] #app {
   overflow-wrap: anywhere;
 }
 
-/* 状态贴在卡片实底上，不随完成/取消自动淡出。 */
+/* 状态贴在卡片实底上，不随完成/取消自动淡出。
+   min-height 按两行(13px×1.4≈36px,取偶)预留:zh 常见两行状态在
+   1↔2 行切换时不再撑高状态行,「完成/取消钉在底部不动」才成立。 */
 .scroll-status {
   flex-shrink: 0;
   margin: 0;
-  min-height: 32px;
+  min-height: 38px;
   background: transparent;
   color: var(--ink);
   font-size: 13px;
@@ -215,4 +219,13 @@ html[data-view="scroll"] #app {
   color: var(--on-accent);
   background: var(--accent);
   filter: var(--control-hover-filter);
+}
+
+/* 取消会丢弃本次全部拼接,是不可逆动作:悬停/按压给危险色,与 record 的
+   .record-discard 用同一组 token;静止态保持中性(视觉噪音考量)。 */
+.scroll-actions .scroll-cancel:hover:not(:disabled),
+.scroll-actions .scroll-cancel:active:not(:disabled) {
+  color: var(--control-danger-hover-border);
+  border-color: var(--control-danger-hover-border);
+  background: var(--control-danger-hover-bg);
 }

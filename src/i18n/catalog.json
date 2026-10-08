@@ -593,11 +593,11 @@
   },
   "toast.scroll_no_change": {
     "zh-CN": "蓝色框内的 {width}×{height} 没有滚动，未生成长截图。请在框内向下滚动后再点完成。",
-    "en": "Nothing inside the blue frame ({width}×{height}) scrolled, so no long screenshot was saved. Scroll down inside the frame, then finish."
+    "en": "No scroll inside the frame ({width}×{height}); no long screenshot saved. Scroll down, then finish."
   },
   "toast.scroll_no_change.horizontal": {
     "zh-CN": "蓝色框内的 {width}×{height} 没有滚动，未生成长截图。请在框内向右滚动后再点完成。",
-    "en": "Nothing inside the blue frame ({width}×{height}) scrolled, so no long screenshot was saved. Scroll right inside the frame, then finish."
+    "en": "No scroll inside the frame ({width}×{height}); no long screenshot saved. Scroll right, then finish."
   },
   "toast.scroll_limit": {
     "zh-CN": "已达到长截图高度上限，自动完成。",
@@ -621,7 +621,7 @@
   },
   "toast.recording_started": {
     "zh-CN": "录制已开始；可用控制条或托盘停止并保存，录制内容不会进入截图历史。",
-    "en": "Recording started. Stop and save from the control bar or the tray; recordings never enter screenshot history."
+    "en": "Recording started. Stop and save from the control bar or tray; not kept in history."
   },
   "toast.recording_busy": {
     "zh-CN": "已有录制在进行中，请先停止并保存后再开始新录制。",
@@ -641,7 +641,7 @@
   },
   "record.status.countdown": {
     "zh-CN": "倒计时",
-    "en": "Starting"
+    "en": "Starting in"
   },
   "record.status.recording": {
     "zh-CN": "录制中",
@@ -718,6 +718,10 @@
   "record.pending.discard": {
     "zh-CN": "丢弃",
     "en": "Discard"
+  },
+  "record.pending.discard_confirm": {
+    "zh-CN": "确认丢弃？",
+    "en": "Confirm discard?"
   },
   "record.pending.kept": {
     "zh-CN": "保存失败，录制已保留；可重试保存或丢弃。",
@@ -1566,6 +1570,10 @@
   "settings.about.quit_button": {
     "zh-CN": "退出",
     "en": "Quit"
+  },
+  "settings.about.quit_confirm": {
+    "zh-CN": "确认退出？",
+    "en": "Confirm quit?"
   },
   "settings.language.title": {
     "zh-CN": "语言",
@@ -2641,11 +2649,11 @@
   },
   "scroll.status.unchanged": {
     "zh-CN": "蓝色框里的画面还没动。把鼠标放进框内再向下滚动。",
-    "en": "The picture inside the blue frame has not moved. Put the pointer inside the frame and scroll down."
+    "en": "The frame content has not moved. Put the pointer inside and scroll down."
   },
   "scroll.status.unchanged.horizontal": {
     "zh-CN": "蓝色框里的画面还没动。把鼠标放进框内再向右滚动。",
-    "en": "The picture inside the blue frame has not moved. Put the pointer inside the frame and scroll right."
+    "en": "The frame content has not moved. Put the pointer inside and scroll right."
   },
   "scroll.status.fast": {
     "zh-CN": "滚动过快，可能有内容缺失；请放慢速度。",

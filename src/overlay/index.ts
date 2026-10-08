@@ -185,7 +185,7 @@ export function mountOverlay(root: HTMLElement): () => void {
   root.innerHTML = `
     <canvas></canvas>
     <div class="overlay-chrome">
-      <div class="overlay-hint"></div>
+      <div class="overlay-hint" role="status"></div>
       <button type="button" class="overlay-retry" data-i18n="overlay.retry" hidden>重试</button>
       <div class="overlay-actions" hidden>
         <button type="button" data-workspace="ocr" data-i18n="overlay.action.ocr" data-i18n-title="overlay.action.ocr_title" data-tooltip="${t("overlay.action.ocr_title")}">取字</button>
@@ -954,6 +954,12 @@ export function mountOverlay(root: HTMLElement): () => void {
 
   const load = async (): Promise<void> => {
     const generation = ++loadGeneration;
+    // 会话开始即重置顶部提示与重试入口:窗口 show 到首帧到达之间不残留
+    // 上一会话文案(如取字中…),首帧到达后 renderHint 照常覆盖。
+    hint.textContent = t("overlay.notice.loading");
+    hint.classList.remove("is-error");
+    retryBtn.hidden = true;
+    retryAction = null;
     setFinishing(true);
     showNotice(t("overlay.notice.loading"), true);
     try {
@@ -1125,7 +1131,7 @@ export function mountOverlay(root: HTMLElement): () => void {
   /// 偶数收边)写回,尺寸徽标与 confirm_region 的裁剪同源更新;缩到 2px 以下
   /// 由 Enter 确认时的既有 too_small 提示接住。
   const nudgeSelection = (event: KeyboardEvent): void => {
-    if (!selection) {
+    if (!selection || !frame) {
       return;
     }
     let deltaX = 0;
@@ -1149,10 +1155,12 @@ export function mountOverlay(root: HTMLElement): () => void {
         height: Math.max(0, selection.height + deltaY),
       };
     } else {
+      // 移动前先把原点钳进帧内:选区贴边时整块停在边缘,不让随后的
+      // roundedRect() 规范化把宽高永久钳掉 1px。
       selection = {
         ...selection,
-        x: selection.x + deltaX,
-        y: selection.y + deltaY,
+        x: clamp(selection.x + deltaX, 0, Math.max(0, frame.width - selection.width)),
+        y: clamp(selection.y + deltaY, 0, Math.max(0, frame.height - selection.height)),
       };
     }
     const normalized = roundedRect();
@@ -1378,7 +1386,9 @@ export function mountOverlay(root: HTMLElement): () => void {
     if (qrModel?.active === true) {
       return;
     }
-    if (frame.fixed || !isRegionSelectionMode(frame.mode) || event.button !== 0) {
+    // confirm/finishRegion 进行中(含录制前置延迟)冻结画布输入:提交期间的
+    // 屏幕承诺与实际裁剪一致,不再开新拖选或改写选区。
+    if (finishing || frame.fixed || !isRegionSelectionMode(frame.mode) || event.button !== 0) {
       return;
     }
     if (annotationActive()) {
@@ -1777,6 +1787,7 @@ export function mountOverlay(root: HTMLElement): () => void {
     // 现状说明(Wayland 覆盖层无此能力),拖选进行中不抢指针路径。
     if (event.key.startsWith("Arrow")) {
       if (
+        finishing ||
         !frame ||
         frame.fixed ||
         !isRegionSelectionMode(frame.mode) ||

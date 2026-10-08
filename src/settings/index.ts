@@ -209,7 +209,7 @@ export function mountSettings(root: HTMLElement): () => void {
         <div class="settings-main">
           <p class="notice" role="alert" hidden></p>
           <p class="notice invoke-notice" data-invoke-notice role="alert" hidden></p>
-          <p class="notice tray-notice" data-tray-notice role="status" hidden></p>
+          <p class="notice notice-info tray-notice" data-tray-notice role="status" hidden></p>
           <p class="notice notice-success" data-saved-notice role="status" hidden></p>
           <div class="settings-panels" data-settings-panels>
             <section class="settings-panel" role="tabpanel" id="settings-panel-capture" aria-labelledby="settings-tab-capture" data-panel="capture">
@@ -452,7 +452,7 @@ export function mountSettings(root: HTMLElement): () => void {
                     <div class="label" id="quit-label" data-i18n="settings.about.quit_label">退出 Cropmark</div>
                     <p class="hint" data-i18n="settings.about.quit_hint">结束应用并停止热键；有托盘时也可从托盘菜单退出。</p>
                   </div>
-                  <button type="button" class="choice danger" data-action="quit" aria-labelledby="quit-label" data-i18n="settings.about.quit_button">退出</button>
+                  <button type="button" class="choice danger" data-action="quit" aria-labelledby="quit-label" aria-live="polite" data-i18n="settings.about.quit_button">退出</button>
                 </div>
               </section>
             </section>
@@ -549,16 +549,19 @@ export function mountSettings(root: HTMLElement): () => void {
   // 避免按下修饰键期间看起来像没有反应。
   let heldModifiers: string[] = [];
   let applying = false;
-  // 切换写回进行中:开关给共享 busy 可视态(app.css button[aria-busy])并阻止点击。
-  const setApplying = (value: boolean): void => {
+  // 写回进行中只标识发起控件:aria-busy 只标被操作的开关(共享可视态
+  // app.css button[aria-busy]),不再让全页开关集体闪灰,读屏也只播报
+  // 正在操作的控件;其余开关的交互阻断仍由各 handler 的 applying 守卫保证。
+  const setApplying = (value: boolean, source?: HTMLButtonElement | null): void => {
     applying = value;
-    root.querySelectorAll("button.switch").forEach((button) => {
-      if (value) {
-        button.setAttribute("aria-busy", "true");
-      } else {
-        button.removeAttribute("aria-busy");
-      }
-    });
+    if (!source) {
+      return;
+    }
+    if (value) {
+      source.setAttribute("aria-busy", "true");
+    } else {
+      source.removeAttribute("aria-busy");
+    }
   };
   let lastSettings: UiSettings | null = null;
   let section: SettingsSection = "capture";
@@ -832,6 +835,15 @@ export function mountSettings(root: HTMLElement): () => void {
 
     renderLanguage(settings.language);
 
+    // 热键行整表重建:照 renderRegionTools 的做法先记下聚焦的槽位,重建后
+    // 还原焦点,否则点击录制/清除、Esc 取消后的重渲染会把键盘 Tab 序打回
+    // 起点;焦点已在热键区外时不强行抢回。清除按钮没有 data-mode,用同行的
+    // data-hotkey-clear 槽位兜底,清除后按钮消失也能落回该行热键按钮。
+    const activeHotkeyElement = document.activeElement;
+    const activeHotkey =
+      activeHotkeyElement instanceof HTMLButtonElement && hotkeyRoot.contains(activeHotkeyElement)
+        ? (activeHotkeyElement.dataset.mode ?? activeHotkeyElement.dataset.hotkeyClear ?? null)
+        : null;
     hotkeyRoot.replaceChildren();
     for (const slot of HOTKEY_SLOTS) {
       const slotLabel = t(HOTKEY_LABEL_KEY[slot]);
@@ -903,6 +915,9 @@ export function mountSettings(root: HTMLElement): () => void {
       }
       row.append(controls, error);
       hotkeyRoot.append(row);
+    }
+    if (activeHotkey) {
+      hotkeyRoot.querySelector<HTMLButtonElement>(`[data-mode="${activeHotkey}"]`)?.focus();
     }
 
     switchEl.setAttribute("aria-checked", settings.autostart.enabled ? "true" : "false");
@@ -1027,8 +1042,11 @@ export function mountSettings(root: HTMLElement): () => void {
     }
   };
 
-  const applyAppearance = async (next: ExportAppearance): Promise<void> => {
-    setApplying(true);
+  const applyAppearance = async (
+    next: ExportAppearance,
+    source?: HTMLButtonElement | null,
+  ): Promise<void> => {
+    setApplying(true, source);
     try {
       const settings = await invoke<UiSettings>("set_export_appearance", { appearance: next });
       render(settings);
@@ -1036,7 +1054,7 @@ export function mountSettings(root: HTMLElement): () => void {
     } catch (error) {
       showInvokeError(error);
     } finally {
-      setApplying(false);
+      setApplying(false, source);
     }
   };
 
@@ -1054,6 +1072,10 @@ export function mountSettings(root: HTMLElement): () => void {
   // 后台静默刷新(refresh)与失败路径(showInvokeError)均不触发。
   let savedNoticeTimer = 0;
   const notifySaved = (): void => {
+    // 成功写回取代陈旧的 invoke 失败横幅:错误常驻到下一次操作覆盖,
+    // 本次成功保存即覆盖点,不再让用户误以为设置一直没写入。
+    invokeNoticeEl.hidden = true;
+    invokeNoticeEl.textContent = "";
     savedNoticeEl.textContent = t("settings.saved");
     savedNoticeEl.hidden = false;
     window.clearTimeout(savedNoticeTimer);
@@ -1104,8 +1126,11 @@ export function mountSettings(root: HTMLElement): () => void {
     }
   };
 
-  const applyCapture = async (next: CaptureSettings): Promise<void> => {
-    setApplying(true);
+  const applyCapture = async (
+    next: CaptureSettings,
+    source?: HTMLButtonElement | null,
+  ): Promise<void> => {
+    setApplying(true, source);
     try {
       const settings = await invoke<UiSettings>("set_capture_settings", {
         settings: next,
@@ -1115,12 +1140,15 @@ export function mountSettings(root: HTMLElement): () => void {
     } catch (error) {
       showInvokeError(error);
     } finally {
-      setApplying(false);
+      setApplying(false, source);
     }
   };
 
-  const applyHistory = async (next: HistorySettings): Promise<void> => {
-    setApplying(true);
+  const applyHistory = async (
+    next: HistorySettings,
+    source?: HTMLButtonElement | null,
+  ): Promise<void> => {
+    setApplying(true, source);
     try {
       const settings = await invoke<UiSettings>("set_history_settings", {
         settings: next,
@@ -1130,12 +1158,15 @@ export function mountSettings(root: HTMLElement): () => void {
     } catch (error) {
       showInvokeError(error);
     } finally {
-      setApplying(false);
+      setApplying(false, source);
     }
   };
 
-  const applyPin = async (next: PinSettings): Promise<void> => {
-    setApplying(true);
+  const applyPin = async (
+    next: PinSettings,
+    source?: HTMLButtonElement | null,
+  ): Promise<void> => {
+    setApplying(true, source);
     try {
       const settings = await invoke<UiSettings>("set_pin_settings", { settings: next });
       render(settings);
@@ -1143,13 +1174,16 @@ export function mountSettings(root: HTMLElement): () => void {
     } catch (error) {
       showInvokeError(error);
     } finally {
-      setApplying(false);
+      setApplying(false, source);
     }
   };
 
   // R3:录屏开关与录制格式;托盘入口按新值立即重建,选区入口打开时读取。
-  const applyRecording = async (next: RecordingSettings): Promise<void> => {
-    setApplying(true);
+  const applyRecording = async (
+    next: RecordingSettings,
+    source?: HTMLButtonElement | null,
+  ): Promise<void> => {
+    setApplying(true, source);
     try {
       const settings = await invoke<UiSettings>("set_recording_settings", { settings: next });
       render(settings);
@@ -1157,7 +1191,7 @@ export function mountSettings(root: HTMLElement): () => void {
     } catch (error) {
       showInvokeError(error);
     } finally {
-      setApplying(false);
+      setApplying(false, source);
     }
   };
 
@@ -1209,7 +1243,7 @@ export function mountSettings(root: HTMLElement): () => void {
       return;
     }
     const next = captureCursorEl.getAttribute("aria-checked") !== "true";
-    void applyCapture({ ...captureSettings, captureCursor: next });
+    void applyCapture({ ...captureSettings, captureCursor: next }, captureCursorEl);
   });
 
   multiMonitorEl.addEventListener("click", () => {
@@ -1217,7 +1251,7 @@ export function mountSettings(root: HTMLElement): () => void {
       return;
     }
     const next = multiMonitorEl.getAttribute("aria-checked") !== "true";
-    void applyCapture({ ...captureSettings, multiMonitor: next });
+    void applyCapture({ ...captureSettings, multiMonitor: next }, multiMonitorEl);
   });
 
   longCaptureEl.addEventListener("click", () => {
@@ -1225,7 +1259,7 @@ export function mountSettings(root: HTMLElement): () => void {
       return;
     }
     const next = longCaptureEl.getAttribute("aria-checked") !== "true";
-    void applyCapture({ ...captureSettings, longCapture: next });
+    void applyCapture({ ...captureSettings, longCapture: next }, longCaptureEl);
   });
 
   regionToolsEl.addEventListener("click", (event) => {
@@ -1282,7 +1316,7 @@ export function mountSettings(root: HTMLElement): () => void {
       return;
     }
     const next = historyEnabledEl.getAttribute("aria-checked") !== "true";
-    void applyHistory({ ...historySettings, enabled: next });
+    void applyHistory({ ...historySettings, enabled: next }, historyEnabledEl);
   });
 
   historyOpenEl.addEventListener("click", () => {
@@ -1298,7 +1332,7 @@ export function mountSettings(root: HTMLElement): () => void {
       return;
     }
     const next = pinRestoreEl.getAttribute("aria-checked") !== "true";
-    void applyPin({ ...pinSettings, restore: next });
+    void applyPin({ ...pinSettings, restore: next }, pinRestoreEl);
   });
 
   recordingEnabledEl.addEventListener("click", () => {
@@ -1306,7 +1340,7 @@ export function mountSettings(root: HTMLElement): () => void {
       return;
     }
     const next = recordingEnabledEl.getAttribute("aria-checked") !== "true";
-    void applyRecording({ ...recordingSettings, enabled: next });
+    void applyRecording({ ...recordingSettings, enabled: next }, recordingEnabledEl);
   });
 
   recordingFormatsEl.addEventListener("click", (event) => {
@@ -1374,7 +1408,7 @@ export function mountSettings(root: HTMLElement): () => void {
       return;
     }
     const next = applyBeautifyEl.getAttribute("aria-checked") !== "true";
-    void applyAppearance({ ...exportAppearance, applyBeautify: next });
+    void applyAppearance({ ...exportAppearance, applyBeautify: next }, applyBeautifyEl);
   });
 
   useFilenameTemplateEl.addEventListener("click", () => {
@@ -1382,7 +1416,7 @@ export function mountSettings(root: HTMLElement): () => void {
       return;
     }
     const next = useFilenameTemplateEl.getAttribute("aria-checked") !== "true";
-    void applyAppearance({ ...exportAppearance, useFilenameTemplate: next });
+    void applyAppearance({ ...exportAppearance, useFilenameTemplate: next }, useFilenameTemplateEl);
   });
 
   const commitTemplate = (): void => {
@@ -1456,10 +1490,13 @@ export function mountSettings(root: HTMLElement): () => void {
     if (applying || shadowEl.disabled) {
       return;
     }
-    void applyAppearance({
-      ...exportAppearance,
-      beautify: { ...exportAppearance.beautify, shadow: shadowEl.getAttribute("aria-checked") !== "true" },
-    });
+    void applyAppearance(
+      {
+        ...exportAppearance,
+        beautify: { ...exportAppearance.beautify, shadow: shadowEl.getAttribute("aria-checked") !== "true" },
+      },
+      shadowEl,
+    );
   });
 
   presetRoot.addEventListener("click", (event) => {
@@ -1486,8 +1523,34 @@ export function mountSettings(root: HTMLElement): () => void {
     void getCurrentWindow().close();
   });
 
+  // 退出是一键结束全部贴图/热键的最高破坏性操作:两段式确认,首次点击只
+  // 进入待确认(按钮文案切换、非模态、不弹窗),3 秒内再次点击才真正退出,
+  // 超时或焦点移出自动还原。aria-live 让文案切换被读屏播报;dataset.i18n
+  // 同步切换,语言重翻译不会把待确认文案改回常态文案。
+  let quitArmed = false;
+  let quitTimer = 0;
+  const disarmQuit = (): void => {
+    window.clearTimeout(quitTimer);
+    if (!quitArmed) {
+      return;
+    }
+    quitArmed = false;
+    quitEl.dataset.i18n = "settings.about.quit_button";
+    quitEl.textContent = t("settings.about.quit_button");
+  };
   quitEl.addEventListener("click", () => {
-    void invoke("quit_app").catch(showInvokeError);
+    if (quitArmed) {
+      disarmQuit();
+      void invoke("quit_app").catch(showInvokeError);
+      return;
+    }
+    quitArmed = true;
+    quitEl.dataset.i18n = "settings.about.quit_confirm";
+    quitEl.textContent = t("settings.about.quit_confirm");
+    quitTimer = window.setTimeout(disarmQuit, 3000);
+  });
+  quitEl.addEventListener("blur", () => {
+    disarmQuit();
   });
 
   languageRoot.addEventListener("click", (event) => {
@@ -1532,7 +1595,7 @@ export function mountSettings(root: HTMLElement): () => void {
       return;
     }
     const next = switchEl.getAttribute("aria-checked") !== "true";
-    setApplying(true);
+    setApplying(true, switchEl);
     void invoke<UiSettings>("set_autostart_enabled", { enabled: next })
       .then((settings) => {
         render(settings);
@@ -1543,7 +1606,7 @@ export function mountSettings(root: HTMLElement): () => void {
       })
       .catch(showInvokeError)
       .finally(() => {
-        setApplying(false);
+        setApplying(false, switchEl);
       });
   });
 
@@ -1645,9 +1708,15 @@ export function mountSettings(root: HTMLElement): () => void {
   });
 
   // Esc 分层(R9,对齐 preview):热键录制中 Esc 已由上面的捕获型监听器
-  // 取消录制;这里处理常态语义——输入框内先失焦,其余情况关闭设置窗。
+  // 取消录制;待确认的退出只还原按钮;其余常态——输入框内先失焦,
+  // 剩下情况关闭设置窗。
   window.addEventListener("keydown", (event) => {
     if (event.key !== "Escape" || event.defaultPrevented || recording || event.isComposing || event.keyCode === 229) {
+      return;
+    }
+    if (quitArmed) {
+      event.preventDefault();
+      disarmQuit();
       return;
     }
     const active = document.activeElement;

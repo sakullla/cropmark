@@ -17,6 +17,17 @@ const ICONS = {
   close: icons.close,
 };
 
+// 滚轮缩放按累积阈值触发:每个 wheel 事件先按 deltaMode 归一(1 每行按 40、
+// 2 每页按 400 折算,其余按像素),累积量达 ±100 触发一步 ±10% 缩放并向溢出
+// 方向扣减已消费量。鼠标滚轮一格(±100)仍是恰好一步,行为与逐事件触发一致;
+// 触控板连续小增量按实际滚动距离成比例缩放,轻扫不再瞬间打满上限。
+// 250ms 无新事件将累积器清零,防止残量漂移。每个贴图窗是独立 WebView,
+// 模块级状态即单窗私有。
+const WHEEL_STEP_DELTA = 100;
+const WHEEL_IDLE_RESET_MS = 250;
+let wheelAccumulator = 0;
+let wheelIdleTimer: number | undefined;
+
 // R2 贴图增强:旋转/翻转/透明度/几何/编组/穿透状态都以后端为准,前端只做
 // 显示同步——变换后经 `pin-reload` 重拉「已应用变换」的图像,因此画面、复制
 // 与保存天然一致;拖动与滚轮只上报几何,组内联动由后端应用到所有成员。
@@ -162,10 +173,13 @@ export function mountPin(root: HTMLElement): () => void {
     note.hidden = false;
     window.clearTimeout(noteTimer);
     // R1:结果提示按共享常量 3.6s 自动隐藏(原 2.2s),与 overlay/设置一致;
-    // 贴图提示均为终态反馈,无常驻进行中分支(ADR-2)。
-    noteTimer = window.setTimeout(() => {
-      note.hidden = true;
-    }, NOTICE_AUTO_HIDE_MS);
+    // 错误(含后端具体原因)常驻直到下一条提示覆盖,与 history/预览的既有
+    // 约定一致,用户来得及读完并回看(ADR-2)。
+    if (!stateToShow.isError) {
+      noteTimer = window.setTimeout(() => {
+        note.hidden = true;
+      }, NOTICE_AUTO_HIDE_MS);
+    }
   };
 
   const showNote = (text: string, isError = false): void => {
@@ -651,8 +665,23 @@ export function mountPin(root: HTMLElement): () => void {
     "wheel",
     (event) => {
       event.preventDefault();
-      // 每格滚轮 ±10%,以光标为不动点。
-      void zoom(event.deltaY < 0, event.clientX, event.clientY);
+      const unit = event.deltaMode === 1 ? 40 : event.deltaMode === 2 ? 400 : 1;
+      wheelAccumulator += event.deltaY * unit;
+      if (wheelIdleTimer !== undefined) {
+        window.clearTimeout(wheelIdleTimer);
+      }
+      wheelIdleTimer = window.setTimeout(() => {
+        wheelIdleTimer = undefined;
+        wheelAccumulator = 0;
+      }, WHEEL_IDLE_RESET_MS);
+      if (Math.abs(wheelAccumulator) < WHEEL_STEP_DELTA) {
+        return;
+      }
+      // 每步 ±10%,以光标为不动点;只消费一个阈值步长,超出部分留给后续
+      // 事件继续按距离成比例触发。
+      const zoomIn = wheelAccumulator < 0;
+      wheelAccumulator -= Math.sign(wheelAccumulator) * WHEEL_STEP_DELTA;
+      void zoom(zoomIn, event.clientX, event.clientY);
     },
     { passive: false },
   );

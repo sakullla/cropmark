@@ -10,10 +10,9 @@
   flex-direction: column;
   gap: 8px;
   padding: 10px;
-  border: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+  border: 1px solid var(--line);
   border-radius: var(--radius-panel);
-  background: color-mix(in srgb, var(--panel) 28%, var(--bg));
-  box-shadow: none;
+  background: var(--panel);
   color: var(--ink);
   -webkit-app-region: no-drag;
   app-region: no-drag;
@@ -29,9 +28,9 @@
 
 .qr-panel-bar h2 {
   margin: 0;
-  font-size: 13px;
+  font-size: 16px;
   font-weight: 650;
-  color: var(--muted);
+  color: var(--ink);
 }
 
 .qr-panel-list {

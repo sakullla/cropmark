@@ -1378,7 +1378,7 @@ function toolbarMarkup(inlineTools: boolean): string {
         <div class="style-group" data-style-group="number" hidden>
           <span class="style-label" data-i18n="preview.style.number">序号</span>
           <div class="style-options" role="group" data-i18n-aria-label="preview.style.number_group" aria-label="序号起始值">
-            <input
+            <span class="input-wrap" data-tooltip-wrap data-i18n-title="preview.style.number_title" data-tooltip="${t("preview.style.number_title")}"><input
               type="number"
               class="style-number-start"
               data-style-number-start
@@ -1388,9 +1388,7 @@ function toolbarMarkup(inlineTools: boolean): string {
               value="${MIN_NUMBER_START}"
               data-i18n-aria-label="preview.style.number_group"
               aria-label="序号起始值"
-              data-i18n-title="preview.style.number_title"
-              title="序号起始值 (1–999)"
-            />
+            /></span>
           </div>
         </div>
         <div class="style-group" data-style-group="zoom" hidden>
@@ -1560,6 +1558,9 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
   ) {
     return noopEditor();
   }
+
+  // 序号起始输入框的悬停提示挂在外层 wrap(input 是 replaced 元素,::after 不渲染)。
+  const numberStartTipHost = numberStartInput.closest<HTMLElement>("[data-tooltip-wrap]");
 
   const rootStyle = getComputedStyle(root);
   const strokeColor = resolveCanvasColor(rootStyle.getPropertyValue("--stroke"), FALLBACK_STROKE);
@@ -1888,6 +1889,16 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     redraw();
   };
 
+  // 编辑器随内容自增高:border-box 下高度 = scrollHeight(含上下内边距)+ 上下边框,
+  // 超过 showEditor 写入的 max-height 时由 CSS 的 overflow:auto 恢复滚动。
+  // 须在宽度定下后再量,换行宽度才与最终呈现一致。
+  const growEditor = (): void => {
+    editor.style.height = "auto";
+    const style = window.getComputedStyle(editor);
+    const borderY = parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
+    editor.style.height = `${snapDevicePx(editor.scrollHeight + borderY)}px`;
+  };
+
   const showEditor = (origin: Point, text: string, baseFontSize: number): void => {
     editorOrigin = origin;
     const scale = cssScale();
@@ -1905,6 +1916,10 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     editor.classList.add("is-open");
     // 大字号下编辑框可能溢出视口右/下缘;与菜单/面板一样钳回界内。
     editor.style.maxWidth = `${window.innerWidth - FLOATING_PANEL_MARGIN * 2}px`;
+    // 高度上限同 maxWidth 思路(视口高减边距),超出后恢复滚动而不是顶出屏幕。
+    editor.style.maxHeight = `${window.innerHeight - FLOATING_PANEL_MARGIN * 2}px`;
+    // 初始高度按已有内容量取(双击重编辑长文本时即以内容高度打开)。
+    growEditor();
     clampFloatingPanel(editor);
     syncUndo();
     window.setTimeout(() => {
@@ -2051,8 +2066,11 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     root.dataset.tool = tool;
     toolbar.querySelectorAll<HTMLButtonElement>("[data-tool]").forEach((button) => {
       button.classList.toggle("active", button.dataset.tool === tool);
+      // 选中态同步给读屏:aria-pressed 与 .active 同源,不新增状态。
+      button.setAttribute("aria-pressed", String(button.dataset.tool === tool));
     });
     moreBtn.classList.toggle("active", MORE_TOOLS.includes(tool));
+    moreBtn.setAttribute("aria-pressed", String(MORE_TOOLS.includes(tool)));
   };
 
   const setTool = (next: AnnotationTool): void => {
@@ -2067,6 +2085,9 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     start = null;
     current = null;
     freehand = [];
+    // 清掉悬停命中残留的内联 move 光标:热键切工具后鼠标未必再动,
+    // 不清会持续盖住 data-tool 为 text/number 定义的光标。
+    canvas.style.cursor = "";
     const popoverWasOpen = !contextMenu.hidden || !stylePanel.hidden || !morePanel.hidden;
     if (!contextMenu.hidden) {
       hideContextMenu();
@@ -2100,6 +2121,7 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
   const deactivateTool = (): void => {
     toolbar.querySelectorAll<HTMLButtonElement>("[data-tool]").forEach((button) => {
       button.classList.remove("active");
+      button.setAttribute("aria-pressed", "false");
     });
   };
 
@@ -2155,7 +2177,9 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     active: string,
   ): void => {
     host.querySelectorAll<HTMLButtonElement>(`[${attribute}]`).forEach((button) => {
-      button.classList.toggle("active", button.getAttribute(attribute) === active);
+      const isActive = button.getAttribute(attribute) === active;
+      button.classList.toggle("active", isActive);
+      button.setAttribute("aria-pressed", String(isActive));
     });
   };
 
@@ -2200,15 +2224,23 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     }
     const activeColor = styleColor.toLowerCase();
     stylePanel.querySelectorAll<HTMLButtonElement>("[data-style-color]").forEach((button) => {
-      button.classList.toggle("active", (button.dataset.styleColor ?? "").toLowerCase() === activeColor);
+      const isActive = (button.dataset.styleColor ?? "").toLowerCase() === activeColor;
+      button.classList.toggle("active", isActive);
+      button.setAttribute("aria-pressed", String(isActive));
     });
     const activeWidth = String(styleWidth ?? 3);
     stylePanel.querySelectorAll<HTMLButtonElement>("[data-style-width]").forEach((button) => {
-      button.classList.toggle("active", button.dataset.styleWidth === activeWidth);
+      const isActive = button.dataset.styleWidth === activeWidth;
+      button.classList.toggle("active", isActive);
+      button.setAttribute("aria-pressed", String(isActive));
     });
-    const activeTextSize = String(styleTextBase ?? 16);
+    // 字号未选档位(null)时不点亮任何档:此时实际绘制走 28 默认值,
+    // 与 Rust 原生壳 options.text_size == Some(size) 才选中的行为一致。
+    const activeTextSize = styleTextBase === null ? "" : String(styleTextBase);
     stylePanel.querySelectorAll<HTMLButtonElement>("[data-style-text-size]").forEach((button) => {
-      button.classList.toggle("active", button.dataset.styleTextSize === activeTextSize);
+      const isActive = button.dataset.styleTextSize === activeTextSize;
+      button.classList.toggle("active", isActive);
+      button.setAttribute("aria-pressed", String(isActive));
     });
     if (numberStartInput.value !== String(numberStart)) {
       numberStartInput.value = String(numberStart);
@@ -2575,6 +2607,14 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
       redraw();
       return;
     }
+    // 悬停命中已有标注时切 move 光标:命中即拖与工具无关(mousedown),
+    // 但文字工具的 mousedown 是放置编辑器、编辑器打开时不抢文本光标。
+    // 内联样式覆盖 data-tool 的 crosshair;悬停条件不满足时(编辑器打开、
+    // 切到 text 工具等)同样清空,防止残留 "move" 盖住 data-tool 的专用光标。
+    if (!dragging && !moving) {
+      const hoverEnabled = !editorOpen() && tool !== "text" && options.frame();
+      canvas.style.cursor = hoverEnabled && hitAnnotation(physicalPoint(event)) !== -1 ? "move" : "";
+    }
     if (!dragging) {
       return;
     }
@@ -2658,6 +2698,8 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
   editor.addEventListener("compositionend", () => {
     composing = false;
   });
+  // 输入(IME 组合期间同样触发)即随内容增高;松手提交路径不变。
+  editor.addEventListener("input", growEditor);
   editor.addEventListener("keydown", (event) => {
     if (event.isComposing || composing || event.key === "Process" || event.keyCode === 229) {
       return;
@@ -2910,6 +2952,11 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
       button.dataset.tooltip = label;
       button.setAttribute("aria-label", label);
     });
+    // 序号起始输入框的取值范围提示挂在 wrap 上(settings 对 data-tooltip-wrap 同款),
+    // 词条 preview.style.number_title 已含 1–999 范围信息。
+    if (numberStartTipHost) {
+      numberStartTipHost.dataset.tooltip = t("preview.style.number_title");
+    }
   };
 
   syncToolVisibility();

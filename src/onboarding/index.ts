@@ -70,7 +70,7 @@ export function mountOnboarding(root: HTMLElement): () => void {
           <h2 id="guide-logs-title" data-i18n="guide.logs.title">日志位置</h2>
           <p class="hint" data-i18n="guide.logs.body">诊断日志保存在本机，不含截图、剪贴板或识别文字。下面是日志文件的位置，也可以在设置的通用分组里再次打开。</p>
           <p class="hint" data-log-path>—</p>
-          <p class="hint" data-log-error hidden></p>
+          <p class="hint" data-log-error role="alert" hidden></p>
           <button type="button" class="choice" data-action="open-logs" data-i18n="guide.logs.button">打开日志文件夹</button>
         </section>
         <button type="button" class="guide-done" data-action="close" data-i18n="guide.done">知道了</button>

@@ -209,9 +209,14 @@
   background: color-mix(in srgb, var(--tooltip-bg) 75%, transparent);
   color: var(--tooltip-ink);
   font: 12px/1.4 var(--font-ui);
-  white-space: nowrap;
+  /* 收敛为最多两行(锚在 bottom:8px,增高向上生长不遮内容):窄贴图开启
+     点击穿透后,唯一的恢复指引至少完整显示两行,不再被拦腰截断;更长文案
+     两行截断仍有 ellipsis 暗示,且错误常驻可见可再读。 */
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   overflow: hidden;
-  text-overflow: ellipsis;
   pointer-events: none;
 }
 

@@ -48,6 +48,17 @@ function axisFromDataset(value: string | undefined): CaptureAxis {
   return value === "horizontal" ? "horizontal" : "vertical";
 }
 
+/**
+ * 静默渲染辅助:Rust 每 100ms 推送一次全量状态,文本未变就不触碰 DOM,
+ * role=status 不被同文替换轰炸,读屏只播真实变化(showError 等直写路径
+ * 改的是同一 textContent,比对基准始终与 DOM 一致,不会被缓存带偏)。
+ */
+function setTextIfChanged(element: HTMLElement, value: string): void {
+  if (element.textContent !== value) {
+    element.textContent = value;
+  }
+}
+
 /** 命令失败时优先展示服务端本地化文案,否则用通用失败文案。 */
 function messageOf(error: unknown, fallback: CatalogKey = "scroll.action.axis_failed"): string {
   if (typeof error === "string" && error.trim().length > 0) {
@@ -82,6 +93,7 @@ export function mountScroll(root: HTMLElement): () => void {
           <button type="button" class="scroll-axis-option" role="radio" data-axis="horizontal" data-i18n="scroll.axis.horizontal" aria-checked="false" tabindex="-1"></button>
         </div>
         <p class="scroll-lock" hidden></p>
+        <p class="scroll-lock scroll-undo-empty" hidden></p>
         <p class="scroll-status" role="status"><span class="scroll-status-text"></span><span class="progress" aria-hidden="true" hidden></span></p>
         <p class="scroll-hint"></p>
       </div>
@@ -92,12 +104,14 @@ export function mountScroll(root: HTMLElement): () => void {
         <button type="button" class="scroll-cancel" data-i18n="scroll.cancel"></button>
       </div>
     </div>`;
+  const card = root.querySelector(".scroll-card");
   const status = root.querySelector(".scroll-status");
   const statusText = root.querySelector(".scroll-status-text");
   const statusSpinner = root.querySelector(".scroll-status .progress");
   const size = root.querySelector(".scroll-size");
   const hint = root.querySelector(".scroll-hint");
   const lock = root.querySelector(".scroll-lock");
+  const undoEmptyNote = root.querySelector(".scroll-undo-empty");
   const finish = root.querySelector(".scroll-finish");
   const start = root.querySelector(".scroll-start");
   const undo = root.querySelector(".scroll-undo");
@@ -107,12 +121,14 @@ export function mountScroll(root: HTMLElement): () => void {
     (button): button is HTMLButtonElement => button instanceof HTMLButtonElement,
   );
   if (
+    !(card instanceof HTMLElement) ||
     !(status instanceof HTMLElement) ||
     !(statusText instanceof HTMLElement) ||
     !(statusSpinner instanceof HTMLElement) ||
     !(size instanceof HTMLElement) ||
     !(hint instanceof HTMLElement) ||
     !(lock instanceof HTMLElement) ||
+    !(undoEmptyNote instanceof HTMLElement) ||
     !(finish instanceof HTMLButtonElement) ||
     !(start instanceof HTMLButtonElement) ||
     !(undo instanceof HTMLButtonElement) ||
@@ -150,21 +166,15 @@ export function mountScroll(root: HTMLElement): () => void {
       // radiogroup 漫游 tab 序:仅当前方向可 Tab 到达,其余靠方向键/Home/End。
       button.tabIndex = active ? 0 : -1;
       button.disabled = axisDisabled;
-      if (locked) {
-        button.dataset.tooltip = t("scroll.axis.locked");
-      } else {
-        delete button.dataset.tooltip;
-      }
     }
-    // 锁定原因常驻在卡片里,不依赖悬停;未锁定时不占位。
-    if (locked) {
-      lock.hidden = false;
-      lock.textContent = t("scroll.axis.locked");
-    } else {
-      lock.hidden = true;
-      lock.textContent = "";
-    }
-    hint.textContent = axis === "horizontal" ? t("scroll.hint.horizontal") : t("scroll.hint");
+    // 锁定原因常驻在卡片里,不依赖悬停;未锁定时不占位。(不再另发 tooltip:
+    // 卡片 overflow 与 .scroll-body 横向裁剪把气泡裁得基本不可见,信息零丢失。)
+    lock.hidden = !locked;
+    setTextIfChanged(lock, locked ? t("scroll.axis.locked") : "");
+    setTextIfChanged(
+      hint,
+      axis === "horizontal" ? t("scroll.hint.horizontal") : t("scroll.hint"),
+    );
 
     // R7:finishing 进行中呈现「正在拼接 · N 段」+ 共享旋转圈,常驻到被
     // 结果替换(成功收窗/失败走 failed 文案,ADR-2);其余状态不转圈。
@@ -172,13 +182,18 @@ export function mountScroll(root: HTMLElement): () => void {
     statusSpinner.hidden = !finishing;
     if (!last) {
       status.classList.remove("is-error");
-      statusText.textContent = t(statusKey("ready", axis));
-      size.textContent = "";
+      // 首帧(last 未知)不预写「就绪」文案:此刻开始按钮还不存在,等
+      // get_scroll_status 返回后自洽呈现,不再指示用户去点不存在的按钮。
+      setTextIfChanged(statusText, "");
+      setTextIfChanged(size, "");
     } else {
       status.classList.toggle("is-error", last.state === "failed");
-      statusText.textContent = finishing
-        ? t("scroll.status.finishing_segments", { count: last.segmentCount })
-        : t(statusKey(last.state, last.axis));
+      setTextIfChanged(
+        statusText,
+        finishing
+          ? t("scroll.status.finishing_segments", { count: last.segmentCount })
+          : t(statusKey(last.state, last.axis)),
+      );
       // 尺寸一直显示：这就是正在截的那一块，滚动后沿轴变长。
       const parts = [t("scroll.watching", { width: last.width, height: last.height })];
       if (last.appended > 0) {
@@ -186,21 +201,23 @@ export function mountScroll(root: HTMLElement): () => void {
           last.axis === "horizontal" ? "scroll.appended.horizontal" : "scroll.appended";
         parts.push(t(appendedKey, { count: last.appended }));
       }
-      size.textContent = parts.join(" · ");
+      setTextIfChanged(size, parts.join(" · "));
     }
     // 开始按钮只在就绪态出现;开始后被开始信号接管,不保留入口。
     start.hidden = !ready;
     start.disabled = actionBusy;
-    // 回退:栈空(只剩首帧/未开始)、finishing 或动作进行中禁用并附原因。
+    // 回退:栈空(只剩首帧/未开始)、finishing 或动作进行中禁用;
+    // 空栈原因像方向锁定一样常驻一行,不再藏进被卡片裁剪的悬停气泡。
     const undoDisabled =
       !last || !last.canUndo || actionBusy || last.state === "finishing";
     undo.disabled = undoDisabled;
-    if (last && !last.canUndo) {
-      undo.dataset.tooltip = t("scroll.undo.empty");
-    } else {
-      delete undo.dataset.tooltip;
-    }
+    const undoEmpty = last !== null && !last.canUndo && !actionBusy && last.state !== "finishing";
+    undoEmptyNote.hidden = !undoEmpty;
+    setTextIfChanged(undoEmptyNote, undoEmpty ? t("scroll.undo.empty") : "");
+    // 共享 busy 语义:aria-busy 触发全局 progress 光标(app.css),读屏拿到进行中,
+    // 拼接/取消期间与 record/preview 同口径;按钮禁用逻辑不变。
     const busy = actionBusy || last?.state === "finishing";
+    card.setAttribute("aria-busy", String(busy));
     finish.disabled = busy || !last;
     cancel.disabled = busy;
   };

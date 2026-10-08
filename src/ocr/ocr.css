@@ -46,6 +46,7 @@
   font-size: 12px;
   user-select: text;
 }
+.ocr-panel-query:hover { border-color: var(--control-hover-border); }
 .ocr-panel-nav { display: flex; align-items: center; gap: 3px; }
 .ocr-panel-count { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .ocr-panel button:not(.icon-btn) {
@@ -58,12 +59,14 @@
   font: inherit;
   font-size: 12px;
   cursor: pointer;
+  transition: var(--control-transition);
 }
 .ocr-panel-nav button { padding: 0 !important; width: 26px; }
 .ocr-panel button:hover:not(:disabled) { border-color: var(--control-hover-border); background: var(--control-hover-bg); }
+.ocr-panel button:active:not(:disabled) { filter: var(--control-pressed-filter); }
 .ocr-panel button:disabled { opacity: var(--control-disabled-opacity); cursor: default; }
 .ocr-panel-actions button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink, #fff); }
-.ocr-panel-actions button.primary:hover:not(:disabled) { filter: brightness(1.08); }
+.ocr-panel-actions button.primary:hover:not(:disabled) { filter: var(--control-hover-filter); }
 .ocr-panel-text {
   flex: 1 1 0;
   min-height: 0;
@@ -124,4 +127,11 @@
 
 .ocr-panel-text mark.is-selected {
   background: color-mix(in srgb, var(--ocr-hl-strong) 55%, transparent);
+}
+
+/* 中/强两态的混合底在明暗两种主题下均为中亮蓝,显式深字两端都过 4.5:1
+   (暗色下沿用 inherit 会掉到 3.4:1);is-search 弱底保持 inherit。 */
+.ocr-panel-text mark.is-current,
+.ocr-panel-text mark.is-selected {
+  color: #0c2a3e;
 }

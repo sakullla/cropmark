@@ -149,6 +149,15 @@ html[data-view="record-overlay"] #app {
   filter: var(--control-hover-filter);
 }
 
+/* 丢弃是不可撤销的破坏性动作(temp 文件后端即删):悬停/按下给危险色,
+   与 settings 的 .choice.danger 用同一组 token。 */
+.record-btn.record-discard:hover:not(:disabled),
+.record-btn.record-discard:active:not(:disabled) {
+  color: var(--control-danger-hover-border);
+  border-color: var(--control-danger-hover-border);
+  background: var(--control-danger-hover-bg);
+}
+
 .record-btn.record-draw.is-active,
 .record-btn.record-draw.is-active:hover:not(:disabled) {
   color: var(--accent);
@@ -191,8 +200,9 @@ html[data-view="record-overlay"] #app {
   display: block;
   width: 100%;
   max-height: 120px;
+  /* 高度由 TS 侧按成片尺寸写入的内联 aspect-ratio 预留,媒体到达不跳动。 */
   object-fit: contain;
-  background: #111;
+  background: var(--overlay-bg);
   border-radius: var(--radius-control-sm);
 }
 
@@ -227,7 +237,7 @@ html[data-chrome="border"] body,
 html[data-chrome="border"] #app {
   width: 100%;
   height: 100%;
-  background: #f43f5e;
+  background: var(--stroke);
 }
 
 /* R4/R5:边框条可命中——横向条用纵向调整光标,竖向条用横向;
@@ -381,6 +391,18 @@ html[data-chrome="border"] #app {
   color: var(--ink);
   font: inherit;
   font-size: 12px;
+  cursor: pointer;
+  transition: var(--control-transition);
+}
+
+/* 与全应用控件一致的悬停/压感反馈(is-active 选中态规则在下方,不受影响)。 */
+.record-annotate button:hover:not(:disabled) {
+  background: var(--control-hover-bg);
+  border-color: var(--control-hover-border);
+}
+
+.record-annotate button:active:not(:disabled) {
+  filter: var(--control-pressed-filter);
 }
 
 .record-annotate button.is-active {
@@ -394,6 +416,11 @@ html[data-chrome="border"] #app {
   padding: 0;
   background: var(--swatch);
   border-color: var(--line);
+}
+
+/* 色块 hover 只换边框,--swatch 底色保留:色块本身就是语义色。 */
+.record-annotate button[data-style-color]:hover:not(:disabled) {
+  background: var(--swatch);
 }
 
 .record-overlay-root .record-draw {

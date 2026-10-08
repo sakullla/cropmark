@@ -240,6 +240,12 @@ button.annotation-chrome svg {
   transition: var(--control-transition);
 }
 
+/* 序号起始输入框外包 .input-wrap 挂自绘提示(input 是 replaced 元素,::after 不渲染;
+   app.css 已有全局 .input-wrap inline-flex)。此处只保证 wrap 不被选项行压缩。 */
+.style-options .input-wrap {
+  flex: 0 0 auto;
+}
+
 .style-options button[data-style-color]::before {
   content: "";
   position: absolute;
@@ -324,7 +330,9 @@ button.annotation-chrome svg {
   top: 12px;
   z-index: 5;
   min-width: 180px;
-  min-height: 2em;
+  /* 单行下限(行高 1.25em + 上下内边距 16px + 上下边框 4px):
+     多行内容由 index.ts 的 growEditor 随 scrollHeight 增高,不再钉死两行。 */
+  min-height: calc(1.25em + 20px);
   margin: 0;
   padding: 8px 10px;
   border: 2px solid var(--accent);

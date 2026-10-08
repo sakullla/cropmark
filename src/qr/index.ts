@@ -115,6 +115,8 @@ export function mountQrModel(options: QrModelOptions): QrModel {
   let generation = 0;
   let busy = false;
   let panelDismissed = true;
+  // 复制按钮被 renderPanel 重建时的待恢复焦点序号(见 renderPanel 内说明)。
+  let copyFocusIndex: number | null = null;
   let lastNotice: {
     key: CatalogKey | null;
     params?: Record<string, string | number>;
@@ -164,7 +166,18 @@ export function mountQrModel(options: QrModelOptions): QrModel {
     const visible = active && !panelDismissed && contents !== null && contents.length > 0;
     panel.hidden = !visible;
     if (!visible) {
+      copyFocusIndex = null;
       return;
+    }
+    // 重建前记下键盘焦点所在的复制按钮;焦点已移到面板外其他控件(或 body 之外的
+    // 任何元素)时不争夺。busy 置灰的按钮不可聚焦,保留序号待下次重建恢复——
+    // copy() 结束的重建会重新启用按钮,把焦点放回原处。
+    const activeElement = document.activeElement;
+    if (activeElement instanceof HTMLButtonElement) {
+      const index = Number(activeElement.dataset.qrCopy);
+      copyFocusIndex = Number.isInteger(index) ? index : null;
+    } else if (copyFocusIndex !== null && activeElement !== document.body) {
+      copyFocusIndex = null;
     }
     list.replaceChildren();
     contents?.forEach((content, index) => {
@@ -180,10 +193,21 @@ export function mountQrModel(options: QrModelOptions): QrModel {
       copy.className = "qr-item-copy";
       copy.dataset.qrCopy = String(index);
       copy.textContent = t("preview.qr_panel.copy");
+      // 可见文本同为「复制」,读屏靠带序号的 aria-label 区分对应哪条内容。
+      copy.setAttribute("aria-label", `${t("preview.qr_panel.copy")} ${index + 1}`);
       copy.disabled = busy;
       item.append(text, copy);
       list.append(item);
     });
+    if (copyFocusIndex !== null) {
+      const target = list.querySelector<HTMLButtonElement>(`[data-qr-copy="${copyFocusIndex}"]`);
+      if (!target) {
+        copyFocusIndex = null;
+      } else if (!target.disabled) {
+        target.focus();
+        copyFocusIndex = null;
+      }
+    }
   };
 
   const runRecognition = async (): Promise<void> => {
@@ -246,10 +270,12 @@ export function mountQrModel(options: QrModelOptions): QrModel {
       return;
     }
     active = true;
-    if (contents !== null && !panelDismissed) {
+    // 缓存重开(与取字模型同语义):帧是冻结的,已识别内容不会过期,
+    // 带 `contents` 直接重开面板,不整段重新识别;无缓存才发起识别。
+    if (contents !== null) {
+      panelDismissed = false;
       renderPanel();
       setNoticeKey("preview.note.qr_hint", "hint");
-      emitChange();
     } else {
       void runRecognition();
     }
@@ -279,10 +305,10 @@ export function mountQrModel(options: QrModelOptions): QrModel {
     emitChange();
   };
 
+  // 关闭面板即退出激活态(与取字模型一致):宿主工具条高亮同步熄灭,
+  // 再点按钮走 activate 的缓存重开,不留「亮着却点不动」的死按钮。
   const closePanel = (): void => {
-    panelDismissed = true;
-    renderPanel();
-    emitChange();
+    deactivate();
   };
 
   const copy = async (index: number): Promise<void> => {

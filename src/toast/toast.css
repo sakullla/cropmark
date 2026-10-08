@@ -35,4 +35,10 @@ html[data-view="toast"] #app {
   line-height: 1.35;
   white-space: normal;
   overflow-wrap: anywhere;
+  /* 窗高固定两行(320×44,Rust 侧不可改):任何超长词条至少以省略号明示
+     截断,而非被窗高无声裁切。 */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
 }

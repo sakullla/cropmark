@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { handleRadioGroupKeydown } from "../a11y";
 import {
   annotationToolForKey,
   clampFloatingPanel,
@@ -93,7 +94,7 @@ export function mountPreview(root: HTMLElement): () => void {
         <span class="mark" aria-hidden="true"></span>
         <span class="name">Cropmark</span>
       </div>
-      <p class="preview-note" role="status" data-drag-handle data-tauri-drag-region>${t("preview.note.loading")}</p>
+      <p class="preview-note" role="status" data-drag-handle data-tauri-drag-region><span class="preview-note-text" data-note-text>${t("preview.note.loading")}</span></p>
       <button type="button" class="preview-close icon-btn" data-action="close" data-i18n-aria-label="preview.close" aria-label="关闭">${icons.close}</button>
     </header>
     <div class="preview-toolbar" data-preview-toolbar>
@@ -149,6 +150,7 @@ export function mountPreview(root: HTMLElement): () => void {
           </div>
           <div class="preview-crop-bar" data-crop-bar hidden>
             <span class="preview-crop-hint" data-i18n="preview.crop.hint">${t("preview.crop.hint")}</span>
+            <span class="preview-crop-size" data-crop-size></span>
             <button type="button" data-crop-action="confirm" data-i18n="preview.crop.confirm">${t("preview.crop.confirm")}</button>
             <button type="button" data-crop-action="cancel" data-i18n="preview.crop.cancel">${t("preview.crop.cancel")}</button>
           </div>
@@ -165,6 +167,7 @@ export function mountPreview(root: HTMLElement): () => void {
   const canvas = root.querySelector("canvas");
   const outputEl = root.querySelector("[data-beautify-output]");
   const note = root.querySelector(".preview-note");
+  const noteTextEl = root.querySelector("[data-note-text]");
   const frameEl = root.querySelector(".preview-frame");
   const stageEl = root.querySelector(".preview-stage");
   const toolbarEl = root.querySelector("[data-annotation-toolbar]");
@@ -184,6 +187,7 @@ export function mountPreview(root: HTMLElement): () => void {
   const cropBtn = root.querySelector("[data-action=crop]");
   const againBtn = root.querySelector("[data-action=capture-again]");
   const cropBar = root.querySelector("[data-crop-bar]");
+  const cropSizeEl = root.querySelector("[data-crop-size]");
   const cropConfirmBtn = root.querySelector("[data-crop-action=confirm]");
   const cropCancelBtn = root.querySelector("[data-crop-action=cancel]");
   const pinBtn = root.querySelector("[data-action=pin]");
@@ -195,6 +199,7 @@ export function mountPreview(root: HTMLElement): () => void {
     !(canvas instanceof HTMLCanvasElement) ||
     !(outputEl instanceof HTMLElement) ||
     !(note instanceof HTMLElement) ||
+    !(noteTextEl instanceof HTMLElement) ||
     !(frameEl instanceof HTMLElement) ||
     !(stageEl instanceof HTMLElement) ||
     !(toolbarEl instanceof HTMLElement) ||
@@ -214,6 +219,7 @@ export function mountPreview(root: HTMLElement): () => void {
     !(cropBtn instanceof HTMLButtonElement) ||
     !(againBtn instanceof HTMLButtonElement) ||
     !(cropBar instanceof HTMLElement) ||
+    !(cropSizeEl instanceof HTMLElement) ||
     !(cropConfirmBtn instanceof HTMLButtonElement) ||
     !(cropCancelBtn instanceof HTMLButtonElement) ||
     !(pinBtn instanceof HTMLButtonElement) ||
@@ -342,10 +348,22 @@ export function mountPreview(root: HTMLElement): () => void {
     const carried = carriedNoteSource;
     const prefix =
       carried !== null && noteSource === copiedSource ? `${t(carried.key, carried.params)} ` : "";
-    note.textContent = `${prefix}${noteText(noteSource)}`;
+    const text = `${prefix}${noteText(noteSource)}`;
+    noteTextEl.textContent = text;
     note.classList.toggle("is-success", noteKind === "success");
     note.classList.toggle("is-feedback", noteKind === "feedback");
     note.classList.toggle("is-error", noteKind === "error");
+    // 错误态两件兜底:全文进悬停气泡(钳制在 .preview-note-text,本体
+    // overflow:visible 让气泡能伸出);裸 data-tauri-drag-region 会被注入的
+    // drag.js(isDragRegion 对裸属性按元素自身命中启动拖动并 preventDefault)
+    // 拦截 mousedown,显式置 "false" 才能让 user-select:text 真正可用。
+    if (noteKind === "error") {
+      note.dataset.tooltip = text;
+      note.dataset.tauriDragRegion = "false";
+    } else {
+      delete note.dataset.tooltip;
+      note.dataset.tauriDragRegion = "";
+    }
   };
 
   const setNoteSource = (
@@ -675,6 +693,12 @@ export function mountPreview(root: HTMLElement): () => void {
     },
     { capture: true },
   );
+
+  // menuitemradio 的键盘契约:方向键/Home/End 在质量项间移动并选中
+  // (选中走既有 click 委托,持久化路径不变);Esc 关闭由上面的捕获监听处理。
+  saveQualityPanel.addEventListener("keydown", (event) => {
+    handleRadioGroupKeydown(event, saveQualityPanel, "[data-save-quality]");
+  });
 
   editor = mountAnnotationEditor({
     root,
@@ -1060,7 +1084,11 @@ export function mountPreview(root: HTMLElement): () => void {
   // 可读到当前语言的原因词条;启用时恢复共享 i18n 机制维护的动作提示
   // (applyTranslations 会向同一 dataset.tooltip 写 data-i18n-title 词条),
   // 无动作提示的按钮才移除属性,不残留空气泡。
-  const setDisabledReason = (button: HTMLButtonElement, reason: CatalogKey | null): void => {
+  const setDisabledReason = (
+    button: HTMLButtonElement,
+    reason: CatalogKey | null,
+    params?: Record<string, string | number>,
+  ): void => {
     if (reason === null) {
       const titleKey = button.dataset.i18nTitle as CatalogKey | undefined;
       if (titleKey) {
@@ -1069,22 +1097,56 @@ export function mountPreview(root: HTMLElement): () => void {
         delete button.dataset.tooltip;
       }
     } else {
-      button.dataset.tooltip = t(reason);
+      button.dataset.tooltip = t(reason, params);
     }
   };
 
+  // 裁剪互斥的可见状态:进入裁剪时禁用工具条其余按钮并只记录本批节点,
+  // 退出时恢复这些;其他原因(忙碌/录制/编辑器撤销态)维护的禁用不被覆盖。
+  let cropLockedButtons: HTMLButtonElement[] = [];
+
   // 裁剪模式的界面状态:松开仅暂存选区,确认按钮/Enter 提交,处理期间禁止重复操作。
+  // 拖选全程同步尺寸徽标;确认按钮按最小边长诚实置灰,不足时悬停可读原因。
   const syncCropUi = (): void => {
     cropBar.hidden = !cropping;
     cropBtn.classList.toggle("active", cropping);
     rotateLeftBtn.disabled = cropping || recordingContent || busy;
     rotateRightBtn.disabled = cropping || recordingContent || busy;
     cropBtn.disabled = recordingContent || busy;
-    const cropReady = cropRect() !== null;
+    // 裁剪与关闭保持可用;裁剪确认条不在工具条内,自身按钮不受影响。
+    // 溢出菜单里的按钮是同一批节点移动,同样命中。根级 click 守卫仍兜底。
+    const mutexButtons = root.querySelectorAll<HTMLButtonElement>(
+      '.preview-toolbar button:not([data-action="crop"]):not([data-action="close"])',
+    );
+    if (cropping) {
+      mutexButtons.forEach((button) => {
+        if (!button.disabled) {
+          button.disabled = true;
+          cropLockedButtons.push(button);
+        }
+      });
+    } else if (cropLockedButtons.length > 0) {
+      for (const button of cropLockedButtons) {
+        button.disabled = false;
+      }
+      cropLockedButtons = [];
+    }
+    const rect = cropRect();
+    const cropReady =
+      rect !== null && rect.width >= MIN_CROP_EDGE && rect.height >= MIN_CROP_EDGE;
+    cropSizeEl.textContent =
+      rect === null ? "" : t("overlay.size_format", { width: rect.width, height: rect.height });
     cropConfirmBtn.disabled = busy || !cropReady;
     setDisabledReason(
       cropConfirmBtn,
-      busy ? "preview.crop.disabled_busy" : cropReady ? null : "preview.crop.disabled_no_selection",
+      busy
+        ? "preview.crop.disabled_busy"
+        : cropReady
+          ? null
+          : rect === null
+            ? "preview.crop.disabled_no_selection"
+            : "error.preview.crop_too_small",
+      rect !== null && !cropReady ? { detail: MIN_CROP_EDGE } : undefined,
     );
     cropCancelBtn.disabled = busy;
     setDisabledReason(cropCancelBtn, busy ? "preview.crop.disabled_busy" : null);
@@ -1126,9 +1188,11 @@ export function mountPreview(root: HTMLElement): () => void {
     cropDragging = false;
     cropStart = null;
     cropCurrent = null;
+    // 先恢复工具条互斥禁用,再让编辑器重算撤销/重做/删除按钮态;
+    // 顺序反了,编辑器刚同步的禁用态会被解锁覆盖。
+    syncCropUi();
     // 恢复标注工具条高亮(enterCrop 为进入裁剪清掉了)。
     editor?.setTool(editor.tool());
-    syncCropUi();
     setNoteSource(copiedSource, copiedKind);
     redraw();
   };
@@ -1533,6 +1597,11 @@ export function mountPreview(root: HTMLElement): () => void {
   root.querySelectorAll("[data-drag-handle]").forEach((handle) => {
     handle.addEventListener("mousedown", (event) => {
       if (!(event instanceof MouseEvent) || event.button !== 0) {
+        return;
+      }
+      // 错误态提示条让位给文本选择:不吞 mousedown,CSS 已声明的
+      // user-select:text/cursor:text 才真正可用,长错误串可拖选复制报障。
+      if (handle.classList.contains("preview-note") && handle.classList.contains("is-error")) {
         return;
       }
       if (eventElement(event)?.closest("button")) {

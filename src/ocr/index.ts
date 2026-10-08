@@ -97,6 +97,7 @@ const FALLBACK_OCR_HL = "#0ea5e9";
 const FALLBACK_OCR_HL_STRONG = "#0369a1";
 const DRAG_THRESHOLD = 4;
 const MIN_RUBBER = 3;
+const SEARCH_DEBOUNCE_MS = 150;
 
 type SelectionSource =
   | { kind: "point"; point: OcrPoint }
@@ -340,6 +341,8 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
   let recognitionError: string | null = null;
   let generation = 0;
   let searchGen = 0;
+  let panelPaintFrame = 0;
+  let searchDebounce = 0;
   let selected: number[] = [];
   let selectionSource: SelectionSource | null = null;
   let spanOffsets: Array<CharRange | null> = [];
@@ -399,6 +402,7 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
 
   const clearPanelView = (): void => {
     searchGen += 1;
+    cancelScheduledPaint();
     searchInput.value = "";
     matches = [];
     matchIndex = 0;
@@ -493,6 +497,29 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
     }
   };
 
+  // 面板文本重绘按帧合并:拖选/步进每次事件触发的是「调度」而非立即重建,
+  // 同一帧内多次事件(图上拖橡皮筋的 pointerMove)只重建一次整份文本 DOM,
+  // 面板滚动跳变随多次叠加的 scrollTop 修正一起消失。
+  const cancelScheduledPaint = (): void => {
+    if (panelPaintFrame !== 0) {
+      cancelAnimationFrame(panelPaintFrame);
+      panelPaintFrame = 0;
+    }
+  };
+
+  const schedulePaint = (): void => {
+    if (panelPaintFrame !== 0) {
+      return;
+    }
+    panelPaintFrame = requestAnimationFrame(() => {
+      panelPaintFrame = 0;
+      // 回调执行先于本帧渲染,不会露出旧内容;面板已隐藏(退出/重置)则跳过。
+      if (!panel.hidden) {
+        paintPanel();
+      }
+    });
+  };
+
   const syncSearchStatus = (): void => {
     const query = searchInput.value.trim();
     if (!query) {
@@ -542,9 +569,10 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
     summary.textContent = ready && doc
       ? t("preview.ocr_panel.count", { count: Array.from(doc.fullText).length, lines: doc.fullText.split("\n").length })
       : t("preview.ocr_panel.subtitle");
-    summary.title = t("preview.ocr_panel.selection_hint");
+    // 自绘短延迟提示(走全局 data-tooltip 约定),替代 ~500ms 才出现的原生 title。
+    summary.dataset.tooltip = t("preview.ocr_panel.selection_hint");
     if (ready && !panelHasDomSelection()) {
-      paintPanel();
+      schedulePaint();
     }
     syncActions();
   };
@@ -590,7 +618,7 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
       return;
     }
     matchIndex = (matchIndex + delta + matches.length) % matches.length;
-    paintPanel();
+    schedulePaint();
     syncSearchStatus();
     emitChange();
   };
@@ -694,6 +722,7 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
     clearSelection();
     clearDrag();
     panel.hidden = true;
+    cancelScheduledPaint();
     // 退出取字即撤下阶段进度呈现;词条通道也随之静默(结果不再展示)。
     hideProgressStage();
     syncActions();
@@ -726,6 +755,8 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
     generation += 1;
     running = false;
     recognitionError = null;
+    // 文档更替:旧文档的待绘制帧作废(空文档路径由 clearPanelView 再兜底)。
+    cancelScheduledPaint();
     clearSelection();
     clearDrag();
     hideProgressStage();
@@ -1077,14 +1108,34 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
   });
 
   searchInput.addEventListener("input", () => {
-    void applySearch();
+    // 连续击键合并为一次搜索:防抖期间 searchGen 已保证过期结果被丢弃;
+    // Enter 步进(stepMatch)不走防抖,立即响应。
+    if (searchDebounce !== 0) {
+      window.clearTimeout(searchDebounce);
+    }
+    searchDebounce = window.setTimeout(() => {
+      searchDebounce = 0;
+      void applySearch();
+    }, SEARCH_DEBOUNCE_MS);
   });
   searchInput.addEventListener("keydown", (event) => {
-    if (event.key !== "Enter" || event.isComposing) {
+    if (event.key === "Enter" && !event.isComposing) {
+      event.preventDefault();
+      stepMatch(event.shiftKey ? -1 : 1);
       return;
     }
-    event.preventDefault();
-    stepMatch(event.shiftKey ? -1 : 1);
+    // 搜索框内 Esc 先清关键词(浏览器搜索框肌肉记忆):词已为空则不拦截,
+    // 放行给宿主的 Esc 退出取字路径。stopPropagation 避免宿主同帧误触发。
+    if (event.key === "Escape" && !event.isComposing && searchInput.value !== "") {
+      searchInput.value = "";
+      if (searchDebounce !== 0) {
+        window.clearTimeout(searchDebounce);
+        searchDebounce = 0;
+      }
+      void applySearch();
+      event.preventDefault();
+      event.stopPropagation();
+    }
   });
 
   panelText.addEventListener("mouseup", (event) => {

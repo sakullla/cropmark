@@ -47,7 +47,8 @@
     background-color 120ms ease,
     border-color 120ms ease,
     color 120ms ease,
-    filter 120ms ease;
+    filter 120ms ease,
+    opacity 120ms ease;
   /* 全局界面字体栈的唯一取值来源:各视图(含贴图)一律消费此变量。 */
   --font-ui: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   font-family: var(--font-ui);
@@ -370,6 +371,8 @@ html[data-view="settings"] .settings-panels {
   overflow-y: auto;
   /* 右缘控件的悬停提示是定位元素;横向滚动条会露馅,提示本身已右对齐收敛。 */
   overflow-x: hidden;
+  /* 分类间滚动条有无不一,预留槽位让右缘的开关/按钮列不再横向跳动。 */
+  scrollbar-gutter: stable;
   padding: 24px;
 }
 
@@ -491,6 +494,13 @@ html[data-view="settings"] .hint {
   color: var(--ok);
   background: var(--ok-soft);
   border-color: var(--ok);
+}
+
+/* 中性通知:托盘状态等非成败信息,复用 .notice 布局,仅换强调色淡底。 */
+.notice.notice-info {
+  color: var(--ink);
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
 }
 
 /* 设置页保存反馈改为浮层药丸:不再推挤面板高度,连续点开关不会让控件

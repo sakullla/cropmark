@@ -126,13 +126,34 @@
   background: var(--danger-soft);
   border-color: color-mix(in srgb, var(--danger) 45%, transparent);
   color: var(--danger);
-  white-space: normal;
-  overflow-wrap: anywhere;
+  /* 本体放行 overflow:钳制交给内层 .preview-note-text,共享
+     [data-tooltip]::after 挂在本体下方,overflow:hidden 会把整个气泡裁掉。 */
+  overflow: visible;
   /* 错误详情要可选中复制:退出拖拽区并恢复文本光标。 */
   user-select: text;
   cursor: text;
   -webkit-app-region: no-drag;
   app-region: no-drag;
+}
+
+/* 无界多行折叠收进最多两行:标题栏高度被钳到常数,fit 画布的整幅重缩放
+   不再随错误长度抖动;截断处悬停经本体 data-tooltip 读全文。 */
+.preview-note.is-error .preview-note-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* 错误全文提示:共享 [data-tooltip]::after 是 nowrap,长错误串需换行
+   且不超出窗口宽度;依赖上方本体错误态的 overflow:visible 才不被裁掉。 */
+.preview-note[data-tooltip]::after {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  width: max-content;
+  max-width: min(360px, calc(100vw - 48px));
 }
 
 .preview-toolbar {
@@ -306,6 +327,19 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* 拖选尺寸徽标:沿用 overlay .size-badge 的 tabular-nums 数字语言,muted 小字。 */
+.preview-crop-size {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* 未拖选时徽标留空,不占确认条间距。 */
+.preview-crop-size:empty {
+  display: none;
 }
 
 /* 动作按钮只保留这一套基础规则:形状与尺寸,状态语义消费共享 token。 */
@@ -520,6 +554,17 @@
   color: var(--accent);
   cursor: pointer;
   font: inherit;
+  transition: var(--control-transition);
+}
+
+/* 重试是加载失败唯一恢复路径:与工具条按钮同一套 token,悬停/按下有视觉确认。 */
+.preview-load-state button:hover {
+  border-color: var(--control-hover-border);
+  background: var(--control-hover-bg);
+}
+
+.preview-load-state button:active {
+  filter: var(--control-pressed-filter);
 }
 
 /* 适应窗口时不创建滚动条,避免滚动条改变尺寸后反复触发缩放。 */
@@ -613,6 +658,13 @@
   background: transparent;
   color: var(--ink);
   cursor: pointer;
+  transition: var(--control-transition);
+}
+
+/* 与工具条按钮同一套 token:hover 只换边框/底色,不覆盖选中态的 accent 文字色。 */
+.preview-zoom button:hover {
+  border-color: var(--control-hover-border);
+  background: var(--control-hover-bg);
 }
 
 .preview-zoom button[aria-pressed="true"] {
