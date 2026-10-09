@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { NOTICE_AUTO_HIDE_MS } from "../feedback";
-import { localeTag, t, type CatalogKey } from "../i18n";
+import { currentLanguage, localeTag, t, type CatalogKey } from "../i18n";
 import { icons } from "../icons";
 import "./history.css";
 
@@ -190,12 +190,15 @@ export function mountHistory(root: HTMLElement): () => void {
             <option value="long" data-i18n="history.filter.mode_long">长截图</option>
           </select>
           <input class="history-search" data-filter="note" type="search" autocomplete="off" data-i18n-aria-label="history.filter.note_label" data-i18n-placeholder="history.filter.note_placeholder" aria-label="搜索备注" placeholder="搜索备注" />
-          <button type="button" class="history-filter-clear" data-action="clear-filters" data-i18n="history.filter.clear" disabled>清除筛选</button>
+          <button type="button" class="history-filter-clear is-reserved" data-action="clear-filters" data-i18n="history.filter.clear" disabled aria-hidden="true">清除筛选</button>
         </div>
         <p class="notice" data-notice role="alert" hidden></p>
         <div class="history-list" data-list></div>
         <p class="history-loading" data-loading role="status"><span class="progress" aria-hidden="true"></span><span data-i18n="history.loading">正在加载历史记录…</span></p>
-        <p class="history-empty" data-empty data-i18n="history.empty" hidden>暂无历史记录。截图完成后会自动出现在这里。</p>
+        <div class="history-empty" data-empty hidden>
+          <p data-empty-text data-i18n="history.empty">暂无历史记录。截图完成后会自动出现在这里。</p>
+          <button type="button" class="history-filter-clear" data-empty-clear data-i18n="history.filter.clear" hidden>清除筛选</button>
+        </div>
         <p class="history-status" data-status role="status" hidden></p>
         <p class="history-undo" data-undo role="status" hidden>
           <span class="history-undo-text" data-undo-text></span>
@@ -229,6 +232,8 @@ export function mountHistory(root: HTMLElement): () => void {
   const listEl = root.querySelector("[data-list]");
   const countEl = root.querySelector("[data-count]");
   const emptyEl = root.querySelector("[data-empty]");
+  const emptyTextEl = root.querySelector("[data-empty-text]");
+  const emptyClearEl = root.querySelector("[data-empty-clear]");
   const loadingEl = root.querySelector("[data-loading]");
   const clearEl = root.querySelector("[data-action=clear]");
   const closeEl = root.querySelector("[data-action=close]");
@@ -250,6 +255,8 @@ export function mountHistory(root: HTMLElement): () => void {
     !(listEl instanceof HTMLElement) ||
     !(countEl instanceof HTMLElement) ||
     !(emptyEl instanceof HTMLElement) ||
+    !(emptyTextEl instanceof HTMLElement) ||
+    !(emptyClearEl instanceof HTMLButtonElement) ||
     !(loadingEl instanceof HTMLElement) ||
     !(clearEl instanceof HTMLButtonElement) ||
     !(closeEl instanceof HTMLButtonElement)
@@ -329,7 +336,7 @@ export function mountHistory(root: HTMLElement): () => void {
     listEl
       .querySelectorAll<HTMLButtonElement>("[data-entry-action]")
       .forEach((button) => {
-        button.disabled = busy || button.dataset.missingDisabled === "true";
+        button.disabled = busy;
       });
   };
 
@@ -338,9 +345,18 @@ export function mountHistory(root: HTMLElement): () => void {
     syncBusy();
   };
 
+  const setConfirmBlocked = (blocked: boolean): void => {
+    filtersEl.inert = blocked;
+    listEl.inert = blocked;
+    emptyEl.inert = blocked;
+    undoEl.inert = blocked;
+    clearEl.inert = blocked;
+  };
+
   const hideConfirm = (): void => {
     pendingConfirm = null;
     confirmEl.hidden = true;
+    setConfirmBlocked(false);
     confirmTextEl.textContent = "";
     confirmAcceptEl.textContent = t("history.accept");
     const trigger = confirmTrigger;
@@ -358,6 +374,7 @@ export function mountHistory(root: HTMLElement): () => void {
       (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     confirmTextEl.textContent = confirmMessage(pending);
     confirmAcceptEl.textContent = confirmAcceptLabel(pending);
+    setConfirmBlocked(true);
     confirmEl.hidden = false;
     // 初始焦点落在取消,键盘 Enter 不会直接触发破坏性操作。
     confirmCancelEl.focus();
@@ -510,6 +527,39 @@ export function mountHistory(root: HTMLElement): () => void {
   const savedNote = (id: string): string =>
     lastPayload?.entries.find((entry) => entry.id === id)?.note ?? "";
 
+  // 与后端 sanitize_note 一致：控制字符去掉，换行和制表符变成空格，再去掉两端空白。
+  // 只含空白的备注存下来会变成空字符串。先整理再比较，避免提示「已保存」后输入框却空了。
+  const normalizeNote = (value: string): string => {
+    let cleaned = "";
+    for (const ch of value) {
+      if (cleaned.length >= 500) {
+        break;
+      }
+      if (ch === "\n" || ch === "\r" || ch === "\t") {
+        cleaned += " ";
+      } else if (/\p{Cc}/u.test(ch)) {
+        continue;
+      } else {
+        cleaned += ch;
+      }
+    }
+    return cleaned.trim();
+  };
+
+  // 单行备注超出输入框时，悬停用系统提示读全文。列表会裁掉自绘气泡。
+  // 正在编辑时去掉提示，避免盖住光标。
+  const syncNoteOverflowTitle = (input: HTMLInputElement): void => {
+    if (document.activeElement === input || input.value.length === 0) {
+      input.removeAttribute("title");
+      return;
+    }
+    if (input.scrollWidth > input.clientWidth + 1) {
+      input.title = input.value;
+    } else {
+      input.removeAttribute("title");
+    }
+  };
+
   const persistNote = async (id: string, draft: string): Promise<void> => {
     try {
       const payload = await invoke<HistoryListPayload>("set_history_note", { id, note: draft });
@@ -546,8 +596,9 @@ export function mountHistory(root: HTMLElement): () => void {
       holder.textContent = t("history.thumb_missing");
     } else {
       if (!entry.imageMissing) {
-        // 双击缩略图即再编辑,提示与按钮同一文案。
-        holder.dataset.tooltip = t("history.reedit");
+        // 单击缩略图即再编辑。列表会裁掉自绘气泡，系统提示在滚动边缘仍可见。
+        holder.classList.add("is-reedit");
+        holder.title = t("history.reedit");
       }
       loadThumbnail(entry.id, holder);
     }
@@ -558,10 +609,14 @@ export function mountHistory(root: HTMLElement): () => void {
     time.className = "history-time";
     const formatted = formatTime(entry.createdAt);
     time.textContent = formatted.label;
-    time.dataset.tooltip = formatted.title;
+    // 列表 overflow 会裁掉向下的自绘气泡。完整日期改走系统提示，贴在滚动区域边缘也能看见。
+    const canReedit = !entry.imageMissing;
+    time.title = canReedit ? `${formatted.title} · ${t("history.reedit")}` : formatted.title;
     const detail = document.createElement("div");
     detail.className = "history-size";
-    const detailParts = [`${entry.width} × ${entry.height}`];
+    const detailParts = [
+      t("preview.zoom.dimensions", { width: entry.width, height: entry.height }),
+    ];
     if (toolsEnabled && entry.mode) {
       const labelKey = modeLabelKey(entry.mode);
       if (labelKey) {
@@ -569,6 +624,10 @@ export function mountHistory(root: HTMLElement): () => void {
       }
     }
     detail.textContent = detailParts.join(" · ");
+    if (canReedit) {
+      meta.classList.add("is-reedit");
+      detail.title = t("history.reedit");
+    }
     meta.append(time, detail);
     if (entry.imageMissing) {
       const missing = document.createElement("div");
@@ -588,8 +647,40 @@ export function mountHistory(root: HTMLElement): () => void {
       input.placeholder = t("history.note_placeholder");
       input.setAttribute("aria-label", t("history.note_label"));
       input.value = noteDrafts.get(entry.id) ?? entry.note;
+      const limitEl = document.createElement("p");
+      limitEl.className = "history-note-limit";
+      limitEl.id = `history-note-limit-${entry.id.replace(/[^\w-]/g, "") || "row"}`;
+      const noteAtLimit = (): boolean => input.value.length >= input.maxLength;
+      // 写满后再敲不会进框。红字留在这一行下面，光标还在框里也能看见，不必等悬停。
+      const syncNoteLimit = (): void => {
+        const full = noteAtLimit();
+        const wasHidden = limitEl.hidden;
+        input.classList.toggle("is-full", full);
+        limitEl.hidden = !full;
+        limitEl.textContent = full ? t("history.note_limit", { max: input.maxLength }) : "";
+        if (full) {
+          input.setAttribute("aria-describedby", limitEl.id);
+        } else {
+          input.removeAttribute("aria-describedby");
+        }
+        if (document.activeElement === input) {
+          input.removeAttribute("title");
+        }
+        // 列表底部写满时，红字在输入框下面，不滚一下会被列表裁掉。
+        if (full && wasHidden && document.activeElement === input) {
+          limitEl.scrollIntoView({ block: "nearest", inline: "nearest" });
+        }
+      };
+      syncNoteLimit();
+      input.addEventListener("beforeinput", (event) => {
+        if (!noteAtLimit() || !event.inputType.startsWith("insert")) {
+          return;
+        }
+        syncNoteLimit();
+      });
       input.addEventListener("input", () => {
         noteDrafts.set(entry.id, input.value);
+        syncNoteLimit();
       });
       input.addEventListener("keydown", (event) => {
         if (event.key === "Enter" && !event.isComposing) {
@@ -597,18 +688,26 @@ export function mountHistory(root: HTMLElement): () => void {
           input.blur();
         }
       });
+      input.addEventListener("focus", () => {
+        syncNoteLimit();
+      });
       input.addEventListener("blur", () => {
         if (applyingDom) {
           return;
         }
-        const draft = input.value;
+        const draft = normalizeNote(input.value);
+        if (input.value !== draft) {
+          input.value = draft;
+        }
+        syncNoteLimit();
+        syncNoteOverflowTitle(input);
         noteDrafts.delete(entry.id);
         if (draft === savedNote(entry.id)) {
           return;
         }
         void persistNote(entry.id, draft);
       });
-      note.append(input);
+      note.append(input, limitEl);
       row.append(note);
     }
 
@@ -625,7 +724,7 @@ export function mountHistory(root: HTMLElement): () => void {
       favorite.disabled = busy;
       const favoriteLabel = t(entry.favorite ? "history.unfavorite" : "history.favorite");
       favorite.setAttribute("aria-label", favoriteLabel);
-      favorite.dataset.tooltip = favoriteLabel;
+      favorite.title = favoriteLabel;
       favorite.innerHTML = STAR_ICON;
       actions.append(favorite);
     }
@@ -641,11 +740,18 @@ export function mountHistory(root: HTMLElement): () => void {
       button.className = className;
       button.dataset.entryAction = action;
       button.textContent = t(labelKey);
+      if (action === "copy" && copyButtonMinWidth) {
+        button.style.minWidth = copyButtonMinWidth;
+      }
       if (entry.imageMissing && action !== "delete") {
-        button.disabled = true;
         button.dataset.missingDisabled = "true";
-        // 禁用控件不响应自绘提示的悬停;原因提示保留原生 title(R2 允许例外)。
+        // 真正 disabled 时，系统提示在 Chromium 里不会出现。用 aria-disabled
+        // 挡住点击，悬停仍能看到原图缺失的原因。
+        button.setAttribute("aria-disabled", "true");
         button.title = t("history.image_missing_title");
+        if (busy) {
+          button.disabled = true;
+        }
       } else if (busy) {
         button.disabled = true;
       }
@@ -665,11 +771,133 @@ export function mountHistory(root: HTMLElement): () => void {
     return row;
   };
 
+  let copyButtonMinWidth = "";
+  const measureCopyButtonMinWidth = (): string => {
+    const probe = document.createElement("button");
+    probe.type = "button";
+    probe.className = "history-btn history-btn-quiet";
+    probe.style.position = "absolute";
+    probe.style.visibility = "hidden";
+    probe.style.pointerEvents = "none";
+    probe.style.width = "auto";
+    probe.style.minWidth = "0";
+    probe.style.left = "0";
+    probe.style.top = "0";
+    root.append(probe);
+    let widest = 0;
+    for (const key of ["history.copy", "history.copy_done"] as const) {
+      probe.textContent = t(key);
+      widest = Math.max(widest, probe.getBoundingClientRect().width);
+    }
+    probe.remove();
+    return widest > 0 ? `${Math.ceil(widest)}px` : "";
+  };
+
+  // 原生下拉宽度跟着当前选项走。「今天」换成「最近 30 天」、或「All modes」换成
+  // 「Scrolling capture」时，搜索框会被挤窄。按该下拉最长的一项留住宽度。
+  const selectWidthCache = new Map<string, string>();
+  const reserveSelectWidths = (): void => {
+    const selects = root.querySelectorAll<HTMLSelectElement>(".history-select");
+    for (const select of selects) {
+      const key = `${currentLanguage()}|${select.dataset.filter ?? ""}`;
+      let next = selectWidthCache.get(key);
+      if (!next) {
+        const probe = document.createElement("select");
+        probe.className = "history-select";
+        probe.style.position = "absolute";
+        probe.style.visibility = "hidden";
+        probe.style.pointerEvents = "none";
+        probe.style.width = "auto";
+        probe.style.minWidth = "0";
+        probe.style.maxWidth = "none";
+        probe.style.left = "0";
+        probe.style.top = "0";
+        const option = document.createElement("option");
+        probe.append(option);
+        root.append(probe);
+        let widest = 0;
+        for (const item of select.options) {
+          option.textContent = item.text;
+          widest = Math.max(widest, probe.getBoundingClientRect().width);
+        }
+        probe.remove();
+        if (widest <= 0) {
+          continue;
+        }
+        next = `min(${Math.ceil(widest)}px, 100%)`;
+        selectWidthCache.set(key, next);
+      }
+      if (select.style.minWidth !== next) {
+        select.style.minWidth = next;
+      }
+    }
+  };
+
+  let copyFlashId: string | null = null;
+  let copyFlashTimer = 0;
+  const copyButtonFor = (id: string): HTMLButtonElement | null => {
+    const row = listEl.querySelector(`[data-entry-id="${CSS.escape(id)}"]`);
+    const button = row?.querySelector("[data-entry-action=copy]");
+    return button instanceof HTMLButtonElement ? button : null;
+  };
+  const clearCopyFlash = (): void => {
+    if (copyFlashTimer) {
+      window.clearTimeout(copyFlashTimer);
+      copyFlashTimer = 0;
+    }
+    if (copyFlashId) {
+      const button = copyButtonFor(copyFlashId);
+      if (button) {
+        button.classList.remove("is-copied");
+        button.textContent = t("history.copy");
+      }
+    }
+    copyFlashId = null;
+  };
+  const paintCopyFlash = (): void => {
+    if (!copyFlashId) {
+      return;
+    }
+    const button = copyButtonFor(copyFlashId);
+    if (!button) {
+      return;
+    }
+    button.classList.add("is-copied");
+    button.textContent = t("history.copy_done");
+  };
+  const flashCopied = (id: string): void => {
+    clearCopyFlash();
+    copyFlashId = id;
+    paintCopyFlash();
+    copyFlashTimer = window.setTimeout(() => {
+      copyFlashTimer = 0;
+      const button = copyFlashId ? copyButtonFor(copyFlashId) : null;
+      copyFlashId = null;
+      if (button) {
+        button.classList.remove("is-copied");
+        button.textContent = t("history.copy");
+      }
+    }, NOTICE_AUTO_HIDE_MS);
+  };
+
   const render = (payload: HistoryListPayload): void => {
     lastPayload = payload;
     const toolsEnabled = payload.toolsEnabled;
     filtersEl.hidden = !toolsEnabled;
-    clearFiltersEl.disabled = !filtersActive();
+    const filtersOn = filtersActive();
+    if (!filtersOn && document.activeElement === clearFiltersEl) {
+      searchEl.focus();
+    }
+    clearFiltersEl.disabled = !filtersOn;
+    clearFiltersEl.classList.toggle("is-reserved", !filtersOn);
+    if (filtersOn) {
+      clearFiltersEl.removeAttribute("aria-hidden");
+    } else {
+      clearFiltersEl.setAttribute("aria-hidden", "true");
+    }
+    timeEl.classList.toggle("is-active", timeRange !== "all");
+    modeEl.classList.toggle("is-active", modeFilter !== "all");
+    searchEl.classList.toggle("is-active", noteQuery.trim().length > 0);
     noticeEl.hidden = !payload.notice;
     noticeEl.textContent = payload.notice ?? "";
     const visible = visibleEntries(
@@ -704,11 +932,15 @@ export function mountHistory(root: HTMLElement): () => void {
         break;
       }
     }
+    copyButtonMinWidth = toolsEnabled ? measureCopyButtonMinWidth() : "";
     applyingDom = true;
     try {
       listEl.replaceChildren();
       for (const entry of visible) {
         listEl.append(entryRow(entry, toolsEnabled));
+      }
+      for (const input of listEl.querySelectorAll<HTMLInputElement>(".history-note-input")) {
+        syncNoteOverflowTitle(input);
       }
     } finally {
       applyingDom = false;
@@ -748,18 +980,30 @@ export function mountHistory(root: HTMLElement): () => void {
     const noHistory = payload.entries.length === 0;
     const noMatch = !noHistory && visible.length === 0;
     emptyEl.hidden = !(noHistory || noMatch);
-    emptyEl.textContent = noMatch ? t("history.filter.empty") : t("history.empty");
+    emptyTextEl.textContent = noMatch ? t("history.filter.empty") : t("history.empty");
+    emptyClearEl.hidden = !noMatch;
     countEl.hidden = payload.entries.length === 0;
     countEl.textContent =
       toolsEnabled && filtersActive()
         ? t("history.count_filtered", { count: visible.length, total: payload.entries.length })
         : t("history.count", { count: payload.entries.length });
+    const countText = countEl.textContent ?? "";
+    if (
+      countText.length > 0 &&
+      countEl.clientWidth > 0 &&
+      countEl.scrollWidth > countEl.clientWidth + 1
+    ) {
+      countEl.title = countText;
+    } else {
+      countEl.removeAttribute("title");
+    }
     clearEl.disabled = busy || payload.entries.length === 0;
     if (payload.pendingUndo) {
       showUndo(payload.pendingUndo);
     } else {
       hideUndo();
     }
+    paintCopyFlash();
   };
 
   const refresh = async (): Promise<void> => {
@@ -825,12 +1069,14 @@ export function mountHistory(root: HTMLElement): () => void {
       showConfirm({ kind: "delete", id }, trigger);
       return;
     }
+    let copiedId: string | null = null;
     hideConfirm();
     setBusy(true);
     try {
       if (action === "copy") {
         await invoke("copy_history_entry", { id });
         setStatusKey("history.copied");
+        copiedId = id;
       } else if (action === "pin") {
         await invoke("pin_history_entry", { id });
         setStatusKey("history.pinned");
@@ -847,6 +1093,9 @@ export function mountHistory(root: HTMLElement): () => void {
     } finally {
       setBusy(false);
     }
+    if (copiedId) {
+      flashCopied(copiedId);
+    }
   };
 
   listEl.addEventListener("click", (event) => {
@@ -855,19 +1104,37 @@ export function mountHistory(root: HTMLElement): () => void {
       return;
     }
     const button = target.closest("[data-entry-action]");
-    if (!(button instanceof HTMLButtonElement) || button.disabled) {
+    if (button instanceof HTMLButtonElement) {
+      if (button.disabled || button.getAttribute("aria-disabled") === "true") {
+        return;
+      }
+      const row = button.closest("[data-entry-id]");
+      const id = row instanceof HTMLElement ? row.dataset.entryId : undefined;
+      const action = button.dataset.entryAction;
+      if (!id || !action) {
+        return;
+      }
+      void runAction(action, id, button);
       return;
     }
-    const row = button.closest("[data-entry-id]");
-    const id = row instanceof HTMLElement ? row.dataset.entryId : undefined;
-    const action = button.dataset.entryAction;
-    if (!id || !action) {
+    // 缩略图用了指针光标和「再编辑」提示。单击就打开，不必再等第二次点击。
+    const opener = target.closest(".history-thumb.is-reedit, .history-meta.is-reedit");
+    if (!(opener instanceof HTMLElement)) {
       return;
     }
-    void runAction(action, id, button);
+    const row = opener.closest("[data-entry-id]");
+    if (!(row instanceof HTMLElement)) {
+      return;
+    }
+    const reedit = row.querySelector<HTMLButtonElement>('[data-entry-action="reedit"]');
+    const id = row.dataset.entryId;
+    if (id && reedit && !reedit.disabled && reedit.getAttribute("aria-disabled") !== "true") {
+      void runAction("reedit", id, reedit);
+    }
   });
 
-  // 双击缩略图/时间区 = 再编辑(最高频动作);落在按钮或输入框上的双击不触发。
+  // 时间和尺寸单击已经打开。行内空白处仍保留双击，避免和备注、按钮抢第一次点击。
+  // 落在按钮或输入框上的双击不触发。
   listEl.addEventListener("dblclick", (event) => {
     const target = event.target;
     if (!(target instanceof Element)) {
@@ -882,7 +1149,7 @@ export function mountHistory(root: HTMLElement): () => void {
     }
     const reedit = row.querySelector<HTMLButtonElement>('[data-entry-action="reedit"]');
     const id = row.dataset.entryId;
-    if (id && reedit && !reedit.disabled) {
+    if (id && reedit && !reedit.disabled && reedit.getAttribute("aria-disabled") !== "true") {
       void runAction("reedit", id, reedit);
     }
   });
@@ -923,6 +1190,9 @@ export function mountHistory(root: HTMLElement): () => void {
   clearFiltersEl.addEventListener("click", () => {
     resetFilters();
   });
+  emptyClearEl.addEventListener("click", () => {
+    resetFilters();
+  });
 
   clearEl.addEventListener("click", () => {
     if (busy) {
@@ -936,6 +1206,28 @@ export function mountHistory(root: HTMLElement): () => void {
       return;
     }
     void performUndo();
+  });
+
+  confirmEl.addEventListener("keydown", (event) => {
+    if (event.key !== "Tab") {
+      return;
+    }
+    const items = [confirmAcceptEl, confirmCancelEl].filter((button) => !button.disabled);
+    const first = items[0];
+    const last = items[items.length - 1];
+    if (!first || !last) {
+      return;
+    }
+    const active = document.activeElement;
+    if (event.shiftKey) {
+      if (active === first || !confirmEl.contains(active)) {
+        event.preventDefault();
+        last.focus();
+      }
+    } else if (active === last || !confirmEl.contains(active)) {
+      event.preventDefault();
+      first.focus();
+    }
   });
 
   confirmAcceptEl.addEventListener("click", () => {
@@ -1015,9 +1307,27 @@ export function mountHistory(root: HTMLElement): () => void {
   });
 
   void refresh();
+  reserveSelectWidths();
+  void document.fonts.ready.then(() => {
+    if (!root.isConnected) {
+      return;
+    }
+    selectWidthCache.clear();
+    reserveSelectWidths();
+    const next = measureCopyButtonMinWidth();
+    if (!next || next === copyButtonMinWidth) {
+      return;
+    }
+    copyButtonMinWidth = next;
+    root.querySelectorAll<HTMLButtonElement>("[data-entry-action=copy]").forEach((button) => {
+      button.style.minWidth = next;
+    });
+  });
 
   // 语言切换:重建动态文案(状态、确认条、列表时间/动作),静态标签由 main 应用。
   return () => {
+    selectWidthCache.clear();
+    reserveSelectWidths();
     renderStatus();
     if (lastPayload) {
       render(lastPayload);

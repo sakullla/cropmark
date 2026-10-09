@@ -10,7 +10,10 @@ export function mountOcrLayout(stage: HTMLElement): { sync: (active: boolean) =>
   divider.setAttribute("role", "separator");
   divider.setAttribute("aria-orientation", "vertical");
   divider.dataset.i18nAriaLabel = "preview.ocr_panel.resize";
-  divider.setAttribute("aria-label", t("preview.ocr_panel.resize"));
+  const resizeLabel = t("preview.ocr_panel.resize");
+  divider.setAttribute("aria-label", resizeLabel);
+  // 握把的 ::after 已经是竖条，不能再挂自绘气泡。系统提示能说明拖动和双击。
+  divider.title = resizeLabel;
   stage.querySelector(".preview-image-pane")!.after(divider);
   let ratio = 0.44;
   let active = false;

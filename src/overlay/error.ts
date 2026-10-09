@@ -30,10 +30,16 @@ export function mountCaptureError(root: HTMLElement): () => void {
     return () => undefined;
   }
 
+  // 失败窗打开后焦点停在关闭上，Enter 就能关掉。语言刷新只改文案，不把正在复制说明的焦点拽走。
+  let closeFocused = false;
   const render = (error: CaptureError | null): void => {
     message.textContent = error?.message || t("error.fallback");
     hint.textContent = error?.hint || "";
     hint.hidden = !error?.hint;
+    if (!closeFocused) {
+      closeFocused = true;
+      queueMicrotask(() => close.focus());
+    }
   };
 
   close.addEventListener("click", () => {

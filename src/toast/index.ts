@@ -17,7 +17,20 @@ export function mountToast(root: HTMLElement): () => void {
   }
 
   const render = (payload: ToastPayload | null): void => {
-    message.textContent = payload?.message ?? "";
+    const text = payload?.message ?? "";
+    message.textContent = text;
+    message.removeAttribute("title");
+    // 三行仍放不下的文件名：系统提示给出全文。短句不重复挂同一段文字。
+    window.requestAnimationFrame(() => {
+      if (message.textContent !== text) {
+        return;
+      }
+      if (text && message.scrollHeight > message.clientHeight + 1) {
+        message.title = text;
+      } else {
+        message.removeAttribute("title");
+      }
+    });
   };
 
   void invoke<ToastPayload | null>("get_toast_message").then(render);

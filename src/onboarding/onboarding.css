@@ -31,6 +31,14 @@
   margin-top: 4px;
 }
 
+/* 打开日志失败以前和灰色说明同一套字。这是错误，要能和路径正文分开。 */
+.guide-section [data-log-error] {
+  color: var(--danger);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.45;
+}
+
 .guide-section > .choice {
   margin-top: 12px;
   max-width: 100%;
@@ -48,7 +56,7 @@
 
 .guide-hotkey {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
   min-width: 0;
@@ -64,6 +72,9 @@
 
 .guide-hotkey kbd {
   flex: 0 1 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   min-width: 0;
   max-width: min(60%, 100%);
   padding: 4px 10px;
@@ -75,11 +86,16 @@
   font-size: 13px;
   font-weight: 650;
   font-variant-numeric: tabular-nums;
-  overflow-wrap: anywhere;
-  text-align: right;
+  /* 与设置里的热键按钮相同：在加号处折行，键名本身放得下就不断开。 */
+  overflow-wrap: break-word;
+  text-align: center;
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--ink) 16%, transparent);
 }
 
 .guide-done {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   align-self: stretch;
   max-width: 100%;
   border: 0;
@@ -96,6 +112,7 @@
 }
 
 .guide-done:hover,
+.guide-done:focus-visible,
 .guide-done:active {
   filter: var(--control-hover-filter);
 }

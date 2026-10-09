@@ -26,6 +26,9 @@
 }
 
 .preview-titlebar {
+  position: relative;
+  /* 高于工具条。错误全文提示向下展开，否则会被 z-index:10 的工具条盖住。 */
+  z-index: 12;
   flex: 0 0 auto;
   display: flex;
   align-items: center;
@@ -63,12 +66,13 @@
   border: 1px solid transparent;
   border-radius: var(--radius-control-sm);
   background: transparent;
-  color: var(--muted);
+  color: var(--ink);
   cursor: pointer;
 }
 
 /* 关闭是危险动作:软危险语义 + 共享 press 反馈(过渡/按下滤镜由 .icon-btn 提供)。 */
 .preview-close:hover,
+.preview-close:focus-visible,
 .preview-close:active {
   background: var(--control-danger-hover-bg);
   box-shadow: inset 0 0 0 1px var(--control-danger-hover-border);
@@ -83,9 +87,16 @@
   padding: 3px 10px;
   border: 1px solid transparent;
   border-radius: var(--radius-pill);
-  color: var(--muted);
-  font-size: 12px;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 650;
   line-height: 1.4;
+  /* 省略放在内层文字上。本体若 overflow:hidden，截断后的悬停全文会被裁掉。 */
+  overflow: visible;
+}
+
+.preview-note-text {
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -186,6 +197,29 @@
   overflow: visible;
 }
 
+/* 保存、裁剪的说明是一整句。不换行时会从按钮中线画出窗口。 */
+.preview-toolbar [data-tooltip]::after {
+  left: 0;
+  right: auto;
+  transform: none;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  width: max-content;
+  max-width: min(18rem, calc(100vw - 16px));
+  text-align: start;
+}
+
+.preview-toolbar > [data-action="copy"][data-tooltip]::after,
+.preview-overflow > [data-tooltip]::after,
+.preview-action-group[data-preview-group="output"] [data-tooltip]::after,
+.preview-action-group[data-preview-group="picture"] [data-action="crop"][data-tooltip]::after,
+.preview-action-group[data-preview-group="picture"] [data-action="capture-again"][data-tooltip]::after,
+.preview-action-group[data-preview-group="picture"] [data-action="rotate-left"][data-tooltip]::after,
+.preview-action-group[data-preview-group="picture"] [data-action="rotate-right"][data-tooltip]::after {
+  left: auto;
+  right: 0;
+}
+
 .preview-tools,
 .preview-action-group {
   display: flex;
@@ -202,7 +236,7 @@
 
 .preview-group-sep {
   width: 1px;
-  height: 20px;
+  height: 24px;
   margin: 0 2px;
   background: var(--line);
   flex: 0 0 auto;
@@ -225,10 +259,21 @@
 }
 
 .preview-root .preview-overflow-menu .tool-label {
-  display: inline;
+  display: block;
+  /* 按文字撑开菜单。碰到菜单最大宽度时再省略，避免短菜单被长名撑破窗口。 */
+  flex: 0 1 auto;
+  width: max-content;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
   font-size: 13px;
   line-height: 1;
   white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.preview-more-glyph {
+  display: contents;
 }
 
 .preview-root .preview-toolbar .annotation-chrome,
@@ -240,6 +285,12 @@
   padding: 0 10px;
   gap: 6px;
   color: var(--ink);
+}
+
+/* 取字还没出结果时，「复制全部」先占住图标位。结果到来后按钮出现，旁边的工具不再被挤开。 */
+.preview-named.is-reserved {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .preview-toolbar-row .preview-named:not([data-action="save"]):not(.preview-save-caret) {
@@ -259,13 +310,14 @@
 .preview-overflow-menu {
   position: fixed;
   z-index: 40;
-  width: 176px;
+  /* 短操作名仍保持原宽度。Rotate right 90° 一类长名按文字变宽，不再被省略号截断。 */
+  width: max-content;
   display: flex;
   flex-direction: column;
   align-items: stretch;
   gap: 2px;
-  min-width: 160px;
-  max-width: calc(100vw - 16px);
+  min-width: 176px;
+  max-width: min(280px, calc(100vw - 16px));
   max-height: min(420px, calc(100vh - 16px));
   overflow-y: auto;
   overflow-x: hidden;
@@ -281,6 +333,8 @@
 .preview-root .preview-overflow-menu .annotation-chrome {
   width: 100%;
   justify-content: flex-start;
+  /* 图标和名称紧挨着，长名字看起来贴在图标上。 */
+  gap: 8px;
   border-radius: var(--radius-control-sm);
   flex: 0 0 36px;
   height: 36px;
@@ -290,8 +344,13 @@
   background: transparent;
 }
 
-.preview-overflow-menu button:hover:not(:disabled) {
+.preview-overflow-menu button:hover:not(:disabled):not([aria-disabled="true"]),
+.preview-overflow-menu button:focus-visible:not([aria-disabled="true"]) {
   background: var(--control-hover-bg);
+}
+
+.preview-overflow-menu button:active:not(:disabled):not([aria-disabled="true"]) {
+  filter: var(--control-pressed-filter);
 }
 
 .preview-overflow-menu [data-tooltip]::after {
@@ -307,11 +366,16 @@
   z-index: 6;
   display: flex;
   align-items: center;
+  /* 取字面板挤窄画面时，确认和取消换到下一行靠右，不再被画面裁掉。 */
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 8px;
+  row-gap: 6px;
   max-width: calc(100% - 24px);
   padding: 6px 8px 6px 12px;
   border: 1px solid var(--line);
-  border-radius: var(--radius-pill);
+  /* 换行后整条会变高。胶囊圆角会收成大半圆，改和录制完成条一样的窗口圆角。 */
+  border-radius: var(--radius-window);
   background: var(--panel);
   box-shadow: var(--shadow);
 }
@@ -321,25 +385,75 @@
 }
 
 .preview-crop-hint {
-  min-width: 0;
+  flex: 1 1 10rem;
+  /* 宽画面里说明仍贴在按钮左侧。窄于 10rem 时说明独占一行，把按钮让到下一行。
+     上限避免整句把确认条拉成画面那么宽。 */
+  min-width: min(100%, 10rem);
+  max-width: min(100%, 28rem);
+  /* 和截图顶栏说明同一字号。颜色仍弱于旁边的像素尺寸，尺寸继续用正文色。 */
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
+  line-height: 1.45;
+  /* 单行省略会先裁掉 Enter / Esc。窄窗口改在按钮旁折行，整句操作说明都留着。 */
+  white-space: normal;
+  overflow-wrap: break-word;
+}
+
+/* 选区小于最小边长时，说明改成原因，和红色尺寸同一颜色。确认仍禁用。 */
+.preview-crop-hint.is-too-small {
+  color: var(--danger);
+  font-weight: 650;
+}
+
+/* 拖选时的像素尺寸要能盯着看:提示保持灰色,数字用正文色和等宽数字。 */
+.preview-crop-size,
+.preview-crop-bar > button,
+.preview-crop-confirm-wrap {
+  flex: 0 0 auto;
+}
+
+.preview-crop-bar button {
+  white-space: nowrap;
+}
+
+.preview-crop-size {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-/* 拖选尺寸徽标:沿用 overlay .size-badge 的 tabular-nums 数字语言,muted 小字。 */
-.preview-crop-size {
-  color: var(--muted);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
+.preview-crop-size.is-too-small {
+  color: var(--danger);
 }
 
 /* 未拖选时徽标留空,不占确认条间距。 */
 .preview-crop-size:empty {
   display: none;
+}
+
+/* 确认置灰时原因挂在外层：禁用按钮本身悬停不出气泡。条在画面底部，气泡向上展开。 */
+.preview-crop-confirm-wrap {
+  display: inline-flex;
+  position: relative;
+}
+
+.preview-crop-confirm-wrap[data-tooltip]::after {
+  top: auto;
+  bottom: calc(100% + 6px);
+  left: auto;
+  right: 0;
+  transform: none;
+  white-space: normal;
+  width: max-content;
+  max-width: min(16rem, calc(100vw - 16px));
+  text-align: start;
 }
 
 /* 动作按钮只保留这一套基础规则:形状与尺寸,状态语义消费共享 token。 */
@@ -364,17 +478,26 @@
   app-region: no-drag;
 }
 
-.preview-named:hover:not(.primary):not(:disabled),
-.preview-named:active:not(.primary):not(:disabled),
+.preview-named:hover:not(.primary):not(:disabled):not([aria-disabled="true"]),
+.preview-named:focus-visible:not(.primary):not(:disabled):not([aria-disabled="true"]),
+.preview-named:active:not(.primary):not(:disabled):not([aria-disabled="true"]),
 .preview-crop-bar button:hover:not(.primary):not(:disabled),
+.preview-crop-bar button:focus-visible:not(.primary):not(:disabled),
 .preview-crop-bar button:active:not(.primary):not(:disabled) {
   border-color: var(--control-hover-border);
   background: var(--control-hover-bg);
 }
 
-.preview-named:active:not(.primary):not(:disabled),
+.preview-named:active:not(.primary):not(:disabled):not([aria-disabled="true"]),
 .preview-crop-bar button:active:not(.primary):not(:disabled) {
   filter: var(--control-pressed-filter);
+}
+
+/* 确认条浮在画面上:按钮收成 32px,少挡住正在裁的区域。 */
+.preview-crop-bar button {
+  height: 32px;
+  min-height: 32px;
+  padding: 0 12px;
 }
 
 .preview-named.active,
@@ -386,7 +509,9 @@
 }
 
 .preview-named:disabled,
+.preview-named[aria-disabled="true"],
 .preview-overflow-menu .annotation-chrome:disabled,
+.preview-overflow-menu .annotation-chrome[aria-disabled="true"],
 .preview-crop-bar button:disabled {
   opacity: var(--control-disabled-opacity);
   cursor: default;
@@ -394,8 +519,9 @@
 
 .preview-named svg,
 .preview-crop-bar button svg {
-  width: 15px;
-  height: 15px;
+  /* 与同一条工具栏上的标注图标同为 18px，保存、裁剪、贴图不再偏小。 */
+  width: 18px;
+  height: 18px;
   display: block;
   flex: 0 0 auto;
 }
@@ -409,12 +535,14 @@
   padding: 0 16px;
 }
 
-.preview-named.primary:hover:not(:disabled),
-.preview-crop-bar .primary:hover:not(:disabled) {
+.preview-named.primary:hover:not(:disabled):not([aria-disabled="true"]):not(:active),
+.preview-named.primary:focus-visible:not(:disabled):not([aria-disabled="true"]):not(:active),
+.preview-crop-bar .primary:hover:not(:disabled):not(:active),
+.preview-crop-bar .primary:focus-visible:not(:disabled):not(:active) {
   filter: var(--control-hover-filter);
 }
 
-.preview-named.primary:active:not(:disabled),
+.preview-named.primary:active:not(:disabled):not([aria-disabled="true"]),
 .preview-crop-bar .primary:active:not(:disabled) {
   filter: var(--control-pressed-filter);
 }
@@ -454,9 +582,23 @@
   border-radius: var(--radius-pill) 0 0 var(--radius-pill);
 }
 
+.preview-save-split:hover,
+.preview-save-split:focus-within {
+  border-color: var(--control-hover-border);
+}
+
+.preview-save-split:hover > .preview-save-caret,
+.preview-save-split:focus-within > .preview-save-caret {
+  border-left-color: var(--control-hover-border);
+}
+
+.preview-save-split:focus-within {
+  border-color: var(--accent);
+}
+
 .preview-save-split > .preview-save-caret {
-  width: 28px;
-  min-width: 28px;
+  width: 32px;
+  min-width: 32px;
   min-height: 24px;
   padding: 0;
   border-left: 1px solid var(--line);
@@ -467,8 +609,8 @@
 }
 
 .preview-save-caret svg {
-  width: 12px;
-  height: 12px;
+  width: 16px;
+  height: 16px;
   display: block;
 }
 
@@ -496,6 +638,18 @@
 
 .preview-quality-panel[hidden] {
   display: none;
+}
+
+/* 面板贴在保存按钮右侧。居中且不换行时，「高质量（文件较大）」会画出窗口。 */
+.preview-quality-panel [data-tooltip]::after {
+  left: auto;
+  right: 0;
+  transform: none;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  width: max-content;
+  max-width: min(16rem, calc(100vw - 16px));
+  text-align: start;
 }
 
 .preview-stage {
@@ -545,25 +699,42 @@
   font-size: 13px;
 }
 
+/* 失败和加载共用这一块，但失败不是进行中：用危险色，避免看起来还在转圈。 */
+.preview-load-state.is-error {
+  color: var(--danger);
+  font-weight: 650;
+}
+
 .preview-load-state .progress { width: 24px; height: 24px; }
 .preview-load-state button {
-  border: 1px solid var(--line);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  border: 1px solid var(--accent);
   border-radius: var(--radius-control-sm);
-  padding: 8px 20px;
-  background: var(--card);
-  color: var(--accent);
+  padding: 0 20px;
+  /* 失败时这是唯一恢复动作。实心主按钮，和录制待保存里的重试一致。 */
+  background: var(--accent);
+  color: var(--on-accent);
   cursor: pointer;
   font: inherit;
+  font-weight: 650;
   transition: var(--control-transition);
 }
 
-/* 重试是加载失败唯一恢复路径:与工具条按钮同一套 token,悬停/按下有视觉确认。 */
-.preview-load-state button:hover {
-  border-color: var(--control-hover-border);
-  background: var(--control-hover-bg);
+.preview-load-state button:hover:not(:active),
+.preview-load-state button:focus-visible:not(:active) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+  filter: var(--control-hover-filter);
 }
 
 .preview-load-state button:active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
   filter: var(--control-pressed-filter);
 }
 
@@ -577,7 +748,11 @@
   align-self: stretch;
   display: flex;
   align-items: center;
+  /* 取字面板挤窄画面后，缩放按钮换到下一行并靠右，不再被窗口裁掉。 */
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 4px;
+  row-gap: 6px;
   padding: 6px 0 0;
   border: 0;
   border-radius: var(--radius-control);
@@ -585,14 +760,36 @@
 }
 
 .preview-dimensions {
+  display: block;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  height: 32px;
   margin-right: auto;
-  padding: 0 4px;
-  color: var(--muted);
-  font-size: 12px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: var(--card);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 30px;
   font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 画面还没到时不画出空胶囊，右侧缩放按钮仍靠这一侧的 auto 边距留在原位。 */
+.preview-dimensions:empty {
+  height: auto;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
 }
 
 .preview-zoom button {
+  flex: 0 0 auto;
   white-space: nowrap;
 }
 
@@ -601,20 +798,66 @@
   opacity: 0.55;
 }
 
+/* 保存、复制、旋转进行中工具条是 inert，画面上的新笔画也会被丢掉。
+   光标改为进行中，避免工具条和截图看起来还能点。关闭和缩放不在这一层。 */
+.preview-root.is-working .preview-toolbar,
+.preview-root.is-loading .preview-toolbar,
+.preview-root.is-working .preview-toolbar button,
+.preview-root.is-loading .preview-toolbar button,
+.preview-root.is-working .preview-frame,
+.preview-root.is-loading .preview-frame,
+.preview-root.is-working .preview-output,
+.preview-root.is-loading .preview-output {
+  cursor: progress;
+}
+
+.preview-root.is-working .preview-frame canvas,
+.preview-root.is-loading .preview-frame canvas {
+  pointer-events: none;
+}
+
+/* 加载失败后工具条不再接收点击，但不再保持正常外观。重试按钮在画面中央，不在这一层。 */
+.preview-root.is-unavailable .preview-toolbar,
+.preview-root.is-unavailable .preview-toolbar button,
+.preview-root.is-unavailable .preview-frame,
+.preview-root.is-unavailable .preview-output {
+  cursor: not-allowed;
+}
+
+.preview-root.is-unavailable .preview-toolbar {
+  opacity: 0.55;
+}
+
+.preview-root.is-unavailable .preview-frame canvas {
+  pointer-events: none;
+}
+
 .preview-root.is-loading .preview-frame canvas {
   visibility: hidden;
 }
 
+.preview-note.is-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.preview-note.is-progress .preview-note-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .preview-note.is-progress::before {
   content: "";
-  display: inline-block;
+  display: block;
+  flex: 0 0 auto;
   width: 10px;
   height: 10px;
-  margin-right: 8px;
   border: 2px solid var(--line);
   border-top-color: var(--accent);
   border-radius: 50%;
-  vertical-align: -2px;
   animation: app-progress-spin 800ms linear infinite;
 }
 
@@ -630,7 +873,8 @@
 .preview-stage.has-ocr { gap: 0; }
 .preview-stage > .ocr-panel { width: var(--ocr-pane-width, 44%); }
 .preview-ocr-divider {
-  flex: 0 0 12px;
+  /* 握把只有 4px，命中区加宽到 16px，才比较容易拖到分界。 */
+  flex: 0 0 16px;
   cursor: col-resize;
   touch-action: none;
   position: relative;
@@ -638,12 +882,14 @@
 .preview-ocr-divider::after {
   content: "";
   position: absolute;
-  top: 40%;
-  bottom: 40%;
-  width: 3px;
-  left: 4px;
+  top: 50%;
+  left: 6px;
+  width: 4px;
+  height: min(64px, 46%);
   border-radius: 3px;
-  background: var(--line);
+  /* 舞台底色上发丝线几乎看不见。短握把用正文色的淡混合，悬停再换成强调色。 */
+  background: color-mix(in srgb, var(--ink) 32%, transparent);
+  transform: translateY(-50%);
 }
 .preview-ocr-divider:hover::after,
 .preview-ocr-divider:focus-visible::after,
@@ -651,25 +897,45 @@
 .is-resizing-ocr { user-select: none; cursor: col-resize; }
 
 .preview-zoom button {
-  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  min-height: 32px;
+  height: 32px;
   padding: 0 8px;
-  border: 1px solid transparent;
+  /* 和左侧尺寸胶囊同一套描边。透明边框只有悬停才出现，未选中时像说明文字。 */
+  border: 1px solid var(--line);
   border-radius: var(--radius-control-sm);
-  background: transparent;
+  background: var(--card);
   color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
   cursor: pointer;
   transition: var(--control-transition);
 }
 
 /* 与工具条按钮同一套 token:hover 只换边框/底色,不覆盖选中态的 accent 文字色。 */
-.preview-zoom button:hover {
+.preview-zoom button:hover:not([aria-pressed="true"]),
+.preview-zoom button:focus-visible:not([aria-pressed="true"]) {
   border-color: var(--control-hover-border);
   background: var(--control-hover-bg);
 }
 
+.preview-zoom button:active:not(:disabled) {
+  filter: var(--control-pressed-filter);
+}
+
 .preview-zoom button[aria-pressed="true"] {
   background: var(--accent-soft);
+  border-color: var(--accent);
   color: var(--accent);
+}
+
+.preview-zoom button[aria-pressed="true"]:hover:not(:active),
+.preview-zoom button[aria-pressed="true"]:focus-visible:not(:active) {
+  filter: var(--control-hover-filter);
 }
 
 .preview-zoom [data-tooltip]::after {
@@ -678,6 +944,12 @@
   left: auto;
   right: 0;
   transform: none;
+  /* 「原始像素（100%），滚动查看细节」不换行时，取字面板挤窄画面后会画出窗口。 */
+  white-space: normal;
+  overflow-wrap: anywhere;
+  width: max-content;
+  max-width: min(16rem, calc(100vw - 16px));
+  text-align: start;
 }
 
 /* R2:取字面板样式在共享模块 src/ocr/ocr.css;这里只保留预览专属的画布光标。 */
@@ -699,7 +971,8 @@
   width: auto;
   height: auto;
   display: block;
-  border-radius: var(--radius-control-sm);
+  /* 预览不再另切圆角。小截图的四角会被吃掉,和复制、保存出去的像素对不上。
+     美化圆角仍由脚本按设置写进行内样式。 */
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--ink) 18%, transparent),
     0 2px 10px color-mix(in srgb, var(--ink) 18%, transparent),
@@ -719,6 +992,7 @@
   cursor: text;
 }
 
-.preview-root[data-tool="number"] .preview-frame canvas {
+.preview-root[data-tool="number"] .preview-frame canvas,
+.preview-root[data-tool="sticker"] .preview-frame canvas {
   cursor: copy;
 }

@@ -15,11 +15,11 @@ export function mountDelay(root: HTMLElement): () => void {
       <div class="count-row">
         <span class="count-ring" aria-hidden="true" hidden></span>
         <div class="count" data-i18n="delay.preparing" aria-hidden="true">准备截取</div>
+        <button type="button" data-action="cancel" data-i18n="delay.cancel">取消</button>
       </div>
       <p class="hint" data-i18n="delay.hint">倒计时期间可操作其它应用，到期截取当时屏幕。</p>
       <div class="sr-only" role="status" data-delay-status></div>
     </div>
-    <button type="button" data-action="cancel" data-i18n="delay.cancel">取消</button>
   `;
   const count = root.querySelector(".count");
   const ring = root.querySelector(".count-ring");

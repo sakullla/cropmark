@@ -4,16 +4,32 @@
   height: 100%;
 }
 
+.history-root .titlebar {
+  gap: 8px;
+}
+
+.history-root .brand {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
 .history-toolbar {
   display: flex;
   align-items: center;
+  flex: 0 0 auto;
   gap: 8px;
 }
 
 .history-count {
-  font-size: 12px;
-  font-weight: 550;
-  color: var(--muted);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
 }
 
 .history-content {
@@ -41,25 +57,72 @@
   color: var(--ink);
   font: inherit;
   font-size: 13px;
+  font-weight: 650;
   transition: var(--control-transition);
 }
 
-.history-select:hover,
-.history-search:hover,
-.history-note-input:hover {
+.history-select:hover:not(:focus-visible),
+.history-search:hover:not(:focus-visible),
+.history-note-input:hover:not(:focus-visible) {
   border-color: var(--control-hover-border);
-  background: var(--control-hover-bg);
+  background-color: var(--control-hover-bg);
+}
+
+.history-select:focus-visible,
+.history-search:focus-visible,
+.history-note-input:focus-visible {
+  border-color: var(--accent);
+  background-color: var(--control-fill);
+}
+
+/* 非「全部」时下拉和搜索框要能看出正在筛。只改边框色，背景用 background-color，避免清掉下拉箭头。 */
+.history-select.is-active,
+.history-select.is-active:hover:not(:focus-visible),
+.history-search.is-active,
+.history-search.is-active:hover:not(:focus-visible) {
+  border-color: var(--accent);
+  background-color: var(--accent-soft);
+}
+
+.history-select.is-active,
+.history-select.is-active:hover:not(:focus-visible) {
+  color: var(--accent);
+}
+
+/* 选中筛选时箭头跟文字同色。只换图，位置和重复仍用上面的规则。 */
+.history-select.is-active {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 4.5 6 8l3.5-3.5' fill='none' stroke='%232457db' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+
+@media (prefers-color-scheme: dark) {
+  .history-select.is-active {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 4.5 6 8l3.5-3.5' fill='none' stroke='%2393c5fd' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  }
 }
 
 .history-select,
 .history-search {
   height: 32px;
+  /* 边框各 1px，行高填满内容区，关闭态的文字才落在 32px 框的中线。 */
+  line-height: 30px;
 }
 
 .history-select {
   flex: 0 0 auto;
   max-width: 100%;
-  padding: 0 8px;
+  padding: 0 28px 0 10px;
+  cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 4.5 6 8l3.5-3.5' fill='none' stroke='%23617087' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  background-size: 12px 12px;
+}
+
+@media (prefers-color-scheme: dark) {
+  .history-select {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 4.5 6 8l3.5-3.5' fill='none' stroke='%23a8b3c0' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  }
 }
 
 .history-search {
@@ -70,7 +133,11 @@
 
 .history-filter-clear {
   flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: 0;
+  height: 32px;
   min-height: 32px;
   padding: 0 8px;
   border-radius: var(--radius-control-sm);
@@ -84,6 +151,7 @@
 }
 
 .history-filter-clear:hover:not(:disabled),
+.history-filter-clear:focus-visible:not(:disabled),
 .history-filter-clear:active:not(:disabled) {
   background: var(--accent-soft);
 }
@@ -97,9 +165,17 @@
   cursor: default;
 }
 
+/* 未筛选时仍占位。开始筛选或输入备注时，搜索框不再被「清除筛选」挤窄。 */
+.history-filter-clear.is-reserved {
+  visibility: hidden;
+  pointer-events: none;
+}
+
 .history-status {
   margin: 0;
-  font-size: 12px;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.45;
   color: var(--ok);
   overflow-wrap: anywhere;
 }
@@ -120,11 +196,12 @@
   border: 1px solid var(--accent);
   border-radius: var(--radius-control);
   background: var(--accent-soft);
+  animation: surface-in 160ms ease;
 }
 
 .history-undo-text {
   min-width: 0;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.45;
   color: var(--ink);
   overflow-wrap: anywhere;
@@ -138,12 +215,22 @@
   font-weight: 650;
 }
 
-.history-undo .history-undo-btn:hover:not(:disabled) {
+.history-undo .history-undo-btn:hover:not(:disabled),
+.history-undo .history-undo-btn:focus-visible:not(:disabled) {
   filter: var(--control-hover-filter);
 }
 
 .history-undo .history-undo-btn:active:not(:disabled) {
   filter: var(--control-pressed-filter);
+}
+
+/* 确认条打开时，列表和清空不能再点。变淡说明这些操作先停一下。 */
+.history-root:has(.history-confirm:not([hidden])) .history-clear,
+.history-root:has(.history-confirm:not([hidden])) .history-filters,
+.history-root:has(.history-confirm:not([hidden])) .history-list,
+.history-root:has(.history-confirm:not([hidden])) .history-empty,
+.history-root:has(.history-confirm:not([hidden])) .history-undo {
+  opacity: 0.45;
 }
 
 /* 窗口内确认条:删除/清空不依赖 WebView 原生 confirm(macOS WKWebView 不可用)。 */
@@ -156,11 +243,15 @@
   border: 1px solid var(--danger);
   border-radius: var(--radius-control);
   background: var(--danger-soft);
+  animation: surface-in 160ms ease;
 }
 
 .history-confirm-text {
+  /* 英文整句比 640 宽的内容区更长。不设下限时文字不收缩，确认和取消会被右侧裁掉。 */
+  flex: 1 1 auto;
+  min-width: 0;
   margin: 0;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.45;
   color: var(--ink);
   overflow-wrap: anywhere;
@@ -179,7 +270,8 @@
   font-weight: 650;
 }
 
-.history-confirm .history-confirm-accept:hover:not(:disabled) {
+.history-confirm .history-confirm-accept:hover:not(:disabled),
+.history-confirm .history-confirm-accept:focus-visible:not(:disabled) {
   border-color: var(--danger);
   background: var(--danger);
   color: var(--on-danger);
@@ -200,23 +292,12 @@
   background: var(--card);
   overflow: auto;
   overscroll-behavior: contain;
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--ink) 28%, transparent) transparent;
+  /* 删除贴在行尾。滚动条浮在内容上时会盖住它，先留出槽位。 */
+  scrollbar-gutter: stable;
 }
 
 .history-list:empty {
   display: none;
-}
-
-.history-list::-webkit-scrollbar {
-  width: 10px;
-}
-
-.history-list::-webkit-scrollbar-thumb {
-  border: 2px solid transparent;
-  border-radius: var(--radius-pill);
-  background: color-mix(in srgb, var(--ink) 28%, transparent);
-  background-clip: padding-box;
 }
 
 .history-item {
@@ -231,6 +312,7 @@
   padding: 12px;
   border-bottom: 1px solid var(--line);
   background: transparent;
+  transition: background-color 120ms ease;
 }
 
 .history-item:not(:has(.history-note)) {
@@ -238,11 +320,27 @@
   row-gap: 0;
 }
 
+/* 有备注时缩略图跨两行。继续居中会在出现备注时把图往下挪。改成顶对齐，时间和图的上沿保持不动。 */
+.history-item:has(.history-note) {
+  align-items: start;
+}
+
 .history-item:last-child {
   border-bottom: 0;
 }
 
-.history-item:hover {
+.history-item:first-child {
+  border-start-start-radius: calc(var(--radius-menu) - 1px);
+  border-start-end-radius: calc(var(--radius-menu) - 1px);
+}
+
+.history-item:last-child {
+  border-end-start-radius: calc(var(--radius-menu) - 1px);
+  border-end-end-radius: calc(var(--radius-menu) - 1px);
+}
+
+.history-item:hover,
+.history-item:focus-within {
   background: var(--row-hover);
 }
 
@@ -250,8 +348,9 @@
   background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
-.history-item.is-favorite:hover {
-  background: var(--row-hover);
+.history-item.is-favorite:hover,
+.history-item.is-favorite:focus-within {
+  background: color-mix(in srgb, var(--accent) 14%, var(--row-hover));
 }
 
 .history-thumb {
@@ -271,12 +370,19 @@
   text-align: center;
 }
 
-/* 双击缩略图即再编辑;可点的给指针光标。 */
-.history-thumb[data-tooltip] {
+/* 单击缩略图、时间或尺寸都会再编辑。悬停其中任一处，缩略图边框一起变色。 */
+.history-thumb.is-reedit {
   cursor: pointer;
+  transition: var(--control-transition);
 }
 
-/* 英文整句宽于单行内容区。折进 96×72，避免居中后被 overflow 裁掉两端。 */
+.history-thumb.is-reedit:hover,
+.history-item:has(.history-meta.is-reedit:hover) .history-thumb.is-reedit {
+  border-color: var(--accent);
+}
+
+/* 英文整句宽于单行内容区。折进 96×72，避免居中后被 overflow 裁掉两端。
+   缺失不是普通说明，用正文色，和还在加载的灰底分开。 */
 .history-thumb.missing {
   flex-direction: column;
   align-items: stretch;
@@ -284,6 +390,8 @@
   padding: 6px;
   overflow-wrap: anywhere;
   line-height: 1.25;
+  color: var(--ink);
+  font-size: 12px;
 }
 
 .history-thumb img {
@@ -308,6 +416,10 @@
   min-width: min(100%, 8.5rem);
 }
 
+.history-meta.is-reedit {
+  cursor: pointer;
+}
+
 .history-time {
   font-size: 14px;
   font-weight: 650;
@@ -318,7 +430,7 @@
 .history-size,
 .history-mode {
   margin-top: 2px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
   overflow-wrap: break-word;
@@ -333,23 +445,73 @@
 
 .history-note-input {
   width: 100%;
-  height: 28px;
+  height: 32px;
   padding: 0 8px;
+  line-height: 30px;
 }
 
-.history-fav {
+/* 空备注平时只留「添加备注」，避免每行一个实框。悬停或键盘停在这一条时再露出输入框。 */
+.history-note-input:placeholder-shown {
+  border-color: transparent;
+  background: transparent;
+}
+
+.history-note-input:placeholder-shown:hover:not(:focus-visible),
+.history-item:hover .history-note-input:placeholder-shown:not(:focus-visible),
+.history-item:focus-within .history-note-input:placeholder-shown:not(:focus-visible) {
+  border-color: var(--line);
+  background: var(--control-fill);
+}
+
+.history-note-input:focus-visible,
+.history-note-input:placeholder-shown:focus-visible {
+  border-color: var(--accent);
+  background-color: var(--control-fill);
+}
+
+/* 写满 500 字后再输入不会进框。红框留在原处，原因写在输入框下面。 */
+.history-note-input.is-full,
+.history-note-input.is-full:hover:not(:focus-visible),
+.history-note-input.is-full:focus-visible {
+  border-color: var(--danger);
+}
+
+.history-note-input.is-full:focus-visible {
+  outline-color: var(--danger);
+}
+
+.history-note-limit {
+  margin: 4px 0 0;
+  color: var(--danger);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.history-btn.history-fav {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 32px;
+  height: 32px;
+  min-height: 32px;
   padding: 0;
-  color: var(--muted);
+  /* 未收藏也是可点动作，灰色会像禁用。实心收藏态仍用强调色。 */
+  color: var(--ink);
 }
 
 .history-fav svg {
   display: block;
   width: 16px;
   height: 16px;
+}
+
+.history-fav:hover:not(:disabled),
+.history-fav:focus-visible {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
 }
 
 .history-fav.is-on {
@@ -362,7 +524,8 @@
 
 .history-missing-note {
   margin-top: 2px;
-  font-size: 11px;
+  font-size: 13px;
+  line-height: 1.4;
   color: var(--danger);
 }
 
@@ -376,11 +539,13 @@
   gap: 2px;
 }
 
+/* 操作换行时，独立分隔线会掉到行尾。改挂在删除按钮左侧，跟着删除走。 */
 .history-action-sep {
-  width: 1px;
-  height: 16px;
-  margin: 0 4px;
-  background: var(--line);
+  width: 0;
+  height: 0;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
 }
 
 .history-clear,
@@ -395,6 +560,9 @@
 }
 
 .history-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: 0;
   min-height: 32px;
   padding: 0 8px;
@@ -406,6 +574,7 @@
 }
 
 .history-clear:hover:not(:disabled),
+.history-clear:focus-visible:not(:disabled),
 .history-clear:active:not(:disabled) {
   color: var(--danger);
   background: var(--control-danger-hover-bg);
@@ -417,6 +586,9 @@
 }
 
 .history-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: 1px solid transparent;
   min-height: 32px;
   padding: 0 10px;
@@ -434,11 +606,12 @@
   font-weight: 650;
 }
 
-.history-btn-edit:hover:not(:disabled) {
+.history-btn-edit:hover:not(:disabled):not([aria-disabled="true"]),
+.history-btn-edit:focus-visible:not(:disabled):not([aria-disabled="true"]) {
   filter: var(--control-hover-filter);
 }
 
-.history-btn-edit:active:not(:disabled) {
+.history-btn-edit:active:not(:disabled):not([aria-disabled="true"]) {
   filter: var(--control-pressed-filter);
 }
 
@@ -446,24 +619,60 @@
   color: var(--ink);
 }
 
-.history-btn-quiet:hover:not(:disabled),
-.history-btn-quiet:active:not(:disabled) {
+.history-btn-quiet:hover:not(:disabled):not([aria-disabled="true"]),
+.history-btn-quiet:focus-visible:not(:disabled):not([aria-disabled="true"]),
+.history-btn-quiet:active:not(:disabled):not([aria-disabled="true"]) {
   border-color: var(--control-hover-border);
   color: var(--ink);
   background: var(--control-hover-bg);
 }
 
-.history-btn-quiet:active:not(:disabled) {
+.history-btn-quiet:active:not(:disabled):not([aria-disabled="true"]) {
   filter: var(--control-pressed-filter);
 }
 
+.history-btn-quiet.is-copied,
+.history-btn-quiet.is-copied:hover:not(:disabled):not(:active),
+.history-btn-quiet.is-copied:focus-visible:not(:disabled):not(:active),
+.history-btn-quiet.is-copied:active:not(:disabled) {
+  border-color: var(--ok);
+  background: var(--ok);
+  color: var(--on-accent);
+}
+
+.history-btn-quiet.is-copied:hover:not(:disabled):not(:active),
+.history-btn-quiet.is-copied:focus-visible:not(:disabled):not(:active) {
+  filter: var(--control-hover-filter);
+}
+
+.history-btn-quiet.is-copied:active:not(:disabled) {
+  filter: var(--control-pressed-filter);
+}
+
+.history-actions .history-btn-danger {
+  position: relative;
+  margin-inline-start: 8px;
+}
+
 .history-btn-danger {
-  margin-left: 2px;
   color: var(--danger);
   font-weight: 650;
 }
 
+.history-actions .history-btn-danger::before {
+  content: "";
+  position: absolute;
+  left: -6px;
+  top: 50%;
+  width: 1px;
+  height: 16px;
+  transform: translateY(-50%);
+  background: var(--line);
+  pointer-events: none;
+}
+
 .history-btn-danger:hover:not(:disabled),
+.history-btn-danger:focus-visible:not(:disabled),
 .history-btn-danger:active:not(:disabled) {
   border-color: var(--control-danger-hover-border);
   background: var(--control-danger-hover-bg);
@@ -479,6 +688,12 @@
   cursor: default;
 }
 
+/* 原图缺失用 aria-disabled，悬停才能看到原因。外观与禁用一致，光标表明点不了。 */
+.history-btn[aria-disabled="true"] {
+  opacity: var(--control-disabled-opacity);
+  cursor: not-allowed;
+}
+
 /* 初始加载指示:复用 app.css 的行内进度圈,只在首次载入出现。 */
 .history-loading {
   display: flex;
@@ -486,13 +701,44 @@
   justify-content: center;
   gap: 8px;
   margin: 8px 0;
-  color: var(--muted);
-  font-size: 12px;
+  color: var(--ink);
+  font-size: 13px;
 }
 
 .history-empty {
-  margin: auto 0;
+  margin: auto 8px;
+  padding: 28px 20px;
   text-align: center;
-  color: var(--muted);
+  /* 空列表时这是唯一正文，灰色会像禁用说明。虚线框已经表达“还没有”。 */
+  color: var(--ink);
   font-size: 13px;
+  line-height: 1.6;
+  /* 发丝线虚线贴在底上几乎看不见。空列表是这一屏唯一内容，框要能读出来。 */
+  border: 1px dashed color-mix(in srgb, var(--ink) 32%, var(--line));
+  border-radius: var(--radius-panel);
+  background: var(--card);
+}
+
+.history-empty p {
+  margin: 0;
+}
+
+.history-empty .history-filter-clear {
+  margin-top: 12px;
+  padding: 0 14px;
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.history-empty .history-filter-clear:hover:not(:disabled):not(:active),
+.history-empty .history-filter-clear:focus-visible:not(:disabled):not(:active) {
+  background: var(--accent);
+  color: var(--on-accent);
+  filter: var(--control-hover-filter);
+}
+
+.history-empty .history-filter-clear:active:not(:disabled) {
+  background: var(--accent);
+  color: var(--on-accent);
+  filter: var(--control-pressed-filter);
 }

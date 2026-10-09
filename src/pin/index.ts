@@ -143,6 +143,11 @@ export function mountPin(root: HTMLElement): () => void {
   };
   let image: HTMLImageElement | null = null;
   let busy = false;
+  // 复制、旋转等还在进行时，再点一次会被丢掉。光标改成进行中，避免看起来像没点到。
+  const setBusy = (value: boolean): void => {
+    busy = value;
+    root.setAttribute("aria-busy", String(value));
+  };
   let noteTimer = 0;
   let noteState: {
     key: CatalogKey | null;
@@ -164,6 +169,33 @@ export function mountPin(root: HTMLElement): () => void {
     }
     note.textContent = noteText();
     note.classList.toggle("is-error", noteState.isError);
+    syncNoteClamp();
+  };
+
+  // 四行仍放不下时，悬停才能读完。提示条默认不接指针，否则会挡住贴图拖动。
+  const syncNoteClamp = (): void => {
+    const text = note.textContent ?? "";
+    window.requestAnimationFrame(() => {
+      if (note.hidden || note.textContent !== text || text.length === 0) {
+        note.classList.remove("is-clamped");
+        note.removeAttribute("title");
+        return;
+      }
+      note.style.setProperty("-webkit-line-clamp", "unset");
+      note.style.display = "block";
+      note.style.overflow = "visible";
+      const full = note.scrollHeight;
+      note.style.removeProperty("-webkit-line-clamp");
+      note.style.removeProperty("display");
+      note.style.removeProperty("overflow");
+      const clamped = note.clientHeight > 0 && full > note.clientHeight + 1;
+      note.classList.toggle("is-clamped", clamped);
+      if (clamped) {
+        note.title = text;
+      } else {
+        note.removeAttribute("title");
+      }
+    });
   };
 
   const showNoteSource = (stateToShow: NonNullable<typeof noteState>): void => {
@@ -171,6 +203,7 @@ export function mountPin(root: HTMLElement): () => void {
     note.textContent = noteText();
     note.classList.toggle("is-error", stateToShow.isError);
     note.hidden = false;
+    syncNoteClamp();
     window.clearTimeout(noteTimer);
     // R1:结果提示按共享常量 3.6s 自动隐藏(原 2.2s),与 overlay/设置一致;
     // 错误(含后端具体原因)常驻直到下一条提示覆盖,与 history/预览的既有
@@ -194,15 +227,39 @@ export function mountPin(root: HTMLElement): () => void {
     showNoteSource({ key, params, text: "", isError });
   };
 
+  // 贴图窗口 overflow 会裁掉伸出边缘的自绘气泡。语言刷新先写入 data-tooltip
+  // 并清掉 title，这里改回系统提示，小图上的复制、再标注说明仍能读完。
+  const pinNativeTitles = (): void => {
+    root.querySelectorAll<HTMLElement>("[data-tooltip]").forEach((node) => {
+      const tip = node.dataset.tooltip;
+      if (!tip) {
+        return;
+      }
+      node.title = tip;
+      delete node.dataset.tooltip;
+    });
+  };
+
   // 菜单可用性/状态文案由后端状态与开关驱动;增强项在功能关闭时整体隐藏。
   const syncUi = (): void => {
     const opacity = state?.opacity ?? 1;
+    const opacityIndex = OPACITY_STEPS.indexOf(opacity);
+    const nextOpacity = OPACITY_STEPS[(opacityIndex + 1) % OPACITY_STEPS.length] ?? 1;
+    const opacityTip = t("pin.toolbar.opacity_cycle", {
+      current: Math.round(opacity * 100),
+      next: Math.round(nextOpacity * 100),
+    });
     opacityBtn.textContent = `${Math.round(opacity * 100)}%`;
+    opacityBtn.dataset.tooltip = opacityTip;
+    opacityBtn.setAttribute("aria-label", opacityTip);
     menu.querySelectorAll<HTMLButtonElement>("[data-menu-opacity]").forEach((button) => {
-      button.classList.toggle(
-        "active",
-        Math.abs(Number(button.dataset.menuOpacity) - opacity) < 0.001,
-      );
+      const percent = Math.round(Number(button.dataset.menuOpacity) * 100);
+      const current = Math.abs(Number(button.dataset.menuOpacity) - opacity) < 0.001;
+      button.classList.toggle("active", current);
+      button.setAttribute("aria-pressed", current ? "true" : "false");
+      button.dataset.tooltip = t(current ? "pin.menu.opacity_current" : "pin.menu.opacity_set", {
+        percent,
+      });
     });
 
     const enhance = options.enhance;
@@ -217,6 +274,7 @@ export function mountPin(root: HTMLElement): () => void {
       clickThroughBtn.dataset.tooltip = options.clickThroughReason;
     } else {
       delete clickThroughBtn.dataset.tooltip;
+      clickThroughBtn.removeAttribute("title");
     }
     clickThroughBtn.textContent = t(
       state?.clickThrough ? "pin.menu.click_through_off" : "pin.menu.click_through",
@@ -226,9 +284,9 @@ export function mountPin(root: HTMLElement): () => void {
     groupBtn.hidden = !enhance || grouped;
     ungroupBtn.hidden = !enhance || !grouped;
     closeMenuBtn.textContent = t(grouped ? "pin.menu.close_group" : "pin.menu.close");
-    closeToolbarBtn.dataset.tooltip = t(
-      grouped ? "pin.toolbar.close_group_title" : "pin.toolbar.close_title",
-    );
+    const closeTip = t(grouped ? "pin.toolbar.close_group_title" : "pin.toolbar.close_title");
+    closeToolbarBtn.dataset.tooltip = closeTip;
+    closeToolbarBtn.setAttribute("aria-label", closeTip);
 
     // R8:文本贴图的复制目标是原始文本而非渲染图像,标题与菜单同步。
     const copyText = state?.copyKind === "text";
@@ -236,6 +294,16 @@ export function mountPin(root: HTMLElement): () => void {
       copyText ? "pin.toolbar.copy_text_title" : "pin.toolbar.copy_title",
     );
     copyMenuBtn.textContent = t(copyText ? "pin.menu.copy_text" : "pin.menu.copy");
+    pinNativeTitles();
+    if (copyToolbarBtn.classList.contains("is-copied")) {
+      const copiedTip = t(copyText ? "pin.note.copied_text" : "pin.note.copied");
+      copyToolbarBtn.title = copiedTip;
+      copyToolbarBtn.setAttribute("aria-label", copiedTip);
+      const icon = copyToolbarBtn.querySelector("svg");
+      if (icon) {
+        icon.outerHTML = icons.check;
+      }
+    }
   };
 
   // 后端返回的 PNG 已应用旋转/翻转/透明度,画布只按窗口尺寸拉伸显示。
@@ -326,18 +394,35 @@ export function mountPin(root: HTMLElement): () => void {
     }
   };
 
+  let copyFlashTimer = 0;
+  const flashCopiedToolbar = (): void => {
+    copyToolbarBtn.classList.add("is-copied");
+    syncUi();
+    window.clearTimeout(copyFlashTimer);
+    copyFlashTimer = window.setTimeout(() => {
+      copyFlashTimer = 0;
+      copyToolbarBtn.classList.remove("is-copied");
+      const icon = copyToolbarBtn.querySelector("svg");
+      if (icon) {
+        icon.outerHTML = icons.copy;
+      }
+      syncUi();
+    }, NOTICE_AUTO_HIDE_MS);
+  };
+
   const copy = async (): Promise<void> => {
     if (busy) {
       return;
     }
-    busy = true;
+    setBusy(true);
     try {
       await invoke("copy_pin", { label: win.label });
       showNoteKey(state?.copyKind === "text" ? "pin.note.copied_text" : "pin.note.copied");
+      flashCopiedToolbar();
     } catch (error) {
       showNote(invokeError(error, t("pin.error.copy")), true);
     } finally {
-      busy = false;
+      setBusy(false);
     }
   };
 
@@ -345,7 +430,7 @@ export function mountPin(root: HTMLElement): () => void {
     if (busy) {
       return;
     }
-    busy = true;
+    setBusy(true);
     try {
       const result = await invoke<{ saved: boolean; path?: string | null }>("save_pin", {
         label: win.label,
@@ -358,7 +443,7 @@ export function mountPin(root: HTMLElement): () => void {
     } catch (error) {
       showNote(invokeError(error, t("pin.error.save")), true);
     } finally {
-      busy = false;
+      setBusy(false);
     }
   };
 
@@ -367,13 +452,13 @@ export function mountPin(root: HTMLElement): () => void {
     if (busy || !image) {
       return;
     }
-    busy = true;
+    setBusy(true);
     try {
       await invoke("begin_pin_edit", { label: win.label });
     } catch (error) {
       showNote(invokeError(error, t("pin.error.annotate")), true);
     } finally {
-      busy = false;
+      setBusy(false);
     }
   };
 
@@ -381,13 +466,13 @@ export function mountPin(root: HTMLElement): () => void {
     if (busy) {
       return;
     }
-    busy = true;
+    setBusy(true);
     try {
       applyState(await invoke<PinState>("rotate_pin", { label: win.label }), false);
     } catch (error) {
       showNote(invokeError(error, t("pin.error.rotate")), true);
     } finally {
-      busy = false;
+      setBusy(false);
     }
   };
 
@@ -395,14 +480,14 @@ export function mountPin(root: HTMLElement): () => void {
     if (busy) {
       return;
     }
-    busy = true;
+    setBusy(true);
     try {
       await invoke("flip_pin", { label: win.label, axis });
       showNoteKey("pin.note.flipped");
     } catch (error) {
       showNote(invokeError(error, t("pin.error.flip")), true);
     } finally {
-      busy = false;
+      setBusy(false);
     }
   };
 
@@ -410,13 +495,13 @@ export function mountPin(root: HTMLElement): () => void {
     if (!OPACITY_STEPS.includes(next) || busy) {
       return;
     }
-    busy = true;
+    setBusy(true);
     try {
       applyState(await invoke<PinState>("set_pin_opacity", { label: win.label, opacity: next }), false);
     } catch (error) {
       showNote(invokeError(error, t("pin.error.opacity")), true);
     } finally {
-      busy = false;
+      setBusy(false);
     }
   };
 
@@ -434,7 +519,7 @@ export function mountPin(root: HTMLElement): () => void {
       showNote(options.clickThroughReason ?? t("pin.error.click_through"), true);
       return;
     }
-    busy = true;
+    setBusy(true);
     try {
       const next = await invoke<PinState>("set_pin_click_through", {
         label: win.label,
@@ -445,7 +530,7 @@ export function mountPin(root: HTMLElement): () => void {
     } catch (error) {
       showNote(invokeError(error, t("pin.error.click_through")), true);
     } finally {
-      busy = false;
+      setBusy(false);
     }
   };
 
@@ -453,7 +538,7 @@ export function mountPin(root: HTMLElement): () => void {
     if (busy) {
       return;
     }
-    busy = true;
+    setBusy(true);
     try {
       const count = await invoke<number>("group_all_pins");
       applyState(await loadState(), false);
@@ -461,7 +546,7 @@ export function mountPin(root: HTMLElement): () => void {
     } catch (error) {
       showNote(invokeError(error, t("pin.error.group")), true);
     } finally {
-      busy = false;
+      setBusy(false);
     }
   };
 
@@ -469,14 +554,14 @@ export function mountPin(root: HTMLElement): () => void {
     if (busy) {
       return;
     }
-    busy = true;
+    setBusy(true);
     try {
       applyState(await invoke<PinState>("ungroup_pin", { label: win.label }), false);
       showNoteKey("pin.note.ungrouped");
     } catch (error) {
       showNote(invokeError(error, t("pin.error.ungroup")), true);
     } finally {
-      busy = false;
+      setBusy(false);
     }
   };
 
@@ -484,13 +569,13 @@ export function mountPin(root: HTMLElement): () => void {
     if (busy) {
       return;
     }
-    busy = true;
+    setBusy(true);
     try {
       applyState(await invoke<PinState>("reset_pin_zoom", { label: win.label }), false);
     } catch (error) {
       showNote(invokeError(error, t("pin.error.reset")), true);
     } finally {
-      busy = false;
+      setBusy(false);
     }
   };
 
@@ -583,6 +668,37 @@ export function mountPin(root: HTMLElement): () => void {
       close();
     }
   };
+
+  // 菜单是一组按钮，不是系统菜单。方向键在可见项之间移动，Tab 仍然可用。
+  menu.addEventListener("keydown", (event) => {
+    const keys = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End"];
+    if (!keys.includes(event.key)) {
+      return;
+    }
+    const buttons = Array.from(menu.querySelectorAll<HTMLButtonElement>("button")).filter(
+      (button) => !button.hidden,
+    );
+    if (buttons.length === 0) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const current = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    const delta = event.key === "ArrowUp" || event.key === "ArrowLeft" ? -1 : 1;
+    const index =
+      event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? buttons.length - 1
+          : current < 0
+            ? delta > 0
+              ? 0
+              : buttons.length - 1
+            : (current + delta + buttons.length) % buttons.length;
+    const next = buttons[index];
+    next.focus();
+    next.scrollIntoView({ block: "nearest" });
+  });
 
   // 打开菜单后焦点移入第一个可见项,Esc/点选/外部点击关闭后由 hideMenu 送回 stage。
   const focusMenu = (): void => {

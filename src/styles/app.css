@@ -99,6 +99,127 @@ html[data-view="history"] .shell {
   box-sizing: border-box;
 }
 
+/* 控件全部自绘。WebView 的原生按钮面会在悬停时冒出来，盖住圆角和底色。 */
+button {
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+/* 占位符与正文提示同色,避免浏览器默认浅灰在明暗主题下都读不清。 */
+::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="button"]):not([type="submit"]),
+textarea {
+  caret-color: var(--accent);
+}
+
+/* 搜索框清除钮用界面色，避免 WebView 自带的系统叉和明暗主题脱节。 */
+input[type="search"]::-webkit-search-decoration,
+input[type="search"]::-webkit-search-results-button {
+  -webkit-appearance: none;
+}
+
+input[type="search"]::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-inline-end: 0;
+  background-color: var(--muted);
+  cursor: pointer;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 3l6 6M9 3L3 9' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E") center / 12px 12px no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 3l6 6M9 3L3 9' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E") center / 12px 12px no-repeat;
+}
+
+input[type="search"]::-webkit-search-cancel-button:hover {
+  background-color: var(--ink);
+}
+
+/* 清除钮画在行尾内边距里。空框仍用原内边距，有内容才让出 16px 叉，末字不再被盖住。 */
+input[type="search"]:not(:placeholder-shown) {
+  padding-inline-end: 28px;
+}
+
+/* 可滚动表面共用细滚动条:默认系统槽在这些卡片里过粗,也和历史列表不一致。 */
+.settings-panels,
+.history-list,
+.window-list,
+.capability-panel,
+.ocr-panel-text,
+.ocr-panel-state,
+.qr-panel-list,
+.preview-overflow-menu,
+.record-pending-list,
+.scroll-body,
+.error-body,
+.delay-root .hint {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--ink) 28%, transparent) transparent;
+}
+
+.settings-panels::-webkit-scrollbar,
+.history-list::-webkit-scrollbar,
+.window-list::-webkit-scrollbar,
+.capability-panel::-webkit-scrollbar,
+.ocr-panel-text::-webkit-scrollbar,
+.ocr-panel-state::-webkit-scrollbar,
+.qr-panel-list::-webkit-scrollbar,
+.preview-overflow-menu::-webkit-scrollbar,
+.record-pending-list::-webkit-scrollbar,
+.scroll-body::-webkit-scrollbar,
+.error-body::-webkit-scrollbar,
+.delay-root .hint::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.settings-panels::-webkit-scrollbar-thumb,
+.history-list::-webkit-scrollbar-thumb,
+.window-list::-webkit-scrollbar-thumb,
+.capability-panel::-webkit-scrollbar-thumb,
+.ocr-panel-text::-webkit-scrollbar-thumb,
+.ocr-panel-state::-webkit-scrollbar-thumb,
+.qr-panel-list::-webkit-scrollbar-thumb,
+.preview-overflow-menu::-webkit-scrollbar-thumb,
+.record-pending-list::-webkit-scrollbar-thumb,
+.scroll-body::-webkit-scrollbar-thumb,
+.error-body::-webkit-scrollbar-thumb,
+.delay-root .hint::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--ink) 28%, transparent);
+  background-clip: padding-box;
+}
+
+.settings-panels::-webkit-scrollbar-thumb:hover,
+.history-list::-webkit-scrollbar-thumb:hover,
+.window-list::-webkit-scrollbar-thumb:hover,
+.capability-panel::-webkit-scrollbar-thumb:hover,
+.ocr-panel-text::-webkit-scrollbar-thumb:hover,
+.ocr-panel-state::-webkit-scrollbar-thumb:hover,
+.qr-panel-list::-webkit-scrollbar-thumb:hover,
+.preview-overflow-menu::-webkit-scrollbar-thumb:hover,
+.record-pending-list::-webkit-scrollbar-thumb:hover,
+.scroll-body::-webkit-scrollbar-thumb:hover,
+.error-body::-webkit-scrollbar-thumb:hover,
+.delay-root .hint::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--ink) 46%, transparent);
+  background-clip: padding-box;
+}
+
+@keyframes surface-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 /* 仅辅助技术可见:视觉倒数等逐秒变化的内容不再逐次播报,由它播一次开始状态。 */
 .sr-only {
   position: absolute;
@@ -275,6 +396,7 @@ html[data-view="guide"] .titlebar .name {
 }
 
 .icon-btn:hover,
+.icon-btn:focus-visible,
 .icon-btn:active {
   background: var(--control-hover-bg);
   box-shadow: inset 0 0 0 1px var(--control-hover-border);
@@ -323,7 +445,11 @@ html[data-view="settings"] .settings-nav-item {
   width: 100%;
   border: 0;
   border-radius: var(--radius-control);
-  padding: 11px 14px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  /* 左侧留给当前分类的色条，未选中也留同样的空隙，切换时文字不横跳。 */
+  padding: 11px 14px 11px 18px;
   font: inherit;
   font-size: 14px;
   /* 650 与 700 在 Segoe UI、微软雅黑上是同一粗体，未选中必须停在 500 才轻于选中项。 */
@@ -331,28 +457,63 @@ html[data-view="settings"] .settings-nav-item {
   line-height: 1.35;
   text-align: left;
   overflow-wrap: anywhere;
-  color: var(--muted);
+  /* 分类名是导航，不是说明。灰色会像整栏不可用；当前项仍用强调色和色条分开。 */
+  color: var(--ink);
   background: transparent;
   cursor: pointer;
+  position: relative;
   transition: var(--control-transition);
 }
 
+/* 可见字重是 500，选中才到 650。隐形副本始终按 650 占高，窄窗口里「Records & output」选中时不再多折一行、把下面的分类顶下去。 */
+html[data-view="settings"] .settings-nav-label,
+html[data-view="settings"] .settings-nav-reserve {
+  grid-area: 1 / 1;
+  min-width: 0;
+}
+
+html[data-view="settings"] .settings-nav-reserve {
+  font-weight: 650;
+  visibility: hidden;
+  pointer-events: none;
+  user-select: none;
+}
+
 html[data-view="settings"] .settings-nav-item:hover,
+html[data-view="settings"] .settings-nav-item:focus-visible,
 html[data-view="settings"] .settings-nav-item:active {
   background: var(--control-hover-bg);
   color: var(--ink);
 }
 
+html[data-view="settings"] .settings-nav-item:active {
+  filter: var(--control-pressed-filter);
+}
+
 html[data-view="settings"] .settings-nav-item[aria-selected="true"],
 html[data-view="settings"] .settings-nav-item[aria-selected="true"]:hover,
+html[data-view="settings"] .settings-nav-item[aria-selected="true"]:focus-visible,
 html[data-view="settings"] .settings-nav-item[aria-selected="true"]:active {
   background: var(--card);
   color: var(--accent);
-  box-shadow: inset 3px 0 var(--accent), var(--shadow-soft);
+  box-shadow: var(--shadow-soft);
   font-weight: 650;
 }
 
+/* 圆角按钮上的内阴影会被角裁短。独立色条收在圆角之内，当前分类更清楚。 */
+html[data-view="settings"] .settings-nav-item[aria-selected="true"]::before {
+  content: "";
+  position: absolute;
+  left: 6px;
+  top: 9px;
+  bottom: 9px;
+  width: 3px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+}
+
 html[data-view="settings"] .settings-main {
+  position: relative;
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -374,6 +535,11 @@ html[data-view="settings"] .settings-panels {
   /* 分类间滚动条有无不一,预留槽位让右缘的开关/按钮列不再横向跳动。 */
   scrollbar-gutter: stable;
   padding: 24px;
+}
+
+/* 保存药丸盖在滚动区底边上。只在它出现时把滚入区域上移，最后一项不会被挡住，平时也不多出一块空白。 */
+html[data-view="settings"] .settings-main:has([data-saved-notice]:not([hidden])) .settings-panels {
+  scroll-padding-bottom: 64px;
 }
 
 html[data-view="settings"] .settings-panel {
@@ -481,12 +647,34 @@ html[data-view="settings"] .hint {
   overflow-wrap: anywhere;
 }
 
+/* 校验句以前和灰色说明一样轻。加粗后才看得出是错误，不是下一条说明。 */
+.error {
+  font-weight: 650;
+}
+
+/* 数字在行的右侧。错误句贴右，读完就落在红框旁边，而不是贴在左侧标题下。 */
+.block > .error {
+  text-align: end;
+}
+
+/* 模板说明在整行输入下面。长句从左边读起，不要贴到卡片右缘。 */
+.block > .template-notice {
+  text-align: start;
+}
+
 .notice {
   margin: 0;
   padding: 10px 12px;
   background: var(--danger-soft);
   border: 1px solid var(--danger);
   border-radius: var(--radius-control);
+  /* 失败横幅以前只有红底，字仍是正文色。保存失败和历史索引损坏要能一眼看成错误。 */
+  color: var(--danger);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.45;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 /* R3:设置写回成功的短暂反馈行,复用 .notice 布局,仅换成功配色。 */
@@ -504,15 +692,25 @@ html[data-view="settings"] .hint {
 }
 
 /* 设置页保存反馈改为浮层药丸:不再推挤面板高度,连续点开关不会让控件
-   从指针下挪走;error/tray 提示仍走行内 notice。 */
+   从指针下挪走;error/tray 提示仍走行内 notice。
+   贴在内容区底边正中。靠右会盖住这一列的开关、热键和退出按钮。 */
 html[data-view="settings"] .notice.notice-success {
   position: absolute;
-  right: 20px;
-  bottom: 20px;
+  top: auto;
+  right: 24px;
+  bottom: 16px;
+  left: 24px;
   z-index: 30;
-  margin: 0;
+  width: max-content;
+  max-width: min(280px, calc(100% - 48px));
+  margin: 0 auto;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
   box-shadow: var(--shadow);
   pointer-events: none;
+  animation: surface-in 160ms ease;
 }
 
 .rows {
@@ -544,20 +742,25 @@ html[data-view="settings"] .notice.notice-success {
 
 .hotkey-btn {
   grid-area: btn;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 148px;
   max-width: 100%;
   min-width: 24px;
+  min-height: 32px;
   border: 1px solid var(--line);
   background: var(--control-fill);
   color: var(--ink);
   border-radius: var(--radius-pill);
-  padding: 7px 12px;
+  padding: 4px 12px;
   font: inherit;
   font-size: 13px;
   line-height: 1.3;
   font-variant-numeric: tabular-nums;
   white-space: normal;
-  overflow-wrap: anywhere;
+  /* 显示串在加号后有零宽空格。按词折行，PrintScreen 放得下就保持完整。 */
+  overflow-wrap: break-word;
   text-align: center;
   cursor: pointer;
   transition: var(--control-transition);
@@ -571,11 +774,74 @@ html[data-view="settings"] .notice.notice-success {
   max-width: 100%;
 }
 
+/* 未绑定时仍占住「清除」的宽度。绑定或清除后热键胶囊不再左右跳，
+   也不会在清除的瞬间滑到光标底下再被点一次。 */
+.hotkey-clear[data-reserved="true"] {
+  visibility: hidden;
+  pointer-events: none;
+}
+
 .hotkey-btn:hover,
-.hotkey-btn.recording,
+.hotkey-btn:focus-visible,
 .hotkey-btn:active {
   border-color: var(--control-hover-border);
   background: var(--control-hover-bg);
+}
+
+/* 没绑定时不要看起来像一条叫「未绑定」的快捷键。 */
+.hotkey-btn.is-unbound {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+/* 正在录键时和普通悬停分开:强调色文字加一圈呼吸,明确程序在等下一次按键。 */
+.hotkey-btn.recording,
+.hotkey-btn.recording:hover,
+.hotkey-btn.recording:focus-visible,
+.hotkey-btn.recording:active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 650;
+}
+
+.hotkey-btn.recording {
+  /* 等待文案比 148px 的热键胶囊长。加宽并保持一行，避免折成两行把下面的热键行顶下去。
+     下限盖住「按下新热键 · Esc 取消」和按住修饰键后的短文案，录键过程中宽度不再变。 */
+  width: max-content;
+  min-width: min(16.5rem, 100%);
+  max-width: 100%;
+  white-space: nowrap;
+  animation: hotkey-listen 1.2s ease-in-out infinite;
+}
+
+/* 呼吸动画会整段换掉 box-shadow。键盘焦点时把内圈空隙留在动画里，否则录键中看不到焦点。 */
+.hotkey-btn.recording:focus-visible {
+  animation-name: hotkey-listen-focus;
+}
+
+@keyframes hotkey-listen {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent);
+  }
+}
+
+@keyframes hotkey-listen-focus {
+  0%,
+  100% {
+    box-shadow:
+      inset 0 0 0 4px var(--focus-gap),
+      0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent);
+  }
+  50% {
+    box-shadow:
+      inset 0 0 0 4px var(--focus-gap),
+      0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent);
+  }
 }
 
 .hotkey-btn:active {
@@ -589,6 +855,7 @@ html[data-view="settings"] .notice.notice-success {
   border-color: var(--danger);
   background: var(--danger-soft);
   color: var(--ink);
+  animation: none;
 }
 
 .hotkey-row .error {
@@ -621,6 +888,10 @@ html[data-view="settings"] .notice.notice-success {
   min-width: 0;
 }
 
+.setting-row:has(.switch:not(:disabled)) {
+  cursor: pointer;
+}
+
 .setting-row > :first-child:not(:last-child),
 .autostart-row > :first-child:not(:last-child) {
   /* 基线给 50% 而非 auto:长说明的 max-content 会撑过整行,把开关/按钮
@@ -636,13 +907,53 @@ html[data-view="settings"] .notice.notice-success {
   margin-left: auto;
 }
 
+/* 行是顶对齐。数字框和选项胶囊都是 32px，标题行高约 20px，上移 6px 后中线才落在标题上。 */
+.setting-row > .number-input,
+.setting-row > .input-wrap {
+  margin-top: -6px;
+}
+
+.setting-row > .choice,
+.setting-row > .choices {
+  margin-top: -6px;
+}
+
 /* 右侧控制贴近面板右缘,居中展开的悬停提示会越界出横向滚动条;右对齐收敛。 */
 .setting-row > :last-child[data-tooltip]::after,
 .setting-row > .input-wrap:last-child[data-tooltip]::after,
-.autostart-row > :last-child[data-tooltip]::after {
+.autostart-row > :last-child[data-tooltip]::after,
+.hotkey-row [data-tooltip]::after {
   left: auto;
   right: 0;
   transform: none;
+}
+
+/* 热键说明是一整句。不换行时英文会从右缘向左伸出卡片，被滚动区裁掉。 */
+.hotkey-row [data-tooltip]::after {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  width: max-content;
+  max-width: min(280px, calc(100vw - 48px));
+}
+
+/* 卡片最后一行贴着滚动区域下沿。气泡向下会被裁掉，改到控件上方。 */
+.card .setting-row:last-child [data-tooltip]::after,
+.card .setting-row:last-child[data-tooltip]::after,
+.card .autostart-row:last-child [data-tooltip]::after {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+
+/* 阴影开关禁用时原因在整行上。整行居中会超出卡片，改到右侧并允许换行。 */
+.setting-row[data-tooltip]::after {
+  left: auto;
+  right: 0;
+  transform: none;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  width: max-content;
+  max-width: min(280px, 100%);
+  text-align: start;
 }
 
 .setting-row .label {
@@ -653,13 +964,15 @@ html[data-view="settings"] .notice.notice-success {
 .number-input {
   width: 84px;
   max-width: 100%;
+  height: 32px;
   flex: 0 0 auto;
   border: 1px solid var(--line);
   border-radius: var(--radius-control);
-  padding: 7px 10px;
+  padding: 0 10px;
   font: inherit;
   font-size: 14px;
-  line-height: 1.3;
+  /* 边框各 1px，行高填满内容区，数字才落在 32px 框的中线。 */
+  line-height: 30px;
   font-variant-numeric: tabular-nums;
   text-align: center;
   color: var(--ink);
@@ -676,13 +989,71 @@ input[data-filename-template] {
   text-align: left !important;
 }
 
-.number-input:hover:not(:disabled) {
+/* 系统微调按钮叠在居中数字上，三位数会和箭头挤在一起。上下方向键仍可增减。 */
+.number-input[type="number"] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.number-input[type="number"]::-webkit-outer-spin-button,
+.number-input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.number-input:disabled {
+  color: var(--ink);
+  /* 数字保持正文色。底改成页面底色，和可编辑的白底框分开。 */
+  background: var(--bg);
+  opacity: 1;
+  cursor: default;
+}
+
+.number-input:hover:not(:disabled):not(:focus-visible) {
   border-color: var(--control-hover-border);
   background: var(--control-hover-bg);
 }
 
+.number-input:focus-visible {
+  border-color: var(--accent);
+  background: var(--control-fill);
+}
+
 .number-input[aria-invalid="true"] {
   border-color: var(--danger);
+}
+
+/* 悬停规则比无效边更具体。不补这一条，红框一悬停就变回强调色，看起来像错误已经消失。 */
+.number-input[aria-invalid="true"]:hover:not(:disabled) {
+  border-color: var(--danger);
+}
+
+.number-input[aria-invalid="true"]:focus-visible {
+  outline-color: var(--danger);
+  border-color: var(--danger);
+}
+
+/* 写满、含非法字符、首尾空格/句点，或系统保留名时，保存结果都会和输入不一样。红框留在原处。 */
+.number-input.is-full,
+.number-input.is-unsafe,
+.number-input.is-trimmed,
+.number-input.is-reserved,
+.number-input.is-full:hover:not(:disabled):not(:focus-visible),
+.number-input.is-unsafe:hover:not(:disabled):not(:focus-visible),
+.number-input.is-trimmed:hover:not(:disabled):not(:focus-visible),
+.number-input.is-reserved:hover:not(:disabled):not(:focus-visible),
+.number-input.is-full:focus-visible,
+.number-input.is-unsafe:focus-visible,
+.number-input.is-trimmed:focus-visible,
+.number-input.is-reserved:focus-visible {
+  border-color: var(--danger);
+}
+
+.number-input.is-full:focus-visible,
+.number-input.is-unsafe:focus-visible,
+.number-input.is-trimmed:focus-visible,
+.number-input.is-reserved:focus-visible {
+  outline-color: var(--danger);
 }
 
 .choices {
@@ -698,17 +1069,49 @@ input[data-filename-template] {
   margin-top: 12px;
 }
 
+/* 禁用原因挂在整组上。逐个按钮居中弹出时，靠右的胶囊会把说明裁出卡片。 */
+.block > .choices[data-tooltip]::after {
+  left: 0;
+  right: auto;
+  transform: none;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  width: max-content;
+  max-width: 100%;
+  text-align: start;
+}
+
+.block > .choices[data-tooltip]:focus-within::after {
+  opacity: 1;
+}
+
 .setting-row .choices {
   justify-content: flex-end;
 }
 
+.preset-swatch {
+  display: block;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  margin-right: 6px;
+  border-radius: var(--radius-pill);
+  /* 浅色样张在白底上、深色样张在暗底上都会贴没。跟正文色混一圈边。 */
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 28%, transparent);
+}
+
 .choice {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   max-width: 100%;
+  min-height: 32px;
   border: 1px solid var(--line);
   border-radius: var(--radius-pill);
-  padding: 7px 12px;
+  padding: 4px 12px;
   font: inherit;
   font-size: 13px;
+  font-weight: 650;
   line-height: 1.3;
   white-space: normal;
   overflow-wrap: anywhere;
@@ -720,6 +1123,7 @@ input[data-filename-template] {
 }
 
 .choice:hover:not(:disabled),
+.choice:focus-visible:not(:disabled),
 .choice:active:not(:disabled) {
   border-color: var(--control-hover-border);
   background: var(--control-hover-bg);
@@ -731,11 +1135,20 @@ input[data-filename-template] {
 
 .choice.selected,
 .choice.selected:hover:not(:disabled),
+.choice.selected:focus-visible:not(:disabled),
 .choice.selected:active:not(:disabled) {
   border-color: var(--accent);
   background: var(--accent-soft);
   color: var(--accent);
-  font-weight: 650;
+}
+
+.choice.selected:hover:not(:disabled):not(:active),
+.choice.selected:focus-visible:not(:disabled):not(:active) {
+  filter: var(--control-hover-filter);
+}
+
+.choice.selected:active:not(:disabled) {
+  filter: var(--control-pressed-filter);
 }
 
 .choice:disabled {
@@ -743,16 +1156,42 @@ input[data-filename-template] {
   cursor: default;
 }
 
+/* 整组关掉时仍要认出当前项。未选项保持变淡，表示现在不能改。 */
+.choice.selected:disabled {
+  opacity: 1;
+}
+
 .choice.danger,
 .choice.danger:hover:not(:disabled),
+.choice.danger:focus-visible:not(:disabled),
 .choice.danger:active:not(:disabled) {
   color: var(--control-danger-hover-border);
   border-color: var(--control-danger-hover-border);
 }
 
 .choice.danger:hover:not(:disabled),
+.choice.danger:focus-visible:not(:disabled),
 .choice.danger:active:not(:disabled) {
   background: var(--control-danger-hover-bg);
+}
+
+/* 退出要再点一次才生效。挂起后改成实心危险按钮，和只改了文案的描边按钮分开。 */
+.choice.danger[data-armed="true"],
+.choice.danger[data-armed="true"]:hover:not(:disabled),
+.choice.danger[data-armed="true"]:focus-visible:not(:disabled),
+.choice.danger[data-armed="true"]:active:not(:disabled) {
+  color: var(--on-danger);
+  background: var(--danger);
+  border-color: var(--danger);
+}
+
+.choice.danger[data-armed="true"]:hover:not(:disabled):not(:active),
+.choice.danger[data-armed="true"]:focus-visible:not(:disabled):not(:active) {
+  filter: var(--control-hover-filter);
+}
+
+.choice.danger[data-armed="true"]:active:not(:disabled) {
+  filter: var(--control-pressed-filter);
 }
 
 .switch {
@@ -764,16 +1203,43 @@ input[data-filename-template] {
   position: relative;
   cursor: pointer;
   flex: 0 0 auto;
+  /* 行是顶对齐。26px 开关比 15px×1.35 的标题行高，上移后才落在标题中线，不跟着说明下沉。 */
+  margin-top: -3px;
   /* 底色随开关态过渡,与 knob 滑动一致;reduced-motion 由共享 kill-switch 关闭。 */
   transition: var(--control-transition);
 }
 
-.switch:hover:not(:disabled) {
+.switch:hover:not(:disabled),
+.switch:focus-visible:not(:disabled) {
   filter: var(--control-hover-filter);
 }
 
 .switch:active:not(:disabled) {
   filter: var(--control-pressed-filter);
+}
+
+/* 点标题或说明也会拨动开关。悬停和按下整行时，轨道给出和直接点开关一样的反馈。 */
+.setting-row:has(.switch:not(:disabled)):hover .switch:not(:disabled):not(:active) {
+  filter: var(--control-hover-filter);
+}
+
+.setting-row:has(.switch:not(:disabled)):active .switch:not(:disabled):not(:active) {
+  filter: var(--control-pressed-filter);
+}
+
+/* 开关本身就是当前值。整组禁用时不要和按钮一起变淡，开或关仍要能看出来。 */
+.switch:disabled {
+  opacity: 1;
+  cursor: default;
+  /* 开或关保持原色。加一圈内描边，表示现在拨不动。 */
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 22%, transparent);
+}
+
+/* 26px 轨道上的内缩焦点环会盖住滑块;外移一圈,键盘切换时开关仍完整可见。 */
+.switch:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  box-shadow: none;
 }
 
 .switch .knob {
@@ -794,6 +1260,9 @@ input[data-filename-template] {
 
 .switch.on .knob {
   transform: translateX(18px);
+  /* 深色主题的强调色是浅色，白滑块会融进轨道。滑块跟强调色上的文字走同一对比色。 */
+  background: var(--on-accent);
+  box-shadow: 0 1px 2px color-mix(in srgb, #000 32%, transparent);
 }
 
 .error-text {
@@ -809,10 +1278,13 @@ input[data-filename-template] {
 
 .about-version {
   flex: 0 0 auto;
-  font-size: 14px;
+  /* 与左侧 .label 同一字号和行高，版本号才和「版本」齐平。 */
+  font-size: 15px;
+  line-height: 1.35;
   font-weight: 600;
-  color: var(--muted);
+  color: var(--ink);
   font-variant-numeric: tabular-nums;
+  user-select: text;
 }
 
 /* 关于里的图标是装饰,名称与分组标题先出现;图标沿用标题栏的 26px。 */
@@ -890,6 +1362,16 @@ input[data-filename-template] {
 /* <input> 是 replaced 元素,::after 不渲染;禁用原因挂到外层 .input-wrap 上。 */
 .input-wrap {
   display: inline-flex;
+  align-items: center;
+}
+
+.input-suffix {
+  flex: 0 0 auto;
+  margin-inline-start: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1;
 }
 
 /* 文件名模板框独占一整行:input-wrap 默认收缩贴合,模板需要铺满卡片宽。 */
@@ -898,22 +1380,51 @@ input[data-filename-template] {
   width: 100%;
 }
 
+/* 禁用原因挂在整行输入上。居中且不换行时，英文句子会超出卡片被滚动区裁掉。 */
+.template-wrap[data-tooltip]::after {
+  left: 0;
+  transform: none;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  width: max-content;
+  max-width: 100%;
+}
+
 .input-wrap .number-input {
   flex: 1 1 auto;
   min-width: 0;
 }
 
 /* 日志路径按等宽列出,整段可选;折行不越行宽。 */
-html[data-view="settings"] [data-log-path] {
+html[data-view="settings"] [data-log-path],
+html[data-view="guide"] [data-log-path] {
   font-family: Consolas, "Courier New", monospace;
-  font-size: 11.5px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--ink);
+  user-select: text;
 }
 
-/* 选区工具等按压式开关:选中态在着色之外加 ✓,色彩之外多一层判读线索。 */
-html[data-view="settings"] [data-region-tools] .choice.selected::before {
+/* 选区工具等按压式开关:选中态在着色之外加 ✓,色彩之外多一层判读线索。
+   勾号放在左侧等宽格子里，右侧留同样宽的空列，文字始终居中。
+   未选中也占住勾号的宽度，勾上时旁边的胶囊不再被挤换行。 */
+html[data-view="settings"] [data-region-tools] .choice {
+  display: inline-grid;
+  grid-template-columns: 1em auto 1em;
+  align-items: center;
+  justify-items: center;
+}
+
+html[data-view="settings"] [data-region-tools] .choice::before {
   content: "✓";
-  margin-right: 4px;
+  grid-column: 1;
+  margin-right: 0;
   font-weight: 700;
+  visibility: hidden;
+}
+
+html[data-view="settings"] [data-region-tools] .choice.selected::before {
+  visibility: visible;
 }
 
 /* 热键按钮贴近卡片右缘,提示右对齐,避免长文案被窗口右缘裁切。 */
@@ -927,6 +1438,21 @@ html[data-view="settings"] [data-region-tools] .choice.selected::before {
   /* 共享控件的状态过渡统一由 token 关闭，各视图无需重复维护。 */
   :root {
     --control-transition: none;
+  }
+
+  html[data-view="settings"] .notice.notice-success,
+  .history-undo,
+  .history-confirm {
+    animation: none;
+  }
+
+  .history-item,
+  .history-thumb[data-tooltip] {
+    transition: none;
+  }
+
+  .hotkey-btn.recording {
+    animation: none;
   }
 
   .switch .knob,
@@ -944,7 +1470,7 @@ html[data-view="settings"] [data-region-tools] .choice.selected::before {
 /* 窄窗导航保持可读,内容区不被固定侧栏挤出。 */
 @media (max-width: 640px) {
   html[data-view="settings"] .settings-nav { flex-basis: 132px; padding: 12px 8px; }
-  html[data-view="settings"] .settings-nav-item { padding: 10px; font-size: 13px; }
+  html[data-view="settings"] .settings-nav-item { padding: 10px 10px 10px 16px; font-size: 13px; }
   html[data-view="settings"] .settings-panels { padding: 12px; }
   html[data-view="settings"] .card { padding: 16px; }
 }

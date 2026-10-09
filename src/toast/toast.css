@@ -17,7 +17,7 @@ html[data-view="toast"] #app {
   justify-content: center;
   padding: 0 14px;
   user-select: none;
-  /* 窗高固定 44px（Rust 侧 TOAST_HEIGHT）：超长文案在窗内截断而非撑出圆角边界。 */
+  /* 窗高固定 62px（Rust 侧 TOAST_HEIGHT）：超长文案在窗内截断而非撑出圆角边界。 */
   overflow: hidden;
   background: #1b1f26;
   border: 1px solid rgba(255, 255, 255, 0.16);
@@ -35,10 +35,9 @@ html[data-view="toast"] #app {
   line-height: 1.35;
   white-space: normal;
   overflow-wrap: anywhere;
-  /* 窗高固定两行(320×44,Rust 侧不可改):任何超长词条至少以省略号明示
-     截断,而非被窗高无声裁切。 */
+  /* 窗高固定三行(320×62)。再长的文件名以省略号明示截断，全文挂在系统提示上。 */
   display: -webkit-box;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 3;
   overflow: hidden;
 }

@@ -45,11 +45,11 @@ html[data-view="scroll"] #app {
 
 .scroll-head {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: baseline;
-  justify-content: space-between;
   gap: 8px;
   flex-shrink: 0;
+  min-width: 0;
   background: transparent;
 }
 
@@ -66,10 +66,13 @@ html[data-view="scroll"] #app {
 
 .scroll-axis-option {
   flex: 1 1 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   height: 26px;
   min-width: 0;
   color: var(--ink);
-  font-size: 12px;
+  font-size: 13px;
   background: transparent;
   border: 1px solid transparent;
   border-radius: var(--radius-control-sm);
@@ -77,7 +80,8 @@ html[data-view="scroll"] #app {
   transition: var(--control-transition);
 }
 
-.scroll-axis-option:hover:not(:disabled) {
+.scroll-axis-option:hover:not(:disabled),
+.scroll-axis-option:focus-visible:not(:disabled) {
   background: var(--control-hover-bg);
   border-color: var(--control-hover-border);
 }
@@ -93,11 +97,11 @@ html[data-view="scroll"] #app {
   box-shadow: var(--shadow-soft);
 }
 
-.scroll-axis-option.is-active:hover:not(:disabled) {
-  color: var(--on-accent);
-  background: var(--accent);
+.scroll-axis-option.is-active:hover:not(:disabled),
+.scroll-axis-option.is-active:focus-visible:not(:disabled) {
+  color: var(--accent);
+  background: var(--accent-soft);
   border-color: var(--accent);
-  filter: var(--control-hover-filter);
 }
 
 .scroll-axis-option:disabled {
@@ -110,22 +114,53 @@ html[data-view="scroll"] #app {
 }
 
 .scroll-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
   font-size: 13px;
   font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 范围和加长像素始终同一行。加长数字用等宽数字，变长时不再把状态说明顶下去。
+   放不下时先省略范围，悬停仍能看到完整句子。 */
+.scroll-size,
+.scroll-appended {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .scroll-size {
+  flex: 1 1 auto;
   min-width: 0;
-  color: var(--muted);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-align: end;
+  text-overflow: ellipsis;
+}
+
+.scroll-appended {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 70%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.scroll-appended::before {
+  content: " · ";
 }
 
 /* 状态贴在卡片实底上，不随完成/取消自动淡出。
    min-height 按两行(13px×1.4≈36px,取偶)预留:zh 常见两行状态在
    1↔2 行切换时不再撑高状态行,「完成/取消钉在底部不动」才成立。 */
 .scroll-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
   flex-shrink: 0;
   margin: 0;
   min-height: 38px;
@@ -137,22 +172,32 @@ html[data-view="scroll"] #app {
   overflow-wrap: anywhere;
 }
 
+.scroll-status-text {
+  min-width: 0;
+}
+
+.scroll-status.is-attention {
+  color: var(--accent);
+}
+
 .scroll-status.is-error {
   color: var(--danger);
 }
 
 /* R7:finishing 进行中跟在文案后的共享旋转圈;失败/完成文案替换时隐藏。 */
 .scroll-status .progress {
-  margin-inline-start: 6px;
+  flex: 0 0 auto;
+  /* 圈高约 0.9em 加边框，上移半个行高差，才落在第一行文字的中线。 */
+  margin-top: 0.1em;
 }
 
 .scroll-hint {
   flex-shrink: 0;
   margin: 0;
   background: transparent;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.35;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.45;
   overflow-wrap: anywhere;
 }
 
@@ -161,9 +206,9 @@ html[data-view="scroll"] #app {
   flex-shrink: 0;
   margin: 0;
   color: var(--ink);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 650;
-  line-height: 1.35;
+  line-height: 1.4;
   overflow-wrap: anywhere;
 }
 
@@ -176,11 +221,14 @@ html[data-view="scroll"] #app {
 
 .scroll-actions button {
   flex: 1 1 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   height: 30px;
   min-width: 24px;
   min-height: 30px;
   color: var(--ink);
-  font-size: 12px;
+  font-size: 13px;
   background: var(--control-fill);
   border: 1px solid var(--line);
   border-radius: var(--radius-control-sm);
@@ -188,7 +236,8 @@ html[data-view="scroll"] #app {
   transition: var(--control-transition);
 }
 
-.scroll-actions button:hover:not(:disabled) {
+.scroll-actions button:hover:not(:disabled),
+.scroll-actions button:focus-visible:not(:disabled) {
   background: var(--control-hover-bg);
   border-color: var(--control-hover-border);
 }
@@ -203,10 +252,20 @@ html[data-view="scroll"] #app {
   border-color: var(--accent);
 }
 
-.scroll-actions .scroll-start:hover:not(:disabled) {
+.scroll-actions .scroll-start:hover:not(:disabled):not(:active),
+.scroll-actions .scroll-start:focus-visible:not(:disabled):not(:active),
+.scroll-actions .scroll-start:active:not(:disabled) {
   color: var(--on-accent);
   background: var(--accent);
+}
+
+.scroll-actions .scroll-start:hover:not(:disabled):not(:active),
+.scroll-actions .scroll-start:focus-visible:not(:disabled):not(:active) {
   filter: var(--control-hover-filter);
+}
+
+.scroll-actions .scroll-start:active:not(:disabled) {
+  filter: var(--control-pressed-filter);
 }
 
 .scroll-actions .scroll-finish {
@@ -215,15 +274,47 @@ html[data-view="scroll"] #app {
   border-color: var(--accent);
 }
 
-.scroll-actions .scroll-finish:hover:not(:disabled) {
+.scroll-actions .scroll-finish:hover:not(:disabled):not(:active),
+.scroll-actions .scroll-finish:focus-visible:not(:disabled):not(:active),
+.scroll-actions .scroll-finish:active:not(:disabled) {
   color: var(--on-accent);
   background: var(--accent);
+}
+
+.scroll-actions .scroll-finish:hover:not(:disabled):not(:active),
+.scroll-actions .scroll-finish:focus-visible:not(:disabled):not(:active) {
   filter: var(--control-hover-filter);
+}
+
+.scroll-actions .scroll-finish:active:not(:disabled) {
+  filter: var(--control-pressed-filter);
+}
+
+/* 就绪时下一步是「开始」。完成仍可保存当前画面，但不要和开始抢成两个实心按钮。 */
+.scroll-actions .scroll-finish.is-secondary,
+.scroll-actions .scroll-finish.is-secondary:hover:not(:disabled):not(:active),
+.scroll-actions .scroll-finish.is-secondary:focus-visible:not(:disabled):not(:active),
+.scroll-actions .scroll-finish.is-secondary:active:not(:disabled) {
+  color: var(--ink);
+  background: var(--control-fill);
+  border-color: var(--line);
+}
+
+.scroll-actions .scroll-finish.is-secondary:hover:not(:disabled):not(:active),
+.scroll-actions .scroll-finish.is-secondary:focus-visible:not(:disabled):not(:active) {
+  background: var(--control-hover-bg);
+  border-color: var(--control-hover-border);
+  filter: none;
+}
+
+.scroll-actions .scroll-finish.is-secondary:active:not(:disabled) {
+  filter: var(--control-pressed-filter);
 }
 
 /* 取消会丢弃本次全部拼接,是不可逆动作:悬停/按压给危险色,与 record 的
    .record-discard 用同一组 token;静止态保持中性(视觉噪音考量)。 */
 .scroll-actions .scroll-cancel:hover:not(:disabled),
+.scroll-actions .scroll-cancel:focus-visible:not(:disabled),
 .scroll-actions .scroll-cancel:active:not(:disabled) {
   color: var(--control-danger-hover-border);
   border-color: var(--control-danger-hover-border);

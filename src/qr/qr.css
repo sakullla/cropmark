@@ -6,10 +6,13 @@
   width: clamp(180px, 30%, 260px);
   min-width: 0;
   min-height: 0;
+  /* 预览舞台把面板拉到和画面一样高。不封顶时，长链接会把面板撑出窗口。 */
+  max-height: 100%;
   display: flex;
   flex-direction: column;
   gap: 8px;
   padding: 10px;
+  overflow: hidden;
   border: 1px solid var(--line);
   border-radius: var(--radius-panel);
   background: var(--panel);
@@ -34,12 +37,16 @@
 }
 
 .qr-panel-list {
-  flex: 1 1 auto;
+  /* 基准高度为 0，多出来的链接在列表里滚，不再把标题和复制按钮顶出窗口。 */
+  flex: 1 1 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 8px;
   overflow: auto;
+  overscroll-behavior: contain;
+  /* 滚动条出现时不再把右侧的复制按钮挤窄。 */
+  scrollbar-gutter: stable;
 }
 
 .qr-item {
@@ -50,6 +57,12 @@
   border: 1px solid var(--line);
   border-radius: var(--radius-control-sm);
   background: color-mix(in srgb, var(--bg) 65%, transparent);
+  transition: border-color 120ms ease;
+}
+
+.qr-item:hover,
+.qr-item:focus-within {
+  border-color: var(--control-hover-border);
 }
 
 .qr-item-text {
@@ -65,27 +78,66 @@
 
 .qr-item-copy {
   align-self: flex-end;
-  min-width: 24px;
-  min-height: 24px;
-  height: 28px;
-  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  min-height: 32px;
+  height: 32px;
+  padding: 0 10px;
   border: 1px solid var(--line);
   border-radius: var(--radius-control-sm);
   background: color-mix(in srgb, var(--panel) 80%, transparent);
   color: var(--ink);
   font: inherit;
-  font-size: 12px;
+  font-size: 13px;
   cursor: pointer;
   transition: var(--control-transition);
 }
 
-.qr-item-copy:hover:not(:disabled) {
+.qr-item-copy:hover:not(:disabled),
+.qr-item-copy:focus-visible:not(:disabled) {
   border-color: var(--control-hover-border);
   background: var(--control-hover-bg);
 }
 
 .qr-item-copy:active:not(:disabled) {
   filter: var(--control-pressed-filter);
+}
+
+/* 只有一条结果时复制就是下一步。多条时保持普通按钮，避免一列实心蓝。 */
+.qr-item-copy.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+  font-weight: 650;
+}
+
+.qr-item-copy.primary:hover:not(:disabled):not(:active),
+.qr-item-copy.primary:focus-visible:not(:disabled):not(:active),
+.qr-item-copy.primary:active:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+
+.qr-item-copy.primary:hover:not(:disabled):not(:active),
+.qr-item-copy.primary:focus-visible:not(:disabled):not(:active) {
+  filter: var(--control-hover-filter);
+}
+
+.qr-item-copy.primary:active:not(:disabled) {
+  filter: var(--control-pressed-filter);
+}
+
+.qr-item-copy.is-copied,
+.qr-item-copy.is-copied:hover:not(:disabled):not(:active),
+.qr-item-copy.is-copied:focus-visible:not(:disabled):not(:active),
+.qr-item-copy.is-copied:active:not(:disabled) {
+  background: var(--ok);
+  border-color: var(--ok);
+  color: var(--on-accent);
+  font-weight: 650;
 }
 
 .qr-item-copy:disabled {

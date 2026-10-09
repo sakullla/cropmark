@@ -8,7 +8,7 @@ import {
   type Annotation,
   type AnnotationEditor,
 } from "../annotation";
-import { t, type CatalogKey } from "../i18n";
+import { currentLanguage, t, type CatalogKey } from "../i18n";
 import { mountOcrModel, type OcrModel } from "../ocr";
 import { mountQrModel, type QrModel } from "../qr";
 import { NOTICE_AUTO_HIDE_MS } from "../feedback";
@@ -356,9 +356,19 @@ export function mountOverlay(root: HTMLElement): () => void {
 
   // ADR-2:进行中提示(persistent)不自动消失,直到完成/失败文案替换;
   // 瞬态结果提示按共享常量自动隐藏(R1:与贴图/设置一致)。
-  const showNotice = (message: string, persistent = false): void => {
+  const showNotice = (
+    message: string,
+    persistent = false,
+    tone: "neutral" | "error" | "success" | "attention" = "neutral",
+  ): void => {
     notice.textContent = message;
     notice.hidden = false;
+    // 复制/保存失败以前和「选区太小」同一套中性条，失败看不出来。
+    // 还没选好就确认，用强调色，和工具用法说明分开。
+    notice.classList.toggle("is-error", tone === "error");
+    notice.classList.toggle("is-success", tone === "success");
+    notice.classList.toggle("is-attention", tone === "attention");
+    notice.classList.remove("is-progress");
     if (noticeTimer) {
       window.clearTimeout(noticeTimer);
       noticeTimer = 0;
@@ -369,6 +379,25 @@ export function mountOverlay(root: HTMLElement): () => void {
         notice.hidden = true;
       }, NOTICE_AUTO_HIDE_MS);
     }
+    syncNoticeClamp();
+  };
+
+  // 底部提示最多三行。更长的失败原因悬停再读，避免盖住选区和工具条。
+  const syncNoticeClamp = (): void => {
+    const text = notice.textContent ?? "";
+    window.requestAnimationFrame(() => {
+      if (notice.hidden || (notice.textContent ?? "") !== text) {
+        return;
+      }
+      const clamped =
+        text.length > 0 && notice.clientHeight > 0 && notice.scrollHeight > notice.clientHeight + 1;
+      notice.classList.toggle("is-clamped", clamped);
+      if (clamped) {
+        notice.title = text;
+      } else {
+        notice.removeAttribute("title");
+      }
+    });
   };
 
   // 隐藏提示必须同时清掉自动隐藏计时器,否则旧计时器会提前藏掉新提示。
@@ -378,6 +407,8 @@ export function mountOverlay(root: HTMLElement): () => void {
       noticeTimer = 0;
     }
     notice.hidden = true;
+    notice.classList.remove("is-error", "is-success", "is-attention", "is-progress", "is-clamped");
+    notice.removeAttribute("title");
   };
 
   // finishing 期间动作按钮给共享 disabled 可视态(app.css button:disabled),
@@ -407,8 +438,54 @@ export function mountOverlay(root: HTMLElement): () => void {
   const showFailure = (message: string, retry: () => void): void => {
     hint.textContent = message;
     hint.classList.add("is-error");
+    syncHintClamp();
     retryAction = retry;
     retryBtn.hidden = false;
+    // 失败后重试是顶部的恢复动作。焦点放上去，Enter 点重试，而不是确认选区。
+    queueMicrotask(() => {
+      if (!retryBtn.hidden) {
+        retryBtn.focus();
+      }
+    });
+  };
+
+  // 「能力说明」和「收起说明」宽窄不同。先按较宽的那句留宽，展开时顶栏不再挪位。
+  const capabilityWidthCache = new Map<string, string>();
+  const reserveCapabilityWidth = (): void => {
+    const parent = capabilityToggle.parentElement;
+    if (!parent || capabilityToggle.getClientRects().length === 0) {
+      return;
+    }
+    const key = currentLanguage();
+    let width = capabilityWidthCache.get(key);
+    if (!width) {
+      const probe = capabilityToggle.cloneNode(false);
+      if (!(probe instanceof HTMLButtonElement)) {
+        return;
+      }
+      probe.className = capabilityToggle.className;
+      probe.style.position = "absolute";
+      probe.style.visibility = "hidden";
+      probe.style.pointerEvents = "none";
+      probe.style.width = "auto";
+      probe.style.minWidth = "0";
+      probe.style.whiteSpace = "nowrap";
+      parent.append(probe);
+      let widest = 0;
+      for (const text of [t("overlay.capabilities"), t("overlay.capabilities_collapse")]) {
+        probe.textContent = text;
+        widest = Math.max(widest, probe.getBoundingClientRect().width);
+      }
+      probe.remove();
+      if (widest <= 0) {
+        return;
+      }
+      width = `${Math.ceil(widest)}px`;
+      capabilityWidthCache.set(key, width);
+    }
+    if (capabilityToggle.style.minWidth !== width) {
+      capabilityToggle.style.minWidth = width;
+    }
   };
 
   const setCapabilityPanel = (
@@ -418,9 +495,10 @@ export function mountOverlay(root: HTMLElement): () => void {
     const focusWasInside = capabilityPanel.contains(document.activeElement);
     capabilityPanel.hidden = !open;
     capabilityToggle.setAttribute("aria-expanded", open ? "true" : "false");
-    capabilityToggle.textContent = t(
-      open ? "overlay.capabilities_collapse" : "overlay.capabilities",
-    );
+    const labelKey = open ? "overlay.capabilities_collapse" : "overlay.capabilities";
+    capabilityToggle.dataset.i18n = labelKey;
+    capabilityToggle.textContent = t(labelKey);
+    reserveCapabilityWidth();
     if (open && options.focusPanel) {
       capabilityPanel.focus();
     } else if (
@@ -468,6 +546,24 @@ export function mountOverlay(root: HTMLElement): () => void {
     capabilityPanel.replaceChildren(title, available, listEl);
   };
 
+  // 顶栏说明最多两行。更长的失败原因悬停才能读完，平时不挡住选区拖动。
+  const syncHintClamp = (): void => {
+    const text = hint.textContent ?? "";
+    window.requestAnimationFrame(() => {
+      if ((hint.textContent ?? "") !== text) {
+        return;
+      }
+      const clamped =
+        text.length > 0 && hint.clientHeight > 0 && hint.scrollHeight > hint.clientHeight + 1;
+      hint.classList.toggle("is-clamped", clamped);
+      if (clamped) {
+        hint.title = text;
+      } else {
+        hint.removeAttribute("title");
+      }
+    });
+  };
+
   const renderHint = (): void => {
     if (!frame) {
       return;
@@ -481,29 +577,28 @@ export function mountOverlay(root: HTMLElement): () => void {
       // R2/R4:取字/二维码识别中提示退出方式;退出后恢复工作区/标注提示。
       if (ocrModel?.active === true) {
         hint.textContent = t("overlay.hint.ocr");
-        return;
-      }
-      if (qrModel?.active === true) {
+      } else if (qrModel?.active === true) {
         hint.textContent = t("overlay.hint.qr");
-        return;
+      } else {
+        hint.textContent = t(
+          annotationActive()
+            ? reduced
+              ? "overlay.hint.reduced_annotate"
+              : "overlay.hint.annotate"
+            : "overlay.hint.workspace",
+        );
       }
-      hint.textContent = t(
-        annotationActive()
-          ? reduced
-            ? "overlay.hint.reduced_annotate"
-            : "overlay.hint.annotate"
-          : "overlay.hint.workspace",
-      );
-      return;
+    } else {
+      hint.textContent =
+        frame.mode === "window"
+          ? t("overlay.hint.window")
+          : frame.snapWindowLevel === true
+            ? t("overlay.hint.snap")
+            : reduced
+              ? t("overlay.hint.reduced")
+              : t("overlay.hint.region_nudge");
     }
-    hint.textContent =
-      frame.mode === "window"
-        ? t("overlay.hint.window")
-        : frame.snapWindowLevel === true
-          ? t("overlay.hint.snap")
-          : reduced
-            ? t("overlay.hint.reduced")
-            : t("overlay.hint.region_nudge");
+    syncHintClamp();
   };
 
   // 画布几何由 `canvasGeometry` 唯一决定:fixed 工作区是帧的等比显示框,
@@ -689,6 +784,7 @@ export function mountOverlay(root: HTMLElement): () => void {
   const clearBadge = (): void => {
     badgeTarget = null;
     badge.hidden = true;
+    badge.classList.remove("is-too-small");
   };
 
   /// 尺寸徽标放在离光标热点最远、且仍在画面内的角外侧。没有光标时按选区中心平局,留在左上。
@@ -703,6 +799,7 @@ export function mountOverlay(root: HTMLElement): () => void {
       return;
     }
     badge.hidden = false;
+    badge.classList.toggle("is-too-small", badgeTarget.width < 2 || badgeTarget.height < 2);
     const sizeLabel = t("overlay.size_format", {
       width: badgeTarget.width,
       height: badgeTarget.height,
@@ -927,16 +1024,33 @@ export function mountOverlay(root: HTMLElement): () => void {
         );
       }
     }
-    strokeWithHalo(
-      ctx,
-      mapped.x + 1,
-      mapped.y + 1,
-      mapped.width - 2,
-      mapped.height - 2,
-      2,
-      selectionStroke,
-      selectionHalo,
-    );
+    const tooSmall = crop.width < 2 || crop.height < 2;
+    const stroke = tooSmall ? canvasToken(root, "--danger", "#b42318") : selectionStroke;
+    // 描边以路径为中心。选区比线宽还窄时，向内收会得到负宽，框会翻到选区外。
+    const inset = 1;
+    if (mapped.width > inset * 2 && mapped.height > inset * 2) {
+      strokeWithHalo(
+        ctx,
+        mapped.x + inset,
+        mapped.y + inset,
+        mapped.width - inset * 2,
+        mapped.height - inset * 2,
+        2,
+        stroke,
+        selectionHalo,
+      );
+    } else {
+      strokeWithHalo(
+        ctx,
+        mapped.x,
+        mapped.y,
+        Math.max(mapped.width, 1),
+        Math.max(mapped.height, 1),
+        2,
+        stroke,
+        selectionHalo,
+      );
+    }
     placeBadge(crop);
     // R2:取字三态画在最上层(已选 > 当前命中 > 搜索命中)。
     paintOcr();
@@ -958,10 +1072,12 @@ export function mountOverlay(root: HTMLElement): () => void {
     // 上一会话文案(如取字中…),首帧到达后 renderHint 照常覆盖。
     hint.textContent = t("overlay.notice.loading");
     hint.classList.remove("is-error");
+    syncHintClamp();
     retryBtn.hidden = true;
     retryAction = null;
     setFinishing(true);
     showNotice(t("overlay.notice.loading"), true);
+    notice.classList.add("is-progress");
     try {
       const next = await invoke<OverlayFrame>("get_overlay_frame");
       if (generation !== loadGeneration) return;
@@ -1068,7 +1184,7 @@ export function mountOverlay(root: HTMLElement): () => void {
     if (!crop || crop.width < 2 || crop.height < 2) {
       // 不静默吞掉确认:给出下次能成功的具体做法(R13)。单击未拖动得到的
       // 0×0 选区同样按"太小"提示,而不是无反馈。
-      showNotice(t(selection ? "overlay.notice.too_small" : "overlay.notice.select_first"));
+      showNotice(t(selection ? "overlay.notice.too_small" : "overlay.notice.select_first"), false, "attention");
       return;
     }
     editor?.commitText();
@@ -1122,8 +1238,12 @@ export function mountOverlay(root: HTMLElement): () => void {
     const current = buttons.indexOf(document.activeElement as HTMLButtonElement);
     const index = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1
       : (current + (event.key === "ArrowUp" ? -1 : 1) + buttons.length) % buttons.length;
-    buttons[index].focus();
-    buttons[index].scrollIntoView({ block: "nearest" });
+    const next = buttons[index];
+    next.focus();
+    next.scrollIntoView({ block: "nearest" });
+    hoverId = next.dataset.windowId ?? null;
+    markActiveWindow(list, hoverId);
+    scheduleDraw();
   });
 
   /// R4:方向键微调:移动选区 1 物理像素/次,Shift+方向键以左上角为锚缩放
@@ -1241,7 +1361,7 @@ export function mountOverlay(root: HTMLElement): () => void {
     setFinishing(true);
     void invoke("preview_workspace_ocr", { annotations: currentAnnotations() }).catch((error) => {
       setFinishing(false);
-      showNotice(invokeError(error, t("overlay.error.capture_failed")));
+      showNotice(invokeError(error, t("overlay.error.capture_failed")), false, "error");
     });
   };
 
@@ -1257,7 +1377,7 @@ export function mountOverlay(root: HTMLElement): () => void {
     setFinishing(true);
     void invoke("preview_workspace_qr", { annotations: currentAnnotations() }).catch((error) => {
       setFinishing(false);
-      showNotice(invokeError(error, t("overlay.error.capture_failed")));
+      showNotice(invokeError(error, t("overlay.error.capture_failed")), false, "error");
     });
   };
 
@@ -1266,7 +1386,14 @@ export function mountOverlay(root: HTMLElement): () => void {
     closable: false,
     notice: (message, kind) => {
       recognitionNoticeActive = true;
-      showNotice(message, kind === "progress" || kind === "hint");
+      showNotice(
+        message,
+        kind === "progress" || kind === "hint" || kind === "empty",
+        kind === "error" ? "error" : kind === "success" ? "success" : "neutral",
+      );
+      if (kind === "progress") {
+        notice.classList.add("is-progress");
+      }
     },
     onChange: syncRecognitionChrome,
   });
@@ -1276,7 +1403,14 @@ export function mountOverlay(root: HTMLElement): () => void {
     closable: false,
     notice: (message, kind) => {
       recognitionNoticeActive = true;
-      showNotice(message, kind === "progress" || kind === "hint");
+      showNotice(
+        message,
+        kind === "progress" || kind === "hint" || kind === "empty",
+        kind === "error" ? "error" : kind === "success" ? "success" : "neutral",
+      );
+      if (kind === "progress") {
+        notice.classList.add("is-progress");
+      }
     },
     onChange: syncRecognitionChrome,
   });
@@ -1296,7 +1430,7 @@ export function mountOverlay(root: HTMLElement): () => void {
       await afterExport("copy");
     } catch (error) {
       setFinishing(false);
-      showNotice(invokeError(error, t("preview.error.copy_fallback")));
+      showNotice(invokeError(error, t("preview.error.copy_fallback")), false, "error");
     }
   };
 
@@ -1331,12 +1465,12 @@ export function mountOverlay(root: HTMLElement): () => void {
         } catch {
           // 工作区恢复失败不能再静默:用户需要知道浮层状态可能异常。
           setFinishing(false);
-          showNotice(t("overlay.notice.restore_failed"));
+          showNotice(t("overlay.notice.restore_failed"), false, "error");
           return;
         }
       }
       setFinishing(false);
-      showNotice(invokeError(error, t("overlay.error.save_fallback")));
+      showNotice(invokeError(error, t("overlay.error.save_fallback")), false, "error");
     }
   };
 
@@ -1351,7 +1485,7 @@ export function mountOverlay(root: HTMLElement): () => void {
       await afterExport("pin");
     } catch (error) {
       setFinishing(false);
-      showNotice(invokeError(error, t("preview.error.pin_fallback")));
+      showNotice(invokeError(error, t("preview.error.pin_fallback")), false, "error");
     }
   };
 
@@ -1365,7 +1499,7 @@ export function mountOverlay(root: HTMLElement): () => void {
       await invoke("edit_workspace_further", { annotations: currentAnnotations() });
     } catch (error) {
       setFinishing(false);
-      showNotice(invokeError(error, t("overlay.error.capture_failed")));
+      showNotice(invokeError(error, t("overlay.error.capture_failed")), false, "error");
     }
   };
 
@@ -1539,6 +1673,8 @@ export function mountOverlay(root: HTMLElement): () => void {
     const id = hoverId ?? hitWindow(frame, point.x, point.y);
     if (id) {
       void finishWindow(id);
+    } else {
+      showNotice(t("overlay.notice.window_first"), false, "attention");
     }
   });
 
@@ -1672,8 +1808,12 @@ export function mountOverlay(root: HTMLElement): () => void {
     frame: () => (frame ? { width: frame.width, height: frame.height, scale: frame.scale } : null),
     redraw: () => scheduleDraw(),
     // R2/R4:取字或二维码识别激活时画布输入只给识别层,标注编辑暂时禁用。
+    // 确认截图期间同样关掉标注。导出用的是按下确认时的图元,之后再画不会进结果。
     isEditable: () =>
-      annotationActive() && ocrModel?.active !== true && qrModel?.active !== true,
+      !finishing &&
+      annotationActive() &&
+      ocrModel?.active !== true &&
+      qrModel?.active !== true,
     // 标注阶段右键未命中图元:与 R13 一致地说明操作条缺失与替代路径,
     // 而不是静默无响应。
     onContextMenuMiss: () => {
@@ -1684,11 +1824,12 @@ export function mountOverlay(root: HTMLElement): () => void {
     // 与预览一致地消费工具用法提示(取字/马赛克/聚光灯等),不再静默丢弃。
     onToolHint: (hint) => {
       if (hint) {
-        showNotice(t(hint.key, hint.params));
+        // 文字框还开着时，换行说明要留在屏幕上。其它工具用法仍短暂出现。
+        showNotice(t(hint.key, hint.params), hint.key === "preview.note.text_editing");
       }
     },
     onError: (error) => {
-      showNotice(typeof error === "string" ? error : t(error.key, error.params));
+      showNotice(typeof error === "string" ? error : t(error.key, error.params), false, "error");
     },
   });
 
@@ -1777,6 +1918,8 @@ export function mountOverlay(root: HTMLElement): () => void {
       if (frame.mode === "window") {
         if (hoverId) {
           void finishWindow(hoverId);
+        } else {
+          showNotice(t("overlay.notice.window_first"), false, "attention");
         }
         return;
       }
@@ -1829,10 +1972,25 @@ export function mountOverlay(root: HTMLElement): () => void {
     chromeObserver.observe(chrome);
   }
 
+  // 标注工具条会换行。底部提示按整条高度上移，避免盖住第二行按钮。
+  const syncToolsClearance = (): void => {
+    root.style.setProperty("--overlay-tools-h", `${toolsEl.offsetHeight}px`);
+  };
+  const toolsObserver = new ResizeObserver(syncToolsClearance);
+  toolsObserver.observe(toolsEl);
+  syncToolsClearance();
+
   void listen("overlay-reload", () => {
     void load();
   });
   void load();
+  void document.fonts.ready.then(() => {
+    if (!root.isConnected) {
+      return;
+    }
+    capabilityWidthCache.clear();
+    reserveCapabilityWidth();
+  });
 
   // 语言切换:提示条、能力面板、取字/二维码面板与开关文案即时更新;静态标签由 main 应用。
   return () => {
@@ -1857,9 +2015,29 @@ export function mountOverlay(root: HTMLElement): () => void {
 function markActiveWindow(root: HTMLElement, activeId: string | null): void {
   root.querySelectorAll(".window-item").forEach((item) => {
     const button = item as HTMLElement;
-    button.classList.toggle("active", button.dataset.windowId === activeId);
-    button.setAttribute("aria-current", String(button.dataset.windowId === activeId));
+    const active = button.dataset.windowId === activeId;
+    button.classList.toggle("active", active);
+    if (active) {
+      button.setAttribute("aria-current", "true");
+      revealWindowItem(root, button);
+    } else {
+      button.removeAttribute("aria-current");
+    }
   });
+}
+
+/** 只滚动窗口列表本身。高亮跟着指针或滚轮换层时，当前行要留在列表里。 */
+function revealWindowItem(list: HTMLElement, item: HTMLElement): void {
+  const itemBox = item.getBoundingClientRect();
+  const listBox = list.getBoundingClientRect();
+  if (listBox.height <= 0 || itemBox.height <= 0) {
+    return;
+  }
+  if (itemBox.top < listBox.top) {
+    list.scrollTop -= listBox.top - itemBox.top;
+  } else if (itemBox.bottom > listBox.bottom) {
+    list.scrollTop += itemBox.bottom - listBox.bottom;
+  }
 }
 
 function renderWindowList(
@@ -1882,9 +2060,9 @@ function renderWindowList(
     button.type = "button";
     button.className = "window-item";
     button.dataset.windowId = item.id;
-    button.title = item.title;
     if (item.id === activeId) {
       button.classList.add("active");
+      button.setAttribute("aria-current", "true");
     }
     button.innerHTML = `<div class="title"></div><div class="meta"></div>`;
     const title = button.querySelector(".title");
@@ -1900,7 +2078,22 @@ function renderWindowList(
       onPick(item.id);
     });
     root.append(button);
+    // 短标题和按钮上的字一样，悬停再弹一次只会挡住列表。只有折成两行仍放不下时才给系统提示。
+    if (title instanceof HTMLElement && item.title.length > 0 && textClamped(title)) {
+      button.title = item.title;
+    }
   }
+}
+
+function textClamped(element: HTMLElement): boolean {
+  element.style.setProperty("-webkit-line-clamp", "unset");
+  element.style.display = "block";
+  element.style.overflow = "visible";
+  const full = element.scrollHeight;
+  element.style.removeProperty("-webkit-line-clamp");
+  element.style.removeProperty("display");
+  element.style.removeProperty("overflow");
+  return full > element.clientHeight + 1;
 }
 
 function windowRectOnFrame(window: ListedWindow, frame: OverlayFrame): Selection | null {

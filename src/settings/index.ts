@@ -6,7 +6,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { handleRadioGroupKeydown } from "../a11y";
 import { autostartHelp, hotkeyErrorText } from "../errors";
 import { NOTICE_AUTO_HIDE_MS } from "../feedback";
-import { t, type CatalogKey } from "../i18n";
+import { currentLanguage, t, type CatalogKey } from "../i18n";
 import { icons } from "../icons";
 
 export type CaptureMode = "region" | "window" | "fullscreen";
@@ -203,7 +203,7 @@ export function mountSettings(root: HTMLElement): () => void {
         <nav class="settings-nav" role="tablist" aria-orientation="vertical" data-settings-nav data-i18n-aria-label="settings.nav.aria_label" aria-label="设置分类">
           ${SECTIONS.map(
             (section, index) => `
-            <button type="button" class="settings-nav-item" role="tab" id="settings-tab-${section}" aria-controls="settings-panel-${section}" aria-selected="${index === 0 ? "true" : "false"}" tabindex="${index === 0 ? 0 : -1}" data-section="${section}" data-i18n="${SECTION_LABEL_KEY[section]}">${t(SECTION_LABEL_KEY[section])}</button>`,
+            <button type="button" class="settings-nav-item" role="tab" id="settings-tab-${section}" aria-controls="settings-panel-${section}" aria-selected="${index === 0 ? "true" : "false"}" tabindex="${index === 0 ? 0 : -1}" data-section="${section}"><span class="settings-nav-label" data-i18n="${SECTION_LABEL_KEY[section]}">${t(SECTION_LABEL_KEY[section])}</span><span class="settings-nav-reserve" data-i18n="${SECTION_LABEL_KEY[section]}" aria-hidden="true">${t(SECTION_LABEL_KEY[section])}</span></button>`,
           ).join("")}
         </nav>
         <div class="settings-main">
@@ -227,7 +227,7 @@ export function mountSettings(root: HTMLElement): () => void {
                       <div class="label" id="delay-label" data-i18n="settings.capture.delay_label">延时秒数</div>
                       <p class="hint" data-i18n="settings.capture.delay_hint">0–60 秒，热键与托盘截取按此倒计时；0 为立即截取。</p>
                     </div>
-                    <input type="number" class="number-input" data-capture="delay" min="0" max="60" step="1" inputmode="numeric" aria-labelledby="delay-label" aria-describedby="delay-error" />
+                    <span class="input-wrap"><input type="number" class="number-input" data-capture="delay" min="0" max="60" step="1" inputmode="numeric" aria-labelledby="delay-label" aria-describedby="delay-error" /><span class="input-suffix" data-i18n="settings.unit.seconds">秒</span></span>
                   </div>
                   <p class="error" id="delay-error" data-capture-error role="alert" hidden></p>
                   <div class="setting-row">
@@ -304,7 +304,7 @@ export function mountSettings(root: HTMLElement): () => void {
                       <div class="label" id="history-limit-label" data-i18n="settings.history.limit_label">记录上限</div>
                       <p class="hint" data-i18n="settings.history.limit_hint">5–200 条，超出上限时自动淘汰最旧记录。</p>
                     </div>
-                    <input type="number" class="number-input" data-history="limit" min="5" max="200" step="1" inputmode="numeric" aria-labelledby="history-limit-label" aria-describedby="history-limit-error" />
+                    <span class="input-wrap"><input type="number" class="number-input" data-history="limit" min="5" max="200" step="1" inputmode="numeric" aria-labelledby="history-limit-label" aria-describedby="history-limit-error" /><span class="input-suffix" data-i18n="settings.unit.records">条</span></span>
                   </div>
                   <p class="error" id="history-limit-error" data-history-error role="alert" hidden></p>
                   <div class="setting-row">
@@ -331,6 +331,7 @@ export function mountSettings(root: HTMLElement): () => void {
                     </div>
                   </div>
                   <span class="input-wrap template-wrap" data-tooltip-wrap><input type="text" class="number-input" data-filename-template maxlength="180" spellcheck="false" aria-labelledby="template-label" data-i18n-placeholder="settings.export.template_placeholder" placeholder="例如 shot_{date}_{mode}_{seq}" /></span>
+                  <p class="error template-notice" id="template-notice" data-template-notice role="status" hidden></p>
                 </section>
                 <section class="block" aria-labelledby="beautify-title">
                   <h2 id="beautify-title" data-i18n="settings.export.beautify_title">导出美化</h2>
@@ -352,14 +353,14 @@ export function mountSettings(root: HTMLElement): () => void {
                       <div class="label" id="padding-label" data-i18n="settings.export.padding_label">留白</div>
                       <p class="hint" data-i18n="settings.export.padding_hint">0–240 像素，输出四周各加这么多留白。</p>
                     </div>
-                    <span class="input-wrap" data-tooltip-wrap><input type="number" class="number-input" data-beautify-padding min="0" max="240" step="1" inputmode="numeric" aria-labelledby="padding-label" aria-describedby="export-error" /></span>
+                    <span class="input-wrap" data-tooltip-wrap><input type="number" class="number-input" data-beautify-padding min="0" max="240" step="1" inputmode="numeric" aria-labelledby="padding-label" aria-describedby="export-error" /><span class="input-suffix" data-i18n="settings.unit.px">像素</span></span>
                   </div>
                   <div class="setting-row">
                     <div>
                       <div class="label" id="radius-label" data-i18n="settings.export.radius_label">圆角</div>
                       <p class="hint" data-i18n="settings.export.radius_hint">0–160 像素。阴影边距由圆角推导。</p>
                     </div>
-                    <span class="input-wrap" data-tooltip-wrap><input type="number" class="number-input" data-beautify-radius min="0" max="160" step="1" inputmode="numeric" aria-labelledby="radius-label" aria-describedby="export-error" /></span>
+                    <span class="input-wrap" data-tooltip-wrap><input type="number" class="number-input" data-beautify-radius min="0" max="160" step="1" inputmode="numeric" aria-labelledby="radius-label" aria-describedby="export-error" /><span class="input-suffix" data-i18n="settings.unit.px">像素</span></span>
                   </div>
                   <p class="error" id="export-error" data-export-error role="alert" hidden></p>
                   <div class="setting-row">
@@ -483,6 +484,7 @@ export function mountSettings(root: HTMLElement): () => void {
   const historyOpenEl = root.querySelector("[data-action=open-history]");
   const useFilenameTemplateEl = root.querySelector("[data-export-option=useFilenameTemplate]");
   const templateEl = root.querySelector("[data-filename-template]");
+  const templateNoticeEl = root.querySelector("[data-template-notice]");
   const applyBeautifyEl = root.querySelector("[data-export-option=applyBeautify]");
   const presetRoot = root.querySelector("[data-beautify-presets]");
   const paddingEl = root.querySelector("[data-beautify-padding]");
@@ -523,6 +525,7 @@ export function mountSettings(root: HTMLElement): () => void {
     !(historyOpenEl instanceof HTMLButtonElement) ||
     !(useFilenameTemplateEl instanceof HTMLButtonElement) ||
     !(templateEl instanceof HTMLInputElement) ||
+    !(templateNoticeEl instanceof HTMLElement) ||
     !(applyBeautifyEl instanceof HTMLButtonElement) ||
     !(presetRoot instanceof HTMLElement) ||
     !(paddingEl instanceof HTMLInputElement) ||
@@ -555,13 +558,92 @@ export function mountSettings(root: HTMLElement): () => void {
   const setApplying = (value: boolean, source?: HTMLButtonElement | null): void => {
     applying = value;
     if (!source) {
+      if (!value) {
+        queueMicrotask(drainDeferredClicks);
+      }
       return;
     }
     if (value) {
       source.setAttribute("aria-busy", "true");
     } else {
       source.removeAttribute("aria-busy");
+      queueMicrotask(drainDeferredClicks);
     }
+  };
+  // 输入框失焦会先开始保存，紧接着的那下点击会撞上 applying 被丢掉。
+  // 先排进队列，这次保存结束再补点一次，开关和选项不会没反应。
+  const deferredClicks: Array<() => void> = [];
+  const replayClick = (control: HTMLElement): void => {
+    deferredClicks.push(() => {
+      if (!control.isConnected) {
+        return;
+      }
+      if (control instanceof HTMLButtonElement && control.disabled) {
+        return;
+      }
+      control.click();
+    });
+  };
+  const drainDeferredClicks = (): void => {
+    if (applying) {
+      return;
+    }
+    const next = deferredClicks.shift();
+    if (!next) {
+      return;
+    }
+    next();
+    if (!applying) {
+      drainDeferredClicks();
+    }
+  };
+  // 保存还没结束时，失焦提交先记下草稿再排队。刷新不能把框里的新内容盖回旧值。
+  const fieldDrafts = new Map<HTMLInputElement, string>();
+  const rememberFieldDraft = (input: HTMLInputElement): void => {
+    fieldDrafts.set(input, input.value);
+  };
+  const deferUntilIdle = (action: () => void): void => {
+    if (applying) {
+      deferredClicks.push(action);
+      return;
+    }
+    action();
+  };
+  const commitFieldWhenIdle = (input: HTMLInputElement, commit: () => void): void => {
+    rememberFieldDraft(input);
+    deferUntilIdle(() => {
+      if (document.activeElement === input) {
+        return;
+      }
+      const pending = fieldDrafts.get(input);
+      if (pending !== undefined) {
+        input.value = pending;
+      }
+      commit();
+    });
+  };
+  const showFieldValue = (
+    input: HTMLInputElement,
+    saved: string,
+    matchesSaved: (draft: string) => boolean,
+  ): boolean => {
+    const draft = fieldDrafts.get(input);
+    if (draft !== undefined && matchesSaved(draft) && input.getAttribute("aria-invalid") !== "true") {
+      fieldDrafts.delete(input);
+    }
+    if (document.activeElement === input) {
+      return false;
+    }
+    const pending = fieldDrafts.get(input);
+    if (pending !== undefined) {
+      input.value = pending;
+      return false;
+    }
+    if (input.getAttribute("aria-invalid") === "true") {
+      return false;
+    }
+    input.value = saved;
+    return true;
   };
   let lastSettings: UiSettings | null = null;
   let section: SettingsSection = "capture";
@@ -658,10 +740,18 @@ export function mountSettings(root: HTMLElement): () => void {
     selectSection(SECTIONS[nextIndex], true);
   });
 
+  const revealWhileEditing = (element: HTMLElement, wasHidden: boolean, field: HTMLElement): void => {
+    if (wasHidden && document.activeElement === field) {
+      element.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+  };
+
   const showDelayError = (message: string): void => {
+    const wasHidden = delayErrorEl.hidden;
     delayErrorEl.hidden = false;
     delayErrorEl.textContent = message;
     delayEl.setAttribute("aria-invalid", "true");
+    revealWhileEditing(delayErrorEl, wasHidden, delayEl);
   };
 
   const clearDelayError = (): void => {
@@ -672,8 +762,11 @@ export function mountSettings(root: HTMLElement): () => void {
 
   const renderCapture = (capture: CaptureSettings): void => {
     captureSettings = capture;
-    delayEl.value = String(capture.delaySeconds);
-    clearDelayError();
+    // 焦点还在框里、标红，或保存进行中已经改过的草稿，都不要盖回已保存的秒数。
+    const delaySaved = String(capture.delaySeconds);
+    if (showFieldValue(delayEl, delaySaved, (draft) => draft.trim() === delaySaved)) {
+      clearDelayError();
+    }
     syncSwitch(captureCursorEl, capture.captureCursor);
     syncSwitch(multiMonitorEl, capture.multiMonitor);
     syncSwitch(longCaptureEl, capture.longCapture);
@@ -703,9 +796,11 @@ export function mountSettings(root: HTMLElement): () => void {
   };
 
   const showHistoryError = (message: string): void => {
+    const wasHidden = historyErrorEl.hidden;
     historyErrorEl.hidden = false;
     historyErrorEl.textContent = message;
     historyLimitEl.setAttribute("aria-invalid", "true");
+    revealWhileEditing(historyErrorEl, wasHidden, historyLimitEl);
   };
 
   const clearHistoryError = (): void => {
@@ -716,8 +811,10 @@ export function mountSettings(root: HTMLElement): () => void {
 
   const renderHistory = (history: HistorySettings): void => {
     historySettings = history;
-    historyLimitEl.value = String(history.limit);
-    clearHistoryError();
+    const limitSaved = String(history.limit);
+    if (showFieldValue(historyLimitEl, limitSaved, (draft) => draft.trim() === limitSaved)) {
+      clearHistoryError();
+    }
     syncSwitch(historyEnabledEl, history.enabled);
   };
 
@@ -736,6 +833,11 @@ export function mountSettings(root: HTMLElement): () => void {
         ? (document.activeElement.dataset.recordingFormat ?? null)
         : null;
     recordingFormatsEl.replaceChildren();
+    if (settings.enabled) {
+      delete recordingFormatsEl.dataset.tooltip;
+    } else {
+      recordingFormatsEl.dataset.tooltip = t("settings.recording.disabled_reason");
+    }
     for (const item of RECORDING_FORMATS) {
       const button = document.createElement("button");
       button.type = "button";
@@ -748,13 +850,6 @@ export function mountSettings(root: HTMLElement): () => void {
       button.classList.toggle("selected", selected);
       // 开关关闭时格式仍可见；disabled 后点击与方向键都不改写格式。
       button.disabled = !settings.enabled;
-      // R9:禁用原因与就地 hint 同源,悬停/聚焦可读到,不出现「点了没反应」。
-      // 可用时不再重复按钮自身文案。
-      if (settings.enabled) {
-        button.removeAttribute("data-tooltip");
-      } else {
-        button.dataset.tooltip = t("settings.recording.disabled_reason");
-      }
       // 漫游 tabindex:与语言/预设组一致的 radio 组键盘行为。
       button.tabIndex = selected ? 0 : -1;
       recordingFormatsEl.append(button);
@@ -770,6 +865,11 @@ export function mountSettings(root: HTMLElement): () => void {
         ? (document.activeElement.dataset.recordingFps ?? null)
         : null;
     recordingFpsEl.replaceChildren();
+    if (settings.enabled) {
+      delete recordingFpsEl.dataset.tooltip;
+    } else {
+      recordingFpsEl.dataset.tooltip = t("settings.recording.disabled_reason");
+    }
     for (const fps of RECORDING_FPS) {
       const button = document.createElement("button");
       button.type = "button";
@@ -787,11 +887,6 @@ export function mountSettings(root: HTMLElement): () => void {
       button.setAttribute("aria-checked", selected ? "true" : "false");
       button.classList.toggle("selected", selected);
       button.disabled = !settings.enabled;
-      if (settings.enabled) {
-        button.removeAttribute("data-tooltip");
-      } else {
-        button.dataset.tooltip = t("settings.recording.disabled_reason");
-      }
       button.tabIndex = selected ? 0 : -1;
       recordingFpsEl.append(button);
     }
@@ -850,7 +945,7 @@ export function mountSettings(root: HTMLElement): () => void {
       const optional = slot === "clipboardpin";
       const accelerator = hotkeyValue(settings.hotkeys, slot);
       const display =
-        displayAccelerator(accelerator) || (optional ? t("settings.hotkeys.unbound") : "");
+        displayAccelerator(accelerator) || t("settings.hotkeys.unbound");
       const row = document.createElement("div");
       row.className = "hotkey-row";
       const errorText = hotkeyErrorText(hotkeyError(settings.hotkeyErrors, slot));
@@ -866,7 +961,9 @@ export function mountSettings(root: HTMLElement): () => void {
       button.type = "button";
       button.className = "hotkey-btn";
       button.dataset.mode = slot;
-      button.dataset.tooltip = t("settings.hotkey.title");
+      button.dataset.tooltip = t(
+        recording === slot ? "settings.hotkey.recording_title" : "settings.hotkey.title",
+      );
       button.setAttribute(
         "aria-label",
         recording === slot
@@ -874,14 +971,16 @@ export function mountSettings(root: HTMLElement): () => void {
           : accelerator
             ? t("settings.hotkey.aria_current", {
                 mode: slotLabel,
-                accelerator: display,
+                accelerator: display.replaceAll("\u200b", ""),
               })
-            : t("settings.hotkeys.unbound"),
+            : t("settings.hotkey.aria_unbound", { mode: slotLabel }),
       );
       button.textContent =
         recording === slot ? recordingButtonLabel() : display;
       if (recording === slot) {
         button.classList.add("recording");
+      } else if (!accelerator) {
+        button.classList.add("is-unbound");
       }
 
       const error = document.createElement("p");
@@ -903,14 +1002,20 @@ export function mountSettings(root: HTMLElement): () => void {
       controls.style.gap = "6px";
       controls.style.gridArea = "btn";
       controls.append(button);
-      // R8:可选绑定支持显式清除;录制中不显示清除按钮,避免误触丢输入。
-      if (optional && accelerator && recording !== slot) {
+      // 可选绑定始终留出清除按钮的位置。未绑定时只占位、不能点，
+      // 录制中拿掉，避免误触把正在录的键清掉。
+      if (optional && recording !== slot) {
         const clear = document.createElement("button");
         clear.type = "button";
-        clear.className = "choice";
+        clear.className = "choice hotkey-clear";
         clear.dataset.hotkeyClear = slot;
         clear.dataset.tooltip = t("settings.hotkeys.clear_title");
         clear.textContent = t("settings.hotkeys.clear");
+        if (!accelerator) {
+          clear.dataset.reserved = "true";
+          clear.tabIndex = -1;
+          clear.setAttribute("aria-hidden", "true");
+        }
         controls.append(clear);
       }
       row.append(controls, error);
@@ -934,18 +1039,45 @@ export function mountSettings(root: HTMLElement): () => void {
     renderExport(settings);
     renderPin(settings.pin);
     renderRecording(settings.recording ?? { ...DEFAULT_RECORDING });
+    reserveQuitWidth();
   };
 
   const showExportError = (message: string): void => {
+    const wasHidden = exportErrorEl.hidden;
     exportErrorEl.hidden = false;
     exportErrorEl.textContent = message;
+    const field = document.activeElement;
+    if (wasHidden && (field === paddingEl || field === radiusEl)) {
+      exportErrorEl.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
   };
 
-  const clearExportError = (): void => {
-    exportErrorEl.hidden = true;
-    exportErrorEl.textContent = "";
-    paddingEl.removeAttribute("aria-invalid");
-    radiusEl.removeAttribute("aria-invalid");
+  const beautifyNumberInvalid = (input: HTMLInputElement, max: number): boolean => {
+    if (!exportAppearance.applyBeautify || input.disabled) {
+      return false;
+    }
+    const raw = input.value.trim();
+    if (!/^\d+$/.test(raw)) {
+      return true;
+    }
+    const value = Number(raw);
+    return !Number.isSafeInteger(value) || value < 0 || value > max;
+  };
+
+  // 内边距和圆角共用一条错误。改对其中一个时，另一个仍不合法就继续标红，并换成它的说明。
+  const syncBeautifyErrors = (): void => {
+    const paddingBad = beautifyNumberInvalid(paddingEl, 240);
+    const radiusBad = beautifyNumberInvalid(radiusEl, 160);
+    paddingEl.toggleAttribute("aria-invalid", paddingBad);
+    radiusEl.toggleAttribute("aria-invalid", radiusBad);
+    if (paddingBad) {
+      showExportError(t("settings.export.padding_error"));
+    } else if (radiusBad) {
+      showExportError(t("settings.export.radius_error"));
+    } else {
+      exportErrorEl.hidden = true;
+      exportErrorEl.textContent = "";
+    }
   };
 
   const renderExport = (settings: UiSettings): void => {
@@ -966,26 +1098,36 @@ export function mountSettings(root: HTMLElement): () => void {
     };
     syncSwitch(applyBeautifyEl, exportAppearance.applyBeautify);
     syncSwitch(useFilenameTemplateEl, exportAppearance.useFilenameTemplate);
-    if (document.activeElement !== templateEl) {
-      templateEl.value = exportAppearance.filenameTemplate;
-    }
+    const templateSaved = exportAppearance.filenameTemplate;
+    showFieldValue(templateEl, templateSaved, (draft) => draft === templateSaved);
     templateEl.disabled = !exportAppearance.useFilenameTemplate;
-    const templateTip = exportAppearance.useFilenameTemplate
-      ? t("settings.export.template_label")
-      : t("settings.export.template_disabled");
-    templateEl.parentElement?.setAttribute("data-tooltip", templateTip);
-    if (document.activeElement !== paddingEl) {
-      paddingEl.value = String(exportAppearance.beautify.padding);
+    // 能编辑时提示只重复「文件名模板」，还会盖住下面的美化标题。原因只在禁用时出现。
+    if (exportAppearance.useFilenameTemplate) {
+      templateEl.parentElement?.removeAttribute("data-tooltip");
+    } else {
+      templateEl.parentElement?.setAttribute(
+        "data-tooltip",
+        t("settings.export.template_disabled"),
+      );
     }
-    if (document.activeElement !== radiusEl) {
-      radiusEl.value = String(exportAppearance.beautify.radius);
-    }
+    syncTemplateLimit();
+    const paddingSaved = String(exportAppearance.beautify.padding);
+    showFieldValue(paddingEl, paddingSaved, (draft) => draft.trim() === paddingSaved);
+    const radiusSaved = String(exportAppearance.beautify.radius);
+    showFieldValue(radiusEl, radiusSaved, (draft) => draft.trim() === radiusSaved);
     paddingEl.disabled = !exportAppearance.applyBeautify;
     radiusEl.disabled = !exportAppearance.applyBeautify;
     shadowEl.disabled = !exportAppearance.applyBeautify;
-    shadowEl.dataset.tooltip = exportAppearance.applyBeautify
-      ? t("settings.export.shadow_label")
-      : t("settings.export.beautify_disabled");
+    // 禁用的开关收不到悬停，原因挂在整行上，点标题或灰开关都能看到。
+    delete shadowEl.dataset.tooltip;
+    const shadowRow = shadowEl.closest(".setting-row");
+    if (shadowRow instanceof HTMLElement) {
+      if (exportAppearance.applyBeautify) {
+        shadowRow.removeAttribute("data-tooltip");
+      } else {
+        shadowRow.setAttribute("data-tooltip", t("settings.export.beautify_disabled"));
+      }
+    }
     const beautifyReason = exportAppearance.applyBeautify
       ? null
       : t("settings.export.beautify_disabled");
@@ -996,6 +1138,7 @@ export function mountSettings(root: HTMLElement): () => void {
         element.parentElement?.removeAttribute("data-tooltip");
       }
     }
+    syncBeautifyErrors();
     syncSwitch(shadowEl, exportAppearance.beautify.shadow);
     // 预设按钮每次重建:方向键漫游后焦点落在被替换节点上,这里记住并还原。
     const activePreset =
@@ -1004,6 +1147,11 @@ export function mountSettings(root: HTMLElement): () => void {
         ? (document.activeElement.dataset.beautifyPreset ?? null)
         : null;
     presetRoot.replaceChildren();
+    if (exportAppearance.applyBeautify) {
+      delete presetRoot.dataset.tooltip;
+    } else {
+      presetRoot.dataset.tooltip = t("settings.export.beautify_disabled");
+    }
     for (const item of BEAUTIFY_PRESETS) {
       const button = document.createElement("button");
       button.type = "button";
@@ -1017,21 +1165,10 @@ export function mountSettings(root: HTMLElement): () => void {
       button.classList.toggle("selected", selected);
       // 漫游 tabindex:与语言组一致的 radio 组键盘行为。
       button.tabIndex = selected ? 0 : -1;
-      if (exportAppearance.applyBeautify) {
-        button.removeAttribute("data-tooltip");
-      } else {
-        button.dataset.tooltip = t("settings.export.beautify_disabled");
-      }
       const chip = document.createElement("span");
+      chip.className = "preset-swatch";
       chip.setAttribute("aria-hidden", "true");
-      chip.style.display = "inline-block";
-      chip.style.width = "10px";
-      chip.style.height = "10px";
-      chip.style.marginRight = "6px";
-      chip.style.borderRadius = "999px";
-      chip.style.verticalAlign = "-1px";
       chip.style.background = item.swatch;
-      chip.style.boxShadow = "inset 0 0 0 1px rgba(0,0,0,0.18)";
       button.prepend(chip);
       presetRoot.append(button);
     }
@@ -1078,6 +1215,15 @@ export function mountSettings(root: HTMLElement): () => void {
     invokeNoticeEl.textContent = "";
     savedNoticeEl.textContent = t("settings.saved");
     savedNoticeEl.hidden = false;
+    const covered = document.activeElement;
+    if (covered instanceof HTMLElement && panelsRoot.contains(covered)) {
+      const toastTop = savedNoticeEl.getBoundingClientRect().top;
+      // 提示浮在滚动区上。控件已经在视口里时，scrollIntoView 不会再挪，刚改的开关会一直被「已保存」挡住。
+      const overlap = covered.getBoundingClientRect().bottom - (toastTop - 8);
+      if (overlap > 0) {
+        panelsRoot.scrollTop += overlap;
+      }
+    }
     window.clearTimeout(savedNoticeTimer);
     savedNoticeTimer = window.setTimeout(() => {
       savedNoticeEl.hidden = true;
@@ -1226,10 +1372,11 @@ export function mountSettings(root: HTMLElement): () => void {
     void applyCapture({ ...captureSettings, delaySeconds: seconds });
   };
 
+  delayEl.addEventListener("input", () => {
+    rememberFieldDraft(delayEl);
+  });
   delayEl.addEventListener("change", () => {
-    if (!applying) {
-      commitDelay();
-    }
+    commitFieldWhenIdle(delayEl, commitDelay);
   });
   delayEl.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
@@ -1240,6 +1387,7 @@ export function mountSettings(root: HTMLElement): () => void {
 
   captureCursorEl.addEventListener("click", () => {
     if (applying) {
+      replayClick(captureCursorEl);
       return;
     }
     const next = captureCursorEl.getAttribute("aria-checked") !== "true";
@@ -1248,6 +1396,7 @@ export function mountSettings(root: HTMLElement): () => void {
 
   multiMonitorEl.addEventListener("click", () => {
     if (applying) {
+      replayClick(multiMonitorEl);
       return;
     }
     const next = multiMonitorEl.getAttribute("aria-checked") !== "true";
@@ -1256,6 +1405,7 @@ export function mountSettings(root: HTMLElement): () => void {
 
   longCaptureEl.addEventListener("click", () => {
     if (applying) {
+      replayClick(longCaptureEl);
       return;
     }
     const next = longCaptureEl.getAttribute("aria-checked") !== "true";
@@ -1264,6 +1414,10 @@ export function mountSettings(root: HTMLElement): () => void {
 
   regionToolsEl.addEventListener("click", (event) => {
     if (applying) {
+      const button = event.target instanceof Element ? event.target.closest("button") : null;
+      if (button instanceof HTMLButtonElement) {
+        replayClick(button);
+      }
       return;
     }
     const target = event.target;
@@ -1299,10 +1453,11 @@ export function mountSettings(root: HTMLElement): () => void {
     void applyHistory({ ...historySettings, limit });
   };
 
+  historyLimitEl.addEventListener("input", () => {
+    rememberFieldDraft(historyLimitEl);
+  });
   historyLimitEl.addEventListener("change", () => {
-    if (!applying) {
-      commitHistoryLimit();
-    }
+    commitFieldWhenIdle(historyLimitEl, commitHistoryLimit);
   });
   historyLimitEl.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
@@ -1313,6 +1468,7 @@ export function mountSettings(root: HTMLElement): () => void {
 
   historyEnabledEl.addEventListener("click", () => {
     if (applying) {
+      replayClick(historyEnabledEl);
       return;
     }
     const next = historyEnabledEl.getAttribute("aria-checked") !== "true";
@@ -1329,6 +1485,7 @@ export function mountSettings(root: HTMLElement): () => void {
 
   pinRestoreEl.addEventListener("click", () => {
     if (applying) {
+      replayClick(pinRestoreEl);
       return;
     }
     const next = pinRestoreEl.getAttribute("aria-checked") !== "true";
@@ -1337,6 +1494,7 @@ export function mountSettings(root: HTMLElement): () => void {
 
   recordingEnabledEl.addEventListener("click", () => {
     if (applying) {
+      replayClick(recordingEnabledEl);
       return;
     }
     const next = recordingEnabledEl.getAttribute("aria-checked") !== "true";
@@ -1345,7 +1503,14 @@ export function mountSettings(root: HTMLElement): () => void {
 
   recordingFormatsEl.addEventListener("click", (event) => {
     const target = event.target;
-    if (!(target instanceof Element) || applying || !recordingSettings.enabled) {
+    if (!(target instanceof Element) || !recordingSettings.enabled) {
+      return;
+    }
+    if (applying) {
+      const pending = target.closest("button");
+      if (pending instanceof HTMLButtonElement) {
+        replayClick(pending);
+      }
       return;
     }
     const button = target.closest("[data-recording-format]");
@@ -1361,7 +1526,14 @@ export function mountSettings(root: HTMLElement): () => void {
 
   recordingFpsEl.addEventListener("click", (event) => {
     const target = event.target;
-    if (!(target instanceof Element) || applying || !recordingSettings.enabled) {
+    if (!(target instanceof Element) || !recordingSettings.enabled) {
+      return;
+    }
+    if (applying) {
+      const pending = target.closest("button");
+      if (pending instanceof HTMLButtonElement) {
+        replayClick(pending);
+      }
       return;
     }
     const button = target.closest("[data-recording-fps]");
@@ -1405,6 +1577,7 @@ export function mountSettings(root: HTMLElement): () => void {
 
   applyBeautifyEl.addEventListener("click", () => {
     if (applying) {
+      replayClick(applyBeautifyEl);
       return;
     }
     const next = applyBeautifyEl.getAttribute("aria-checked") !== "true";
@@ -1413,6 +1586,7 @@ export function mountSettings(root: HTMLElement): () => void {
 
   useFilenameTemplateEl.addEventListener("click", () => {
     if (applying) {
+      replayClick(useFilenameTemplateEl);
       return;
     }
     const next = useFilenameTemplateEl.getAttribute("aria-checked") !== "true";
@@ -1430,34 +1604,79 @@ export function mountSettings(root: HTMLElement): () => void {
     void applyAppearance({ ...exportAppearance, filenameTemplate: next });
   };
 
-  templateEl.addEventListener("change", () => {
-    if (!applying) {
-      commitTemplate();
+  const syncTemplateLimit = (): void => {
+    const active = !templateEl.disabled;
+    const full = active && templateEl.value.length >= templateEl.maxLength;
+    const unsafe = active && /[<>:"/\\|?*]/.test(templateEl.value);
+    // 保存时会去掉文件名首尾的空格和句点。和非法字符一样，输入时就要能看见，而不是存完才发现名字变了。
+    const trimmed = active && /^(?:[ .]+)|(?:[ .]+)$/.test(templateEl.value);
+    // CON、AUX 等保留名会在末尾被加上 _。序号占位符落在第一个句点前时，结果取决于序号，不在这里猜。
+    const reserved = active && reservedFilenameStem(templateEl.value);
+    templateEl.classList.toggle("is-full", full);
+    templateEl.classList.toggle("is-unsafe", unsafe);
+    templateEl.classList.toggle("is-trimmed", trimmed);
+    templateEl.classList.toggle("is-reserved", reserved);
+    const templateNotice = unsafe
+      ? t("settings.export.template_unsafe")
+      : reserved
+        ? t("settings.export.template_reserved")
+        : trimmed
+          ? t("settings.export.template_trim")
+          : full
+            ? t("settings.export.template_limit", { max: templateEl.maxLength })
+            : "";
+    // 红框旁边直接写出原因。只靠悬停标题时，光标还在框里就看不到保存后会变成什么样。
+    if (templateNotice) {
+      const wasHidden = templateNoticeEl.hidden;
+      templateEl.title = templateNotice;
+      templateNoticeEl.hidden = false;
+      templateNoticeEl.textContent = templateNotice;
+      templateEl.setAttribute("aria-describedby", "template-notice");
+      revealWhileEditing(templateNoticeEl, wasHidden, templateEl);
+    } else {
+      templateEl.removeAttribute("title");
+      templateNoticeEl.hidden = true;
+      templateNoticeEl.textContent = "";
+      templateEl.removeAttribute("aria-describedby");
     }
+  };
+
+  templateEl.addEventListener("beforeinput", (event) => {
+    if (templateEl.disabled || templateEl.value.length < templateEl.maxLength) {
+      return;
+    }
+    if (!event.inputType.startsWith("insert")) {
+      return;
+    }
+    syncTemplateLimit();
+  });
+  templateEl.addEventListener("input", () => {
+    rememberFieldDraft(templateEl);
+    syncTemplateLimit();
+  });
+  templateEl.addEventListener("change", () => {
+    commitFieldWhenIdle(templateEl, commitTemplate);
   });
 
   const commitBeautifyNumber = (
     input: HTMLInputElement,
     field: "padding" | "radius",
     max: number,
-    errorKey: "settings.export.padding_error" | "settings.export.radius_error",
   ): void => {
     if (!exportAppearance.applyBeautify) {
       return;
     }
     const raw = input.value.trim();
     if (!/^\d+$/.test(raw)) {
-      input.setAttribute("aria-invalid", "true");
-      showExportError(t(errorKey));
+      syncBeautifyErrors();
       return;
     }
     const value = Number(raw);
     if (!Number.isSafeInteger(value) || value < 0 || value > max) {
-      input.setAttribute("aria-invalid", "true");
-      showExportError(t(errorKey));
+      syncBeautifyErrors();
       return;
     }
-    clearExportError();
+    syncBeautifyErrors();
     if (value === exportAppearance.beautify[field]) {
       return;
     }
@@ -1467,15 +1686,17 @@ export function mountSettings(root: HTMLElement): () => void {
     });
   };
 
+  paddingEl.addEventListener("input", () => {
+    rememberFieldDraft(paddingEl);
+  });
   paddingEl.addEventListener("change", () => {
-    if (!applying) {
-      commitBeautifyNumber(paddingEl, "padding", 240, "settings.export.padding_error");
-    }
+    commitFieldWhenIdle(paddingEl, () => commitBeautifyNumber(paddingEl, "padding", 240));
+  });
+  radiusEl.addEventListener("input", () => {
+    rememberFieldDraft(radiusEl);
   });
   radiusEl.addEventListener("change", () => {
-    if (!applying) {
-      commitBeautifyNumber(radiusEl, "radius", 160, "settings.export.radius_error");
-    }
+    commitFieldWhenIdle(radiusEl, () => commitBeautifyNumber(radiusEl, "radius", 160));
   });
   for (const input of [paddingEl, radiusEl, templateEl]) {
     input.addEventListener("keydown", (event) => {
@@ -1487,7 +1708,11 @@ export function mountSettings(root: HTMLElement): () => void {
   }
 
   shadowEl.addEventListener("click", () => {
-    if (applying || shadowEl.disabled) {
+    if (shadowEl.disabled) {
+      return;
+    }
+    if (applying) {
+      replayClick(shadowEl);
       return;
     }
     void applyAppearance(
@@ -1501,7 +1726,14 @@ export function mountSettings(root: HTMLElement): () => void {
 
   presetRoot.addEventListener("click", (event) => {
     const target = event.target;
-    if (!(target instanceof Element) || applying) {
+    if (!(target instanceof Element)) {
+      return;
+    }
+    if (applying) {
+      const pending = target.closest("button");
+      if (pending instanceof HTMLButtonElement) {
+        replayClick(pending);
+      }
       return;
     }
     const button = target.closest("[data-beautify-preset]");
@@ -1512,7 +1744,7 @@ export function mountSettings(root: HTMLElement): () => void {
     if (!preset || preset === exportAppearance.beautify.preset) {
       return;
     }
-    clearExportError();
+    syncBeautifyErrors();
     void applyAppearance({
       ...exportAppearance,
       beautify: { ...exportAppearance.beautify, preset },
@@ -1523,9 +1755,49 @@ export function mountSettings(root: HTMLElement): () => void {
     void getCurrentWindow().close();
   });
 
+  // 「退出」比「确认退出？」窄。先按确认文案留宽，第一次点击不再把旁边的说明挤窄。
+  const quitWidthCache = new Map<string, string>();
+  const reserveQuitWidth = (): void => {
+    const parent = quitEl.parentElement;
+    if (!parent || quitEl.getClientRects().length === 0) {
+      return;
+    }
+    const key = currentLanguage();
+    let width = quitWidthCache.get(key);
+    if (!width) {
+      const probe = quitEl.cloneNode(false);
+      if (!(probe instanceof HTMLButtonElement)) {
+        return;
+      }
+      probe.className = "choice danger";
+      probe.style.position = "absolute";
+      probe.style.visibility = "hidden";
+      probe.style.pointerEvents = "none";
+      probe.style.width = "auto";
+      probe.style.minWidth = "0";
+      probe.style.whiteSpace = "nowrap";
+      parent.append(probe);
+      let widest = 0;
+      for (const text of [t("settings.about.quit_button"), t("settings.about.quit_confirm")]) {
+        probe.textContent = text;
+        widest = Math.max(widest, probe.getBoundingClientRect().width);
+      }
+      probe.remove();
+      if (widest <= 0) {
+        return;
+      }
+      width = `${Math.ceil(widest)}px`;
+      quitWidthCache.set(key, width);
+    }
+    if (quitEl.style.minWidth !== width) {
+      quitEl.style.minWidth = width;
+    }
+  };
+
   // 退出是一键结束全部贴图/热键的最高破坏性操作:两段式确认,首次点击只
   // 进入待确认(按钮文案切换、非模态、不弹窗),3 秒内再次点击才真正退出,
-  // 超时或焦点移出自动还原。aria-live 让文案切换被读屏播报;dataset.i18n
+  // 超时或焦点移出自动还原。平时名称用旁边的「退出 Cropmark」;挂起后
+  // 拿掉 aria-labelledby,读屏跟着按钮文案念「确认退出？」。dataset.i18n
   // 同步切换,语言重翻译不会把待确认文案改回常态文案。
   let quitArmed = false;
   let quitTimer = 0;
@@ -1535,8 +1807,10 @@ export function mountSettings(root: HTMLElement): () => void {
       return;
     }
     quitArmed = false;
+    delete quitEl.dataset.armed;
     quitEl.dataset.i18n = "settings.about.quit_button";
     quitEl.textContent = t("settings.about.quit_button");
+    quitEl.setAttribute("aria-labelledby", "quit-label");
   };
   quitEl.addEventListener("click", () => {
     if (quitArmed) {
@@ -1545,8 +1819,10 @@ export function mountSettings(root: HTMLElement): () => void {
       return;
     }
     quitArmed = true;
+    quitEl.dataset.armed = "true";
     quitEl.dataset.i18n = "settings.about.quit_confirm";
     quitEl.textContent = t("settings.about.quit_confirm");
+    quitEl.removeAttribute("aria-labelledby");
     quitTimer = window.setTimeout(disarmQuit, 3000);
   });
   quitEl.addEventListener("blur", () => {
@@ -1555,7 +1831,14 @@ export function mountSettings(root: HTMLElement): () => void {
 
   languageRoot.addEventListener("click", (event) => {
     const target = event.target;
-    if (!(target instanceof Element) || applying) {
+    if (!(target instanceof Element)) {
+      return;
+    }
+    if (applying) {
+      const pending = target.closest("button");
+      if (pending instanceof HTMLButtonElement) {
+        replayClick(pending);
+      }
       return;
     }
     const button = target.closest("[data-language-value]");
@@ -1592,6 +1875,7 @@ export function mountSettings(root: HTMLElement): () => void {
 
   switchEl.addEventListener("click", () => {
     if (applying) {
+      replayClick(switchEl);
       return;
     }
     const next = switchEl.getAttribute("aria-checked") !== "true";
@@ -1612,11 +1896,22 @@ export function mountSettings(root: HTMLElement): () => void {
 
   hotkeyRoot.addEventListener("click", (event) => {
     const target = event.target;
-    if (!(target instanceof Element) || applying) {
+    if (!(target instanceof Element)) {
+      return;
+    }
+    if (applying) {
+      const pending = target.closest("button");
+      if (pending instanceof HTMLButtonElement) {
+        replayClick(pending);
+      }
       return;
     }
     const clearButton = target.closest("[data-hotkey-clear]");
-    if (clearButton instanceof HTMLButtonElement && clearButton.dataset.hotkeyClear) {
+    if (
+      clearButton instanceof HTMLButtonElement &&
+      clearButton.dataset.hotkeyClear &&
+      clearButton.dataset.reserved !== "true"
+    ) {
       void applyHotkey(clearButton.dataset.hotkeyClear as HotkeySlot, "");
       return;
     }
@@ -1747,6 +2042,13 @@ export function mountSettings(root: HTMLElement): () => void {
   // 首次读取完成前面板禁用并标 busy:控件不再按硬编码默认值闪现后被 refresh 改写。
   panelsRoot.inert = true;
   root.setAttribute("aria-busy", "true");
+  void document.fonts.ready.then(() => {
+    if (!root.isConnected) {
+      return;
+    }
+    quitWidthCache.clear();
+    reserveQuitWidth();
+  });
   void refresh().finally(() => {
     panelsRoot.inert = false;
     root.setAttribute("aria-busy", "false");
@@ -1755,6 +2057,28 @@ export function mountSettings(root: HTMLElement): () => void {
   // 语言切换:静态标签由 main 的 applyTranslations 更新;这里先按当前状态
   // 重渲染动态行(热键/开关/历史/语言选项/美化预设),再从后端重取一次
   // (热键错误/开机启动/无托盘提示由后端按新语言重新解析)。
+  // 开关行的标题和说明不是 <label>。点文字或行内空白也拨动开关，不必瞄准 44px 轨道。
+  root.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) {
+      return;
+    }
+    const row = target.closest(".setting-row");
+    if (!(row instanceof HTMLElement)) {
+      return;
+    }
+    const sw = row.querySelector(".switch");
+    if (!(sw instanceof HTMLButtonElement) || sw.disabled) {
+      return;
+    }
+    if (target.closest("button, a, input, select, textarea")) {
+      return;
+    }
+    // 点的是标题或说明，开关自己不会拿到焦点。先聚焦再拨动，键盘焦点环落在刚改的控件上。
+    sw.focus();
+    sw.click();
+  });
+
   return () => {
     // 重渲染/卸载路径不再让成功提示定时器对着旧元素触发。
     window.clearTimeout(savedNoticeTimer);
@@ -1791,6 +2115,42 @@ export function acceleratorFromEvent(event: KeyboardEvent): string | null {
   return parts.join("+");
 }
 
+const RESERVED_FILENAME_STEMS = new Set([
+  "CON",
+  "PRN",
+  "AUX",
+  "NUL",
+  "COM1",
+  "COM2",
+  "COM3",
+  "COM4",
+  "COM5",
+  "COM6",
+  "COM7",
+  "COM8",
+  "COM9",
+  "LPT1",
+  "LPT2",
+  "LPT3",
+  "LPT4",
+  "LPT5",
+  "LPT6",
+  "LPT7",
+  "LPT8",
+  "LPT9",
+]);
+
+/** 与 Rust `is_reserved` 对齐：展开占位符并去掉首尾空格和句点后，第一个句点前的名字是否为保留名。 */
+function reservedFilenameStem(template: string): boolean {
+  const expanded = template.replace(/\{(?:date|time|datetime|mode)\}/g, "x");
+  const cleaned = expanded.replace(/[<>:"/\\|?*]/g, "_").replace(/^[ .]+|[ .]+$/g, "");
+  const base = cleaned.split(".")[0] ?? "";
+  if (base.includes("{")) {
+    return false;
+  }
+  return RESERVED_FILENAME_STEMS.has(base.toUpperCase());
+}
+
 export function displayAccelerator(accelerator: string): string {
   const platform = navigator.platform;
   const superLabel = platform.includes("Mac")
@@ -1798,7 +2158,11 @@ export function displayAccelerator(accelerator: string): string {
     : platform.includes("Win")
       ? "Win"
       : "Super";
-  return accelerator.replaceAll("Super", superLabel).replaceAll("Meta", superLabel);
+  // 加号后插入零宽空格，按钮和引导页里的长组合在加号处折行，不再从 Ctrl 中间断开。
+  return accelerator
+    .replaceAll("Super", superLabel)
+    .replaceAll("Meta", superLabel)
+    .replaceAll("+", "+\u200b");
 }
 
 function codeToKey(code: string): string | null {

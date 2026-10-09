@@ -30,6 +30,40 @@ pub fn measure_width(text: &str, size: f32) -> Option<f32> {
     Some(width)
 }
 
+/// 数字和十六进制字母按其中最宽的一格计宽。
+/// 拖选时尺寸徽标、移动光标时放大镜色值不再因 `1` 比 `8` 窄而左右跳。
+pub fn measure_stable_width(text: &str, size: f32) -> Option<f32> {
+    let font = ui_font()?;
+    let scale = PxScale::from(size.round());
+    let scaled = font.as_scaled(scale);
+    let mut slot = 0.0f32;
+    for ch in "0123456789ABCDEF".chars() {
+        slot = slot.max(scaled.h_advance(font.glyph_id(ch)));
+    }
+    if slot <= 0.0 {
+        return measure_width(text, size);
+    }
+    let mut width = 0.0f32;
+    let mut prev: Option<ab_glyph::GlyphId> = None;
+    for ch in text.chars() {
+        let stable = ch.is_ascii_digit() || matches!(ch, 'A'..='F' | 'a'..='f');
+        let glyph_id = font.glyph_id(ch);
+        if let Some(prev_id) = prev {
+            if !stable {
+                width += scaled.kern(prev_id, glyph_id);
+            }
+        }
+        if stable {
+            width += slot;
+            prev = None;
+        } else {
+            width += scaled.h_advance(glyph_id);
+            prev = Some(glyph_id);
+        }
+    }
+    Some(width)
+}
+
 pub fn line_height(size: f32) -> f32 {
     size * LINE_HEIGHT
 }
@@ -184,6 +218,13 @@ mod tests {
             return; // 无字体环境(部分 CI 容器)仅验证不 panic。
         }
         assert!(measure_width("宽度123", 13.0).unwrap() > 0.0);
+        let narrow = measure_stable_width("111 × 11 · 11, 11", 13.0).unwrap();
+        let wide = measure_stable_width("888 × 88 · 88, 88", 13.0).unwrap();
+        assert_eq!(narrow, wide, "same digit count must keep the badge width");
+        let hex_narrow = measure_stable_width("#111111", 13.0).unwrap();
+        let hex_wide = measure_stable_width("#FFFFFF", 13.0).unwrap();
+        assert_eq!(hex_narrow, hex_wide, "hex color must not shift the magnifier");
+        assert!(narrow >= measure_width("111 × 11 · 11, 11", 13.0).unwrap());
         let mut rgba = vec![0u8; 64 * 24 * 4];
         assert!(draw_text(
             &mut rgba,

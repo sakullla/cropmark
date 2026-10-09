@@ -16,40 +16,74 @@
 }
 .ocr-panel-bar {
   display: flex;
-  align-items: center;
+  /* 标题下还有一行说明。整组居中会把关闭钮落到两行中间，改和标题中线对齐。 */
+  align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
   flex: 0 0 auto;
   padding: 14px 16px 10px;
 }
-.ocr-panel-bar h2 { margin: 0; font-size: 16px; font-weight: 650; }
-.ocr-panel-subtitle { margin: 4px 0 0; color: var(--muted); font-size: 11px; }
+.ocr-panel-bar > div {
+  min-width: 0;
+}
+.ocr-panel-bar h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.ocr-panel-bar .icon-btn {
+  flex: 0 0 auto;
+  margin-top: -5px;
+}
+.ocr-panel-subtitle { margin: 4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
 .ocr-panel-search {
   display: flex;
   align-items: center;
   flex: 0 0 auto;
+  flex-wrap: wrap;
   gap: 6px;
   padding: 0 12px 10px;
   border-bottom: 1px solid var(--line);
 }
 .ocr-panel-query {
-  flex: 1;
-  min-width: 0;
-  width: 0;
+  /* 窄面板上「无匹配」和两个箭头会把输入挤没。先保证能看清正在搜的词，放不下再换行。 */
+  flex: 1 1 160px;
+  min-width: min(100%, 160px);
+  width: auto;
   height: 32px;
   padding: 0 9px;
+  line-height: 30px;
   border: 1px solid var(--line);
   border-radius: var(--radius-control-sm);
   background: var(--control-fill);
   color: var(--ink);
   font: inherit;
-  font-size: 12px;
+  font-size: 13px;
   user-select: text;
 }
-.ocr-panel-query:hover { border-color: var(--control-hover-border); }
-.ocr-panel-nav { display: flex; align-items: center; gap: 3px; }
-.ocr-panel-count { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ocr-panel-query:hover:not(:focus-visible) {
+  border-color: var(--control-hover-border);
+  background-color: var(--control-hover-bg);
+}
+.ocr-panel-query:focus-visible {
+  border-color: var(--accent);
+  background: var(--control-fill);
+}
+.ocr-panel-nav {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 3px;
+  margin-left: auto;
+}
+.ocr-panel-count { font-size: 13px; color: var(--ink); font-weight: 650; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ocr-panel-count.is-empty { color: var(--danger); }
 .ocr-panel button:not(.icon-btn) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   min-height: 32px;
   padding: 0 10px;
   border: 1px solid var(--line);
@@ -57,16 +91,58 @@
   background: var(--control-fill);
   color: var(--ink);
   font: inherit;
-  font-size: 12px;
+  font-size: 13px;
   cursor: pointer;
   transition: var(--control-transition);
 }
-.ocr-panel-nav button { padding: 0 !important; width: 26px; }
-.ocr-panel button:hover:not(:disabled) { border-color: var(--control-hover-border); background: var(--control-hover-bg); }
-.ocr-panel button:active:not(:disabled) { filter: var(--control-pressed-filter); }
+.ocr-panel-nav button { padding: 0 !important; width: 32px; min-width: 32px; }
+.ocr-panel button:hover:not(:disabled):not([aria-disabled="true"]),
+.ocr-panel button:focus-visible:not(:disabled):not([aria-disabled="true"]) { border-color: var(--control-hover-border); background: var(--control-hover-bg); }
+.ocr-panel button:active:not(:disabled):not([aria-disabled="true"]) { filter: var(--control-pressed-filter); }
 .ocr-panel button:disabled { opacity: var(--control-disabled-opacity); cursor: default; }
-.ocr-panel-actions button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink, #fff); }
-.ocr-panel-actions button.primary:hover:not(:disabled) { filter: var(--control-hover-filter); }
+.ocr-panel button[aria-disabled="true"] {
+  opacity: var(--control-disabled-opacity);
+  cursor: not-allowed;
+}
+.ocr-panel-actions button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+  font-weight: 650;
+}
+.ocr-panel-actions button.primary:hover:not(:disabled):not([aria-disabled="true"]),
+.ocr-panel-actions button.primary:focus-visible:not(:disabled):not([aria-disabled="true"]),
+.ocr-panel-actions button.primary:active:not(:disabled):not([aria-disabled="true"]) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+.ocr-panel-actions button.primary:hover:not(:disabled):not([aria-disabled="true"]),
+.ocr-panel-actions button.primary:focus-visible:not(:disabled):not([aria-disabled="true"]):not(:active) { filter: var(--control-hover-filter); }
+.ocr-panel-actions button.primary:active:not(:disabled):not([aria-disabled="true"]) { filter: var(--control-pressed-filter); }
+.ocr-panel-actions button.is-copied,
+.ocr-panel-actions button.is-copied:hover:not(:disabled):not(:active),
+.ocr-panel-actions button.is-copied:focus-visible:not(:disabled):not(:active),
+.ocr-panel-actions button.primary.is-copied,
+.ocr-panel-actions button.primary.is-copied:hover:not(:disabled):not(:active),
+.ocr-panel-actions button.primary.is-copied:focus-visible:not(:disabled):not(:active) {
+  background: var(--ok);
+  border-color: var(--ok);
+  color: var(--on-accent);
+}
+.ocr-panel-actions button.is-copied:hover:not(:disabled):not(:active),
+.ocr-panel-actions button.is-copied:focus-visible:not(:disabled):not(:active),
+.ocr-panel-actions button.primary.is-copied:hover:not(:disabled):not(:active),
+.ocr-panel-actions button.primary.is-copied:focus-visible:not(:disabled):not(:active) {
+  filter: var(--control-hover-filter);
+}
+.ocr-panel-actions button.is-copied:active:not(:disabled),
+.ocr-panel-actions button.primary.is-copied:active:not(:disabled) {
+  background: var(--ok);
+  border-color: var(--ok);
+  color: var(--on-accent);
+  filter: var(--control-pressed-filter);
+}
 .ocr-panel-text {
   flex: 1 1 0;
   min-height: 0;
@@ -87,19 +163,70 @@
 }
 .ocr-panel-text:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .ocr-panel-footer { flex: 0 0 auto; padding: 10px 12px 12px; border-top: 1px solid var(--line); }
-.ocr-panel-summary { margin: 0 0 8px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
-.ocr-panel-actions { display: flex; gap: 8px; }
-.ocr-panel-actions button { flex: 1; min-width: 0; }
+.ocr-panel-summary { margin: 0 0 8px; color: var(--muted); font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
+/* 字数说明贴在面板底边。气泡向下会被面板裁掉，也会挡住复制按钮，改到文字上方。 */
+.ocr-panel-summary[data-tooltip]::after {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+.ocr-panel-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+/* 窄面板里「Copy selected」不再在按钮内折成两行，放不下就各自占一行。 */
+.ocr-panel-actions button {
+  flex: 1 1 auto;
+  min-width: min(100%, 9.5rem);
+  white-space: nowrap;
+}
+/* 没选中时「复制所选」的原因在按钮上。向下会被面板裁掉，改到按钮上方。 */
+.ocr-panel-actions button[data-tooltip]::after {
+  top: auto;
+  bottom: calc(100% + 6px);
+  white-space: normal;
+  overflow-wrap: anywhere;
+  width: max-content;
+  max-width: min(240px, 100%);
+  transform: none;
+  left: 0;
+}
 .ocr-panel-state {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   padding: 24px 16px;
   text-align: center;
   font-size: 14px;
   overflow-wrap: anywhere;
 }
-.ocr-panel-state-hint { color: var(--muted); font-size: 12px; line-height: 1.7; }
+.ocr-panel-state p { margin: 0; max-width: 28em; }
+.ocr-panel-state p:first-child { font-weight: 650; }
+.ocr-panel-state [data-ocr-state-title].is-error { color: var(--danger); }
+/* 空结果和识别失败时，重新识别是这块里唯一的下一步。 */
+.ocr-panel-state button {
+  margin-top: 4px;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+  font-weight: 650;
+}
+.ocr-panel-state button:hover:not(:disabled):not(:active),
+.ocr-panel-state button:focus-visible:not(:disabled):not(:active),
+.ocr-panel-state button:active:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+.ocr-panel-state button:hover:not(:disabled):not(:active),
+.ocr-panel-state button:focus-visible:not(:disabled):not(:active) {
+  filter: var(--control-hover-filter);
+}
+.ocr-panel-state button:active:not(:disabled) {
+  filter: var(--control-pressed-filter);
+}
+.ocr-panel-state-hint { color: var(--muted); font-size: 13px; line-height: 1.7; }
 .ocr-progress { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 20px 0; }
 .ocr-panel [hidden], .ocr-panel[hidden] { display: none !important; }
 @media (max-height: 400px) {

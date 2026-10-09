@@ -2185,7 +2185,7 @@ impl Composer {
                 crate::i18n::tp("record.bar.fps", &[("fps", &fps.to_string())])
             );
         }
-        let text_width = text::measure_width(&label, font)?;
+        let text_width = text::measure_stable_width(&label, font)?;
         // faux bold 二次描画会向右多占约 5% 字号宽度,预留。
         let bold_slack = (font * 0.05).ceil() as i32;
         let width = text_width.ceil() as i32 + bold_slack + metrics.badge_pad_x * 2;
@@ -2475,7 +2475,8 @@ impl Composer {
         }
         let center = self.sample(cursor.0, cursor.1);
         let line = magnifier_readout_line(cursor, center);
-        let text_w = text::measure_width(&line, layout.font).unwrap_or(0.0);
+        let text_w = text::measure_stable_width(&line, layout.font)
+            .unwrap_or_else(|| text::measure_width(MAG_READOUT_SAMPLE, layout.font).unwrap_or(0.0));
         let swatch = (layout.pill_h - 8).max(10);
         let footer_w = (swatch + 8 + text_w.ceil() as i32 + layout.pill_pad_x)
             .min(panel.width - layout.pad * 2);

@@ -21,20 +21,30 @@
   cursor: pointer;
 }
 
-.overlay-root[aria-busy="true"] canvas {
+/* 确认进行中选区和新标注都不再接受。整层和工具条用进行中光标，
+   避免十字准星和可点的工具看起来像还能画。底部动作按钮保持禁用光标。 */
+.overlay-root[aria-busy="true"],
+.overlay-root[aria-busy="true"] canvas,
+.overlay-root[aria-busy="true"] .overlay-tools,
+.overlay-root[aria-busy="true"] .overlay-tools button {
   cursor: progress;
+}
+
+.overlay-notice.is-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .overlay-notice.is-progress::before {
   content: "";
-  display: inline-block;
+  display: block;
+  flex: 0 0 auto;
   width: 10px;
   height: 10px;
-  margin-right: 8px;
   border: 2px solid var(--line);
   border-top-color: var(--accent);
   border-radius: 50%;
-  vertical-align: -2px;
   animation: app-progress-spin 800ms linear infinite;
 }
 
@@ -79,10 +89,16 @@
 }
 
 .overlay-hint {
-  max-width: 100%;
-  padding: 8px 14px;
+  flex: 1 1 18rem;
+  /* 窄时不再缩成几字一列。最多两行，长错误不再把顶栏拉成满屏一条。 */
+  min-width: min(100%, 18rem);
+  max-width: min(100%, 36rem);
+  max-height: calc(2.8em + 4px);
+  overflow: hidden;
+  padding: 2px 4px;
   border-radius: var(--radius-pill);
-  background: var(--panel);
+  /* 外层 chrome 已是实底，说明不再套一层同色胶囊，少挡住画面。 */
+  background: transparent;
   border: 0;
   box-shadow: none;
   color: var(--ink);
@@ -100,20 +116,32 @@
 
 /* 失败提示与正常中性提示视觉区分:危险令牌同 settings .notice。 */
 .overlay-hint.is-error {
+  padding: 6px 12px;
+  max-height: calc(2.8em + 12px);
   background: var(--danger-soft);
   color: var(--danger);
   box-shadow: inset 0 0 0 1px var(--danger);
 }
 
+.overlay-hint.is-clamped {
+  pointer-events: auto;
+  cursor: help;
+}
+
 .overlay-cancel,
 .overlay-retry {
   pointer-events: auto;
+  flex: 0 0 auto;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   cursor: pointer;
   border: 1px solid var(--line);
   border-radius: var(--radius-control-sm);
-  min-width: 24px;
-  min-height: 24px;
-  padding: 8px 14px;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0 14px;
   background: var(--panel);
   color: var(--ink);
   font: inherit;
@@ -124,7 +152,7 @@
 }
 
 .overlay-cancel:hover,
-.overlay-retry:hover {
+.overlay-cancel:focus-visible {
   border-color: var(--control-hover-border);
   background: var(--control-hover-bg);
 }
@@ -134,22 +162,51 @@
   filter: var(--control-pressed-filter);
 }
 
+/* 重试只在加载失败时出现，是这条提示里的恢复动作。取消仍是浅色按钮。 */
+.overlay-retry {
+  background: var(--accent);
+  border-color: transparent;
+  color: var(--on-accent);
+}
+
+.overlay-retry:hover:not(:active),
+.overlay-retry:focus-visible:not(:active),
+.overlay-retry:active {
+  background: var(--accent);
+  border-color: transparent;
+  color: var(--on-accent);
+}
+
+.overlay-retry:hover:not(:active),
+.overlay-retry:focus-visible:not(:active) {
+  filter: var(--control-hover-filter);
+}
+
 .overlay-actions {
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
   gap: 6px;
+  flex: 1 1 auto;
+  /* 整组先换行。组本身比顶栏还宽时，里面的按钮再各自换行。 */
+  min-width: min(100%, max-content);
   max-width: 100%;
   pointer-events: auto;
 }
 
 .overlay-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* 文案保持一行。放不下时整颗按钮换行，不把「进一步编辑」拆进按钮里。 */
+  flex: 0 0 auto;
+  white-space: nowrap;
   cursor: pointer;
   border: 1px solid var(--line);
   border-radius: var(--radius-control-sm);
-  min-width: 24px;
-  min-height: 24px;
-  padding: 8px 12px;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0 12px;
   background: var(--panel);
   color: var(--ink);
   font: inherit;
@@ -161,7 +218,8 @@
 
 /* finishing 期间按钮禁用:可视态走 app.css 共享 button:disabled,
    这里只把 hover/active 反馈限定在非禁用态。 */
-.overlay-actions button:hover:not(:disabled):not(.primary) {
+.overlay-actions button:hover:not(:disabled):not(.primary),
+.overlay-actions button:focus-visible:not(:disabled):not(.primary) {
   border-color: var(--control-hover-border);
   background: var(--control-hover-bg);
 }
@@ -181,10 +239,19 @@
   color: var(--on-accent);
 }
 
-.overlay-actions button.primary:hover:not(:disabled) {
+.overlay-actions button.primary:hover:not(:disabled):not(:active),
+.overlay-actions button.primary:active:not(:disabled) {
   background: var(--accent);
   border-color: transparent;
+}
+
+.overlay-actions button.primary:hover:not(:disabled):not(:active),
+.overlay-actions button.primary:focus-visible:not(:disabled):not(:active) {
   filter: var(--control-hover-filter);
+}
+
+.overlay-actions button.primary:active:not(:disabled) {
+  filter: var(--control-pressed-filter);
 }
 
 /* R21:即时标注工具条,悬浮在选区下方居中;样式按钮面板向上展开。 */
@@ -195,10 +262,14 @@
   right: 0;
   width: fit-content;
   margin-inline: auto;
-  z-index: 4;
+  /* 高于底部提示。提示在 DOM 里更靠后，同级会盖住向上展开的样式面板。 */
+  z-index: 5;
   display: flex;
   align-items: center;
-  gap: 2px;
+  justify-content: center;
+  /* 窄屏或高缩放时一行放不下撤销、删除和样式。不换行会画出屏幕。 */
+  flex-wrap: wrap;
+  gap: 4px 2px;
   max-width: calc(100% - 32px);
   padding: 6px 8px;
   border: 1px solid var(--line);
@@ -220,16 +291,24 @@
   bottom: calc(100% + 6px);
 }
 
-/* 工具条出现时把即时说明抬到其上,避免遮挡。 */
+/* 样式面板已经在工具条上方。里面的提示再向上会画出屏幕，改到选项下方。 */
+.overlay-tools .annotation-style-panel [data-tooltip]::after {
+  top: calc(100% + 6px);
+  bottom: auto;
+}
+
+/* 工具条出现时把即时说明抬到其上。高度由脚本写入：换行后仍按整条
+   工具条让开，固定 84px 只够一行，第二行会被提示盖住。 */
 .overlay-root.has-tools .overlay-notice {
-  bottom: 84px;
+  bottom: calc(20px + var(--overlay-tools-h, 48px) + 12px);
 }
 
 .overlay-root[data-tool="text"].has-tools canvas {
   cursor: text;
 }
 
-.overlay-root[data-tool="number"].has-tools canvas {
+.overlay-root[data-tool="number"].has-tools canvas,
+.overlay-root[data-tool="sticker"].has-tools canvas {
   cursor: copy;
 }
 
@@ -283,12 +362,17 @@
    基态与同一 chrome 行的取消/重试按钮同形(control-sm 圆角 + 650 字重 + ink)。*/
 .overlay-capabilities {
   pointer-events: auto;
+  flex: 0 0 auto;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   cursor: pointer;
   border: 1px solid var(--line);
   border-radius: var(--radius-control-sm);
-  min-width: 24px;
-  min-height: 24px;
-  padding: 8px 12px;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0 12px;
   background: var(--panel);
   color: var(--ink);
   font: inherit;
@@ -299,6 +383,7 @@
 }
 
 .overlay-capabilities:hover,
+.overlay-capabilities:focus-visible,
 .overlay-capabilities[aria-expanded="true"] {
   border-color: var(--control-hover-border);
   background: var(--control-hover-bg);
@@ -331,14 +416,20 @@
 
 .capability-panel h2 {
   margin: 0 0 8px;
-  font-size: 14px;
+  font-size: 16px;
+  font-weight: 650;
+  line-height: 1.35;
+  color: var(--ink);
+  overflow-wrap: anywhere;
 }
 
 .capability-panel .available {
   margin: 0 0 10px;
-  color: var(--muted);
-  font-size: 12px;
+  /* 这是面板里唯一的操作说明，不是次要备注。灰色长句在覆盖层上不好读。 */
+  color: var(--ink);
+  font-size: 13px;
   line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .capability-panel dl {
@@ -346,7 +437,7 @@
   grid-template-columns: max-content 1fr;
   gap: 6px 12px;
   margin: 0;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.45;
 }
 
@@ -358,6 +449,7 @@
 .capability-panel dd {
   margin: 0;
   min-width: 0;
+  color: var(--ink);
   overflow-wrap: anywhere;
 }
 
@@ -378,8 +470,35 @@
   font-size: 13px;
   line-height: 1.45;
   overflow-wrap: anywhere;
+  /* 三行够放下选区说明。更长的错误不再往上盖住画面和工具条。 */
+  max-height: calc(4.35em + 20px);
+  overflow: hidden;
   box-shadow: var(--shadow);
   pointer-events: none;
+}
+
+.overlay-notice.is-clamped {
+  pointer-events: auto;
+  cursor: help;
+}
+
+.overlay-notice.is-attention {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  color: var(--accent);
+  font-weight: 650;
+}
+
+.overlay-notice.is-error {
+  background: var(--danger-soft);
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+  color: var(--danger);
+}
+
+.overlay-notice.is-success {
+  background: var(--ok-soft);
+  border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+  color: var(--ok);
 }
 
 .capability-panel[hidden],
@@ -393,14 +512,24 @@
 .size-badge {
   position: absolute;
   z-index: 2;
+  display: inline-flex;
+  align-items: center;
   max-width: calc(100% - 8px);
   padding: 4px 8px;
   border-radius: var(--radius-control-sm);
   background: var(--accent);
   color: var(--on-accent);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 650;
+  line-height: 1.2;
+  letter-spacing: 0.01em;
+  box-shadow: 0 2px 8px color-mix(in srgb, #000 28%, transparent);
   overflow-wrap: anywhere;
+}
+
+.size-badge.is-too-small {
+  background: var(--danger);
+  color: var(--on-danger);
 }
 
 .window-list {
@@ -423,6 +552,10 @@
 }
 
 .window-item {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  width: 100%;
   text-align: left;
   border: 1px solid transparent;
   background: transparent;
@@ -437,9 +570,20 @@
 }
 
 .window-item:hover,
-.window-item.active {
+.window-item:focus-visible {
   border-color: var(--control-hover-border);
   background: var(--control-hover-bg);
+}
+
+.window-item.active,
+.window-item.active:hover,
+.window-item.active:focus-visible {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.window-item.active .title {
+  color: var(--accent);
 }
 
 .window-item:active {
@@ -447,25 +591,38 @@
 }
 
 .window-item .title {
+  min-width: 0;
   font-size: 13px;
   font-weight: 650;
+  line-height: 1.35;
+  /* 浏览器标签和长路径会把一行窗口撑得很高。最多两行，完整名称仍在按钮的系统提示里。 */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
   overflow-wrap: anywhere;
 }
 
 .window-item .meta {
   margin-top: 4px;
-  font-size: 11px;
+  font-size: 13px;
   color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.window-item.active .meta {
+  color: var(--ink);
 }
 
 /* 窗口模式无可列窗口时的空态:不可点击,仅说明。 */
 .window-empty {
-  border: 1px dashed var(--line);
+  /* 外层列表已经是同色面板加发丝边。里层虚线再用 --line 会融进底色。 */
+  border: 1px dashed color-mix(in srgb, var(--ink) 32%, var(--line));
   border-radius: var(--radius-menu);
   padding: 12px;
   background: var(--panel);
-  color: var(--muted);
-  font-size: 12px;
+  color: var(--ink);
+  font-size: 13px;
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
@@ -503,9 +660,8 @@
 
 .delay-root {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  flex-direction: column;
+  justify-content: center;
 }
 
 .delay-root,
@@ -521,7 +677,8 @@
 }
 
 .delay-root {
-  padding: 10px 12px;
+  /* 窗高固定 88。说明改到倒计时和取消的下一行，才能用满整宽，英文不再被挤成要滚动的窄列。 */
+  padding: 8px 12px;
 }
 
 .delay-root > div {
@@ -537,24 +694,31 @@
 .delay-root .count-row {
   display: flex;
   align-items: center;
+  flex-shrink: 0;
   gap: 8px;
   min-width: 0;
 }
 
+.delay-root .count-row button {
+  margin-inline-start: auto;
+}
+
 .delay-root .count {
-  flex-shrink: 0;
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 18px;
   font-weight: 700;
   line-height: 1.2;
   font-variant-numeric: tabular-nums;
+  overflow-wrap: break-word;
 }
 
 /* R7:倒计时环形进度,随剩余时间收敛到 0(--ring 由脚本按已流逝时间写入);
    prefers-reduced-motion 下退化为静态文本+数字。 */
 .delay-root .count-ring {
   flex-shrink: 0;
-  width: 14px;
-  height: 14px;
+  width: 22px;
+  height: 22px;
   border-radius: 50%;
   background: conic-gradient(
     var(--accent) calc(var(--ring, 1) * 1turn),
@@ -579,30 +743,44 @@
   overflow-wrap: anywhere;
 }
 
+/* 失败窗里的 hint 是恢复步骤，不是次要备注。和错误正文同一字号、同一颜色。 */
+.error-body .hint {
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 .delay-root .hint {
   min-height: 0;
   overflow-y: auto;
+  /* 整句说明按词折行。anywhere 会把 countdown 从中间拆开。 */
+  overflow-wrap: break-word;
 }
 
 .delay-root button,
 .error-root button {
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: 0;
   border-radius: var(--radius-pill);
-  min-width: 24px;
-  min-height: 24px;
+  min-width: 32px;
+  min-height: 32px;
   background: var(--accent-soft);
   color: var(--ink);
   font: inherit;
   font-size: 13px;
-  padding: 7px 14px;
+  font-weight: 650;
+  padding: 0 14px;
+  white-space: nowrap;
   cursor: pointer;
   transition: var(--control-transition);
 }
 
 /* 无边框软按钮用内描边表达 hover,与共享控件状态语义一致。 */
 .delay-root button:hover,
-.error-root button:hover {
+.delay-root button:focus-visible {
   background: var(--control-hover-bg);
   box-shadow: inset 0 0 0 1px var(--control-hover-border);
 }
@@ -610,6 +788,26 @@
 .delay-root button:active,
 .error-root button:active {
   filter: var(--control-pressed-filter);
+}
+
+/* 列方向默认把关闭拉成整宽胶囊。失败窗口里这是唯一动作，用实心主按钮。 */
+.error-root button {
+  align-self: flex-end;
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.error-root button:hover:not(:active),
+.error-root button:focus-visible:not(:active),
+.error-root button:active {
+  background: var(--accent);
+  color: var(--on-accent);
+  box-shadow: none;
+}
+
+.error-root button:hover:not(:active),
+.error-root button:focus-visible:not(:active) {
+  filter: var(--control-hover-filter);
 }
 
 .error-root {
@@ -620,10 +818,14 @@
 }
 
 .error-body {
-  flex: 1 1 auto;
+  /* 不把多余高度吃进正文。短错误时关闭紧跟说明；说明过长时在块内滚动，关闭仍留在窗口内。 */
+  flex: 0 1 auto;
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
+  /* 整窗禁止选择，失败说明却是唯一能带走的信息。正文可选中复制，关闭按钮仍不可选。 */
+  user-select: text;
+  cursor: text;
 }
 
 .error-body h1 {

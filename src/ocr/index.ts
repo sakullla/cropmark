@@ -1,8 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { resolveCanvasColor } from "../annotation";
-import { t, type CatalogKey } from "../i18n";
+import { currentLanguage, t, type CatalogKey } from "../i18n";
 import { icons } from "../icons";
+import { NOTICE_AUTO_HIDE_MS } from "../feedback";
 import "./ocr.css";
 
 // R2:取字模型(图上文本层 + 结果面板 + 显式复制)。预览与冻结帧工作区覆盖层
@@ -40,7 +41,7 @@ export interface OcrRect {
   height: number;
 }
 
-export type OcrNoticeKind = "progress" | "hint" | "success" | "error";
+export type OcrNoticeKind = "progress" | "hint" | "success" | "error" | "empty";
 
 /** R7:Rust `ocr-progress` 事件载荷(裸阶段名);与 Rust `OcrStage` serde 表示一致。 */
 export type OcrStage = "preparing" | "recognizing" | "retrying" | "post_processing";
@@ -321,6 +322,71 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
   const actionsRow = panel.querySelector("[data-ocr-actions]") as HTMLElement;
   const copySelectedBtn = panel.querySelector("[data-ocr-action=copy-selected]") as HTMLButtonElement;
   const copyAllBtn = panel.querySelector("[data-ocr-action=copy-all]") as HTMLButtonElement;
+  let copyFlashTimer = 0;
+  let copyFlashBtn: HTMLButtonElement | null = null;
+  const restoreCopyFlash = (): void => {
+    if (copyFlashTimer) {
+      window.clearTimeout(copyFlashTimer);
+      copyFlashTimer = 0;
+    }
+    const button = copyFlashBtn;
+    copyFlashBtn = null;
+    if (!button) {
+      return;
+    }
+    const key =
+      button.dataset.ocrAction === "copy-all"
+        ? "preview.ocr_panel.copy_all"
+        : "preview.ocr_panel.copy_selected";
+    button.dataset.i18n = key;
+    button.textContent = t(key);
+    button.classList.remove("is-copied");
+  };
+  const reserveButtonTextWidth = (button: HTMLButtonElement, texts: readonly string[]): void => {
+    if (!button.isConnected) {
+      return;
+    }
+    const probe = button.cloneNode(false);
+    if (!(probe instanceof HTMLButtonElement)) {
+      return;
+    }
+    probe.className = button.className;
+    probe.style.position = "absolute";
+    probe.style.visibility = "hidden";
+    probe.style.pointerEvents = "none";
+    probe.style.width = "auto";
+    probe.style.minWidth = "0";
+    probe.style.left = "0";
+    probe.style.top = "0";
+    panel.append(probe);
+    let widest = 0;
+    for (const text of texts) {
+      probe.textContent = text;
+      widest = Math.max(widest, probe.getBoundingClientRect().width);
+    }
+    probe.remove();
+    if (widest > 0) {
+      button.style.minWidth = `${Math.ceil(widest)}px`;
+    }
+  };
+  const reserveCopyWidths = (): void => {
+    const copied = t("preview.action.copied");
+    reserveButtonTextWidth(copySelectedBtn, [t("preview.ocr_panel.copy_selected"), copied]);
+    reserveButtonTextWidth(copyAllBtn, [t("preview.ocr_panel.copy_all"), copied]);
+  };
+
+  const flashCopyButton = (button: HTMLButtonElement): void => {
+    reserveCopyWidths();
+    restoreCopyFlash();
+    copyFlashBtn = button;
+    button.classList.add("is-copied");
+    button.dataset.i18n = "preview.action.copied";
+    button.textContent = t("preview.action.copied");
+    copyFlashTimer = window.setTimeout(() => {
+      copyFlashTimer = 0;
+      restoreCopyFlash();
+    }, NOTICE_AUTO_HIDE_MS);
+  };
   const closeBtn = panel.querySelector("[data-ocr-action=close-panel]") as HTMLButtonElement;
   if (options.closable === false) {
     closeBtn.hidden = true;
@@ -365,10 +431,54 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
     options.onChange?.();
   };
 
+  // 阶段文案长短不一。转圈旁边的字先按最长那句留宽，换阶段时转圈不再左右晃。
+  const progressWidthCache = new Map<string, string>();
+  const reserveProgressWidth = (): void => {
+    const parent = progressText.parentElement;
+    if (!parent || parent.getClientRects().length === 0) {
+      return;
+    }
+    const key = currentLanguage();
+    let width = progressWidthCache.get(key);
+    if (!width) {
+      const probe = progressText.cloneNode(false);
+      if (!(probe instanceof HTMLElement)) {
+        return;
+      }
+      probe.className = progressText.className;
+      probe.style.position = "absolute";
+      probe.style.visibility = "hidden";
+      probe.style.pointerEvents = "none";
+      probe.style.width = "auto";
+      probe.style.minWidth = "0";
+      probe.style.whiteSpace = "nowrap";
+      parent.append(probe);
+      let widest = 0;
+      const labels: CatalogKey[] = [
+        "preview.note.ocr_running",
+        ...Object.values(OCR_STAGE_KEYS),
+      ];
+      for (const label of labels) {
+        probe.textContent = t(label);
+        widest = Math.max(widest, probe.getBoundingClientRect().width);
+      }
+      probe.remove();
+      if (widest <= 0) {
+        return;
+      }
+      width = `${Math.ceil(widest)}px`;
+      progressWidthCache.set(key, width);
+    }
+    if (progressText.style.minWidth !== width) {
+      progressText.style.minWidth = width;
+    }
+  };
+
   const showProgressStage = (key: CatalogKey): void => {
     stageKey = key;
     progressText.textContent = t(key);
     progressNote.hidden = false;
+    reserveProgressWidth();
   };
 
   const hideProgressStage = (): void => {
@@ -435,8 +545,28 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
     const visible = active && !panelDismissed && hasDocument();
     actionsRow.hidden = !visible;
     if (visible) {
-      copySelectedBtn.disabled = !hasCopySource() || busy;
+      reserveCopyWidths();
+      const canCopySelection = hasCopySource();
+      const needsSelection = !canCopySelection && !busy;
+      copySelectedBtn.disabled = busy;
+      // toggleAttribute 会写成空字符串，对不上 [aria-disabled="true"]，按钮看起来能点，点下去却是「没有选区」。
+      if (needsSelection) {
+        copySelectedBtn.setAttribute("aria-disabled", "true");
+      } else {
+        copySelectedBtn.removeAttribute("aria-disabled");
+      }
+      if (needsSelection) {
+        copySelectedBtn.dataset.i18nTitle = "preview.ocr_panel.selection_hint";
+        copySelectedBtn.dataset.tooltip = t("preview.ocr_panel.selection_hint");
+        copySelectedBtn.removeAttribute("title");
+      } else {
+        delete copySelectedBtn.dataset.i18nTitle;
+        delete copySelectedBtn.dataset.tooltip;
+      }
       copyAllBtn.disabled = busy;
+      // 已经有选区或当前命中时，复制所选才是这次要做的事。没有选区时，复制全部仍是主按钮。
+      copySelectedBtn.classList.toggle("primary", canCopySelection);
+      copyAllBtn.classList.toggle("primary", !canCopySelection);
     }
   };
 
@@ -520,19 +650,77 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
     });
   };
 
+  // 「无匹配」比「1/3」宽。先按较宽的那句留宽，搜到或搜不到时输入框不再被挤来挤去。
+  const searchCountWidthCache = new Map<string, number>();
+  const measureSearchCount = (text: string): number => {
+    const parent = searchCount.parentElement;
+    if (!parent || parent.getClientRects().length === 0) {
+      return 0;
+    }
+    const probe = searchCount.cloneNode(false);
+    if (!(probe instanceof HTMLElement)) {
+      return 0;
+    }
+    probe.hidden = false;
+    probe.className = "ocr-panel-count";
+    probe.style.position = "absolute";
+    probe.style.visibility = "hidden";
+    probe.style.pointerEvents = "none";
+    probe.style.width = "auto";
+    probe.style.minWidth = "0";
+    probe.style.whiteSpace = "nowrap";
+    probe.textContent = text;
+    parent.append(probe);
+    const width = probe.getBoundingClientRect().width;
+    probe.remove();
+    return width;
+  };
+  const reserveSearchCountWidth = (label: string): void => {
+    if (!label) {
+      if (searchCount.style.minWidth) {
+        searchCount.style.minWidth = "";
+      }
+      return;
+    }
+    const key = currentLanguage();
+    let noMatch = searchCountWidthCache.get(key);
+    if (noMatch === undefined) {
+      noMatch = measureSearchCount(t("preview.ocr_panel.no_match"));
+      if (noMatch > 0) {
+        searchCountWidthCache.set(key, noMatch);
+      }
+    }
+    const noMatchLabel = t("preview.ocr_panel.no_match");
+    const labelWidth = label === noMatchLabel ? (noMatch ?? 0) : measureSearchCount(label);
+    const widest = Math.max(noMatch ?? 0, labelWidth);
+    if (widest <= 0) {
+      return;
+    }
+    const next = `${Math.ceil(widest)}px`;
+    if (searchCount.style.minWidth !== next) {
+      searchCount.style.minWidth = next;
+    }
+  };
+
   const syncSearchStatus = (): void => {
     const query = searchInput.value.trim();
+    let label = "";
     if (!query) {
       searchCount.textContent = "";
     } else if (matches.length === 0) {
-      searchCount.textContent = t("preview.ocr_panel.no_match");
+      label = t("preview.ocr_panel.no_match");
+      searchCount.textContent = label;
     } else {
-      searchCount.textContent = t("preview.ocr_panel.match_count", {
+      label = t("preview.ocr_panel.match_count", {
         current: matchIndex + 1,
         total: matches.length,
       });
+      searchCount.textContent = label;
     }
+    // 「无匹配」和「1/3」以前同一套正文色，搜不到时不容易看出来。
+    searchCount.classList.toggle("is-empty", query.length > 0 && matches.length === 0);
     searchCount.hidden = !query;
+    reserveSearchCountWidth(label);
     const canStep = matches.length > 0;
     prevBtn.disabled = !canStep;
     nextBtn.disabled = !canStep;
@@ -565,12 +753,20 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
     stateHint.hidden = running;
     retryBtn.hidden = running;
     stateTitle.textContent = recognitionError ?? t("preview.error.no_text");
+    // 引擎失败和「图里没有字」共用这一块。失败用危险色，空结果仍是正文。
+    stateTitle.classList.toggle("is-error", recognitionError !== null);
     panel.setAttribute("aria-busy", String(running));
-    summary.textContent = ready && doc
-      ? t("preview.ocr_panel.count", { count: Array.from(doc.fullText).length, lines: doc.fullText.split("\n").length })
-      : t("preview.ocr_panel.subtitle");
-    // 自绘短延迟提示(走全局 data-tooltip 约定),替代 ~500ms 才出现的原生 title。
-    summary.dataset.tooltip = t("preview.ocr_panel.selection_hint");
+    if (ready && doc) {
+      summary.textContent = t("preview.ocr_panel.count", {
+        count: Array.from(doc.fullText).length,
+        lines: doc.fullText.split("\n").length,
+      });
+      // 字数本身不是操作说明。有正文时悬停才提示怎么选。
+      summary.dataset.tooltip = t("preview.ocr_panel.selection_hint");
+    } else {
+      summary.textContent = t("preview.ocr_panel.subtitle");
+      delete summary.dataset.tooltip;
+    }
     if (ready && !panelHasDomSelection()) {
       schedulePaint();
     }
@@ -661,7 +857,7 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
         doc = null;
         spanOffsets = [];
         if (active) {
-          setNoticeKey("preview.error.no_text", "error");
+          setNoticeKey("preview.error.no_text", "empty");
         }
       } else {
         doc = result;
@@ -791,7 +987,6 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
 
   const copySelected = async (): Promise<void> => {
     if (busy) {
-      setNoticeKey("preview.note.busy", "hint");
       return;
     }
     if (running) {
@@ -811,39 +1006,43 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
       setNoticeKey("preview.error.no_selection", "error");
       return;
     }
+    let copied = false;
     busy = true;
     syncActions();
     try {
-      let copied: string;
+      let copiedText: string;
       if (source.kind === "point") {
-        copied = await invoke<string>("copy_ocr_point", {
+        copiedText = await invoke<string>("copy_ocr_point", {
           x: source.point.x,
           y: source.point.y,
         });
       } else if (source.kind === "rect") {
-        copied = await invoke<string>("copy_ocr_rect", {
+        copiedText = await invoke<string>("copy_ocr_rect", {
           x: source.rect.x,
           y: source.rect.y,
           width: source.rect.width,
           height: source.rect.height,
         });
       } else if (source.kind === "all") {
-        copied = await invoke<string>("copy_ocr_all");
+        copiedText = await invoke<string>("copy_ocr_all");
       } else {
-        copied = await invoke<string>("copy_ocr_fragment", { text: source.text });
+        copiedText = await invoke<string>("copy_ocr_fragment", { text: source.text });
       }
-      setNoticeKey("preview.note.ocr_copied", "success", { snippet: snippetOf(copied) });
+      setNoticeKey("preview.note.ocr_copied", "success", { snippet: snippetOf(copiedText) });
+      copied = true;
     } catch (error) {
       setNoticeText(invokeError(error, t("preview.error.no_selection")), "error");
     } finally {
       busy = false;
       syncActions();
     }
+    if (copied) {
+      flashCopyButton(source.kind === "all" ? copyAllBtn : copySelectedBtn);
+    }
   };
 
   const copyAll = async (): Promise<void> => {
     if (busy) {
-      setNoticeKey("preview.note.busy", "hint");
       return;
     }
     if (running) {
@@ -854,16 +1053,21 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
       setNoticeKey("preview.error.no_text", "error");
       return;
     }
+    let copied = false;
     busy = true;
     syncActions();
     try {
       await invoke<string>("copy_ocr_all");
       setNoticeKey("preview.note.ocr_all_copied", "success");
+      copied = true;
     } catch (error) {
       setNoticeText(invokeError(error, t("preview.error.no_text")), "error");
     } finally {
       busy = false;
       syncActions();
+    }
+    if (copied) {
+      flashCopyButton(copyAllBtn);
     }
   };
 
@@ -1086,7 +1290,12 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
   panel.addEventListener("click", (event) => {
     const target = event.target;
     const button = target instanceof Element ? target.closest("[data-ocr-action]") : null;
-    if (!(button instanceof HTMLButtonElement) || button.hidden || button.disabled) {
+    if (
+      !(button instanceof HTMLButtonElement) ||
+      button.hidden ||
+      button.disabled ||
+      button.getAttribute("aria-disabled") === "true"
+    ) {
       return;
     }
     event.preventDefault();
@@ -1178,7 +1387,20 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
     }
   });
 
+  void document.fonts.ready.then(() => {
+    if (panel.isConnected) {
+      searchCountWidthCache.clear();
+      progressWidthCache.clear();
+      reserveCopyWidths();
+      syncSearchStatus();
+      reserveProgressWidth();
+    }
+  });
+
   const refreshLabels = (): void => {
+    searchCountWidthCache.clear();
+    progressWidthCache.clear();
+    reserveCopyWidths();
     renderPanel();
     syncSearchStatus();
     if (lastNotice?.key) {
@@ -1186,6 +1408,7 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
     }
     if (!progressNote.hidden) {
       progressText.textContent = t(stageKey);
+      reserveProgressWidth();
     }
   };
 

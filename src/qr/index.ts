@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { t, type CatalogKey } from "../i18n";
+import { currentLanguage, t, type CatalogKey } from "../i18n";
 import { icons } from "../icons";
 import "./qr.css";
 
@@ -28,7 +28,7 @@ export interface QrPayload {
   codes?: QrCode[];
 }
 
-export type QrNoticeKind = "progress" | "hint" | "success" | "error";
+export type QrNoticeKind = "progress" | "hint" | "success" | "error" | "empty";
 
 export interface QrModelOptions {
   /** 结果面板挂载容器(预览舞台 / 覆盖层根)。 */
@@ -117,11 +117,21 @@ export function mountQrModel(options: QrModelOptions): QrModel {
   let panelDismissed = true;
   // 复制按钮被 renderPanel 重建时的待恢复焦点序号(见 renderPanel 内说明)。
   let copyFocusIndex: number | null = null;
+  let copiedIndex: number | null = null;
+  let copiedTimer = 0;
   let lastNotice: {
     key: CatalogKey | null;
     params?: Record<string, string | number>;
     kind: QrNoticeKind;
   } | null = null;
+
+  const clearCopied = (): void => {
+    copiedIndex = null;
+    if (copiedTimer !== 0) {
+      window.clearTimeout(copiedTimer);
+      copiedTimer = 0;
+    }
+  };
 
   const emitChange = (): void => {
     options.onChange?.();
@@ -162,6 +172,47 @@ export function mountQrModel(options: QrModelOptions): QrModel {
     return parsed;
   };
 
+  // 「复制」比「已复制」窄，变绿时字还会加粗。先按较宽的那句留宽，成功时按钮不再变宽。
+  const qrCopyWidthCache = new Map<string, string>();
+  const reserveQrCopyWidth = (button: HTMLButtonElement): void => {
+    const parent = button.parentElement;
+    if (!parent || parent.getClientRects().length === 0) {
+      return;
+    }
+    const primary = button.classList.contains("primary");
+    const key = `${currentLanguage()}:${primary ? "primary" : "quiet"}`;
+    let width = qrCopyWidthCache.get(key);
+    if (!width) {
+      const probe = button.cloneNode(false);
+      if (!(probe instanceof HTMLButtonElement)) {
+        return;
+      }
+      probe.className = primary ? "qr-item-copy primary" : "qr-item-copy";
+      probe.style.position = "absolute";
+      probe.style.visibility = "hidden";
+      probe.style.pointerEvents = "none";
+      probe.style.width = "auto";
+      probe.style.minWidth = "0";
+      probe.style.whiteSpace = "nowrap";
+      parent.append(probe);
+      let widest = 0;
+      probe.textContent = t("preview.qr_panel.copy");
+      widest = Math.max(widest, probe.getBoundingClientRect().width);
+      probe.classList.add("is-copied");
+      probe.textContent = t("preview.qr_panel.copied");
+      widest = Math.max(widest, probe.getBoundingClientRect().width);
+      probe.remove();
+      if (widest <= 0) {
+        return;
+      }
+      width = `${Math.ceil(widest)}px`;
+      qrCopyWidthCache.set(key, width);
+    }
+    if (button.style.minWidth !== width) {
+      button.style.minWidth = width;
+    }
+  };
+
   const renderPanel = (): void => {
     const visible = active && !panelDismissed && contents !== null && contents.length > 0;
     panel.hidden = !visible;
@@ -180,7 +231,9 @@ export function mountQrModel(options: QrModelOptions): QrModel {
       copyFocusIndex = null;
     }
     list.replaceChildren();
-    contents?.forEach((content, index) => {
+    const items = contents ?? [];
+    const sole = items.length === 1;
+    items.forEach((content, index) => {
       const item = document.createElement("div");
       item.className = "qr-item";
       // R2:list/listitem 语义:辅助技术可逐条枚举结果并报出总数。
@@ -190,14 +243,22 @@ export function mountQrModel(options: QrModelOptions): QrModel {
       text.textContent = content;
       const copy = document.createElement("button");
       copy.type = "button";
-      copy.className = "qr-item-copy";
+      const copied = copiedIndex === index;
+      copy.className = sole ? "qr-item-copy primary" : "qr-item-copy";
+      if (copied) {
+        copy.classList.add("is-copied");
+      }
       copy.dataset.qrCopy = String(index);
-      copy.textContent = t("preview.qr_panel.copy");
+      copy.textContent = copied ? t("preview.qr_panel.copied") : t("preview.qr_panel.copy");
       // 可见文本同为「复制」,读屏靠带序号的 aria-label 区分对应哪条内容。
-      copy.setAttribute("aria-label", `${t("preview.qr_panel.copy")} ${index + 1}`);
+      copy.setAttribute(
+        "aria-label",
+        `${copied ? t("preview.qr_panel.copied") : t("preview.qr_panel.copy")} ${index + 1}`,
+      );
       copy.disabled = busy;
       item.append(text, copy);
       list.append(item);
+      reserveQrCopyWidth(copy);
     });
     if (copyFocusIndex !== null) {
       const target = list.querySelector<HTMLButtonElement>(`[data-qr-copy="${copyFocusIndex}"]`);
@@ -216,6 +277,7 @@ export function mountQrModel(options: QrModelOptions): QrModel {
     contents = null;
     codes = [];
     panelDismissed = false;
+    clearCopied();
     renderPanel();
     setNoticeKey("preview.note.qr_running", "progress");
     emitChange();
@@ -242,7 +304,7 @@ export function mountQrModel(options: QrModelOptions): QrModel {
         panelDismissed = true;
         renderPanel();
         if (active) {
-          setNoticeKey("preview.error.qr_fallback", "error");
+          setNoticeKey("preview.note.qr_none", "empty");
         }
       }
     } catch (error) {
@@ -301,6 +363,7 @@ export function mountQrModel(options: QrModelOptions): QrModel {
     busy = false;
     panelDismissed = true;
     lastNotice = null;
+    clearCopied();
     renderPanel();
     emitChange();
   };
@@ -313,7 +376,6 @@ export function mountQrModel(options: QrModelOptions): QrModel {
 
   const copy = async (index: number): Promise<void> => {
     if (busy || running) {
-      setNoticeKey("preview.note.busy", "hint");
       return;
     }
     const content = contents?.[index];
@@ -326,6 +388,17 @@ export function mountQrModel(options: QrModelOptions): QrModel {
     try {
       await invoke<string>("copy_qr_content", { text: content });
       setNoticeKey("preview.note.qr_copied", "success");
+      copiedIndex = index;
+      if (copiedTimer !== 0) {
+        window.clearTimeout(copiedTimer);
+      }
+      copiedTimer = window.setTimeout(() => {
+        copiedTimer = 0;
+        if (copiedIndex === index) {
+          copiedIndex = null;
+          renderPanel();
+        }
+      }, 1600);
     } catch (error) {
       setNoticeText(invokeError(error, t("preview.error.qr_fallback")), "error");
     } finally {
@@ -353,7 +426,16 @@ export function mountQrModel(options: QrModelOptions): QrModel {
     }
   });
 
+  void document.fonts.ready.then(() => {
+    if (!panel.isConnected) {
+      return;
+    }
+    qrCopyWidthCache.clear();
+    renderPanel();
+  });
+
   const refreshLabels = (): void => {
+    qrCopyWidthCache.clear();
     panel.setAttribute("aria-label", t("preview.qr_panel.title"));
     renderPanel();
     if (lastNotice?.key) {

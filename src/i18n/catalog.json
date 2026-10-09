@@ -692,8 +692,8 @@
     "en": "Select area & record"
   },
   "record.bar.cancel": {
-    "zh-CN": "取消",
-    "en": "Cancel"
+    "zh-CN": "取消 · Esc",
+    "en": "Cancel · Esc"
   },
   "record.bar.draw": {
     "zh-CN": "标注",
@@ -759,17 +759,61 @@
     "zh-CN": "暂停或继续录制",
     "en": "Pause or resume the recording"
   },
+  "record.bar.pause_title": {
+    "zh-CN": "暂停录制 (空格)",
+    "en": "Pause recording (Space)"
+  },
+  "record.bar.pause_while_drawing": {
+    "zh-CN": "先完成标注，再暂停或继续。",
+    "en": "Finish annotating before you pause or resume."
+  },
+  "record.bar.resume_title": {
+    "zh-CN": "继续录制 (空格)",
+    "en": "Resume recording (Space)"
+  },
   "record.bar.stop_title": {
     "zh-CN": "停止并收尾成片，或取消就绪/倒计时",
     "en": "Stop and finish, or cancel while ready/counting down"
+  },
+  "record.bar.cancel_title": {
+    "zh-CN": "取消这次录制 (Esc)",
+    "en": "Cancel this recording (Esc)"
+  },
+  "record.bar.save_title": {
+    "zh-CN": "保存这段录制",
+    "en": "Save this recording"
+  },
+  "record.bar.stop_save_title": {
+    "zh-CN": "停止并保存 (Esc)",
+    "en": "Stop and save (Esc)"
+  },
+  "record.bar.failed_close_title": {
+    "zh-CN": "关闭控制条",
+    "en": "Close the control bar"
   },
   "record.bar.draw_title": {
     "zh-CN": "进入或退出实时标注",
     "en": "Enter or finish live annotation"
   },
+  "record.bar.draw_enter_title": {
+    "zh-CN": "进入实时标注",
+    "en": "Enter live annotation"
+  },
+  "record.bar.draw_wait": {
+    "zh-CN": "倒计时结束后才能标注。",
+    "en": "Annotation is available after the countdown."
+  },
+  "record.bar.draw_done_title": {
+    "zh-CN": "完成标注，回到录制控制",
+    "en": "Finish annotating and return to the controls"
+  },
   "record.bar.start_title": {
-    "zh-CN": "开始录制；无会话时沿用上次区域",
-    "en": "Start recording; reuses the last region when no session is active"
+    "zh-CN": "沿用上次区域重新录制",
+    "en": "Record again in the last area"
+  },
+  "record.bar.start_ready_title": {
+    "zh-CN": "开始录制当前选区",
+    "en": "Start recording this area"
   },
   "record.bar.again_title": {
     "zh-CN": "回到选区重新框选一段录制",
@@ -782,6 +826,10 @@
   "record.pending.discard_title": {
     "zh-CN": "丢弃这条待保存录制",
     "en": "Discard this pending recording"
+  },
+  "record.pending.discard_confirm_title": {
+    "zh-CN": "再点一次才会丢弃，不能撤销",
+    "en": "Click again to discard. This cannot be undone."
   },
   "record.selection.yielded": {
     "zh-CN": "录制范围已让出边框和控制条。再确认一次即可开始，尺寸与成片一致。",
@@ -1220,8 +1268,12 @@
     "en": "Fullscreen capture"
   },
   "settings.hotkey.recording": {
-    "zh-CN": "按下新热键…",
-    "en": "Press new hotkey…"
+    "zh-CN": "按下新热键 · Esc 取消",
+    "en": "Press a key · Esc cancels"
+  },
+  "settings.hotkey.recording_title": {
+    "zh-CN": "正在等待新组合。Esc 取消，并保留原来的热键。",
+    "en": "Waiting for a new combination. Esc cancels and keeps the current hotkey."
   },
   "settings.hotkey.recording_partial": {
     "zh-CN": "{keys} + …",
@@ -1238,6 +1290,10 @@
   "settings.hotkey.aria_current": {
     "zh-CN": "{mode}热键：当前为 {accelerator}，点击修改",
     "en": "{mode} hotkey: currently {accelerator}; click to change"
+  },
+  "settings.hotkey.aria_unbound": {
+    "zh-CN": "{mode}热键：未绑定，点击设置",
+    "en": "{mode} hotkey: not bound; click to set"
   },
   "settings.capture.title": {
     "zh-CN": "截图",
@@ -1346,6 +1402,14 @@
   "settings.history.limit_label": {
     "zh-CN": "记录上限",
     "en": "Record limit"
+  },
+  "settings.unit.records": {
+    "zh-CN": "条",
+    "en": "records"
+  },
+  "settings.unit.seconds": {
+    "zh-CN": "秒",
+    "en": "sec"
   },
   "settings.history.limit_hint": {
     "zh-CN": "5–200 条，超出上限时自动淘汰最旧记录。",
@@ -1475,6 +1539,22 @@
     "zh-CN": "例如 shot_{date}_{mode}_{seq}",
     "en": "Example: shot_{date}_{mode}_{seq}"
   },
+  "settings.export.template_limit": {
+    "zh-CN": "文件名模板最多 {max} 个字符，不能再输入。",
+    "en": "The filename template can be at most {max} characters."
+  },
+  "settings.export.template_unsafe": {
+    "zh-CN": "\\ / : * ? < > | 和引号不能出现在文件名里，保存时会换成下划线。",
+    "en": "\\ / : * ? < > | and quotes cannot appear in a file name. They become underscores when you save."
+  },
+  "settings.export.template_trim": {
+    "zh-CN": "文件名开头或结尾的空格和句点在保存时会被去掉。",
+    "en": "Spaces and periods at the start or end of the file name are removed when you save."
+  },
+  "settings.export.template_reserved": {
+    "zh-CN": "CON、PRN、AUX、NUL、COM1–COM9、LPT1–LPT9 是系统保留名，保存时会在文件名末尾加上 _。",
+    "en": "CON, PRN, AUX, NUL, COM1–COM9, and LPT1–LPT9 are reserved names. A trailing _ is added when you save."
+  },
   "settings.export.beautify_title": {
     "zh-CN": "导出美化",
     "en": "Export beautify"
@@ -1494,6 +1574,10 @@
   "settings.export.padding_label": {
     "zh-CN": "留白",
     "en": "Padding"
+  },
+  "settings.unit.px": {
+    "zh-CN": "像素",
+    "en": "px"
   },
   "settings.export.padding_hint": {
     "zh-CN": "0–240 像素，输出四周各加这么多留白。阴影另按圆角占用固定边距。",
@@ -1747,6 +1831,10 @@
     "zh-CN": "删除选中标注 (Delete)",
     "en": "Delete selected annotation (Delete)"
   },
+  "preview.tool.text_editing_locked": {
+    "zh-CN": "先确认或取消这段文字",
+    "en": "Confirm or cancel this text first"
+  },
   "preview.tool.delete": {
     "zh-CN": "删除",
     "en": "Delete"
@@ -1762,6 +1850,10 @@
   "preview.tool.more_title": {
     "zh-CN": "更多工具",
     "en": "More tools"
+  },
+  "preview.tool.more_current": {
+    "zh-CN": "更多工具，当前是{tool}",
+    "en": "More tools, current: {tool}"
   },
   "preview.style.color": {
     "zh-CN": "颜色",
@@ -1788,8 +1880,8 @@
     "en": "Text size"
   },
   "preview.style.number": {
-    "zh-CN": "序号",
-    "en": "Number"
+    "zh-CN": "起始",
+    "en": "Start"
   },
   "preview.style.number_group": {
     "zh-CN": "序号起始值",
@@ -1798,6 +1890,10 @@
   "preview.style.number_title": {
     "zh-CN": "序号起始值 (1–999)",
     "en": "Number start (1–999)"
+  },
+  "preview.style.number_error": {
+    "zh-CN": "起始值需要是 1–999 的整数。",
+    "en": "Start must be a whole number from 1 to 999."
   },
   "preview.style.width_thin": {
     "zh-CN": "细",
@@ -1823,6 +1919,10 @@
     "zh-CN": "大",
     "en": "Large"
   },
+  "preview.style.pixel_value": {
+    "zh-CN": "{value} 像素",
+    "en": "{value} px"
+  },
   "preview.style.option_title": {
     "zh-CN": "{label} ({value})",
     "en": "{label} ({value})"
@@ -1843,9 +1943,17 @@
     "zh-CN": "适应窗口",
     "en": "Fit"
   },
+  "preview.zoom.fit_title": {
+    "zh-CN": "整张图缩进窗口，不用滚动",
+    "en": "Fit the whole image in the window"
+  },
   "preview.zoom.actual": {
     "zh-CN": "原始像素（100%），滚动查看细节",
     "en": "Actual pixels (100%); scroll to view details"
+  },
+  "preview.zoom.dimensions": {
+    "zh-CN": "{width} × {height} 像素",
+    "en": "{width} × {height} px"
   },
   "preview.style.zoom": {
     "zh-CN": "倍率",
@@ -1906,6 +2014,10 @@
   "preview.quality.group": {
     "zh-CN": "保存质量",
     "en": "Save quality"
+  },
+  "preview.quality.current": {
+    "zh-CN": "当前保存质量：{quality}",
+    "en": "Current save quality: {quality}"
   },
   "preview.quality.high": {
     "zh-CN": "高",
@@ -1975,6 +2087,10 @@
     "zh-CN": "保存",
     "en": "Save"
   },
+  "preview.action.save_with_quality": {
+    "zh-CN": "保存 · {quality}",
+    "en": "Save · {quality}"
+  },
   "preview.action.copy_title": {
     "zh-CN": "复制 (Ctrl+C)",
     "en": "Copy (Ctrl+C)"
@@ -2027,6 +2143,14 @@
     "zh-CN": "拖选要保留的区域 · Enter 或点「确认裁剪」提交 · Esc 取消",
     "en": "Drag the area to keep · Enter or Crop to apply · Esc cancels"
   },
+  "preview.crop.toolbar_locked": {
+    "zh-CN": "先确认裁剪，或按 Esc 取消，再使用其它工具。",
+    "en": "Crop or press Esc to cancel before using other tools."
+  },
+  "preview.crop.too_small": {
+    "zh-CN": "区域至少要 {detail} × {detail} 像素，才能确认裁剪。",
+    "en": "The area must be at least {detail} × {detail} pixels before you can crop."
+  },
   "preview.canvas_label": {
     "zh-CN": "截图预览",
     "en": "Screenshot preview"
@@ -2060,8 +2184,8 @@
     "en": "Delete annotation"
   },
   "preview.text_placeholder": {
-    "zh-CN": "在此输入汉字",
-    "en": "Type here"
+    "zh-CN": "Enter 确认，Esc 取消",
+    "en": "Enter confirms, Esc cancels"
   },
   "preview.copied_clean": {
     "zh-CN": "未标注图已复制",
@@ -2088,12 +2212,44 @@
     "en": "Click or drag to select text, then copy selected or all · Ctrl+A select all · Ctrl+C copy · Esc exits"
   },
   "preview.note.text_hint": {
-    "zh-CN": "点在图上放置文字框，然后输入汉字。Enter 确认，Esc 取消。",
-    "en": "Click the image to place a text box, then type. Enter confirms, Esc cancels."
+    "zh-CN": "点在图上放置文字框，然后输入。Enter 确认，Esc 取消，双击可再编辑。",
+    "en": "Click the image to place a text box, then type. Enter confirms, Esc cancels, double-click to edit again."
+  },
+  "preview.note.text_editing": {
+    "zh-CN": "Enter 确认 · Shift+Enter 换行 · Esc 取消",
+    "en": "Enter confirms · Shift+Enter adds a line · Esc cancels"
   },
   "preview.note.number_hint": {
-    "zh-CN": "点在图上放置序号，从 {start} 起自动递增。",
-    "en": "Click the image to place numbers, incrementing from {start}."
+    "zh-CN": "点在图上放置序号，下一个是 {next}。",
+    "en": "Click the image to place the next number, {next}."
+  },
+  "preview.note.selection_hint": {
+    "zh-CN": "拖动可移动。Delete 或右键可删除。",
+    "en": "Drag to move. Delete, or right-click, to remove it."
+  },
+  "preview.note.selection_text_hint": {
+    "zh-CN": "拖动可移动。双击改文字，Delete 或右键可删除。",
+    "en": "Drag to move. Double-click to edit. Delete, or right-click, to remove it."
+  },
+  "preview.note.arrow_hint": {
+    "zh-CN": "按住拖出箭头。样式面板可改成直线。",
+    "en": "Press and drag to draw an arrow. Switch to a straight line in the style panel."
+  },
+  "preview.note.line_hint": {
+    "zh-CN": "按住拖出直线。",
+    "en": "Press and drag to draw a straight line."
+  },
+  "preview.note.rect_hint": {
+    "zh-CN": "按住拖出矩形。",
+    "en": "Press and drag to draw a rectangle."
+  },
+  "preview.note.ellipse_hint": {
+    "zh-CN": "按住拖出椭圆。",
+    "en": "Press and drag to draw an ellipse."
+  },
+  "preview.note.mosaic_hint": {
+    "zh-CN": "按住拖出要打码的区域。",
+    "en": "Press and drag over the area to pixelate."
   },
   "preview.note.pen_hint": {
     "zh-CN": "按住拖动自由绘制。",
@@ -2227,6 +2383,10 @@
     "zh-CN": "复制",
     "en": "Copy"
   },
+  "preview.qr_panel.copied": {
+    "zh-CN": "已复制",
+    "en": "Copied"
+  },
   "preview.qr_panel.text": {
     "zh-CN": "二维码内容",
     "en": "QR content"
@@ -2339,6 +2499,10 @@
     "zh-CN": "无法识别二维码。",
     "en": "Could not read the QR code."
   },
+  "preview.note.qr_none": {
+    "zh-CN": "没有发现二维码。",
+    "en": "No QR code found."
+  },
   "preview.error.no_selection": {
     "zh-CN": "没有选中文字。",
     "en": "No text selected."
@@ -2364,8 +2528,8 @@
     "en": "Hide"
   },
   "overlay.cancel": {
-    "zh-CN": "取消 Esc",
-    "en": "Cancel Esc"
+    "zh-CN": "取消 · Esc",
+    "en": "Cancel · Esc"
   },
   "overlay.retry": {
     "zh-CN": "重试",
@@ -2410,6 +2574,10 @@
   "overlay.notice.select_first": {
     "zh-CN": "请先拖出要截取的区域。",
     "en": "Drag out a region first."
+  },
+  "overlay.notice.window_first": {
+    "zh-CN": "请先点选要截取的窗口。",
+    "en": "Click the window you want to capture."
   },
   "overlay.notice.too_small": {
     "zh-CN": "选区太小，请拖出至少 2 × 2 像素的区域。",
@@ -2572,8 +2740,8 @@
     "en": "You can use other apps during the countdown; the screen is captured when it ends."
   },
   "delay.cancel": {
-    "zh-CN": "取消",
-    "en": "Cancel"
+    "zh-CN": "取消 · Esc",
+    "en": "Cancel · Esc"
   },
   "delay.countdown": {
     "zh-CN": "{seconds} 秒后截取",
@@ -2618,6 +2786,10 @@
   "scroll.cancel": {
     "zh-CN": "取消",
     "en": "Cancel"
+  },
+  "scroll.cancel_title": {
+    "zh-CN": "取消长截图 (Esc)",
+    "en": "Cancel scrolling capture (Esc)"
   },
   "scroll.undo": {
     "zh-CN": "回退",
@@ -2716,8 +2888,8 @@
     "en": "Capture failed"
   },
   "error.close": {
-    "zh-CN": "关闭",
-    "en": "Close"
+    "zh-CN": "关闭 · Esc",
+    "en": "Close · Esc"
   },
   "error.fallback": {
     "zh-CN": "截取失败。",
@@ -2755,6 +2927,10 @@
     "zh-CN": "调整透明度",
     "en": "Adjust opacity"
   },
+  "pin.toolbar.opacity_cycle": {
+    "zh-CN": "透明度 {current}%，点击改为 {next}%",
+    "en": "Opacity {current}%. Click to change to {next}%."
+  },
   "pin.toolbar.opacity": {
     "zh-CN": "透明度",
     "en": "Opacity"
@@ -2768,8 +2944,8 @@
     "en": "Re-annotate"
   },
   "pin.toolbar.close_title": {
-    "zh-CN": "关闭贴图",
-    "en": "Close pin"
+    "zh-CN": "关闭贴图 (Esc)",
+    "en": "Close pin (Esc)"
   },
   "pin.toolbar.close_group_title": {
     "zh-CN": "关闭整组贴图",
@@ -2830,6 +3006,14 @@
   "pin.menu.opacity_option_title": {
     "zh-CN": "透明度 {percent}%",
     "en": "Opacity {percent}%"
+  },
+  "pin.menu.opacity_current": {
+    "zh-CN": "当前透明度 {percent}%",
+    "en": "Current opacity {percent}%"
+  },
+  "pin.menu.opacity_set": {
+    "zh-CN": "改为 {percent}%",
+    "en": "Change to {percent}%"
   },
   "pin.menu.annotate": {
     "zh-CN": "再标注…",
@@ -2953,7 +3137,7 @@
   },
   "history.count": {
     "zh-CN": "{count} 条",
-    "en": "{count}"
+    "en": "{count} records"
   },
   "history.today": {
     "zh-CN": "今天 {time}",
@@ -3010,6 +3194,10 @@
   "history.copy": {
     "zh-CN": "复制",
     "en": "Copy"
+  },
+  "history.copy_done": {
+    "zh-CN": "已复制",
+    "en": "Copied"
   },
   "history.pin": {
     "zh-CN": "贴图",
@@ -3125,7 +3313,7 @@
   },
   "history.count_filtered": {
     "zh-CN": "{count} / {total} 条",
-    "en": "{count} / {total}"
+    "en": "{count} / {total} records"
   },
   "history.favorite": {
     "zh-CN": "收藏",
@@ -3150,6 +3338,10 @@
   "history.note_placeholder": {
     "zh-CN": "添加备注",
     "en": "Add a note"
+  },
+  "history.note_limit": {
+    "zh-CN": "备注最多 {max} 个字符，不能再输入。",
+    "en": "Notes can be at most {max} characters."
   },
   "history.note_saved": {
     "zh-CN": "备注已保存。",
@@ -3240,8 +3432,8 @@
     "en": "Got it"
   },
   "preview.ocr_panel.resize": {
-    "zh-CN": "调整图片和文字区域宽度",
-    "en": "Resize image and text panes"
+    "zh-CN": "拖动调整图片和文字宽度，双击恢复默认",
+    "en": "Drag to resize the image and text panes. Double-click to reset."
   },
   "preview.ocr_panel.subtitle": {
     "zh-CN": "图文对照 · 离线识别",

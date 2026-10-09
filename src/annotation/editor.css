@@ -6,7 +6,8 @@
 button.annotation-chrome {
   border: 1px solid transparent;
   background: transparent;
-  color: var(--muted);
+  /* 截图覆盖层没有预览顶栏那层 ink 覆盖。灰色图标在面板上偏淡，静止时就用正文色。 */
+  color: var(--ink);
   font: inherit;
   cursor: pointer;
   border-radius: var(--radius-control);
@@ -49,7 +50,7 @@ button.annotation-chrome svg {
 
 .annotation-tools .toolbar-sep {
   width: 1px;
-  height: 16px;
+  height: 20px;
   margin: 0 4px;
   background: var(--line);
   flex: 0 0 auto;
@@ -59,9 +60,43 @@ button.annotation-chrome svg {
   display: none;
 }
 
+/* 覆盖层和录制工具条会换行。独立分隔线会掉到行尾或下一行行首。
+   改挂在撤销按钮左侧，跟着按钮走。预览条不换行，仍用原来的分隔线。 */
+.overlay-tools.annotation-tools .toolbar-sep,
+.record-tools.annotation-tools .toolbar-sep {
+  width: 0;
+  height: 0;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+.overlay-tools.annotation-tools .toolbar-sep + .annotation-chrome,
+.record-tools.annotation-tools .toolbar-sep + .annotation-chrome {
+  position: relative;
+  margin-inline-start: 8px;
+}
+
+.overlay-tools.annotation-tools .toolbar-sep + .annotation-chrome::before,
+.record-tools.annotation-tools .toolbar-sep + .annotation-chrome::before {
+  content: "";
+  position: absolute;
+  left: -6px;
+  top: 50%;
+  width: 1px;
+  height: 20px;
+  transform: translateY(-50%);
+  background: var(--line);
+  pointer-events: none;
+}
+
 .annotation-more {
   position: relative;
   display: inline-flex;
+}
+
+.annotation-more .more-glyph {
+  display: contents;
 }
 
 .annotation-more-panel {
@@ -71,8 +106,13 @@ button.annotation-chrome svg {
   z-index: 20;
   display: flex;
   align-items: center;
-  gap: 1px;
-  padding: 3px;
+  flex-wrap: wrap;
+  /* 宽屏仍是一行。窄录制区域里不换行会画出窗口，点不到后面的工具。 */
+  width: max-content;
+  max-width: calc(100vw - 16px);
+  /* 1px 时相邻悬停底会粘成一块。和工具条的行距一样留 4px，换行后上下也分开。 */
+  gap: 4px;
+  padding: 4px;
   border: 1px solid var(--line);
   border-radius: var(--radius-control-sm);
   background: var(--panel);
@@ -83,19 +123,24 @@ button.annotation-chrome svg {
   display: none;
 }
 
-.annotation-tools button:hover:not(:disabled) {
+.annotation-tools button:hover:not(:disabled):not([aria-disabled="true"]),
+.annotation-tools button:focus-visible:not(:disabled):not([aria-disabled="true"]) {
   background: var(--control-hover-bg);
   border-color: var(--control-hover-border);
 }
 
 .annotation-tools > button:hover:not(:disabled):not(.active),
+.annotation-tools > button:focus-visible:not(:disabled):not(.active),
 .annotation-more > button:hover:not(:disabled):not(.active),
+.annotation-more > button:focus-visible:not(:disabled):not(.active),
 .annotation-style > button:hover:not(:disabled):not(.active),
-.annotation-more-panel > button:hover:not(:disabled):not(.active) {
+.annotation-style > button:focus-visible:not(:disabled):not(.active),
+.annotation-more-panel > button:hover:not(:disabled):not(.active),
+.annotation-more-panel > button:focus-visible:not(:disabled):not(.active) {
   color: var(--ink);
 }
 
-.annotation-tools button:active:not(:disabled) {
+.annotation-tools button:active:not(:disabled):not([aria-disabled="true"]) {
   filter: var(--control-pressed-filter);
 }
 
@@ -105,10 +150,29 @@ button.annotation-chrome svg {
   color: var(--accent);
 }
 
+.annotation-tools button.active:hover:not(:disabled):not([aria-disabled="true"]):not(:active),
+.annotation-tools button.active:focus-visible:not(:disabled):not([aria-disabled="true"]):not(:active) {
+  filter: var(--control-hover-filter);
+}
+
+.annotation-tools button.active:active:not(:disabled):not([aria-disabled="true"]) {
+  filter: var(--control-pressed-filter);
+}
+
 /* 禁用(撤销无可撤销内容)统一为共享变暗与光标,禁用时不出现 hover 反馈。 */
-.annotation-tools button:disabled {
+.annotation-tools button:disabled,
+.annotation-tools button[aria-disabled="true"] {
   opacity: var(--control-disabled-opacity);
   cursor: default;
+}
+
+/* 删除会清掉选中标注。静止时与其它工具同色，悬停和键盘焦点改危险色。
+   按钮可能被收进「更多」而离开 .annotation-tools，所以挂在按钮类上。 */
+button.annotation-chrome[data-action="delete"]:hover:not(:disabled):not([aria-disabled="true"]),
+button.annotation-chrome[data-action="delete"]:focus-visible:not(:disabled):not([aria-disabled="true"]) {
+  color: var(--danger);
+  background: var(--control-danger-hover-bg);
+  border-color: var(--control-danger-hover-border);
 }
 
 .annotation-style {
@@ -116,15 +180,45 @@ button.annotation-chrome svg {
   display: inline-flex;
 }
 
+/* 样式面板收起时，图标角上的色点就是当前墨色。不用颜色的工具不显示。 */
+button.annotation-chrome[data-action="style"] {
+  position: relative;
+}
+
+button.annotation-chrome[data-action="style"] .style-ink {
+  display: none;
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--swatch, var(--accent));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 28%, transparent);
+  pointer-events: none;
+}
+
+button.annotation-chrome[data-action="style"].has-ink .style-ink {
+  display: block;
+}
+
 .annotation-style-panel {
   position: absolute;
   top: calc(100% + 8px);
   left: 0;
   z-index: 30;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  min-width: 292px;
+  /* 各行标签和选项进同一网格，列宽取当前可见标签里最长的一行。
+     中文两字仍停在 36px；英文 Stroke width 不再盖住色块。 */
+  display: grid;
+  grid-template-columns: minmax(36px, max-content) minmax(0, max-content);
+  align-items: center;
+  column-gap: 10px;
+  row-gap: 10px;
+  width: max-content;
+  /* 固定 292px 会压过 max-width。窄录制区域里面板比窗口宽，右侧色块被裁掉。 */
+  min-width: min(292px, calc(100vw - 16px));
+  max-width: calc(100vw - 16px);
+  scrollbar-width: thin;
   padding: 14px;
   border: 1px solid var(--line);
   border-radius: var(--radius-menu);
@@ -140,12 +234,21 @@ button.annotation-chrome svg {
   display: none;
 }
 
+/* 预览和录制的面板向下展开，贴着窗口下沿。提示再向下会被裁掉，改到选项上方。
+   截图覆盖层的面板在工具条之上，由 overlay.css 改回向下。 */
+.annotation-tools .annotation-style-panel [data-tooltip]::after {
+  top: auto;
+  bottom: calc(100% + 6px);
+  /* 「用选区周边像素均值填充」不换行会从按钮中线向两侧画出窗口。 */
+  white-space: normal;
+  overflow-wrap: anywhere;
+  width: max-content;
+  max-width: min(16rem, calc(100vw - 16px));
+  text-align: start;
+}
+
 .style-group {
-  display: grid;
-  grid-template-columns: 36px minmax(0, 1fr);
-  align-items: center;
-  column-gap: 10px;
-  row-gap: 6px;
+  display: contents;
 }
 
 .style-group[hidden] {
@@ -153,10 +256,12 @@ button.annotation-chrome svg {
 }
 
 .style-label {
-  color: var(--muted);
-  font-size: 12px;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 650;
   line-height: 1.2;
-  white-space: nowrap;
+  /* 宽面板仍按整词排成一行。窄面板里列被压窄时折行，不再盖住色块。 */
+  overflow-wrap: anywhere;
 }
 
 .style-options {
@@ -185,10 +290,12 @@ button.annotation-chrome svg {
   justify-content: center;
   flex: 0 0 auto;
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
   transition: var(--control-transition);
 }
 
-.style-options button:hover {
+.style-options button:hover,
+.style-options button:focus-visible {
   border-color: var(--control-hover-border);
   background: var(--control-hover-bg);
 }
@@ -203,12 +310,21 @@ button.annotation-chrome svg {
   color: var(--on-accent);
 }
 
+.style-options button.active:hover:not(:disabled):not(:active),
+.style-options button.active:focus-visible:not(:disabled):not(:active) {
+  filter: var(--control-hover-filter);
+}
+
+.style-options button.active:active:not(:disabled) {
+  filter: var(--control-pressed-filter);
+}
+
 .style-options button[data-style-color] {
   position: relative;
-  width: 28px;
-  min-width: 28px;
-  height: 28px;
-  min-height: 28px;
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
   padding: 0;
   border: 1px solid transparent;
   border-radius: 50%;
@@ -217,8 +333,7 @@ button.annotation-chrome svg {
 }
 
 .style-options button[data-style-color].active,
-.style-options button[data-erase-fill]:not([data-erase-fill="auto"]).active,
-.style-options button[data-sticker-id].active {
+.style-options button[data-erase-fill]:not([data-erase-fill="auto"]).active {
   background-color: transparent;
   color: var(--ink);
   border-color: transparent;
@@ -230,6 +345,7 @@ button.annotation-chrome svg {
   height: 32px;
   min-height: 32px;
   padding: 0 8px;
+  line-height: 30px;
   border: 1px solid var(--line);
   border-radius: var(--radius-pill);
   background-color: var(--control-fill);
@@ -238,6 +354,47 @@ button.annotation-chrome svg {
   font-size: 13px;
   text-align: center;
   transition: var(--control-transition);
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.style-options input[data-style-number-start]::-webkit-outer-spin-button,
+.style-options input[data-style-number-start]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.style-options input[data-style-number-start]:hover:not(:focus-visible) {
+  border-color: var(--control-hover-border);
+  background-color: var(--control-hover-bg);
+}
+
+.style-options input[data-style-number-start]:focus-visible {
+  border-color: var(--accent);
+  background-color: var(--control-fill);
+}
+
+.style-options input[data-style-number-start][aria-invalid="true"],
+.style-options input[data-style-number-start][aria-invalid="true"]:hover:not(:focus-visible),
+.style-options input[data-style-number-start][aria-invalid="true"]:focus-visible {
+  border-color: var(--danger);
+  background-color: var(--control-fill);
+}
+
+.style-options input[data-style-number-start][aria-invalid="true"]:focus-visible {
+  outline-color: var(--danger);
+}
+
+/* 起始值不合法时写在输入框下面。悬停气泡仍是取值范围，红字才是这次为什么没生效。 */
+.style-number-error {
+  grid-column: 1 / -1;
+  margin: 0;
+  max-width: 16rem;
+  color: var(--danger);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 /* 序号起始输入框外包 .input-wrap 挂自绘提示(input 是 replaced 元素,::after 不渲染;
@@ -256,7 +413,8 @@ button.annotation-chrome svg {
 }
 
 /* 色块按钮的透明边框在基础规则中重置,悬停描边需在此恢复。 */
-.style-options button[data-style-color]:hover {
+.style-options button[data-style-color]:hover,
+.style-options button[data-style-color]:focus-visible {
   background: var(--control-hover-bg);
   border-color: var(--control-hover-border);
 }
@@ -273,7 +431,7 @@ button.annotation-chrome svg {
   width: 32px;
   min-width: 32px;
   height: 32px;
-  min-height: 24px;
+  min-height: 32px;
   padding: 2px;
   border-radius: var(--radius-control-sm);
 }
@@ -286,6 +444,16 @@ button.annotation-chrome svg {
   pointer-events: none;
 }
 
+/* 选中态若沿用色块的透明边，缩略图和未选项看不出差别。强调色描边留在悬停上。 */
+.style-options button[data-sticker-id].active,
+.style-options button[data-sticker-id].active:hover:not(:disabled),
+.style-options button[data-sticker-id].active:focus-visible:not(:disabled) {
+  background-color: transparent;
+  color: var(--ink);
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
 .style-options button[data-erase-fill][data-erase-fill="auto"] {
   min-width: 56px;
 }
@@ -293,10 +461,10 @@ button.annotation-chrome svg {
 /* 擦除填充的色块按钮与标注颜色共用外观,但属性独立。 */
 .style-options button[data-erase-fill]:not([data-erase-fill="auto"]) {
   position: relative;
-  width: 30px;
-  min-width: 30px;
-  height: 30px;
-  min-height: 24px;
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
   padding: 0;
   border: 1px solid transparent;
   border-radius: 50%;
@@ -312,7 +480,8 @@ button.annotation-chrome svg {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 14%, transparent);
 }
 
-.style-options button[data-erase-fill]:not([data-erase-fill="auto"]):hover {
+.style-options button[data-erase-fill]:not([data-erase-fill="auto"]):hover,
+.style-options button[data-erase-fill]:not([data-erase-fill="auto"]):focus-visible {
   background: var(--control-hover-bg);
   border-color: var(--control-hover-border);
 }
@@ -363,12 +532,19 @@ button.annotation-chrome svg {
 .annotation-text.is-open {
   visibility: visible;
   pointer-events: auto;
+  /* 外圈是即将写下的颜色，中间留一圈面板色，浅色或深色画面上都认得出。
+     光标保持强调色：琥珀写在白底上会看不见。 */
+  box-shadow:
+    0 0 0 2px var(--panel),
+    0 0 0 5px var(--editor-ink, var(--accent));
 }
 
 .annotation-context {
   position: absolute;
   z-index: 30;
+  width: max-content;
   min-width: 132px;
+  max-width: calc(100vw - 16px);
   padding: 4px;
   border: 1px solid var(--line);
   border-radius: var(--radius-menu);
@@ -381,12 +557,17 @@ button.annotation-chrome svg {
 }
 
 .annotation-context button {
-  display: block;
-  width: 100%;
-  min-width: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  /* 百分比宽度会把菜单卡在 132px，「Delete annotation」折成两行。 */
+  width: max-content;
+  min-width: 100%;
+  white-space: nowrap;
   height: auto;
-  min-height: 24px;
-  padding: 6px 10px;
+  min-height: 32px;
+  padding: 8px 10px;
   text-align: left;
   border: 0;
   border-radius: var(--radius-control-sm);
@@ -398,10 +579,31 @@ button.annotation-chrome svg {
   transition: var(--control-transition);
 }
 
-.annotation-context button:hover {
+.annotation-context kbd {
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.annotation-context button:hover,
+.annotation-context button:focus-visible {
   background: var(--control-hover-bg);
   box-shadow: inset 0 0 0 1px var(--control-hover-border);
   color: var(--accent);
+}
+
+/* 菜单里只有删除。和历史、录屏的删除一样用危险色，避免看起来像普通命令。 */
+.annotation-context button[data-action="delete-annotation"],
+.annotation-context button[data-action="delete-annotation"]:hover,
+.annotation-context button[data-action="delete-annotation"]:focus-visible {
+  color: var(--danger);
+}
+
+.annotation-context button[data-action="delete-annotation"]:hover,
+.annotation-context button[data-action="delete-annotation"]:focus-visible {
+  background: var(--control-danger-hover-bg);
+  box-shadow: inset 0 0 0 1px var(--control-danger-hover-border);
 }
 
 .annotation-context button:active {

@@ -14,7 +14,7 @@ import {
   type AnnotationEditor,
   type AnnotationTool,
 } from "../annotation";
-import { applyTranslations, t, type CatalogKey } from "../i18n";
+import { applyTranslations, currentLanguage, t, type CatalogKey } from "../i18n";
 import { BUTTON_FLASH_MS } from "../feedback";
 import { icons } from "../icons";
 import { mountOcrModel, type OcrDocument, type OcrModel } from "../ocr";
@@ -67,7 +67,7 @@ const CROP_BAR_INSET = 12;
 /** 与 app.css 亮色 --accent 一致;令牌缺失时的最终回退。 */
 const FALLBACK_CROP_EDGE = "#2457db";
 
-type NoteKind = "success" | "feedback" | "error";
+type NoteKind = "success" | "feedback" | "error" | "plain";
 
 // R3 导出:格式由保存对话框返回的扩展名决定,前端只负责质量档位;
 // 默认 PNG(后端 lastFormat 默认 png),质量档位仅 JPEG/WebP 生效。
@@ -94,7 +94,7 @@ export function mountPreview(root: HTMLElement): () => void {
         <span class="mark" aria-hidden="true"></span>
         <span class="name">Cropmark</span>
       </div>
-      <p class="preview-note" role="status" data-drag-handle data-tauri-drag-region><span class="preview-note-text" data-note-text>${t("preview.note.loading")}</span></p>
+      <p class="preview-note is-feedback" role="status" data-drag-handle data-tauri-drag-region><span class="preview-note-text" data-note-text>${t("preview.note.loading")}</span></p>
       <button type="button" class="preview-close icon-btn" data-action="close" data-i18n-aria-label="preview.close" aria-label="关闭">${icons.close}</button>
     </header>
     <div class="preview-toolbar" data-preview-toolbar>
@@ -102,11 +102,11 @@ export function mountPreview(root: HTMLElement): () => void {
         <div class="preview-tools" role="toolbar" data-annotation-toolbar data-preview-group="draw" data-i18n-aria-label="preview.toolbar_group" aria-label="标注" data-tauri-drag-region="false"></div>
         <span class="preview-group-sep" data-preview-sep="draw" aria-hidden="true"></span>
         <div class="preview-action-group" data-preview-group="picture" data-tauri-drag-region="false">
-          <button type="button" class="preview-named" data-tool="ocr" hidden data-i18n-title="preview.action.ocr_title" data-i18n-aria-label="preview.action.ocr" aria-label="取字" data-tauri-drag-region="false">${icons.ocr}<span class="tool-label" data-i18n="preview.action.ocr">取字</span></button>
-          <button type="button" class="preview-named" data-tool="qr" hidden data-i18n-title="preview.action.qr_title" data-i18n-aria-label="preview.action.qr" aria-label="识别二维码" data-tauri-drag-region="false">${icons.qr}<span class="tool-label" data-i18n="preview.action.qr">识别二维码</span></button>
+          <button type="button" class="preview-named" data-tool="ocr" hidden aria-pressed="false" data-i18n-title="preview.action.ocr_title" data-i18n-aria-label="preview.action.ocr" aria-label="取字" data-tauri-drag-region="false">${icons.ocr}<span class="tool-label" data-i18n="preview.action.ocr">取字</span></button>
+          <button type="button" class="preview-named" data-tool="qr" hidden aria-pressed="false" data-i18n-title="preview.action.qr_title" data-i18n-aria-label="preview.action.qr" aria-label="识别二维码" data-tauri-drag-region="false">${icons.qr}<span class="tool-label" data-i18n="preview.action.qr">识别二维码</span></button>
           <button type="button" class="preview-named" data-action="rotate-left" data-i18n-title="preview.action.rotate_left_title" data-i18n-aria-label="preview.action.rotate_left" aria-label="左旋 90°" data-tauri-drag-region="false">${icons.rotateLeft}<span class="tool-label" data-i18n="preview.action.rotate_left">左旋 90°</span></button>
           <button type="button" class="preview-named" data-action="rotate-right" data-i18n-title="preview.action.rotate_right_title" data-i18n-aria-label="preview.action.rotate_right" aria-label="右旋 90°" data-tauri-drag-region="false">${icons.rotateRight}<span class="tool-label" data-i18n="preview.action.rotate_right">右旋 90°</span></button>
-          <button type="button" class="preview-named" data-action="crop" data-i18n-title="preview.action.crop_title" data-i18n-aria-label="preview.action.crop" aria-label="裁剪" data-tauri-drag-region="false">${icons.crop}<span class="tool-label" data-i18n="preview.action.crop">裁剪</span></button>
+          <button type="button" class="preview-named" data-action="crop" aria-pressed="false" data-i18n-title="preview.action.crop_title" data-i18n-aria-label="preview.action.crop" aria-label="裁剪" data-tauri-drag-region="false">${icons.crop}<span class="tool-label" data-i18n="preview.action.crop">裁剪</span></button>
           <button type="button" class="preview-named" data-action="capture-again" hidden data-i18n-title="preview.action.again_title" data-i18n-aria-label="preview.action.again" aria-label="再来一次" data-tauri-drag-region="false">${icons.redo}<span class="tool-label" data-i18n="preview.action.again">再来一次</span></button>
           <button type="button" class="preview-named" data-action="copy-ocr-all" hidden data-i18n-title="preview.action.copy_all" data-i18n-aria-label="preview.action.copy_all" aria-label="复制全部" data-tauri-drag-region="false">${icons.copy}<span class="tool-label" data-i18n="preview.action.copy_all">复制全部</span></button>
         </div>
@@ -133,7 +133,7 @@ export function mountPreview(root: HTMLElement): () => void {
       </div>
       <button type="button" class="primary preview-named" data-action="copy" data-i18n-title="preview.action.copy_title" data-tauri-drag-region="false">${icons.copy}<span data-i18n="preview.action.copy">复制</span></button>
       <div class="preview-overflow" data-preview-overflow hidden>
-        <button type="button" class="preview-named" data-action="preview-more" data-i18n-title="preview.tool.more_title" data-i18n-aria-label="preview.tool.more" aria-label="更多" aria-haspopup="menu" aria-expanded="false" data-tauri-drag-region="false">${icons.more}<span class="tool-label" data-i18n="preview.tool.more">更多</span></button>
+        <button type="button" class="preview-named" data-action="preview-more" data-i18n-title="preview.tool.more_title" data-i18n-aria-label="preview.tool.more" aria-label="更多" aria-haspopup="menu" aria-expanded="false" data-tauri-drag-region="false"><span class="preview-more-glyph" aria-hidden="true">${icons.more}</span><span class="tool-label" data-i18n="preview.tool.more">更多</span></button>
         <div class="preview-overflow-menu" data-preview-overflow-menu role="menu" hidden></div>
       </div>
     </div>
@@ -151,14 +151,18 @@ export function mountPreview(root: HTMLElement): () => void {
           <div class="preview-crop-bar" data-crop-bar hidden>
             <span class="preview-crop-hint" data-i18n="preview.crop.hint">${t("preview.crop.hint")}</span>
             <span class="preview-crop-size" data-crop-size></span>
-            <button type="button" data-crop-action="confirm" data-i18n="preview.crop.confirm">${t("preview.crop.confirm")}</button>
-            <button type="button" data-crop-action="cancel" data-i18n="preview.crop.cancel">${t("preview.crop.cancel")}</button>
+            <span class="preview-crop-confirm-wrap">
+              <button type="button" class="primary" data-crop-action="confirm" data-i18n="preview.crop.confirm">${t("preview.crop.confirm")}</button>
+            </span>
+            <span class="preview-crop-confirm-wrap">
+              <button type="button" data-crop-action="cancel" data-i18n="preview.crop.cancel">${t("preview.crop.cancel")}</button>
+            </span>
           </div>
         </div>
         <div class="preview-zoom" role="group" data-i18n-aria-label="preview.zoom.label">
           <span class="preview-dimensions" data-preview-dimensions aria-live="polite"></span>
-          <button type="button" data-preview-zoom="fit" aria-pressed="true" data-i18n="preview.zoom.fit">适应窗口</button>
-          <button type="button" data-preview-zoom="actual" aria-pressed="false" data-i18n-title="preview.zoom.actual">100%</button>
+          <button type="button" data-preview-zoom="fit" aria-pressed="true" data-i18n="preview.zoom.fit" data-i18n-title="preview.zoom.fit_title" data-i18n-aria-label="preview.zoom.fit_title">适应窗口</button>
+          <button type="button" data-preview-zoom="actual" aria-pressed="false" data-i18n-title="preview.zoom.actual" data-i18n-aria-label="preview.zoom.actual">100%</button>
         </div>
       </div>
     </div>
@@ -188,6 +192,7 @@ export function mountPreview(root: HTMLElement): () => void {
   const againBtn = root.querySelector("[data-action=capture-again]");
   const cropBar = root.querySelector("[data-crop-bar]");
   const cropSizeEl = root.querySelector("[data-crop-size]");
+  const cropHintEl = root.querySelector(".preview-crop-hint");
   const cropConfirmBtn = root.querySelector("[data-crop-action=confirm]");
   const cropCancelBtn = root.querySelector("[data-crop-action=cancel]");
   const pinBtn = root.querySelector("[data-action=pin]");
@@ -220,6 +225,7 @@ export function mountPreview(root: HTMLElement): () => void {
     !(againBtn instanceof HTMLButtonElement) ||
     !(cropBar instanceof HTMLElement) ||
     !(cropSizeEl instanceof HTMLElement) ||
+    !(cropHintEl instanceof HTMLElement) ||
     !(cropConfirmBtn instanceof HTMLButtonElement) ||
     !(cropCancelBtn instanceof HTMLButtonElement) ||
     !(pinBtn instanceof HTMLButtonElement) ||
@@ -327,9 +333,19 @@ export function mountPreview(root: HTMLElement): () => void {
       ctx.fillRect(rect.x + rect.width, rect.y, canvas.width - rect.x - rect.width, rect.height);
       ctx.fillRect(0, rect.y + rect.height, canvas.width, canvas.height - rect.y - rect.height);
       const line = Math.max(1, canvas.width / 900);
-      ctx.strokeStyle = cropEdgeColor;
+      const tooSmall = rect.width < MIN_CROP_EDGE || rect.height < MIN_CROP_EDGE;
+      ctx.strokeStyle = tooSmall
+        ? resolveCanvasColor(getComputedStyle(root).getPropertyValue("--danger"), "#b42318")
+        : cropEdgeColor;
       ctx.lineWidth = line;
-      ctx.strokeRect(rect.x + line / 2, rect.y + line / 2, rect.width - line, rect.height - line);
+      // 线宽大于选区时不要向内收成负宽，红边仍贴在裁剪框上。
+      const inset = Math.min(line / 2, rect.width / 2, rect.height / 2);
+      ctx.strokeRect(
+        rect.x + inset,
+        rect.y + inset,
+        Math.max(rect.width - inset * 2, 1),
+        Math.max(rect.height - inset * 2, 1),
+      );
     }
     ctx.restore();
   };
@@ -360,11 +376,38 @@ export function mountPreview(root: HTMLElement): () => void {
     if (noteKind === "error") {
       note.dataset.tooltip = text;
       note.dataset.tauriDragRegion = "false";
+      note.removeAttribute("title");
     } else {
       delete note.dataset.tooltip;
       note.dataset.tauriDragRegion = "";
+      syncNoteOverflowTitle();
     }
   };
+
+  // 标题栏提示是单行省略。拖动区上的系统提示经常不出现，截断时改用悬停气泡。
+  const syncNoteOverflowTitle = (): void => {
+    if (noteKind === "error") {
+      note.removeAttribute("title");
+      return;
+    }
+    const text = noteTextEl.textContent ?? "";
+    const truncated =
+      text.length > 0 &&
+      (note.scrollWidth > note.clientWidth + 1 ||
+        noteTextEl.scrollWidth > noteTextEl.clientWidth + 1);
+    note.removeAttribute("title");
+    if (truncated) {
+      note.dataset.tooltip = text;
+    } else {
+      delete note.dataset.tooltip;
+    }
+  };
+  const noteOverflowObserver = new ResizeObserver(() => {
+    syncNoteOverflowTitle();
+  });
+  noteOverflowObserver.observe(note);
+  // 保存或复制时转圈占掉一行宽度，提示盒本身不变宽。只观察外层会漏掉内层被挤出省略号的情况。
+  noteOverflowObserver.observe(noteTextEl);
 
   const setNoteSource = (
     source: { key: CatalogKey | null; params?: Record<string, string | number>; text: string },
@@ -450,13 +493,32 @@ export function mountPreview(root: HTMLElement): () => void {
   let ocrWasActive = false;
   let qrWasActive = false;
   let recognitionNoticeActive = false;
+  // 窄窗口会把开关收进菜单并改成 menuitemcheckbox。选中态两边都要写上。
+  const markPressed = (button: HTMLButtonElement, pressed: boolean): void => {
+    const value = pressed ? "true" : "false";
+    button.setAttribute("aria-pressed", value);
+    if (button.getAttribute("role") === "menuitemcheckbox") {
+      button.setAttribute("aria-checked", value);
+    }
+  };
   const syncRecognitionToolbar = (): void => {
     const ocrActive = ocrModel?.active === true;
     const qrActive = qrModel?.active === true;
     ocrLayout.sync(ocrActive);
     ocrBtn.classList.toggle("active", ocrActive);
     qrBtn.classList.toggle("active", qrActive);
-    copyAllBtn.hidden = !ocrActive || (ocrModel?.document()?.spans.length ?? 0) === 0;
+    markPressed(ocrBtn, ocrActive);
+    markPressed(qrBtn, qrActive);
+    const canCopyAll = ocrActive && (ocrModel?.document()?.spans.length ?? 0) > 0;
+    // 取字一开始就占位。识别完成、按钮从无到有时，工具条不再被挤开一格。
+    copyAllBtn.hidden = !ocrActive;
+    copyAllBtn.classList.toggle("is-reserved", ocrActive && !canCopyAll);
+    copyAllBtn.disabled = ocrActive && !canCopyAll;
+    if (ocrActive && !canCopyAll) {
+      copyAllBtn.setAttribute("aria-hidden", "true");
+    } else {
+      copyAllBtn.removeAttribute("aria-hidden");
+    }
     if (!ocrActive && !qrActive && (ocrWasActive || qrWasActive)) {
       editor?.setTool(editor.tool());
       if (recognitionNoticeActive) {
@@ -574,6 +636,28 @@ export function mountPreview(root: HTMLElement): () => void {
 
   let actualSize = false;
   let chromeLayoutKey = "";
+  const syncDimensions = (): void => {
+    const dimensions = root.querySelector("[data-preview-dimensions]");
+    if (!(dimensions instanceof HTMLElement)) {
+      return;
+    }
+    const text = frame
+      ? t("preview.zoom.dimensions", { width: frame.width, height: frame.height })
+      : "";
+    dimensions.textContent = text;
+    dimensions.removeAttribute("title");
+    if (!text) {
+      return;
+    }
+    requestAnimationFrame(() => {
+      if (dimensions.textContent !== text) {
+        return;
+      }
+      if (dimensions.scrollWidth > dimensions.clientWidth + 1) {
+        dimensions.title = text;
+      }
+    });
+  };
   const applyBeautifyChrome = (): void => {
     const pixelScale = 1 / Math.max(window.devicePixelRatio, 1);
     // clientWidth/clientHeight 会取整,在分数 DPI 下可能比实际空间大。
@@ -586,8 +670,7 @@ export function mountPreview(root: HTMLElement): () => void {
       return;
     }
     chromeLayoutKey = key;
-    const dimensions = root.querySelector("[data-preview-dimensions]");
-    if (dimensions) dimensions.textContent = frame ? `${frame.width} × ${frame.height}` : "";
+    syncDimensions();
     const availableWidth = Math.floor(viewport.width / pixelScale) * pixelScale;
     const availableHeight = Math.floor(viewport.height / pixelScale) * pixelScale;
     const displayScale = (width: number, height: number): number => actualSize
@@ -643,12 +726,63 @@ export function mountPreview(root: HTMLElement): () => void {
     });
   });
 
+  // 「保存 · 中」比「保存 · 高」宽。先按最宽的质量档留宽，切换时工具条不再被撑开。
+  const reserveSaveWidth = (): void => {
+    const saveBtn = root.querySelector<HTMLButtonElement>("[data-action=save]");
+    const parent = saveBtn?.parentElement ?? null;
+    if (!saveBtn || !parent || saveBtn.getClientRects().length === 0) {
+      return;
+    }
+    const probe = saveBtn.cloneNode(true);
+    if (!(probe instanceof HTMLButtonElement)) {
+      return;
+    }
+    const probeLabel = probe.querySelector("span");
+    if (!probeLabel) {
+      return;
+    }
+    probe.style.position = "absolute";
+    probe.style.visibility = "hidden";
+    probe.style.pointerEvents = "none";
+    probe.style.minWidth = "0";
+    probe.style.width = "auto";
+    probe.style.whiteSpace = "nowrap";
+    parent.append(probe);
+    let widest = 0;
+    for (const item of SAVE_QUALITIES) {
+      probeLabel.textContent = t("preview.action.save_with_quality", {
+        quality: t(item.labelKey),
+      });
+      widest = Math.max(widest, probe.getBoundingClientRect().width);
+    }
+    probe.remove();
+    if (widest <= 0) {
+      return;
+    }
+    const next = `${Math.ceil(widest)}px`;
+    if (saveBtn.style.minWidth !== next) {
+      saveBtn.style.minWidth = next;
+      requestOverflowLayout();
+    }
+  };
+
   const syncSaveQuality = (): void => {
+    const option = SAVE_QUALITIES.find((item) => item.value === saveQuality);
     saveQualityRoot.querySelectorAll<HTMLButtonElement>("[data-save-quality]").forEach((button) => {
       const selected = button.dataset.saveQuality === saveQuality;
       button.classList.toggle("active", selected);
       button.setAttribute("aria-checked", String(selected));
     });
+    const saveLabel = root.querySelector("[data-action=save] span");
+    if (saveLabel && option) {
+      saveLabel.textContent = t("preview.action.save_with_quality", { quality: t(option.labelKey) });
+    }
+    if (saveQualityToggle instanceof HTMLButtonElement && option) {
+      const tip = t("preview.quality.current", { quality: t(option.titleKey) });
+      saveQualityToggle.dataset.tooltip = tip;
+      saveQualityToggle.setAttribute("aria-label", tip);
+    }
+    reserveSaveWidth();
   };
 
   const toggleQualityPanel = (open?: boolean, restoreFocus = false): void => {
@@ -658,6 +792,8 @@ export function mountPreview(root: HTMLElement): () => void {
       // 重开先回 CSS 锚点(右锚)再钳制,与更多/样式面板同一套边界语义。
       saveQualityPanel.style.left = "";
       saveQualityPanel.style.right = "";
+      saveQualityPanel.style.top = "";
+      saveQualityPanel.style.bottom = "";
     }
     saveQualityPanel.hidden = !next;
     saveQualityToggle.classList.toggle("active", next);
@@ -754,6 +890,8 @@ export function mountPreview(root: HTMLElement): () => void {
         setNote(message, "success");
       } else if (kind === "error") {
         setNote(message, "error");
+      } else if (kind === "empty") {
+        setNote(message, "plain");
       } else {
         setNote(message);
       }
@@ -771,6 +909,8 @@ export function mountPreview(root: HTMLElement): () => void {
         setNote(message, "success");
       } else if (kind === "error") {
         setNote(message, "error");
+      } else if (kind === "empty") {
+        setNote(message, "plain");
       } else {
         setNote(message);
       }
@@ -889,7 +1029,9 @@ export function mountPreview(root: HTMLElement): () => void {
     overflowToggle.setAttribute("aria-expanded", next ? "true" : "false");
     if (next) {
       placeOverflowMenu();
-      const first = overflowMenu.querySelector<HTMLElement>("button:not([hidden])");
+      const first = overflowMenu.querySelector<HTMLElement>(
+        "button:not([hidden]):not(:disabled):not(.is-reserved)",
+      );
       first?.focus();
     } else if (restoreFocus || hadFocus) {
       overflowToggle.focus();
@@ -903,7 +1045,9 @@ export function mountPreview(root: HTMLElement): () => void {
       return;
     }
     const items = Array.from(
-      overflowMenu.querySelectorAll<HTMLElement>("button:not([hidden]):not(:disabled)"),
+      overflowMenu.querySelectorAll<HTMLElement>(
+        "button:not([hidden]):not(:disabled):not(.is-reserved)",
+      ),
     );
     if (items.length === 0) {
       return;
@@ -941,6 +1085,8 @@ export function mountPreview(root: HTMLElement): () => void {
       for (const item of tools) {
         // 回到主行即恢复普通按钮语义;仅在溢出菜单内才是 menuitem。
         item.node.removeAttribute("role");
+        item.node.removeAttribute("aria-checked");
+        item.node.removeAttribute("title");
         toolbarEl.insertBefore(item.node, moreHome);
       }
     }
@@ -948,6 +1094,8 @@ export function mountPreview(root: HTMLElement): () => void {
       const home = kind === "tail" ? toolbarEl : kind === "picture" ? pictureGroup : outputGroup;
       for (const item of overflowItems.filter((entry) => entry.kind === kind).sort((a, b) => a.order - b.order)) {
         item.node.removeAttribute("role");
+        item.node.removeAttribute("aria-checked");
+        item.node.removeAttribute("title");
         home.append(item.node);
       }
     }
@@ -985,7 +1133,18 @@ export function mountPreview(root: HTMLElement): () => void {
       }
       moved.sort((a, b) => a.order - b.order);
       for (const item of moved) {
-        item.node.setAttribute("role", "menuitem");
+        const pressed = item.node.getAttribute("aria-pressed");
+        if (pressed === "true" || pressed === "false") {
+          item.node.setAttribute("role", "menuitemcheckbox");
+          item.node.setAttribute("aria-checked", pressed);
+        } else {
+          item.node.setAttribute("role", "menuitem");
+        }
+        // 菜单 overflow 会裁掉自绘气泡。快捷键说明改走系统提示，回到主行再交给气泡。
+        const tip = item.node.dataset.tooltip;
+        if (tip) {
+          item.node.title = tip;
+        }
       }
       overflowMenu.append(...moved.map((item) => item.node));
       if (moved.length === 0) {
@@ -996,6 +1155,21 @@ export function mountPreview(root: HTMLElement): () => void {
     overflowMenu.hidden = !menuOpen;
     overflowToggle.classList.toggle("active", menuOpen || overflowMenu.querySelector(".active") !== null);
     overflowToggle.setAttribute("aria-expanded", menuOpen ? "true" : "false");
+    const activeTool = overflowMenu.querySelector<HTMLButtonElement>("[data-tool].active");
+    const glyph = overflowToggle.querySelector(".preview-more-glyph");
+    if (glyph) {
+      const svg = activeTool?.querySelector("svg");
+      glyph.innerHTML = svg ? svg.outerHTML : icons.more;
+    }
+    const toolName = activeTool?.querySelector(".tool-label")?.textContent?.trim() ?? "";
+    if (activeTool && toolName.length > 0) {
+      const tip = t("preview.tool.more_current", { tool: toolName });
+      overflowToggle.dataset.tooltip = tip;
+      overflowToggle.setAttribute("aria-label", tip);
+    } else {
+      overflowToggle.dataset.tooltip = t("preview.tool.more_title");
+      overflowToggle.setAttribute("aria-label", t("preview.tool.more"));
+    }
     if (menuOpen) {
       placeOverflowMenu();
     }
@@ -1066,6 +1240,7 @@ export function mountPreview(root: HTMLElement): () => void {
     editor?.commitText();
     editor?.deactivateTool();
     editor?.clearSelection();
+    editor?.dismissChrome();
     ocrModel?.activate();
   };
 
@@ -1077,6 +1252,7 @@ export function mountPreview(root: HTMLElement): () => void {
     editor?.commitText();
     editor?.deactivateTool();
     editor?.clearSelection();
+    editor?.dismissChrome();
     qrModel?.activate();
   };
 
@@ -1089,13 +1265,25 @@ export function mountPreview(root: HTMLElement): () => void {
     reason: CatalogKey | null,
     params?: Record<string, string | number>,
   ): void => {
+    const parent = button.parentElement;
+    const host =
+      parent instanceof HTMLElement && parent.classList.contains("preview-crop-confirm-wrap")
+        ? parent
+        : button;
     if (reason === null) {
       const titleKey = button.dataset.i18nTitle as CatalogKey | undefined;
+      if (host !== button) {
+        delete host.dataset.tooltip;
+      }
       if (titleKey) {
         button.dataset.tooltip = t(titleKey);
       } else {
         delete button.dataset.tooltip;
       }
+    } else if (host !== button) {
+      // 禁用按钮收不到悬停。原因挂在外层，指针落在置灰的确认上也能读到。
+      delete button.dataset.tooltip;
+      host.dataset.tooltip = t(reason, params);
     } else {
       button.dataset.tooltip = t(reason, params);
     }
@@ -1107,35 +1295,233 @@ export function mountPreview(root: HTMLElement): () => void {
 
   // 裁剪模式的界面状态:松开仅暂存选区,确认按钮/Enter 提交,处理期间禁止重复操作。
   // 拖选全程同步尺寸徽标;确认按钮按最小边长诚实置灰,不足时悬停可读原因。
+  // 拖过最小边长时说明从操作提示换成「至少 N 像素」。两句长短不同，确认条会
+  // 变宽变高，按钮在光标底下挪开。按更宽的那句留宽，再按当前实际宽度留高。
+  const cropHintWidthByLang = new Map<string, number>();
+  const cropHintHeightByBox = new Map<string, number>();
+  let cropHintStageWidth = -1;
+  const reserveCropHint = (): void => {
+    if (cropHintEl.getClientRects().length === 0) {
+      return;
+    }
+    const lang = currentLanguage();
+    const stageWidth = stageEl.clientWidth;
+    if (
+      cropHintWidthByLang.has(lang) &&
+      cropHintStageWidth === stageWidth &&
+      cropHintEl.style.minWidth !== "" &&
+      cropHintEl.style.minHeight !== ""
+    ) {
+      return;
+    }
+    cropHintStageWidth = stageWidth;
+    let widthPx = cropHintWidthByLang.get(lang);
+    if (widthPx === undefined) {
+      const probe = document.createElement("span");
+      probe.className = "preview-crop-hint";
+      probe.style.position = "absolute";
+      probe.style.visibility = "hidden";
+      probe.style.pointerEvents = "none";
+      probe.style.width = "max-content";
+      probe.style.maxWidth = "none";
+      probe.style.minWidth = "0";
+      probe.style.height = "auto";
+      probe.style.minHeight = "0";
+      probe.style.whiteSpace = "nowrap";
+      root.append(probe);
+      const texts: Array<{ text: string; bold: boolean }> = [
+        { text: t("preview.crop.hint"), bold: false },
+        { text: t("preview.crop.too_small", { detail: MIN_CROP_EDGE }), bold: true },
+      ];
+      let widest = 0;
+      for (const item of texts) {
+        probe.classList.toggle("is-too-small", item.bold);
+        probe.textContent = item.text;
+        widest = Math.max(widest, probe.getBoundingClientRect().width);
+      }
+      probe.remove();
+      const maxWidth = Number.parseFloat(getComputedStyle(cropHintEl).maxWidth);
+      const capped = Number.isFinite(maxWidth) && maxWidth > 0 ? Math.min(widest, maxWidth) : widest;
+      widthPx = Math.ceil(capped);
+      if (widthPx <= 0) {
+        return;
+      }
+      cropHintWidthByLang.set(lang, widthPx);
+    }
+    cropHintEl.style.minWidth = `min(${widthPx}px, 100%)`;
+    const boxWidth = cropHintEl.clientWidth;
+    if (boxWidth <= 0) {
+      return;
+    }
+    const heightKey = `${lang}:${boxWidth}`;
+    let heightPx = cropHintHeightByBox.get(heightKey);
+    if (heightPx === undefined) {
+      const probe = document.createElement("span");
+      probe.className = "preview-crop-hint";
+      probe.style.position = "absolute";
+      probe.style.visibility = "hidden";
+      probe.style.pointerEvents = "none";
+      probe.style.width = `${boxWidth}px`;
+      probe.style.maxWidth = "none";
+      probe.style.minWidth = "0";
+      probe.style.height = "auto";
+      probe.style.minHeight = "0";
+      probe.style.whiteSpace = "normal";
+      root.append(probe);
+      const texts: Array<{ text: string; bold: boolean }> = [
+        { text: t("preview.crop.hint"), bold: false },
+        { text: t("preview.crop.too_small", { detail: MIN_CROP_EDGE }), bold: true },
+      ];
+      let tallest = 0;
+      for (const item of texts) {
+        probe.classList.toggle("is-too-small", item.bold);
+        probe.textContent = item.text;
+        tallest = Math.max(tallest, probe.getBoundingClientRect().height);
+      }
+      probe.remove();
+      heightPx = Math.ceil(tallest);
+      if (heightPx <= 0) {
+        return;
+      }
+      cropHintHeightByBox.set(heightKey, heightPx);
+    }
+    cropHintEl.style.minHeight = `${heightPx}px`;
+  };
+
+  // 拖选时尺寸从「8 × 8」涨到整图。位数变多会把确认和取消往旁边顶。
+  // 整图尺寸是这次裁剪的上限，按它留宽，拖的过程中按钮不再跟着数字挪。
+  const cropSizeWidthCache = new Map<string, number>();
+  const reserveCropSize = (): void => {
+    if (canvas.width <= 0 || canvas.height <= 0 || cropSizeEl.getClientRects().length === 0) {
+      return;
+    }
+    const key = `${currentLanguage()}:${canvas.width}x${canvas.height}`;
+    let widthPx = cropSizeWidthCache.get(key);
+    if (widthPx === undefined) {
+      const probe = document.createElement("span");
+      probe.className = "preview-crop-size";
+      probe.style.position = "absolute";
+      probe.style.visibility = "hidden";
+      probe.style.pointerEvents = "none";
+      probe.style.width = "max-content";
+      probe.style.maxWidth = "none";
+      probe.style.minWidth = "0";
+      probe.style.whiteSpace = "nowrap";
+      probe.textContent = t("preview.zoom.dimensions", {
+        width: canvas.width,
+        height: canvas.height,
+      });
+      root.append(probe);
+      widthPx = Math.ceil(probe.getBoundingClientRect().width);
+      probe.remove();
+      if (widthPx <= 0) {
+        return;
+      }
+      cropSizeWidthCache.set(key, widthPx);
+    }
+    const next = `min(${widthPx}px, 100%)`;
+    if (cropSizeEl.style.minWidth !== next) {
+      cropSizeEl.style.minWidth = next;
+    }
+  };
+
   const syncCropUi = (): void => {
     cropBar.hidden = !cropping;
     cropBtn.classList.toggle("active", cropping);
-    rotateLeftBtn.disabled = cropping || recordingContent || busy;
-    rotateRightBtn.disabled = cropping || recordingContent || busy;
-    cropBtn.disabled = recordingContent || busy;
+    markPressed(cropBtn, cropping);
+    // 裁剪中不要真正 disabled：禁用按钮收不到悬停，转不动的原因就出不来。
+    // 和工具条上其它按钮一样，用后面的 aria-disabled 拦住点击并挂上说明。
+    rotateLeftBtn.disabled = busy;
+    rotateRightBtn.disabled = busy;
+    cropBtn.disabled = busy;
+    // 录制内容不能旋转/裁剪。用 aria-disabled 而不是 disabled：禁用按钮收不到悬停，
+    // 原因提示要能出现在工具条和溢出菜单里。
+    const recordingLocked = recordingContent && !cropping;
+    for (const button of [rotateLeftBtn, rotateRightBtn, cropBtn]) {
+      if (recordingLocked && !button.disabled) {
+        button.setAttribute("aria-disabled", "true");
+      } else if (!cropLockedButtons.includes(button)) {
+        button.removeAttribute("aria-disabled");
+      }
+    }
     // 裁剪与关闭保持可用;裁剪确认条不在工具条内,自身按钮不受影响。
     // 溢出菜单里的按钮是同一批节点移动,同样命中。根级 click 守卫仍兜底。
     const mutexButtons = root.querySelectorAll<HTMLButtonElement>(
       '.preview-toolbar button:not([data-action="crop"]):not([data-action="close"])',
     );
+    const restoreToolbarTip = (button: HTMLButtonElement): void => {
+      const titleKey = button.dataset.i18nTitle as CatalogKey | undefined;
+      if (titleKey) {
+        button.dataset.tooltip = t(titleKey);
+      } else {
+        delete button.dataset.tooltip;
+      }
+      if (overflowMenu.contains(button)) {
+        const tip = button.dataset.tooltip;
+        if (tip) {
+          button.title = tip;
+        } else {
+          button.removeAttribute("title");
+        }
+      } else {
+        button.removeAttribute("title");
+      }
+    };
+    const showCropLock = (button: HTMLButtonElement): void => {
+      const reason = t("preview.crop.toolbar_locked");
+      button.dataset.cropLock = "true";
+      button.setAttribute("aria-disabled", "true");
+      button.dataset.tooltip = reason;
+      if (overflowMenu.contains(button)) {
+        button.title = reason;
+      } else {
+        button.removeAttribute("title");
+      }
+    };
     if (cropping) {
       mutexButtons.forEach((button) => {
-        if (!button.disabled) {
-          button.disabled = true;
-          cropLockedButtons.push(button);
+        if (button.disabled || cropLockedButtons.includes(button)) {
+          return;
         }
+        cropLockedButtons.push(button);
       });
     } else if (cropLockedButtons.length > 0) {
       for (const button of cropLockedButtons) {
-        button.disabled = false;
+        delete button.dataset.cropLock;
+        button.removeAttribute("aria-disabled");
+        restoreToolbarTip(button);
       }
       cropLockedButtons = [];
     }
     const rect = cropRect();
     const cropReady =
       rect !== null && rect.width >= MIN_CROP_EDGE && rect.height >= MIN_CROP_EDGE;
-    cropSizeEl.textContent =
-      rect === null ? "" : t("overlay.size_format", { width: rect.width, height: rect.height });
+    const cropSizeText =
+      rect === null ? "" : t("preview.zoom.dimensions", { width: rect.width, height: rect.height });
+    cropSizeEl.textContent = cropSizeText;
+    cropSizeEl.removeAttribute("title");
+    if (cropSizeText) {
+      requestAnimationFrame(() => {
+        if (cropSizeEl.textContent !== cropSizeText) {
+          return;
+        }
+        if (cropSizeEl.scrollWidth > cropSizeEl.clientWidth + 1) {
+          cropSizeEl.title = cropSizeText;
+        }
+      });
+    }
+    const tooSmall = rect !== null && !cropReady;
+    cropSizeEl.classList.toggle("is-too-small", tooSmall);
+    cropHintEl.classList.toggle("is-too-small", tooSmall);
+    if (tooSmall) {
+      cropHintEl.dataset.i18n = "preview.crop.too_small";
+      cropHintEl.dataset.i18nParams = JSON.stringify({ detail: MIN_CROP_EDGE });
+      cropHintEl.textContent = t("preview.crop.too_small", { detail: MIN_CROP_EDGE });
+    } else if (cropHintEl.dataset.i18n !== "preview.crop.hint") {
+      delete cropHintEl.dataset.i18nParams;
+      cropHintEl.dataset.i18n = "preview.crop.hint";
+      cropHintEl.textContent = t("preview.crop.hint");
+    }
     cropConfirmBtn.disabled = busy || !cropReady;
     setDisabledReason(
       cropConfirmBtn,
@@ -1150,14 +1536,20 @@ export function mountPreview(root: HTMLElement): () => void {
     );
     cropCancelBtn.disabled = busy;
     setDisabledReason(cropCancelBtn, busy ? "preview.crop.disabled_busy" : null);
-    // 录制内容不支持旋转/裁剪;裁剪中禁用旋转属模式互斥,无需原因词条。
+    // 录制内容不支持旋转/裁剪。裁剪中的其它按钮在后面单独写原因。
     const transformReason: CatalogKey | null = recordingContent
       ? "preview.action.recording_disabled"
       : null;
     setDisabledReason(rotateLeftBtn, transformReason);
     setDisabledReason(rotateRightBtn, transformReason);
     setDisabledReason(cropBtn, transformReason);
+    // 裁剪中其它工具保持可悬停，原因写在按钮上。真正 disabled 时提示不会出现。
+    for (const button of cropLockedButtons) {
+      showCropLock(button);
+    }
     if (cropping) {
+      reserveCropHint();
+      reserveCropSize();
       placeCropBar();
     } else {
       clearCropBarPlacement();
@@ -1170,6 +1562,8 @@ export function mountPreview(root: HTMLElement): () => void {
     root.setAttribute("aria-busy", String(active));
     root.classList.toggle("is-loading", loading);
     root.classList.toggle("is-working", busy);
+    // 画面没载入时工具条仍是 inert，但外观和正常工具条一样。标成不可用，避免点了没反应。
+    root.classList.toggle("is-unavailable", source === null && !loading);
     const toolbar = root.querySelector<HTMLElement>("[data-preview-toolbar]");
     if (toolbar) toolbar.inert = active || !source;
     note.classList.toggle("is-progress", active);
@@ -1210,6 +1604,7 @@ export function mountPreview(root: HTMLElement): () => void {
     editor?.commitText();
     editor?.deactivateTool();
     editor?.clearSelection();
+    editor?.dismissChrome();
     syncCropUi();
     setNoteKey("preview.crop.hint");
     redraw();
@@ -1217,18 +1612,62 @@ export function mountPreview(root: HTMLElement): () => void {
 
   const copyBtn = root.querySelector<HTMLButtonElement>("[data-action=copy]");
   let copyReset = 0;
+  const setCopyIcon = (copied: boolean): void => {
+    if (!(copyBtn instanceof HTMLButtonElement)) {
+      return;
+    }
+    const icon = copyBtn.querySelector("svg");
+    if (icon) {
+      icon.outerHTML = copied ? icons.check : icons.copy;
+    }
+  };
+  // 「复制」和「已复制」宽度不同。先按更宽的那句留出位置，成功时工具条不再被撑开。
+  const reserveCopyWidth = (): void => {
+    if (!(copyBtn instanceof HTMLButtonElement) || !copyBtn.isConnected) {
+      return;
+    }
+    const parent = copyBtn.parentElement;
+    const probe = copyBtn.cloneNode(true);
+    if (!parent || !(probe instanceof HTMLButtonElement)) {
+      return;
+    }
+    const probeLabel = probe.querySelector("span");
+    if (!probeLabel) {
+      return;
+    }
+    probe.style.position = "absolute";
+    probe.style.visibility = "hidden";
+    probe.style.pointerEvents = "none";
+    probe.style.minWidth = "0";
+    probe.style.width = "auto";
+    parent.append(probe);
+    let widest = 0;
+    for (const text of [t("preview.action.copy"), t("preview.action.copied")]) {
+      probeLabel.textContent = text;
+      widest = Math.max(widest, probe.getBoundingClientRect().width);
+    }
+    probe.remove();
+    if (widest > 0) {
+      copyBtn.style.minWidth = `${Math.ceil(widest)}px`;
+    }
+  };
+
   const flashCopiedButton = (): void => {
     if (!(copyBtn instanceof HTMLButtonElement)) {
       return;
     }
+    reserveCopyWidth();
     copyBtn.classList.add("is-copied");
     const label = copyBtn.querySelector("span");
     if (label) {
       label.textContent = t("preview.action.copied");
     }
+    copyBtn.dataset.tooltip = t("preview.action.copied");
+    setCopyIcon(true);
     window.clearTimeout(copyReset);
     copyReset = window.setTimeout(() => {
       copyBtn.classList.remove("is-copied");
+      setCopyIcon(false);
       applyTranslations(copyBtn);
     }, BUTTON_FLASH_MS);
   };
@@ -1242,7 +1681,7 @@ export function mountPreview(root: HTMLElement): () => void {
   const copy = async (): Promise<void> => {
     if (!source) return;
     if (busy || loading) {
-      setNoteKey("preview.note.busy");
+      pulseNote();
       return;
     }
     editor?.commitText();
@@ -1269,7 +1708,7 @@ export function mountPreview(root: HTMLElement): () => void {
   const save = async (): Promise<void> => {
     if (!source) return;
     if (busy || loading) {
-      setNoteKey("preview.note.busy");
+      pulseNote();
       return;
     }
     editor?.commitText();
@@ -1290,8 +1729,8 @@ export function mountPreview(root: HTMLElement): () => void {
         const name = fileNameFromPath(result.path) ?? `cropmark.${format === "jpeg" ? "jpg" : format}`;
         setNoteKey("preview.note.saved", { name }, "success");
       } else {
-        // 保存对话框取消(saved=false)不是错误,也要给可见反馈。
-        setNoteKey("preview.note.save_canceled");
+        // 保存对话框取消(saved=false)不是错误,也不是下一步用法说明。正文色，和成功、失败分开。
+        setNoteKey("preview.note.save_canceled", undefined, "plain");
       }
     } catch (error) {
       setNote(invokeError(error, t("preview.error.save_fallback")), "error");
@@ -1322,7 +1761,7 @@ export function mountPreview(root: HTMLElement): () => void {
   const pin = async (): Promise<void> => {
     if (busy || loading || cropping) {
       if (busy || loading) {
-        setNoteKey("preview.note.busy");
+        pulseNote();
       }
       return;
     }
@@ -1460,7 +1899,7 @@ export function mountPreview(root: HTMLElement): () => void {
 
   root.addEventListener("click", (event) => {
     const button = event.target instanceof Element ? event.target.closest("button") : null;
-    if (!(button instanceof HTMLButtonElement)) {
+    if (!(button instanceof HTMLButtonElement) || button.getAttribute("aria-disabled") === "true") {
       return;
     }
     if (button.dataset.action === "retry-preview") {
@@ -1720,17 +2159,19 @@ export function mountPreview(root: HTMLElement): () => void {
       void pin();
       return;
     }
-    if (key === "v" && !cropBtn.hidden && !cropBtn.disabled) {
+    const keyReady = (button: HTMLButtonElement): boolean =>
+      !button.hidden && !button.disabled && button.getAttribute("aria-disabled") !== "true";
+    if (key === "v" && keyReady(cropBtn)) {
       event.preventDefault();
       enterCrop();
       return;
     }
-    if (key === "," && !rotateLeftBtn.hidden && !rotateLeftBtn.disabled) {
+    if (key === "," && keyReady(rotateLeftBtn)) {
       event.preventDefault();
       void rotate("left");
       return;
     }
-    if (key === "." && !rotateRightBtn.hidden && !rotateRightBtn.disabled) {
+    if (key === "." && keyReady(rotateRightBtn)) {
       event.preventDefault();
       void rotate("right");
       return;
@@ -1821,6 +2262,7 @@ export function mountPreview(root: HTMLElement): () => void {
     const loadSpinner = root.querySelector<HTMLElement>("[data-load-spinner]")!;
     const loadRetry = root.querySelector<HTMLButtonElement>("[data-action=retry-preview]")!;
     loadState.hidden = false;
+    loadState.classList.remove("is-error");
     loadLabel.dataset.i18n = "preview.note.loading";
     loadLabel.textContent = t("preview.note.loading");
     loadSpinner.hidden = false;
@@ -1833,10 +2275,19 @@ export function mountPreview(root: HTMLElement): () => void {
       }
       loading = false;
       loadState.hidden = !failed;
+      loadState.classList.toggle("is-error", failed);
       loadSpinner.hidden = true;
       loadRetry.hidden = !failed;
-      loadLabel.dataset.i18n = "preview.note.image_failed";
-      loadLabel.textContent = t("preview.note.image_failed");
+      if (failed) {
+        loadLabel.dataset.i18n = "preview.note.image_failed";
+        loadLabel.textContent = t("preview.note.image_failed");
+        // 失败时重试是画面中央的唯一恢复动作。焦点放上去，Enter 就能再载入。
+        queueMicrotask(() => {
+          if (generation === previewLoad && !loadRetry.hidden) {
+            loadRetry.focus();
+          }
+        });
+      }
       syncActivity();
     };
     // R6:新帧对应新坐标系,变换历史与裁剪模式一并复位。
@@ -2078,7 +2529,7 @@ export function mountPreview(root: HTMLElement): () => void {
     feedbackKey: CatalogKey,
   ): Promise<void> => {
     if (busy || loading) {
-      setNoteKey("preview.note.busy");
+      pulseNote();
       return;
     }
     if (!frame) {
@@ -2221,13 +2672,48 @@ export function mountPreview(root: HTMLElement): () => void {
   };
 
   syncSaveQuality();
+  reserveCopyWidth();
+  void document.fonts.ready.then(() => {
+    if (!root.isConnected) {
+      return;
+    }
+    if (copyBtn instanceof HTMLButtonElement) {
+      reserveCopyWidth();
+    }
+    reserveSaveWidth();
+    cropHintWidthByLang.clear();
+    cropHintHeightByBox.clear();
+    cropHintStageWidth = -1;
+    cropSizeWidthCache.clear();
+    if (!cropBar.hidden) {
+      reserveCropHint();
+      reserveCropSize();
+    }
+  });
   return () => {
     refreshOptionLabels();
+    syncSaveQuality();
+    reserveCopyWidth();
     renderNote();
     // R2:禁用原因词条随语言切换重渲染。
     syncCropUi();
+    syncDimensions();
     placeCropBar();
+    const ocrDivider = root.querySelector(".preview-ocr-divider");
+    if (ocrDivider instanceof HTMLElement) {
+      const resizeLabel = t("preview.ocr_panel.resize");
+      ocrDivider.setAttribute("aria-label", resizeLabel);
+      ocrDivider.title = resizeLabel;
+    }
     requestOverflowLayout();
+    if (copyBtn instanceof HTMLButtonElement && copyBtn.classList.contains("is-copied")) {
+      const copiedLabel = copyBtn.querySelector("span");
+      if (copiedLabel) {
+        copiedLabel.textContent = t("preview.action.copied");
+      }
+      copyBtn.dataset.tooltip = t("preview.action.copied");
+      setCopyIcon(true);
+    }
   };
 }
 

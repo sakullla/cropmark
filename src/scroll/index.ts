@@ -87,6 +87,7 @@ export function mountScroll(root: HTMLElement): () => void {
         <div class="scroll-head">
           <span class="scroll-title" data-i18n="scroll.title"></span>
           <span class="scroll-size"></span>
+          <span class="scroll-appended" hidden></span>
         </div>
         <div class="scroll-axis" role="radiogroup" data-i18n-aria-label="scroll.axis.label">
           <button type="button" class="scroll-axis-option" role="radio" data-axis="vertical" data-i18n="scroll.axis.vertical" aria-checked="true" tabindex="0"></button>
@@ -108,7 +109,9 @@ export function mountScroll(root: HTMLElement): () => void {
   const status = root.querySelector(".scroll-status");
   const statusText = root.querySelector(".scroll-status-text");
   const statusSpinner = root.querySelector(".scroll-status .progress");
+  const title = root.querySelector(".scroll-title");
   const size = root.querySelector(".scroll-size");
+  const appended = root.querySelector(".scroll-appended");
   const hint = root.querySelector(".scroll-hint");
   const lock = root.querySelector(".scroll-lock");
   const undoEmptyNote = root.querySelector(".scroll-undo-empty");
@@ -125,7 +128,9 @@ export function mountScroll(root: HTMLElement): () => void {
     !(status instanceof HTMLElement) ||
     !(statusText instanceof HTMLElement) ||
     !(statusSpinner instanceof HTMLElement) ||
+    !(title instanceof HTMLElement) ||
     !(size instanceof HTMLElement) ||
+    !(appended instanceof HTMLElement) ||
     !(hint instanceof HTMLElement) ||
     !(lock instanceof HTMLElement) ||
     !(undoEmptyNote instanceof HTMLElement) ||
@@ -147,6 +152,36 @@ export function mountScroll(root: HTMLElement): () => void {
   // 控制窗就绪信号每次会话只发一次;Rust 侧据此才开始 Windows 自动滚动计时,
   // 保证首个自动 nudge 不会在方向按钮可交互前制造首个内容变化(横向被锁死)。
   let readySent = false;
+
+  // 卡片会裁掉 CSS 气泡。范围或标题被省略时，用原生 title 给出整句。
+  const syncClipTitle = (element: HTMLElement): void => {
+    if (element.hidden) {
+      element.removeAttribute("title");
+      return;
+    }
+    const text = element.textContent ?? "";
+    if (!text || element.clientWidth <= 0) {
+      element.removeAttribute("title");
+      return;
+    }
+    if (element.scrollWidth > element.clientWidth + 1) {
+      if (element.title !== text) {
+        element.title = text;
+      }
+    } else if (element.hasAttribute("title")) {
+      element.removeAttribute("title");
+    }
+  };
+  const syncClipTitles = (): void => {
+    syncClipTitle(title);
+    syncClipTitle(size);
+    syncClipTitle(appended);
+  };
+  const head = title.parentElement;
+  if (head) {
+    const clipObserver = new ResizeObserver(() => syncClipTitles());
+    clipObserver.observe(head);
+  }
 
   const axisOf = (payload: ScrollStatus | null): CaptureAxis => payload?.axis ?? "vertical";
   /** 显式开始后方向锁定(与 Rust `axis_switch_allowed` 同口径)。 */
@@ -181,28 +216,39 @@ export function mountScroll(root: HTMLElement): () => void {
     const finishing = last?.state === "finishing";
     statusSpinner.hidden = !finishing;
     if (!last) {
-      status.classList.remove("is-error");
+      status.classList.remove("is-error", "is-attention");
       // 首帧(last 未知)不预写「就绪」文案:此刻开始按钮还不存在,等
       // get_scroll_status 返回后自洽呈现,不再指示用户去点不存在的按钮。
       setTextIfChanged(statusText, "");
       setTextIfChanged(size, "");
+      appended.hidden = true;
+      setTextIfChanged(appended, "");
     } else {
       status.classList.toggle("is-error", last.state === "failed");
+      // 画面没动、滚太快、对不上帧都要用户动手。和「正在滚动」的正文色分开，失败仍用危险色。
+      status.classList.toggle(
+        "is-attention",
+        last.state === "unchanged" || last.state === "fast" || last.state === "no_match",
+      );
       setTextIfChanged(
         statusText,
         finishing
           ? t("scroll.status.finishing_segments", { count: last.segmentCount })
           : t(statusKey(last.state, last.axis)),
       );
-      // 尺寸一直显示：这就是正在截的那一块，滚动后沿轴变长。
-      const parts = [t("scroll.watching", { width: last.width, height: last.height })];
+      // 范围和加长像素分开。加长数字单独占住右侧，位数变长时不再把状态说明顶到下一行。
+      setTextIfChanged(size, t("scroll.watching", { width: last.width, height: last.height }));
       if (last.appended > 0) {
         const appendedKey: CatalogKey =
           last.axis === "horizontal" ? "scroll.appended.horizontal" : "scroll.appended";
-        parts.push(t(appendedKey, { count: last.appended }));
+        appended.hidden = false;
+        setTextIfChanged(appended, t(appendedKey, { count: last.appended }));
+      } else {
+        appended.hidden = true;
+        setTextIfChanged(appended, "");
       }
-      setTextIfChanged(size, parts.join(" · "));
     }
+    syncClipTitles();
     // 开始按钮只在就绪态出现;开始后被开始信号接管,不保留入口。
     start.hidden = !ready;
     start.disabled = actionBusy;
@@ -219,7 +265,11 @@ export function mountScroll(root: HTMLElement): () => void {
     const busy = actionBusy || last?.state === "finishing";
     card.setAttribute("aria-busy", String(busy));
     finish.disabled = busy || !last;
+    finish.classList.toggle("is-secondary", ready);
     cancel.disabled = busy;
+    const cancelTip = t("scroll.cancel_title");
+    cancel.title = cancelTip;
+    cancel.setAttribute("aria-label", cancelTip);
   };
 
   /** 已有状态可渲染即视为可交互:方向按钮此时才启用,通知 Rust 开始自动滚动计时。 */
@@ -258,6 +308,7 @@ export function mountScroll(root: HTMLElement): () => void {
     statusText.textContent = message;
     statusSpinner.hidden = true;
     status.classList.add("is-error");
+    status.classList.remove("is-attention");
   };
 
   const showActionError = (key: CatalogKey): void => {
@@ -303,7 +354,7 @@ export function mountScroll(root: HTMLElement): () => void {
     finish.disabled = true;
     undo.disabled = true;
     cancel.disabled = true;
-    status.classList.remove("is-error");
+    status.classList.remove("is-error", "is-attention");
     // 乐观呈现段数(以最近状态为准),拼接线程的 finishing 事件随即对齐。
     statusText.textContent = t("scroll.status.finishing_segments", {
       count: last?.segmentCount ?? 1,
@@ -360,7 +411,7 @@ export function mountScroll(root: HTMLElement): () => void {
     start.disabled = true;
     undo.disabled = true;
     cancel.disabled = true;
-    status.classList.remove("is-error");
+    status.classList.remove("is-error", "is-attention");
     statusText.textContent = t("scroll.action.canceling");
     statusSpinner.hidden = true;
     void invoke("cancel_scroll_capture").catch(() => {

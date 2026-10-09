@@ -26,7 +26,8 @@ pub const GUIDE: &str = "guide";
 pub const TOAST: &str = "toast";
 
 const TOAST_WIDTH: f64 = 320.0;
-const TOAST_HEIGHT: f64 = 44.0;
+// 三行结果句。两行会把长截图失败提示的后半句操作说明裁掉。
+const TOAST_HEIGHT: f64 = 62.0;
 const TOAST_MARGIN: f64 = 32.0;
 const TOAST_DURATION: Duration = Duration::from_millis(1800);
 

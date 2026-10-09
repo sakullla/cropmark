@@ -476,13 +476,13 @@ export function mountRecordOverlay(root: HTMLElement): () => void {
     });
   };
 
-  const publishNotice = (text: string): void => {
+  const publishNotice = (text: string, error: boolean): void => {
     // 空说明只发一次;仍显示的说明重复发送,控制条晚挂载时也能接到。
     if (text.length === 0 && text === publishedNotice) {
       return;
     }
     publishedNotice = text;
-    void emit(OVERLAY_NOTICE_EVENT, text);
+    void emit(OVERLAY_NOTICE_EVENT, { text, error });
   };
 
   /**
@@ -496,7 +496,8 @@ export function mountRecordOverlay(root: HTMLElement): () => void {
     if (!text) {
       notice.hidden = true;
       notice.style.visibility = "";
-      publishNotice("");
+      notice.classList.remove("is-error");
+      publishNotice("", false);
       return;
     }
     notice.hidden = false;
@@ -504,7 +505,17 @@ export function mountRecordOverlay(root: HTMLElement): () => void {
     const noticeBox = notice.getBoundingClientRect();
     const rootBox = root.getBoundingClientRect();
     const centerY = rootBox.top + rootBox.height / 2;
-    const occupiedBottom = drawBar.hidden ? 0 : drawBar.getBoundingClientRect().bottom;
+    let occupiedBottom = drawBar.hidden ? 0 : drawBar.getBoundingClientRect().bottom;
+    // 样式/更多面板是绝对定位，不撑高工具条，但仍会盖住贴在区域底部的提示。
+    if (!drawBar.hidden) {
+      drawBar
+        .querySelectorAll<HTMLElement>(".annotation-style-panel, .annotation-more-panel")
+        .forEach((panel) => {
+          if (!panel.hidden) {
+            occupiedBottom = Math.max(occupiedBottom, panel.getBoundingClientRect().bottom);
+          }
+        });
+    }
     const hitsTools = occupiedBottom > 0 && noticeBox.top < occupiedBottom + NOTICE_GAP;
     const coversCenter = noticeBox.top <= centerY && noticeBox.bottom >= centerY;
     const hitsControl =
@@ -513,13 +524,14 @@ export function mountRecordOverlay(root: HTMLElement): () => void {
     notice.style.visibility = "";
     if (collides) {
       notice.hidden = true;
-      publishNotice(text);
+      publishNotice(text, notice.classList.contains("is-error"));
       return;
     }
-    publishNotice("");
+    publishNotice("", false);
   };
 
-  const showNotice = (text: string): void => {
+  const showNotice = (text: string, tone: "neutral" | "error" = "neutral"): void => {
+    notice.classList.toggle("is-error", tone === "error" && text.length > 0);
     noticeMessage = text;
     layoutNotice();
   };
@@ -579,9 +591,18 @@ export function mountRecordOverlay(root: HTMLElement): () => void {
   /** 标注模式切换:进入时准备底图,降级平台等底图就绪后再显示绘制层。 */
   const applyInteractive = async (next: boolean): Promise<void> => {
     interactive = next;
+    root.classList.toggle("is-drawing", next);
     // 工具条在控制条里，不盖住捕获矩形。
     drawBar.hidden = true;
     if (next) {
+      if (editor) {
+        void emit("record-annotate-history", {
+          canUndo: editor.canUndo(),
+          canRedo: editor.canRedo(),
+          canDelete: editor.selectedIndex() !== null && editor.isTextEditing() !== true,
+          textEditing: editor.isTextEditing(),
+        });
+      }
       const live = capabilities?.liveOverlay === true;
       const loaded = await loadSnapshot();
       if (!live) {
@@ -589,8 +610,9 @@ export function mountRecordOverlay(root: HTMLElement): () => void {
           void invoke("set_recording_hud_overlay_visible", { visible: true });
         } else {
           interactive = false;
+          root.classList.remove("is-drawing");
           drawBar.hidden = true;
-          showNotice(t("record.overlay.snapshot_failed"));
+          showNotice(t("record.overlay.snapshot_failed"), "error");
           void invoke("set_recording_hud_interactive", { interactive: false });
         }
       }
@@ -679,6 +701,7 @@ export function mountRecordOverlay(root: HTMLElement): () => void {
 
   const exitInteractive = async (): Promise<void> => {
     interactive = false;
+    root.classList.remove("is-drawing");
     drawBar.hidden = true;
     snapshot = null;
     showNotice("");
@@ -688,7 +711,7 @@ export function mountRecordOverlay(root: HTMLElement): () => void {
         await invoke<RecordingHudState>("set_recording_hud_interactive", { interactive: false }),
       );
     } catch (error) {
-      showNotice(messageOf(error));
+      showNotice(messageOf(error), "error");
     }
   };
 
@@ -715,6 +738,8 @@ export function mountRecordOverlay(root: HTMLElement): () => void {
       editor?.undo();
     } else if (event.payload.action === "redo") {
       editor?.redo();
+    } else if (event.payload.action === "delete") {
+      editor?.deleteSelected();
     }
   });
   void listen<{ color?: string; width?: number; textSize?: number }>("record-annotate-style", (event) => {
@@ -762,9 +787,20 @@ export function mountRecordOverlay(root: HTMLElement): () => void {
       scheduleDraw();
       void emit("record-annotate-active", { tool });
     },
-    onError: (error) => {
-      showNotice(typeof error === "string" ? error : t(error.key, error.params));
+    onToolHint: (hint) => {
+      void emit("record-annotate-hint", hint ? { key: hint.key, params: hint.params ?? null } : { key: "" });
     },
+    onHistory: ({ canUndo, canRedo, canDelete, textEditing }) => {
+      void emit("record-annotate-history", { canUndo, canRedo, canDelete, textEditing });
+    },
+    onError: (error) => {
+      showNotice(typeof error === "string" ? error : t(error.key, error.params), "error");
+    },
+  });
+  // 打开样式或更多面板后重新量提示。面板不撑高工具条，否则提示仍压在选项上。
+  const floatingObserver = new MutationObserver(() => layoutNotice());
+  tools.querySelectorAll(".annotation-style-panel, .annotation-more-panel").forEach((panel) => {
+    floatingObserver.observe(panel, { attributes: true, attributeFilter: ["hidden"] });
   });
   void invoke<{ regionTools?: RegionTools }>("get_ui_settings")
     .then((settings) => {
@@ -785,6 +821,7 @@ export function mountRecordOverlay(root: HTMLElement): () => void {
   const resetView = (): void => {
     initialized = false;
     interactive = false;
+    root.classList.remove("is-drawing");
     snapshot = null;
     status = null;
     if (countdownTimer !== null) {

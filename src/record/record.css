@@ -55,40 +55,107 @@ html[data-view="record-overlay"] #app {
   border-radius: 50%;
   background: var(--danger);
   box-shadow: 0 0 0 3px var(--danger-soft);
+  animation: record-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes record-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(0.82);
+    opacity: 0.7;
+  }
 }
 
 .record-root.is-paused .record-pulse {
-  background: var(--muted);
-  box-shadow: 0 0 0 3px var(--line);
+  /* 暂停不是熄灭。灰色加点发丝光环会融进卡片，改成正文色实点，和录制中的红点分开。 */
+  background: var(--ink);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ink) 18%, transparent);
+  animation: none;
+}
+
+/* 还没开始。红点会让人以为已经在录，改成静止的强调色点。 */
+.record-root[data-phase="ready"] .record-pulse {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  animation: none;
 }
 
 .record-root.is-stopped .record-pulse {
   background: var(--ok);
   box-shadow: 0 0 0 3px var(--ok-soft);
+  animation: none;
 }
 
 .record-root.is-failed .record-pulse {
   background: var(--danger);
   box-shadow: 0 0 0 3px var(--danger-soft);
+  animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .record-pulse {
+    animation: none;
+  }
 }
 
 .record-time {
-  flex: 0 0 auto;
-  /* `mm:ss / mm:ss` 加字距;宽度不随秒数变化,按钮才不会被时长挤走。 */
-  min-width: 14ch;
+  display: flex;
+  align-items: baseline;
+  gap: 0.4em;
+  flex: 1 1 auto;
+  /* 尺寸单独占右侧。框选时数字变长不再把这一行拆开，控制条高度保持不变。 */
+  min-width: min(100%, max-content);
+  max-width: 100%;
+  overflow: hidden;
   font-size: 15px;
   font-weight: 650;
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.02em;
+  line-height: 1.3;
   white-space: nowrap;
+}
+
+.record-time-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.record-time-size {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.record-time-size:not([hidden])::before {
+  content: "· ";
 }
 
 .record-phase {
   flex: 0 0 auto;
   max-width: 100%;
-  color: var(--muted);
-  font-size: 12px;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+/* 阶段词和状态点用同一颜色。中断不能只靠 10px 的点，完成也不能仍是正文色。
+   倒计时和录制中跟红点一致；就绪、暂停保持正文色。 */
+.record-root[data-phase="countdown"] .record-phase,
+.record-root[data-phase="recording"] .record-phase,
+.record-root[data-phase="failed"] .record-phase {
+  color: var(--danger);
+}
+
+.record-root[data-phase="finished"] .record-phase {
+  color: var(--ok);
 }
 
 .record-actions {
@@ -97,19 +164,24 @@ html[data-view="record-overlay"] #app {
   justify-content: flex-end;
   align-items: center;
   gap: 8px;
-  min-width: 0;
+  /* 整组先换到下一行。min-width:0 会把暂停/停止/标注挤成计时旁边的一列。 */
+  flex: 1 1 auto;
+  min-width: min(100%, max-content);
   max-width: 100%;
   margin-left: auto;
 }
 
 .record-btn {
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   height: 30px;
   min-height: 30px;
   padding: 0 10px;
   color: var(--ink);
   font: inherit;
-  font-size: 12px;
+  font-size: 13px;
   white-space: nowrap;
   background: var(--control-fill);
   border: 1px solid var(--line);
@@ -118,18 +190,24 @@ html[data-view="record-overlay"] #app {
   transition: var(--control-transition);
 }
 
-.record-btn:hover:not(:disabled) {
+.record-btn:hover:not(:disabled):not([aria-disabled="true"]),
+.record-btn:focus-visible:not(:disabled):not([aria-disabled="true"]) {
   background: var(--control-hover-bg);
   border-color: var(--control-hover-border);
 }
 
-.record-btn:active:not(:disabled) {
+.record-btn:active:not(:disabled):not([aria-disabled="true"]) {
   filter: var(--control-pressed-filter);
 }
 
-.record-btn:disabled {
+.record-btn:disabled,
+.record-btn[aria-disabled="true"] {
   cursor: default;
   opacity: var(--control-disabled-opacity);
+}
+
+.record-btn[aria-disabled="true"] {
+  cursor: not-allowed;
 }
 
 .record-btn[hidden] {
@@ -142,24 +220,60 @@ html[data-view="record-overlay"] #app {
   border-color: var(--accent);
 }
 
-.record-primary:hover:not(:disabled) {
+.record-primary:hover:not(:disabled):not([aria-disabled="true"]):not(:active),
+.record-primary:focus-visible:not(:disabled):not([aria-disabled="true"]):not(:active),
+.record-primary:active:not(:disabled):not([aria-disabled="true"]) {
   color: var(--on-accent);
   background: var(--accent);
   border-color: var(--accent);
+}
+
+.record-primary:hover:not(:disabled):not([aria-disabled="true"]):not(:active),
+.record-primary:focus-visible:not(:disabled):not([aria-disabled="true"]):not(:active) {
   filter: var(--control-hover-filter);
 }
 
-/* 丢弃是不可撤销的破坏性动作(temp 文件后端即删):悬停/按下给危险色,
-   与 settings 的 .choice.danger 用同一组 token。 */
+.record-primary:active:not(:disabled):not([aria-disabled="true"]) {
+  filter: var(--control-pressed-filter);
+}
+
+/* 丢弃会删掉尚未保存的录制。静止时就用危险色，和旁边的重试、保存分开；
+   悬停再铺淡危险底。第二次确认仍是实心危险按钮。 */
+.record-btn.record-discard {
+  color: var(--danger);
+  font-weight: 650;
+}
+
 .record-btn.record-discard:hover:not(:disabled),
+.record-btn.record-discard:focus-visible:not(:disabled),
 .record-btn.record-discard:active:not(:disabled) {
   color: var(--control-danger-hover-border);
   border-color: var(--control-danger-hover-border);
   background: var(--control-danger-hover-bg);
 }
 
+/* 第二次点击才会删文件。挂起后改成实心危险按钮，和只改了文案的普通按钮分开。 */
+.record-btn.record-discard[data-armed="true"],
+.record-btn.record-discard[data-armed="true"]:hover:not(:disabled),
+.record-btn.record-discard[data-armed="true"]:focus-visible:not(:disabled),
+.record-btn.record-discard[data-armed="true"]:active:not(:disabled) {
+  color: var(--on-danger);
+  background: var(--danger);
+  border-color: var(--danger);
+}
+
+.record-btn.record-discard[data-armed="true"]:hover:not(:disabled):not(:active),
+.record-btn.record-discard[data-armed="true"]:focus-visible:not(:disabled):not(:active) {
+  filter: var(--control-hover-filter);
+}
+
+.record-btn.record-discard[data-armed="true"]:active:not(:disabled) {
+  filter: var(--control-pressed-filter);
+}
+
 .record-btn.record-draw.is-active,
-.record-btn.record-draw.is-active:hover:not(:disabled) {
+.record-btn.record-draw.is-active:hover:not(:disabled):not([aria-disabled="true"]),
+.record-btn.record-draw.is-active:focus-visible:not(:disabled):not([aria-disabled="true"]) {
   color: var(--accent);
   background: var(--accent-soft);
   border-color: var(--accent);
@@ -168,15 +282,29 @@ html[data-view="record-overlay"] #app {
 .record-notice {
   flex-shrink: 0;
   margin: 0;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.4;
+  /* 空格暂停、Esc 停止写在这里。灰色 12px 在小卡片上像备注，改成和阶段词一样的正文。 */
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.45;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  /* 四行够放下键位说明和掉帧提示。更长的失败原因不再把下面的保存操作挤出窗口。 */
+  max-height: calc(1.45em * 4);
+  overflow: hidden;
+}
+
+.record-notice.is-clamped {
+  cursor: help;
+}
+
+.record-notice.is-attention {
+  color: var(--accent);
+  font-weight: 650;
 }
 
 .record-notice.is-error {
   color: var(--danger);
+  font-weight: 650;
 }
 
 .record-notice[hidden] {
@@ -215,8 +343,8 @@ html[data-view="record-overlay"] #app {
 .record-preview-error {
   margin: 0;
   color: var(--danger);
-  font-size: 11px;
-  line-height: 1.4;
+  font-size: 13px;
+  line-height: 1.45;
   overflow-wrap: anywhere;
 }
 
@@ -227,8 +355,11 @@ html[data-view="record-overlay"] #app {
 .record-preview-meta {
   margin: 0;
   color: var(--ink);
-  font-size: 12px;
+  /* 和上面的加载失败同一字号。时长、帧率和尺寸现在带单位，12 像素不好读。 */
+  font-size: 13px;
+  line-height: 1.45;
   font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
 }
 
 .record-border-root,
@@ -275,15 +406,18 @@ html[data-chrome="border"] #app {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 8px;
   flex-shrink: 0;
 }
 
 .record-pending-title {
   flex: 1 1 auto;
-  min-width: 0;
-  font-size: 12px;
-  font-weight: 600;
+  /* 按文字占宽。和「重新框选录制」挤在一行时标题不再被缩成省略号，按钮整组换行。 */
+  min-width: min(100%, max-content);
+  max-width: 100%;
+  font-size: 13px;
+  font-weight: 650;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -304,6 +438,7 @@ html[data-chrome="border"] #app {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 6px;
   padding: 6px 8px;
   background: var(--card);
@@ -316,12 +451,13 @@ html[data-chrome="border"] #app {
   flex-direction: column;
   gap: 2px;
   flex: 1 1 auto;
-  min-width: 0;
+  /* 文件名至少留一段。和重试、丢弃挤在一行时不再缩成省略号，按钮换到下一行靠右。 */
+  min-width: min(100%, 10rem);
 }
 
 .record-pending-name {
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 650;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -329,18 +465,18 @@ html[data-chrome="border"] #app {
 
 .record-pending-detail {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
+  line-height: 1.4;
   font-variant-numeric: tabular-nums;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  /* 带上像素单位后单行会把格式裁掉。折行保留全文，放得下时不再弹出同一句提示。 */
+  overflow-wrap: anywhere;
 }
 
 .record-pending-item .record-btn {
-  height: 26px;
-  min-height: 26px;
+  height: 30px;
+  min-height: 30px;
   padding: 0 8px;
-  font-size: 11px;
+  font-size: 13px;
 }
 
 /* ---------- 标注层 ---------- */
@@ -364,17 +500,32 @@ html[data-chrome="border"] #app {
   touch-action: none;
 }
 
+/* 只有进入标注时才换光标。平时这层还负责拖动录制框，不能盖住移动光标。 */
+.record-overlay-root.is-drawing .record-canvas {
+  cursor: crosshair;
+}
+
+.record-overlay-root.is-drawing[data-tool="text"] .record-canvas {
+  cursor: text;
+}
+
+.record-overlay-root.is-drawing[data-tool="number"] .record-canvas,
+.record-overlay-root.is-drawing[data-tool="sticker"] .record-canvas {
+  cursor: copy;
+}
+
 /* 工具条留在区域顶部;完成标注条接在工具条下沿,不再用固定 top 叠到工具条上。
    选择器限定在标注层,避免命中控制条里同名的标注按钮。 */
 .record-annotate {
   display: flex;
   flex: 0 0 auto;
-  flex-wrap: nowrap;
+  align-items: center;
+  /* 控制条宽 420。英文「Annotation style」和全套工具排不进一行，横向滚动会把后排工具藏住。换行后窗口按内容增高。 */
+  flex-wrap: wrap;
   gap: 4px;
   max-width: 100%;
   min-width: 0;
-  min-height: 28px;
-  overflow-x: auto;
+  min-height: 32px;
 }
 
 .record-annotate[hidden] {
@@ -383,44 +534,115 @@ html[data-chrome="border"] #app {
 
 .record-annotate button {
   flex: 0 0 auto;
-  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 32px;
+  min-height: 32px;
   padding: 0 8px;
   border-radius: var(--radius-control-sm);
   border: 1px solid var(--line);
   background: transparent;
   color: var(--ink);
   font: inherit;
-  font-size: 12px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
   cursor: pointer;
   transition: var(--control-transition);
 }
 
 /* 与全应用控件一致的悬停/压感反馈(is-active 选中态规则在下方,不受影响)。 */
-.record-annotate button:hover:not(:disabled) {
+.record-annotate button:hover:not(:disabled):not([aria-disabled="true"]),
+.record-annotate button:focus-visible:not(:disabled):not([aria-disabled="true"]) {
   background: var(--control-hover-bg);
   border-color: var(--control-hover-border);
 }
 
-.record-annotate button:active:not(:disabled) {
+.record-annotate button:active:not(:disabled):not([aria-disabled="true"]) {
   filter: var(--control-pressed-filter);
 }
 
-.record-annotate button.is-active {
+/* 没有可撤销内容时仍要能悬停。真正 disabled 的按钮在系统里不出现说明。 */
+.record-annotate button[aria-disabled="true"] {
+  opacity: var(--control-disabled-opacity);
+  cursor: default;
+}
+
+/* 撤销一组跟在绘制工具后面。分隔线挂在撤销上，换行时跟着走，不会单独占一行。 */
+.record-annotate button.has-sep {
+  position: relative;
+  margin-inline-start: 10px;
+}
+
+.record-annotate button.has-sep::before {
+  content: "";
+  position: absolute;
+  inset-inline-start: -7px;
+  top: 8px;
+  width: 1px;
+  height: 16px;
+  background: var(--line);
+  pointer-events: none;
+}
+
+/* 样式面板收起时，按钮上的色点就是当前墨色，不用打开才知道下一笔是什么颜色。 */
+.record-annotate button.record-style-toggle {
+  gap: 6px;
+}
+
+.record-style-dot {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--swatch, var(--accent));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 28%, transparent);
+}
+
+.record-annotate button[data-annotate-action="delete"]:hover:not(:disabled):not([aria-disabled="true"]):not(:active),
+.record-annotate button[data-annotate-action="delete"]:focus-visible:not(:disabled):not([aria-disabled="true"]):not(:active) {
+  color: var(--danger);
+  background: var(--control-danger-hover-bg);
+  border-color: var(--control-danger-hover-border);
+}
+
+.record-annotate button[data-annotate-action="delete"]:active:not(:disabled):not([aria-disabled="true"]) {
+  color: var(--danger);
+  background: var(--control-danger-hover-bg);
+  border-color: var(--control-danger-hover-border);
+  filter: var(--control-pressed-filter);
+}
+
+.record-annotate button.is-active,
+.record-annotate button.is-active:hover:not(:disabled),
+.record-annotate button.is-active:focus-visible:not(:disabled) {
   color: var(--accent);
   background: var(--accent-soft);
   border-color: var(--accent);
 }
 
 .record-annotate button[data-style-color] {
-  width: 22px;
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
   padding: 0;
   background: var(--swatch);
   border-color: var(--line);
 }
 
 /* 色块 hover 只换边框,--swatch 底色保留:色块本身就是语义色。 */
-.record-annotate button[data-style-color]:hover:not(:disabled) {
+.record-annotate button[data-style-color]:hover:not(:disabled),
+.record-annotate button[data-style-color]:focus-visible:not(:disabled) {
   background: var(--swatch);
+}
+
+/* 色块底色写在后面，会盖掉通用选中底。当前色留样张，只用强调边标出。 */
+.record-annotate button[data-style-color].is-active,
+.record-annotate button[data-style-color].is-active:hover:not(:disabled),
+.record-annotate button[data-style-color].is-active:focus-visible:not(:disabled) {
+  background: var(--swatch);
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 2px var(--panel);
 }
 
 .record-overlay-root .record-draw {
@@ -488,9 +710,14 @@ html[data-chrome="border"] #app {
 }
 
 .record-draw-hint {
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.35;
+  flex: 1 1 12rem;
+  /* 窄选区里说明不再被「完成标注」挤成一字一行。放不下时按钮换到下一行。
+     宽选区里整句不再把完成条拉满。 */
+  min-width: min(100%, 12rem);
+  max-width: min(100%, 28rem);
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.4;
   overflow-wrap: anywhere;
 }
 
@@ -500,11 +727,21 @@ html[data-chrome="border"] #app {
   border-color: var(--accent);
 }
 
-.record-draw-done:hover:not(:disabled) {
+.record-draw-done:hover:not(:disabled):not(:active),
+.record-draw-done:focus-visible:not(:disabled):not(:active),
+.record-draw-done:active:not(:disabled) {
   color: var(--on-accent);
   background: var(--accent);
   border-color: var(--accent);
+}
+
+.record-draw-done:hover:not(:disabled):not(:active),
+.record-draw-done:focus-visible:not(:disabled):not(:active) {
   filter: var(--control-hover-filter);
+}
+
+.record-draw-done:active:not(:disabled) {
+  filter: var(--control-pressed-filter);
 }
 
 .record-overlay-notice {
@@ -515,10 +752,11 @@ html[data-chrome="border"] #app {
   transform: translateX(-50%);
   z-index: 6;
   margin: 0;
-  max-width: calc(100% - 32px);
+  /* 和截图底部提示一样封顶。宽选区里长错误不再拉成一整条。 */
+  max-width: min(560px, calc(100% - 32px));
   padding: 6px 10px;
   color: var(--ink);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.4;
   overflow-wrap: anywhere;
   background: var(--panel);
@@ -529,4 +767,11 @@ html[data-chrome="border"] #app {
 
 .record-overlay-notice[hidden] {
   display: none;
+}
+
+.record-overlay-notice.is-error {
+  background: var(--danger-soft);
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+  color: var(--danger);
+  font-weight: 650;
 }

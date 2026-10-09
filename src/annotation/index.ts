@@ -168,6 +168,13 @@ export interface AnnotationEditorOptions {
   inlineTools?: boolean;
   /** 工具显隐变化后通知宿主重新排布。 */
   onToolsChanged?: () => void;
+  /** 撤销/重做/删除可用性变化时通知宿主。录制控制条不在这条工具栏上，要靠这个同步禁用。 */
+  onHistory?: (state: {
+    canUndo: boolean;
+    canRedo: boolean;
+    canDelete: boolean;
+    textEditing: boolean;
+  }) => void;
 }
 
 export interface AnnotationEditor {
@@ -198,6 +205,8 @@ export interface AnnotationEditor {
   refreshLabels: () => void;
   /** 按设置显示或收起工具。传入的是要显示的工具，未列出的只是不出现。 */
   setEnabledTools: (ids: readonly AnnotationTool[]) => void;
+  /** 收起右键菜单、样式和「更多」。宿主进入裁剪或取字时调用，避免浮层盖住新模式并抢走 Esc。 */
+  dismissChrome: () => void;
 }
 
 export interface ToolModeDefinition {
@@ -248,8 +257,10 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     icon: icons.arrow,
     titleKey: "preview.tool.arrow_title",
     labelKey: "preview.tool.arrow",
+    hintKey: "preview.note.arrow_hint",
     modes: ARROW_MODES,
     defaultMode: "arrow",
+    modeHints: { line: "preview.note.line_hint" },
   },
   {
     id: "rect",
@@ -259,6 +270,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     icon: icons.rect,
     titleKey: "preview.tool.rect_title",
     labelKey: "preview.tool.rect",
+    hintKey: "preview.note.rect_hint",
   },
   {
     id: "ellipse",
@@ -268,6 +280,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     icon: icons.ellipse,
     titleKey: "preview.tool.ellipse_title",
     labelKey: "preview.tool.ellipse",
+    hintKey: "preview.note.ellipse_hint",
   },
   {
     id: "highlighter",
@@ -290,6 +303,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     icon: icons.mosaic,
     titleKey: "preview.tool.mosaic_title",
     labelKey: "preview.tool.mosaic",
+    hintKey: "preview.note.mosaic_hint",
     modes: MOSAIC_MODES,
     defaultMode: "mosaic",
     modeHints: { blur: "preview.note.blur_hint" },
@@ -1303,8 +1317,14 @@ function modeButton(entry: { tool: AnnotationTool; mode: ToolModeDefinition }): 
   return `<button type="button" data-mode-tool="${entry.tool}" data-tool-mode="${entry.mode.id}" data-i18n="${entry.mode.labelKey}" data-tooltip="${t(entry.mode.labelKey)}">${t(entry.mode.labelKey)}</button>`;
 }
 
+/** 字号和贴纸大小是逻辑像素。倍率带 ×、暗度带 %，这里也把单位写在按钮上。 */
+export function stylePixelLabel(value: number): string {
+  return t("preview.style.pixel_value", { value });
+}
+
 function stickerSizeButton(option: { value: number; labelKey: CatalogKey }): string {
-  return `<button type="button" data-sticker-size="${option.value}" data-tooltip="${t("preview.style.option_title", { label: t("preview.style.sticker_size"), value: option.value })}">${t(option.labelKey)}</button>`;
+  const pixels = stylePixelLabel(option.value);
+  return `<button type="button" data-sticker-size="${option.value}" data-tooltip="${t("preview.style.option_title", { label: t("preview.style.sticker_size"), value: pixels })}">${pixels}</button>`;
 }
 
 // 色块颜色走 CSSOM 自定义属性。写进 HTML style 属性会被 style-src 'self' 拦截。
@@ -1332,7 +1352,7 @@ function toolbarMarkup(inlineTools: boolean): string {
   return `
     ${tools}
     <div class="annotation-more" data-more-root${moreHidden}>
-      <button type="button" class="annotation-chrome" data-action="more" data-i18n-title="preview.tool.more_title" data-i18n-aria-label="preview.tool.more" data-tooltip="${t("preview.tool.more_title")}" aria-label="${t("preview.tool.more")}" aria-haspopup="true" aria-expanded="false">${icons.more}<span class="tool-label" data-i18n="preview.tool.more">${t("preview.tool.more")}</span></button>
+      <button type="button" class="annotation-chrome" data-action="more" data-i18n-title="preview.tool.more_title" data-i18n-aria-label="preview.tool.more" data-tooltip="${t("preview.tool.more_title")}" aria-label="${t("preview.tool.more")}" aria-haspopup="true" aria-expanded="false"><span class="more-glyph" aria-hidden="true">${icons.more}</span><span class="tool-label" data-i18n="preview.tool.more">${t("preview.tool.more")}</span></button>
       <div class="annotation-more-panel" data-more-panel hidden>${moreTools}</div>
     </div>
     <span class="toolbar-sep" aria-hidden="true"></span>
@@ -1340,7 +1360,7 @@ function toolbarMarkup(inlineTools: boolean): string {
     ${chromeButton("redo", "preview.tool.redo_title", "preview.tool.redo", icons.redo)}
     ${chromeButton("delete", "preview.tool.delete_title", "preview.tool.delete", icons.trash)}
     <div class="annotation-style" data-style-root>
-      <button type="button" class="annotation-chrome" data-action="style" data-i18n-title="preview.tool.style_title" data-i18n-aria-label="preview.tool.style_title" data-tooltip="${t("preview.tool.style_title")}" aria-label="${t("preview.tool.style_title")}" aria-haspopup="true" aria-expanded="false">${icons.style}<span class="tool-label" data-i18n="preview.tool.style_title">${t("preview.tool.style_title")}</span></button>
+      <button type="button" class="annotation-chrome" data-action="style" data-i18n-title="preview.tool.style_title" data-i18n-aria-label="preview.tool.style_title" data-tooltip="${t("preview.tool.style_title")}" aria-label="${t("preview.tool.style_title")}" aria-haspopup="true" aria-expanded="false">${icons.style}<span class="style-ink" aria-hidden="true"></span><span class="tool-label" data-i18n="preview.tool.style_title">${t("preview.tool.style_title")}</span></button>
       <div class="annotation-style-panel" data-style-panel hidden>
         <div class="style-group" data-style-group="mode" hidden>
           <span class="style-label" data-i18n="preview.style.mode">模式</span>
@@ -1353,7 +1373,7 @@ function toolbarMarkup(inlineTools: boolean): string {
           <div class="style-options" role="group" data-i18n-aria-label="preview.style.color_group" aria-label="标注颜色">
             ${STYLE_COLORS.map(
               (color) =>
-                `<button type="button" data-style-color="${color}" data-tooltip="${color}" aria-label="${t("preview.style.color_aria", { color })}"></button>`,
+                `<button type="button" data-style-color="${color}" data-tooltip="${t("preview.style.color_aria", { color })}" aria-label="${t("preview.style.color_aria", { color })}"></button>`,
             ).join("")}
           </div>
         </div>
@@ -1362,7 +1382,7 @@ function toolbarMarkup(inlineTools: boolean): string {
           <div class="style-options" role="group" data-i18n-aria-label="preview.style.width" aria-label="线宽">
             ${STYLE_WIDTHS.map(
               ({ value, labelKey }) =>
-                `<button type="button" data-style-width="${value}" data-tooltip="${t("preview.style.option_title", { label: t(labelKey), value })}">${t(labelKey)}</button>`,
+                `<button type="button" data-style-width="${value}" data-tooltip="${t("preview.style.option_title", { label: t(labelKey), value: stylePixelLabel(value) })}">${t(labelKey)}</button>`,
             ).join("")}
           </div>
         </div>
@@ -1371,12 +1391,12 @@ function toolbarMarkup(inlineTools: boolean): string {
           <div class="style-options" role="group" data-i18n-aria-label="preview.style.text_size_group" aria-label="文字字号">
             ${STYLE_TEXT_SIZES.map(
               ({ value, labelKey }) =>
-                `<button type="button" data-style-text-size="${value}" data-tooltip="${t("preview.style.option_title", { label: t(labelKey), value })}">${t(labelKey)}</button>`,
+                `<button type="button" data-style-text-size="${value}" data-tooltip="${t("preview.style.option_title", { label: t(labelKey), value: stylePixelLabel(value) })}">${stylePixelLabel(value)}</button>`,
             ).join("")}
           </div>
         </div>
         <div class="style-group" data-style-group="number" hidden>
-          <span class="style-label" data-i18n="preview.style.number">序号</span>
+          <span class="style-label" data-i18n="preview.style.number">起始</span>
           <div class="style-options" role="group" data-i18n-aria-label="preview.style.number_group" aria-label="序号起始值">
             <span class="input-wrap" data-tooltip-wrap data-i18n-title="preview.style.number_title" data-tooltip="${t("preview.style.number_title")}"><input
               type="number"
@@ -1390,6 +1410,7 @@ function toolbarMarkup(inlineTools: boolean): string {
               aria-label="序号起始值"
             /></span>
           </div>
+          <p class="style-number-error" id="style-number-error" data-style-number-error hidden></p>
         </div>
         <div class="style-group" data-style-group="zoom" hidden>
           <span class="style-label" data-i18n="preview.style.zoom">倍率</span>
@@ -1452,11 +1473,27 @@ const FLOATING_PANEL_MARGIN = 4;
  * 浮动面板视口钳制:右键菜单与更多/样式/质量下拉共用同一套边界语义。
  * 面板先按调用方/CSS 锚点布局并量取位置,溢出 bounds(默认窗口视口)时
  * 按像素差平移 style.left/top 收回界内;bounds 比面板还小时贴最小边。
- * 重开面板前调用方应清掉上次写入的 style.left/right/top,从锚点重新量取。
+ * 样式面板比窗口高时先限高并内部滚动,再平移,避免底部选项被裁掉。
+ * 重开面板前调用方应清掉上次写入的 style.left/right/top/bottom,从锚点重新量取。
  */
 export function clampFloatingPanel(panel: HTMLElement, bounds?: FloatingBounds): void {
-  const rect = panel.getBoundingClientRect();
+  // 只收样式面板。文字编辑器自己写了 maxHeight，这里不能清掉。
+  const capHeight = panel.classList.contains("annotation-style-panel");
+  if (capHeight) {
+    panel.style.maxHeight = "";
+    panel.style.overflowY = "";
+  }
+  let rect = panel.getBoundingClientRect();
   const b = bounds ?? { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+  if (capHeight) {
+    const limit = Math.floor(b.height - FLOATING_PANEL_MARGIN * 2);
+    // 矮录制区域或矮预览里，面板比窗口高时底部选项点不到。收进窗口并在内部滚动。
+    if (limit >= 96 && rect.height > limit + 1) {
+      panel.style.maxHeight = `${limit}px`;
+      panel.style.overflowY = "auto";
+      rect = panel.getBoundingClientRect();
+    }
+  }
   const minLeft = b.left + FLOATING_PANEL_MARGIN;
   const minTop = b.top + FLOATING_PANEL_MARGIN;
   const maxLeft = Math.max(minLeft, b.left + b.width - FLOATING_PANEL_MARGIN - rect.width);
@@ -1465,11 +1502,15 @@ export function clampFloatingPanel(panel: HTMLElement, bounds?: FloatingBounds):
   const dy = clamp(rect.top, minTop, maxTop) - rect.top;
   if (dx !== 0) {
     // 右锚定的面板(保存质量)改左锚定,避免 left/right 同时生效拉伸宽度。
+    const left = snapDevicePx(panel.offsetLeft + dx);
     panel.style.right = "auto";
-    panel.style.left = `${snapDevicePx(panel.offsetLeft + dx)}px`;
+    panel.style.left = `${left}px`;
   }
   if (dy !== 0) {
-    panel.style.top = `${snapDevicePx(panel.offsetTop + dy)}px`;
+    // 覆盖层样式/更多面板用 bottom 锚在按钮上方。只写 top 会和 bottom 一起把面板拉高。
+    const top = snapDevicePx(panel.offsetTop + dy);
+    panel.style.bottom = "auto";
+    panel.style.top = `${top}px`;
   }
 }
 
@@ -1504,12 +1545,13 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
   editor.dataset.i18nPlaceholder = "preview.text_placeholder";
   editor.classList.remove("is-open");
   textHost.appendChild(editor);
+  const editorMeasure = document.createElement("canvas");
 
   const contextMenu = document.createElement("div");
   contextMenu.className = "annotation-context";
   contextMenu.hidden = true;
   contextMenu.setAttribute("role", "menu");
-  contextMenu.innerHTML = `<button type="button" role="menuitem" data-action="delete-annotation" data-i18n="preview.action.delete_annotation">${t("preview.action.delete_annotation")}</button>`;
+  contextMenu.innerHTML = `<button type="button" role="menuitem" data-action="delete-annotation"><span data-i18n="preview.action.delete_annotation">${t("preview.action.delete_annotation")}</span><kbd>Delete</kbd></button>`;
   root.appendChild(contextMenu);
 
   const undoBtn = toolbar.querySelector("[data-action=undo]");
@@ -1558,6 +1600,42 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
   ) {
     return noopEditor();
   }
+
+  // 更多工具和样式是一排按钮。方向键在可见项之间移动；起始序号框仍用方向键改数字。
+  const movePanelButtonFocus = (panel: HTMLElement, event: KeyboardEvent): void => {
+    const keys = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"];
+    if (!keys.includes(event.key)) {
+      return;
+    }
+    if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) {
+      return;
+    }
+    const buttons = Array.from(panel.querySelectorAll<HTMLButtonElement>("button")).filter(
+      (button) => !button.hidden && !button.disabled && button.closest("[hidden]") === null,
+    );
+    if (buttons.length === 0) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const current = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    const delta = event.key === "ArrowUp" || event.key === "ArrowLeft" ? -1 : 1;
+    const index =
+      event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? buttons.length - 1
+          : current < 0
+            ? delta > 0
+              ? 0
+              : buttons.length - 1
+            : (current + delta + buttons.length) % buttons.length;
+    const next = buttons[index];
+    next.focus();
+    next.scrollIntoView({ block: "nearest" });
+  };
+  morePanel.addEventListener("keydown", (event) => movePanelButtonFocus(morePanel, event));
+  stylePanel.addEventListener("keydown", (event) => movePanelButtonFocus(stylePanel, event));
 
   // 序号起始输入框的悬停提示挂在外层 wrap(input 是 replaced 元素,::after 不渲染)。
   const numberStartTipHost = numberStartInput.closest<HTMLElement>("[data-tooltip-wrap]");
@@ -1685,14 +1763,58 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     syncUndo();
   };
 
+  let historySignature = "";
+  const lockHistoryButton = (
+    button: HTMLButtonElement,
+    blocked: boolean,
+    reason: CatalogKey | null,
+  ): void => {
+    // 不用真正 disabled：图标按钮被禁用后收不到悬停，撤销是什么、为什么点不了都看不到。
+    // 裁剪锁定自己写 aria-disabled 和原因，这里不要把它清掉。
+    button.disabled = false;
+    if (button.dataset.cropLock === "true") {
+      return;
+    }
+    if (blocked) {
+      button.setAttribute("aria-disabled", "true");
+    } else {
+      button.removeAttribute("aria-disabled");
+    }
+    const titleKey = button.dataset.i18nTitle as CatalogKey | undefined;
+    const tip = reason ? t(reason) : titleKey ? t(titleKey) : "";
+    if (tip) {
+      button.dataset.tooltip = tip;
+    }
+    if (button.closest("[data-preview-overflow-menu]")) {
+      if (tip) {
+        button.title = tip;
+      }
+    } else {
+      button.removeAttribute("title");
+    }
+  };
+
   const syncUndo = (): void => {
     // R6:编辑器栈空但宿主有变换历史时,撤销/重做按钮同样可用。
     const undoEmpty = undoStack.length === 0 && !(options.canUndoFallback?.() ?? false);
     const redoEmpty = redoStack.length === 0 && !(options.canRedoFallback?.() ?? false);
-    undoBtn.disabled = undoEmpty && !editorOpen();
-    // 文字编辑中 redo/delete 本身是空操作,禁用与快捷键语义保持一致。
-    redoBtn.disabled = redoEmpty || editorOpen();
-    deleteBtn.disabled = selected === null || editorOpen();
+    const editing = editorOpen();
+    const undoBlocked = undoEmpty && !editing;
+    // 文字编辑中 redo/delete 本身是空操作,和快捷键一样不执行。原因留在悬停上。
+    const redoBlocked = redoEmpty || editing;
+    const deleteBlocked = selected === null || editing;
+    const editingReason: CatalogKey | null = editing ? "preview.tool.text_editing_locked" : null;
+    lockHistoryButton(undoBtn, undoBlocked, null);
+    lockHistoryButton(redoBtn, redoBlocked, editing ? editingReason : null);
+    lockHistoryButton(deleteBtn, deleteBlocked, editing ? editingReason : null);
+    const canUndo = !undoBlocked;
+    const canRedo = !redoBlocked;
+    const canDelete = !deleteBlocked;
+    const signature = `${canUndo}:${canRedo}:${canDelete}`;
+    if (signature !== historySignature) {
+      historySignature = signature;
+      options.onHistory?.({ canUndo, canRedo, canDelete, textEditing: editing });
+    }
   };
 
   // 预览会把放不下的按钮移出工具条。节点引用要在移动前抓住，重载开关才藏得掉。
@@ -1836,6 +1958,9 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     editor.value = "";
     editorOrigin = null;
     editTarget = null;
+    editor.style.removeProperty("--editor-ink");
+    editor.style.minHeight = "";
+    editor.removeAttribute("aria-description");
     // 失焦收口:隐藏后仍持有焦点会吞掉 A/R/M/T 等工具快捷键。
     if (document.activeElement === editor) {
       editor.blur();
@@ -1881,22 +2006,66 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     }
     redraw();
     syncUndo();
+    emitToolHint();
   };
 
   const cancelEditor = (): void => {
     hideEditor();
     syncUndo();
     redraw();
+    emitToolHint();
+  };
+
+  const editorBoxWidth = (sample: string, sizePx: number): number => {
+    const style = window.getComputedStyle(editor);
+    const chrome =
+      parseFloat(style.paddingLeft) +
+      parseFloat(style.paddingRight) +
+      parseFloat(style.borderLeftWidth) +
+      parseFloat(style.borderRightWidth);
+    const context = editorMeasure.getContext("2d");
+    if (!context) {
+      return Math.ceil(sample.length * sizePx * 0.6 + chrome);
+    }
+    context.font = `${style.fontWeight} ${sizePx}px ${style.fontFamily}`;
+    // measureText 常比实际换行略窄，多留一截避免提示被裁成两行却只显示一行。
+    return Math.ceil(context.measureText(sample).width + chrome + 8);
   };
 
   // 编辑器随内容自增高:border-box 下高度 = scrollHeight(含上下内边距)+ 上下边框,
   // 超过 showEditor 写入的 max-height 时由 CSS 的 overflow:auto 恢复滚动。
   // 须在宽度定下后再量,换行宽度才与最终呈现一致。
   const growEditor = (): void => {
+    if (editor.value.length > 0 || editor.placeholder.length === 0) {
+      editor.style.minHeight = "";
+    } else {
+      const size = parseFloat(editor.style.fontSize) || 18;
+      const needed = editorBoxWidth(editor.placeholder, size);
+      // 窗口太窄、提示不得不折行时，空框加高到两行，避免第二行被裁掉。
+      editor.style.minHeight = needed > editor.offsetWidth + 1 ? "calc(2.5em + 20px)" : "";
+    }
     editor.style.height = "auto";
     const style = window.getComputedStyle(editor);
     const borderY = parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
     editor.style.height = `${snapDevicePx(editor.scrollHeight + borderY)}px`;
+  };
+
+  const editorInk = (): string => {
+    if (editTarget !== null) {
+      const op = annotations[editTarget];
+      if (
+        op &&
+        (op.type === "text" || op.type === "bubble") &&
+        HEX_COLOR_RE.test(op.color)
+      ) {
+        return op.color;
+      }
+    }
+    return HEX_COLOR_RE.test(styleColor) ? styleColor : FALLBACK_STROKE;
+  };
+
+  const syncEditorInk = (): void => {
+    editor.style.setProperty("--editor-ink", editorInk());
   };
 
   const showEditor = (origin: Point, text: string, baseFontSize: number): void => {
@@ -1907,13 +2076,19 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     const editorStyle = window.getComputedStyle(editor);
     const insetX = parseFloat(editorStyle.paddingLeft) + parseFloat(editorStyle.borderLeftWidth);
     const insetY = parseFloat(editorStyle.paddingTop) + parseFloat(editorStyle.borderTopWidth);
-    const fontSize = baseFontSize * scale.y;
+    const fontSize = snapDevicePx(baseFontSize * scale.y);
     editor.value = text;
     editor.style.left = `${snapDevicePx(canvasRect.left - hostRect.left + textHost.scrollLeft + origin.x * scale.x - insetX)}px`;
     editor.style.top = `${snapDevicePx(canvasRect.top - hostRect.top + textHost.scrollTop + origin.y * scale.y - insetY)}px`;
-    editor.style.fontSize = `${snapDevicePx(fontSize)}px`;
-    editor.style.width = `${Math.max(160, fontSize * 12)}px`;
+    editor.style.fontSize = `${fontSize}px`;
+    const maxBox = Math.max(96, window.innerWidth - FLOATING_PANEL_MARGIN * 2);
+    let width = Math.max(160, fontSize * 12);
+    if (text.length === 0 && editor.placeholder.length > 0) {
+      width = Math.min(maxBox, Math.max(width, editorBoxWidth(editor.placeholder, fontSize)));
+    }
+    editor.style.width = `${snapDevicePx(width)}px`;
     editor.classList.add("is-open");
+    editor.setAttribute("aria-description", t("preview.note.text_editing"));
     // 大字号下编辑框可能溢出视口右/下缘;与菜单/面板一样钳回界内。
     editor.style.maxWidth = `${window.innerWidth - FLOATING_PANEL_MARGIN * 2}px`;
     // 高度上限同 maxWidth 思路(视口高减边距),超出后恢复滚动而不是顶出屏幕。
@@ -1921,6 +2096,7 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     // 初始高度按已有内容量取(双击重编辑长文本时即以内容高度打开)。
     growEditor();
     clampFloatingPanel(editor);
+    syncEditorInk();
     syncUndo();
     window.setTimeout(() => {
       editor.focus();
@@ -1935,6 +2111,7 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     editTarget = null;
     selected = null;
     showEditor(point, "", textSize());
+    emitToolHint();
   };
 
   // 双击文字/气泡原位重编辑:载入原文本与原字号,提交时走 replace 动作。
@@ -1961,6 +2138,7 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     moving = false;
     moveState = null;
     showEditor(origin, op.text, op.size);
+    emitToolHint();
   };
 
   const deleteSelected = (): void => {
@@ -1979,6 +2157,7 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     pushAction({ kind: "remove", index, op });
     redraw();
     syncUndo();
+    emitToolHint();
   };
 
   // 拖移中触发 undo/redo 时,拖移位移只被 mousemove 原地写入、尚未入栈。
@@ -1999,8 +2178,15 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
 
   const undo = (): void => {
     if (editorOpen()) {
-      cancelEditor();
-      return;
+      const hadText = editor.value.trim().length > 0;
+      commitEditor();
+      if (editorOpen()) {
+        return;
+      }
+      // 空白输入没有产生标注。栈也是空的时不要落到预览旋转的撤销。
+      if (!hadText && undoStack.length === 0) {
+        return;
+      }
     }
     settleMove();
     const action = undoStack.pop();
@@ -2013,6 +2199,9 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     // 撤销"放置序号"时回退会话计数,使重放/继续放置仍连续递增不跳号。
     if (action.kind === "add" && action.op.type === "number") {
       numberPlaced = Math.max(0, numberPlaced - 1);
+      if (tool === "number") {
+        emitToolHint();
+      }
     }
     selected = null;
     moving = false;
@@ -2020,6 +2209,7 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     redoStack.push(action);
     redraw();
     syncUndo();
+    emitToolHint();
   };
 
   const redo = (): void => {
@@ -2041,6 +2231,9 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     runAction(action, false);
     if (action.kind === "add" && action.op.type === "number") {
       numberPlaced += 1;
+      if (tool === "number") {
+        emitToolHint();
+      }
     }
     selected = null;
     moving = false;
@@ -2048,18 +2241,40 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     undoStack.push(action);
     redraw();
     syncUndo();
+    emitToolHint();
   };
 
   const emitToolHint = (): void => {
+    if (editorOpen()) {
+      options.onToolHint?.({ key: "preview.note.text_editing" });
+      return;
+    }
+    if (selected !== null && !editorOpen()) {
+      const op = annotations[selected];
+      const editableText = op?.type === "text" || op?.type === "bubble";
+      options.onToolHint?.({
+        key: editableText ? "preview.note.selection_text_hint" : "preview.note.selection_hint",
+      });
+      return;
+    }
     const definition = TOOL_BY_ID.get(tool);
     const mode = modeFor(tool);
     const key =
       (mode ? definition?.modeHints?.[mode] : undefined) ?? definition?.hintKey ?? null;
     if (key === "preview.note.number_hint") {
-      options.onToolHint?.({ key, params: { start: numberStart } });
+      options.onToolHint?.({ key, params: { next: numberStart + numberPlaced } });
       return;
     }
     options.onToolHint?.(key ? { key } : null);
+  };
+
+  // 预览窄窗口会把工具收进菜单并改成 menuitemcheckbox。选中态两边都要写上。
+  const markPressed = (button: HTMLButtonElement, pressed: boolean): void => {
+    const value = pressed ? "true" : "false";
+    button.setAttribute("aria-pressed", value);
+    if (button.getAttribute("role") === "menuitemcheckbox") {
+      button.setAttribute("aria-checked", value);
+    }
   };
 
   const syncToolUi = (): void => {
@@ -2067,10 +2282,23 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     toolbar.querySelectorAll<HTMLButtonElement>("[data-tool]").forEach((button) => {
       button.classList.toggle("active", button.dataset.tool === tool);
       // 选中态同步给读屏:aria-pressed 与 .active 同源,不新增状态。
-      button.setAttribute("aria-pressed", String(button.dataset.tool === tool));
+      markPressed(button, button.dataset.tool === tool);
     });
     moreBtn.classList.toggle("active", MORE_TOOLS.includes(tool));
     moreBtn.setAttribute("aria-pressed", String(MORE_TOOLS.includes(tool)));
+    const current = MORE_TOOLS.includes(tool) ? TOOL_BY_ID.get(tool) : undefined;
+    const moreGlyph = moreBtn.querySelector(".more-glyph");
+    if (moreGlyph) {
+      moreGlyph.innerHTML = current?.icon ?? icons.more;
+    }
+    if (current) {
+      const tip = t("preview.tool.more_current", { tool: t(current.labelKey) });
+      moreBtn.dataset.tooltip = tip;
+      moreBtn.setAttribute("aria-label", tip);
+    } else {
+      moreBtn.dataset.tooltip = t("preview.tool.more_title");
+      moreBtn.setAttribute("aria-label", t("preview.tool.more"));
+    }
   };
 
   const setTool = (next: AnnotationTool): void => {
@@ -2121,7 +2349,7 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
   const deactivateTool = (): void => {
     toolbar.querySelectorAll<HTMLButtonElement>("[data-tool]").forEach((button) => {
       button.classList.remove("active");
-      button.setAttribute("aria-pressed", "false");
+      markPressed(button, false);
     });
   };
 
@@ -2195,11 +2423,16 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     if (modes.length > 0) {
       const active = modeFor(tool);
       modeGroup.querySelectorAll<HTMLButtonElement>("[data-mode-tool]").forEach((button) => {
-        button.hidden = button.dataset.modeTool !== tool;
-        button.classList.toggle("active", button.dataset.toolMode === active);
+        const shown = button.dataset.modeTool === tool;
+        button.hidden = !shown;
+        const isActive = shown && button.dataset.toolMode === active;
+        button.classList.toggle("active", isActive);
+        button.setAttribute("aria-pressed", String(isActive));
       });
     }
     colorGroup.hidden = !enabled || !COLOR_STYLE_TOOLS.has(tool);
+    styleBtn.classList.toggle("has-ink", enabled && COLOR_STYLE_TOOLS.has(tool));
+    styleBtn.style.setProperty("--swatch", styleColor);
     widthGroup.hidden = !enabled || !WIDTH_STYLE_TOOLS.has(tool);
     // 字号只跟文字工具。箭头、序号、气泡都不带字号。
     textSizeGroup.hidden = !enabled || tool !== "text";
@@ -2242,8 +2475,61 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
       button.classList.toggle("active", isActive);
       button.setAttribute("aria-pressed", String(isActive));
     });
-    if (numberStartInput.value !== String(numberStart)) {
+    if (
+      document.activeElement !== numberStartInput &&
+      numberStartInput.getAttribute("aria-invalid") !== "true"
+    ) {
       numberStartInput.value = String(numberStart);
+    }
+    equalizeStyleChoices();
+  };
+
+  // 同一行的文字选项按最宽的一档对齐。荧光笔和画笔、高斯模糊和马赛克不再一边长一边短。
+  const equalizeStyleChoices = (): void => {
+    if (stylePanel.hidden) {
+      return;
+    }
+    let changed = false;
+    stylePanel.querySelectorAll<HTMLElement>(".style-options").forEach((group) => {
+      if (group.closest(".style-group[hidden]")) {
+        return;
+      }
+      const buttons = Array.from(
+        group.querySelectorAll<HTMLButtonElement>(":scope > button:not([hidden])"),
+      );
+      if (buttons.length < 2) {
+        return;
+      }
+      if (
+        buttons.some(
+          (button) =>
+            button.hasAttribute("data-style-color") ||
+            button.hasAttribute("data-sticker-id") ||
+            button.hasAttribute("data-erase-fill"),
+        )
+      ) {
+        return;
+      }
+      for (const button of buttons) {
+        button.style.minWidth = "";
+      }
+      let widest = 0;
+      for (const button of buttons) {
+        widest = Math.max(widest, button.getBoundingClientRect().width);
+      }
+      if (widest <= 0) {
+        return;
+      }
+      const next = `${Math.ceil(widest)}px`;
+      for (const button of buttons) {
+        if (button.style.minWidth !== next) {
+          button.style.minWidth = next;
+          changed = true;
+        }
+      }
+    });
+    if (changed) {
+      clampFloatingPanel(stylePanel);
     }
   };
 
@@ -2253,6 +2539,9 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     if (next) {
       // 重开先回 CSS 锚点再钳制,避免上次平移量累积漂移。
       morePanel.style.left = "";
+      morePanel.style.right = "";
+      morePanel.style.top = "";
+      morePanel.style.bottom = "";
       toggleStylePanel(false);
     }
     morePanel.hidden = !next;
@@ -2275,8 +2564,12 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
       moving = false;
       moveState = null;
       redraw();
+      emitToolHint();
       toggleMorePanel(false);
       stylePanel.style.left = "";
+      stylePanel.style.right = "";
+      stylePanel.style.top = "";
+      stylePanel.style.bottom = "";
     }
     stylePanel.hidden = !next;
     styleBtn.classList.toggle("active", next);
@@ -2293,6 +2586,9 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
   const setStyle = (next: Partial<AnnotationStyle>): void => {
     if (typeof next.color === "string" && HEX_COLOR_RE.test(next.color)) {
       styleColor = next.color;
+      if (editorOpen() && editTarget === null) {
+        syncEditorInk();
+      }
     }
     if (next.width !== undefined) {
       styleWidth = typeof next.width === "number" && Number.isFinite(next.width) ? next.width : null;
@@ -2322,6 +2618,7 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     numberPlaced = annotations.filter((op) => op.type === "number").length;
     redraw();
     syncUndo();
+    emitToolHint();
   };
 
   const clear = (): void => {
@@ -2331,6 +2628,10 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
   stylePanel.addEventListener("click", (event) => {
     const button = event.target instanceof Element ? event.target.closest("button") : null;
     if (!(button instanceof HTMLButtonElement)) {
+      return;
+    }
+    // 裁剪锁定用 aria-disabled 变淡按钮。真正 disabled 不会进到这里，aria-disabled 仍会收到点击。
+    if (button.disabled || button.getAttribute("aria-disabled") === "true") {
       return;
     }
     const nextColor = button.dataset.styleColor;
@@ -2344,6 +2645,9 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     const nextStickerSize = button.dataset.stickerSize;
     if (nextColor) {
       styleColor = nextColor;
+      if (editorOpen() && editTarget === null) {
+        syncEditorInk();
+      }
     } else if (nextWidth !== undefined) {
       styleWidth = Number(nextWidth);
     } else if (nextTextSize !== undefined) {
@@ -2371,14 +2675,46 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     redraw();
   });
 
-  // 起始序号调整后本次会话的连续递增从新起点重算;空/非法输入回退当前值。
+  const numberErrorEl = toolbar.querySelector("[data-style-number-error]");
+  const numberStartTip = (invalid: boolean): void => {
+    numberStartInput.toggleAttribute("aria-invalid", invalid);
+    if (numberStartTipHost) {
+      numberStartTipHost.dataset.tooltip = t("preview.style.number_title");
+    }
+    if (numberErrorEl instanceof HTMLElement) {
+      const wasHidden = numberErrorEl.hidden;
+      numberErrorEl.hidden = !invalid;
+      numberErrorEl.textContent = invalid ? t("preview.style.number_error") : "";
+      if (invalid) {
+        numberStartInput.setAttribute("aria-describedby", "style-number-error");
+      } else {
+        numberStartInput.removeAttribute("aria-describedby");
+      }
+      // 错误行会改变面板高度。矮窗口里不重新收边，红字会画出屏幕，红框仍像没有原因。
+      // 收进窗口后面板内部滚动，滚位仍停在顶部，红字会留在底边外面。
+      if (wasHidden !== numberErrorEl.hidden && !stylePanel.hidden) {
+        clampFloatingPanel(stylePanel);
+        if (invalid && document.activeElement === numberStartInput) {
+          numberErrorEl.scrollIntoView({ block: "nearest", inline: "nearest" });
+        }
+      }
+    }
+  };
+
+  // 起始序号调整后本次会话的连续递增从新起点重算。
+  // 空值、小数和超出 1–999 的数字留在框里并标红，不悄悄改回旧值。
   numberStartInput.addEventListener("change", () => {
-    const parsed = Number(numberStartInput.value);
-    if (!Number.isFinite(parsed)) {
-      numberStartInput.value = String(numberStart);
+    const raw = numberStartInput.value.trim();
+    if (!/^\d+$/.test(raw)) {
+      numberStartTip(true);
       return;
     }
-    const next = clamp(Math.round(parsed), MIN_NUMBER_START, MAX_NUMBER_START);
+    const next = Number(raw);
+    if (!Number.isSafeInteger(next) || next < MIN_NUMBER_START || next > MAX_NUMBER_START) {
+      numberStartTip(true);
+      return;
+    }
+    numberStartTip(false);
     numberStartInput.value = String(next);
     if (next === numberStart) {
       return;
@@ -2501,9 +2837,11 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
       moving = true;
       moveState = { index: hit, before: annotations[hit], grab: point, moved: false };
       redraw();
+      emitToolHint();
       return;
     }
     selected = null;
+    emitToolHint();
     if (!toolActive) {
       return;
     }
@@ -2516,6 +2854,7 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
         index: annotations.length,
         op: { type: "number", x: point.x, y: point.y, value, size: textSize(), color: styleColor },
       });
+      emitToolHint();
       redraw();
       syncUndo();
       return;
@@ -2576,6 +2915,7 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     moving = false;
     moveState = null;
     redraw();
+    emitToolHint();
     showContextMenu(event.clientX, event.clientY);
   });
 
@@ -2682,12 +3022,10 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     syncUndo();
   });
 
-  let skipUndoClick = false;
   undoBtn.addEventListener("pointerdown", (event) => {
+    // 按下时编辑器会失焦并提交。先拦住，交给紧接着的 click 一次做完提交和撤销。
     if (editorOpen()) {
       event.preventDefault();
-      cancelEditor();
-      skipUndoClick = true;
     }
   });
   editor.addEventListener("mousedown", (event) => event.stopPropagation());
@@ -2738,6 +3076,10 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     if (!button.dataset.tool && !button.dataset.action && button.closest("[data-style-panel]")) {
       return;
     }
+    // 变淡的按钮（裁剪未结束、或其它宿主锁定）不能切换工具、撤销或删除。
+    if (button.disabled || button.getAttribute("aria-disabled") === "true") {
+      return;
+    }
     const nextTool = button.dataset.tool;
     if (nextTool && isAnnotationTool(nextTool)) {
       setTool(nextTool);
@@ -2751,10 +3093,6 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
       return;
     }
     if (button.dataset.action === "undo") {
-      if (skipUndoClick) {
-        skipUndoClick = false;
-        return;
-      }
       undo();
     } else if (button.dataset.action === "redo") {
       redo();
@@ -2782,6 +3120,17 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
       return;
     }
     if (event.key === "Escape") {
+      // 取字、二维码、裁剪期间快捷键交给宿主。浮层在这里收起，但不吞掉 Esc，宿主才能退出当前模式。
+      if (!editable()) {
+        hideContextMenu();
+        if (!stylePanel.hidden) {
+          toggleStylePanel(false);
+        }
+        if (!morePanel.hidden) {
+          toggleMorePanel(false);
+        }
+        return;
+      }
       if (!contextMenu.hidden) {
         event.preventDefault();
         hideContextMenu(true);
@@ -2806,6 +3155,7 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
         event.preventDefault();
         selected = null;
         redraw();
+        emitToolHint();
         return;
       }
       return;
@@ -2815,6 +3165,14 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
       // 宿主接管工具(取字)时仍允许撤销/重做既有标注。
       const key = event.key.toLowerCase();
       if (key === "z" && !editorOpen()) {
+        const historyBtn = event.shiftKey ? redoBtn : undoBtn;
+        // 裁剪把撤销/重做标成 aria-disabled。这时不要 preventDefault，否则宿主收不到按键。
+        if (
+          historyBtn.disabled ||
+          historyBtn.getAttribute("aria-disabled") === "true"
+        ) {
+          return;
+        }
         event.preventDefault();
         if (event.shiftKey) {
           redo();
@@ -2824,6 +3182,9 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
         return;
       }
       if (key === "y" && !editorOpen()) {
+        if (redoBtn.disabled || redoBtn.getAttribute("aria-disabled") === "true") {
+          return;
+        }
         event.preventDefault();
         redo();
       }
@@ -2890,7 +3251,7 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
         button.textContent = t(option.labelKey);
         button.dataset.tooltip = t("preview.style.option_title", {
           label: t(option.labelKey),
-          value: option.value,
+          value: stylePixelLabel(option.value),
         });
       }
     });
@@ -2899,10 +3260,11 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
         (item) => String(item.value) === button.dataset.styleTextSize,
       );
       if (option) {
-        button.textContent = t(option.labelKey);
+        const pixels = stylePixelLabel(option.value);
+        button.textContent = pixels;
         button.dataset.tooltip = t("preview.style.option_title", {
           label: t(option.labelKey),
-          value: option.value,
+          value: pixels,
         });
       }
     });
@@ -2911,10 +3273,11 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
         (item) => String(item.value) === button.dataset.stickerSize,
       );
       if (option) {
-        button.textContent = t(option.labelKey);
+        const pixels = stylePixelLabel(option.value);
+        button.textContent = pixels;
         button.dataset.tooltip = t("preview.style.option_title", {
           label: t("preview.style.sticker_size"),
-          value: option.value,
+          value: pixels,
         });
       }
     });
@@ -2934,7 +3297,7 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     });
     stylePanel.querySelectorAll<HTMLButtonElement>("[data-style-color]").forEach((button) => {
       const color = button.dataset.styleColor ?? "";
-      button.dataset.tooltip = color;
+      button.dataset.tooltip = t("preview.style.color_aria", { color });
       button.setAttribute("aria-label", t("preview.style.color_aria", { color }));
     });
     stylePanel.querySelectorAll<HTMLButtonElement>("[data-erase-fill]").forEach((button) => {
@@ -2957,6 +3320,17 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     if (numberStartTipHost) {
       numberStartTipHost.dataset.tooltip = t("preview.style.number_title");
     }
+    if (numberErrorEl instanceof HTMLElement && !numberErrorEl.hidden) {
+      numberErrorEl.textContent = t("preview.style.number_error");
+    }
+    if (editorOpen()) {
+      editor.setAttribute("aria-description", t("preview.note.text_editing"));
+      emitToolHint();
+    }
+    syncToolUi();
+    equalizeStyleChoices();
+    // 语言刷新会把 data-i18n-title 写回悬停文案。编辑中的禁用原因要再盖回去。
+    syncUndo();
   };
 
   syncToolVisibility();
@@ -2969,6 +3343,9 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     syncToolVisibility();
     syncStylePanel();
     redraw();
+  });
+  void document.fonts.ready.then(() => {
+    equalizeStyleChoices();
   });
 
   return {
@@ -3013,6 +3390,7 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
       moving = false;
       moveState = null;
       redraw();
+      emitToolHint();
     },
     isTextEditing: editorOpen,
     hasContent: () =>
@@ -3034,6 +3412,15 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
       }
       syncToolVisibility();
       syncStylePanel();
+    },
+    dismissChrome: (): void => {
+      hideContextMenu();
+      if (!stylePanel.hidden) {
+        toggleStylePanel(false);
+      }
+      if (!morePanel.hidden) {
+        toggleMorePanel(false);
+      }
     },
   };
 }
@@ -3082,5 +3469,6 @@ function noopEditor(): AnnotationEditor {
     setStyle: () => undefined,
     refreshLabels: () => undefined,
     setEnabledTools: () => undefined,
+    dismissChrome: () => undefined,
   };
 }
