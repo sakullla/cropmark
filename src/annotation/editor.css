@@ -180,28 +180,6 @@ button.annotation-chrome[data-action="delete"]:focus-visible:not(:disabled):not(
   display: inline-flex;
 }
 
-/* 样式面板收起时，图标角上的色点就是当前墨色。不用颜色的工具不显示。 */
-button.annotation-chrome[data-action="style"] {
-  position: relative;
-}
-
-button.annotation-chrome[data-action="style"] .style-ink {
-  display: none;
-  position: absolute;
-  right: 3px;
-  bottom: 3px;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--swatch, var(--accent));
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 28%, transparent);
-  pointer-events: none;
-}
-
-button.annotation-chrome[data-action="style"].has-ink .style-ink {
-  display: block;
-}
-
 .annotation-style-panel {
   position: absolute;
   top: calc(100% + 8px);

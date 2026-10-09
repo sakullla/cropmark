@@ -571,7 +571,6 @@ export function mountRecordControl(root: HTMLElement): () => void {
     const styleButton = annotateHost.querySelector("[data-annotate-style]");
     if (styleButton instanceof HTMLButtonElement) {
       styleButton.classList.toggle("is-active", styleOpen);
-      styleButton.style.setProperty("--swatch", styleColor);
     }
     annotateHost.querySelectorAll<HTMLButtonElement>("[data-style-color]").forEach((button) => {
       const on = (button.dataset.styleColor ?? "").toLowerCase() === styleColor.toLowerCase();
@@ -698,15 +697,11 @@ export function mountRecordControl(root: HTMLElement): () => void {
     const styleButton = document.createElement("button");
     styleButton.type = "button";
     styleButton.dataset.annotateStyle = "true";
-    styleButton.className = "record-style-toggle";
     styleButton.setAttribute("aria-haspopup", "true");
-    const styleDot = document.createElement("span");
-    styleDot.className = "record-style-dot";
-    styleDot.setAttribute("aria-hidden", "true");
     const styleLabel = document.createElement("span");
     styleLabel.className = "record-style-label";
     styleLabel.textContent = t("preview.tool.style_title");
-    styleButton.append(styleDot, styleLabel);
+    styleButton.append(styleLabel);
     styleButton.addEventListener("click", () => {
       styleOpen = !styleOpen;
       syncAnnotateStyle();

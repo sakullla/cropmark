@@ -585,20 +585,6 @@ html[data-chrome="border"] #app {
   pointer-events: none;
 }
 
-/* 样式面板收起时，按钮上的色点就是当前墨色，不用打开才知道下一笔是什么颜色。 */
-.record-annotate button.record-style-toggle {
-  gap: 6px;
-}
-
-.record-style-dot {
-  width: 10px;
-  height: 10px;
-  flex: 0 0 auto;
-  border-radius: 50%;
-  background: var(--swatch, var(--accent));
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 28%, transparent);
-}
-
 .record-annotate button[data-annotate-action="delete"]:hover:not(:disabled):not([aria-disabled="true"]):not(:active),
 .record-annotate button[data-annotate-action="delete"]:focus-visible:not(:disabled):not([aria-disabled="true"]):not(:active) {
   color: var(--danger);

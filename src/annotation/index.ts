@@ -1360,7 +1360,7 @@ function toolbarMarkup(inlineTools: boolean): string {
     ${chromeButton("redo", "preview.tool.redo_title", "preview.tool.redo", icons.redo)}
     ${chromeButton("delete", "preview.tool.delete_title", "preview.tool.delete", icons.trash)}
     <div class="annotation-style" data-style-root>
-      <button type="button" class="annotation-chrome" data-action="style" data-i18n-title="preview.tool.style_title" data-i18n-aria-label="preview.tool.style_title" data-tooltip="${t("preview.tool.style_title")}" aria-label="${t("preview.tool.style_title")}" aria-haspopup="true" aria-expanded="false">${icons.style}<span class="style-ink" aria-hidden="true"></span><span class="tool-label" data-i18n="preview.tool.style_title">${t("preview.tool.style_title")}</span></button>
+      <button type="button" class="annotation-chrome" data-action="style" data-i18n-title="preview.tool.style_title" data-i18n-aria-label="preview.tool.style_title" data-tooltip="${t("preview.tool.style_title")}" aria-label="${t("preview.tool.style_title")}" aria-haspopup="true" aria-expanded="false">${icons.style}<span class="tool-label" data-i18n="preview.tool.style_title">${t("preview.tool.style_title")}</span></button>
       <div class="annotation-style-panel" data-style-panel hidden>
         <div class="style-group" data-style-group="mode" hidden>
           <span class="style-label" data-i18n="preview.style.mode">模式</span>
@@ -2431,8 +2431,6 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
       });
     }
     colorGroup.hidden = !enabled || !COLOR_STYLE_TOOLS.has(tool);
-    styleBtn.classList.toggle("has-ink", enabled && COLOR_STYLE_TOOLS.has(tool));
-    styleBtn.style.setProperty("--swatch", styleColor);
     widthGroup.hidden = !enabled || !WIDTH_STYLE_TOOLS.has(tool);
     // 字号只跟文字工具。箭头、序号、气泡都不带字号。
     textSizeGroup.hidden = !enabled || tool !== "text";
