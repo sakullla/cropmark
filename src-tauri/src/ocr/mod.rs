@@ -1,7 +1,7 @@
 mod engine;
 pub mod hit;
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
@@ -79,34 +79,39 @@ pub fn remap_document(
 /// 最近一次识别结果(预览变换快照与重映射共用)。
 pub fn last_document(app: &AppHandle) -> Option<OcrDocument> {
     let runtime = app.state::<OcrRuntime>();
-    let inner = runtime.lock();
-    inner.last.clone()
+    let doc = lock(&runtime.last).doc.clone();
+    doc
 }
 
-/// 撤销/重做预览变换时恢复同一坐标基准下的识别结果。
+/// 撤销/重做预览变换时恢复同一坐标基准下的识别结果。写入递增代数:
+/// 识别期间发生过重基后,进行中的识别结果不再覆盖重基后的文档。
 pub fn set_last_document(app: &AppHandle, doc: Option<OcrDocument>) {
     let runtime = app.state::<OcrRuntime>();
-    let mut inner = runtime.lock();
-    inner.last = doc;
+    let mut last = lock(&runtime.last);
+    last.doc = doc;
+    last.revision += 1;
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[derive(Default)]
 pub struct OcrRuntime {
-    inner: Mutex<OcrInner>,
+    /// 推理引擎独立成锁:首次模型加载与整图重试推理只占这把锁,读写
+    /// `last` 的命令(预览变换、copy_ocr_*/search)不再被识别阻塞。
+    /// 并发识别经内层引擎锁串行,与拆锁前的单锁行为等价。
+    engine: Mutex<Option<Arc<Mutex<Engine>>>>,
+    /// 最近一次识别结果与写入代数。
+    last: Mutex<OcrLast>,
 }
 
 #[derive(Default)]
-struct OcrInner {
-    engine: Option<Engine>,
-    last: Option<OcrDocument>,
-}
-
-impl OcrRuntime {
-    fn lock(&self) -> std::sync::MutexGuard<'_, OcrInner> {
-        self.inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
+struct OcrLast {
+    doc: Option<OcrDocument>,
+    revision: u64,
 }
 
 pub fn prepared_clipboard_text(text: &str, empty: OcrError) -> Result<&str, OcrError> {
@@ -164,47 +169,66 @@ fn recognize_blocking_inner(
     // R7:引擎懒加载属 preparing 阶段(首次识别包含模型装载,耗时最长)。
     emit_stage(OcrStage::Preparing);
     let runtime = app.state::<OcrRuntime>();
-    let mut inner = runtime.lock();
-    if inner.engine.is_none() {
-        match Engine::load(&resolve_model_dir(app)) {
-            Ok(engine) => {
-                log::info!("ocr loaded");
-                inner.engine = Some(engine);
-            }
-            Err(error) => {
-                log::warn!("ocr load failed kind={}", error.key());
-                inner.last = None;
-                return Err(error.user_message());
+    // 识别开始时的文档代数:完成后仅当期间无重基写入时才更新最近结果,
+    // 旧帧坐标不覆盖重基后的文档(R6:文档与帧同源)。
+    let revision = lock(&runtime.last).revision;
+    // 引擎槽锁只护住加载本身;随后释放,推理在内层引擎锁上进行。
+    let engine = {
+        let mut slot = lock(&runtime.engine);
+        if slot.is_none() {
+            match Engine::load(&resolve_model_dir(app)) {
+                Ok(engine) => {
+                    log::info!("ocr loaded");
+                    *slot = Some(Arc::new(Mutex::new(engine)));
+                }
+                Err(error) => {
+                    log::warn!("ocr load failed kind={}", error.key());
+                    store_recognized(&runtime, revision, None);
+                    return Err(error.user_message());
+                }
             }
         }
-    }
+        Arc::clone(slot.as_ref().expect("ocr engine loaded"))
+    };
     let width = frame.width;
     let height = frame.height;
-    let engine = inner.engine.as_mut().expect("ocr engine loaded");
-    match engine.recognize_reporting(frame, true, &mut emit_stage) {
+    let mut engine = lock(&engine);
+    let outcome = engine.recognize_reporting(frame, true, &mut emit_stage);
+    // 结果写回在引擎锁释放前完成:并发识别后完成者后写入,与拆锁前的
+    // 单锁串行顺序一致。
+    match outcome {
         Ok(doc) => {
             log::info!(
                 "ocr recognized spans={} chars={} size={width}x{height}",
                 doc.spans.len(),
                 doc.full_text.chars().count()
             );
-            inner.last = Some(doc.clone());
+            store_recognized(&runtime, revision, Some(doc.clone()));
             Ok(doc)
         }
         Err(error) => {
             log::warn!("ocr failed kind={}", error.key());
-            inner.last = None;
+            store_recognized(&runtime, revision, None);
             Err(error.user_message())
         }
+    }
+}
+
+/// 识别完成写回最近结果:仅当识别期间没有重基写入(`set_last_document`)
+/// 时生效,保证文档坐标始终与当前帧同源。
+fn store_recognized(runtime: &OcrRuntime, revision: u64, doc: Option<OcrDocument>) {
+    let mut last = lock(&runtime.last);
+    if last.revision == revision {
+        last.doc = doc;
     }
 }
 
 #[tauri::command]
 pub fn copy_ocr_point(app: AppHandle, x: f64, y: f64) -> Result<String, String> {
     let runtime = app.state::<OcrRuntime>();
-    let inner = runtime.lock();
+    let inner = lock(&runtime.last);
     let doc = inner
-        .last
+        .doc
         .as_ref()
         .ok_or_else(|| OcrError::NoText.user_message())?;
     let index = hit_point(&doc.spans, x, y).ok_or_else(|| OcrError::NoSelection.user_message())?;
@@ -221,9 +245,9 @@ pub fn copy_ocr_rect(
     height: f64,
 ) -> Result<String, String> {
     let runtime = app.state::<OcrRuntime>();
-    let inner = runtime.lock();
+    let inner = lock(&runtime.last);
     let doc = inner
-        .last
+        .doc
         .as_ref()
         .ok_or_else(|| OcrError::NoText.user_message())?;
     let hits = hit_rect(
@@ -242,9 +266,9 @@ pub fn copy_ocr_rect(
 #[tauri::command]
 pub fn copy_ocr_all(app: AppHandle) -> Result<String, String> {
     let runtime = app.state::<OcrRuntime>();
-    let inner = runtime.lock();
+    let inner = lock(&runtime.last);
     let doc = inner
-        .last
+        .doc
         .as_ref()
         .ok_or_else(|| OcrError::NoText.user_message())?;
     let text = recognized_text(doc);
@@ -256,9 +280,9 @@ pub fn copy_ocr_all(app: AppHandle) -> Result<String, String> {
 pub fn copy_ocr_fragment(app: AppHandle, text: String) -> Result<String, String> {
     let fragment = {
         let runtime = app.state::<OcrRuntime>();
-        let inner = runtime.lock();
+        let inner = lock(&runtime.last);
         let doc = inner
-            .last
+            .doc
             .as_ref()
             .ok_or_else(|| OcrError::NoText.user_message())?;
         accepted_fragment(&recognized_text(doc), &text).map_err(|error| error.user_message())?
@@ -270,8 +294,8 @@ pub fn copy_ocr_fragment(app: AppHandle, text: String) -> Result<String, String>
 #[tauri::command]
 pub fn search_ocr_panel(app: AppHandle, query: String) -> Vec<PanelMatch> {
     let runtime = app.state::<OcrRuntime>();
-    let inner = runtime.lock();
-    let Some(doc) = inner.last.as_ref() else {
+    let inner = lock(&runtime.last);
+    let Some(doc) = inner.doc.as_ref() else {
         return Vec::new();
     };
     panel_matches(&recognized_text(doc), &query)
