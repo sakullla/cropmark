@@ -830,7 +830,12 @@ export function mountPin(root: HTMLElement): () => void {
   void listen("pin-cleared", () => {
     image = null;
     state = null;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    // clearRect 不释放后备存储:池化的隐藏窗口会按上一贴图的分辨率一直驻留,
+    // 把画布缩到 0 交还内存;下一次 render() 按新图重设尺寸。
+    if (canvas.width !== 0 || canvas.height !== 0) {
+      canvas.width = 0;
+      canvas.height = 0;
+    }
     syncUi();
   });
 

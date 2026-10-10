@@ -829,6 +829,9 @@ function paintArrow(ctx: CanvasRenderingContext2D, from: Point, to: Point, lineW
   ctx.fill();
 }
 
+// 马赛克预览:离屏降采样取块色,再就近放大回区域。块均视觉等价(遮盖类只要求
+// 视觉不可还原),把逐帧整块 getImageData 读回与 JS 逐像素循环换成两次绘制调用,
+// 与 Rust 侧独立 pixelate 的最终输出互不影响。
 function paintMosaic(
   ctx: CanvasRenderingContext2D,
   op: Extract<Annotation, { type: "mosaic" }>,
@@ -843,43 +846,19 @@ function paintMosaic(
   if (maxW <= 0 || maxH <= 0) {
     return;
   }
-  const data = ctx.getImageData(x, y, maxW, maxH);
-  const px = data.data;
-  for (let by = 0; by < maxH; by += block) {
-    const bh = Math.min(block, maxH - by);
-    for (let bx = 0; bx < maxW; bx += block) {
-      const bw = Math.min(block, maxW - bx);
-      let r = 0;
-      let g = 0;
-      let b = 0;
-      let n = 0;
-      for (let pyy = 0; pyy < bh; pyy += 1) {
-        for (let pxx = 0; pxx < bw; pxx += 1) {
-          const i = ((by + pyy) * maxW + (bx + pxx)) * 4;
-          r += px[i];
-          g += px[i + 1];
-          b += px[i + 2];
-          n += 1;
-        }
-      }
-      if (n === 0) {
-        continue;
-      }
-      r = Math.round(r / n);
-      g = Math.round(g / n);
-      b = Math.round(b / n);
-      for (let pyy = 0; pyy < bh; pyy += 1) {
-        for (let pxx = 0; pxx < bw; pxx += 1) {
-          const i = ((by + pyy) * maxW + (bx + pxx)) * 4;
-          px[i] = r;
-          px[i + 1] = g;
-          px[i + 2] = b;
-          px[i + 3] = 255;
-        }
-      }
-    }
+  const small = document.createElement("canvas");
+  small.width = Math.max(1, Math.ceil(maxW / block));
+  small.height = Math.max(1, Math.ceil(maxH / block));
+  const smallCtx = small.getContext("2d");
+  if (!smallCtx) {
+    return;
   }
-  ctx.putImageData(data, x, y);
+  smallCtx.imageSmoothingEnabled = true;
+  smallCtx.drawImage(ctx.canvas, x, y, maxW, maxH, 0, 0, small.width, small.height);
+  const smoothing = ctx.imageSmoothingEnabled;
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(small, 0, 0, small.width, small.height, x, y, maxW, maxH);
+  ctx.imageSmoothingEnabled = smoothing;
 }
 
 // ctx.filter 支持探测只需一次;不支持时(旧版 WebKit)退回降采样近似。

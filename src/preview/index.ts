@@ -501,23 +501,32 @@ export function mountPreview(root: HTMLElement): () => void {
       button.setAttribute("aria-checked", value);
     }
   };
+  // 取字/二维码状态签名:图上拖橡皮筋时 onChange 每个鼠标事件都到,但影响
+  // 工具条布局的状态(激活态/可复制)不变。签名不变时只保留画布重绘,
+  // 跳过工具条同步与溢出重排,layoutEpoch 不再被逐事件递增到缓存永远失效。
+  let recognitionToolbarToken = "";
   const syncRecognitionToolbar = (): void => {
     const ocrActive = ocrModel?.active === true;
     const qrActive = qrModel?.active === true;
-    ocrLayout.sync(ocrActive);
-    ocrBtn.classList.toggle("active", ocrActive);
-    qrBtn.classList.toggle("active", qrActive);
-    markPressed(ocrBtn, ocrActive);
-    markPressed(qrBtn, qrActive);
     const canCopyAll = ocrActive && (ocrModel?.document()?.spans.length ?? 0) > 0;
-    // 取字一开始就占位。识别完成、按钮从无到有时，工具条不再被挤开一格。
-    copyAllBtn.hidden = !ocrActive;
-    copyAllBtn.classList.toggle("is-reserved", ocrActive && !canCopyAll);
-    copyAllBtn.disabled = ocrActive && !canCopyAll;
-    if (ocrActive && !canCopyAll) {
-      copyAllBtn.setAttribute("aria-hidden", "true");
-    } else {
-      copyAllBtn.removeAttribute("aria-hidden");
+    const token = `${ocrActive}|${qrActive}|${canCopyAll}`;
+    const toolbarChanged = token !== recognitionToolbarToken;
+    recognitionToolbarToken = token;
+    if (toolbarChanged) {
+      ocrLayout.sync(ocrActive);
+      ocrBtn.classList.toggle("active", ocrActive);
+      qrBtn.classList.toggle("active", qrActive);
+      markPressed(ocrBtn, ocrActive);
+      markPressed(qrBtn, qrActive);
+      // 取字一开始就占位。识别完成、按钮从无到有时，工具条不再被挤开一格。
+      copyAllBtn.hidden = !ocrActive;
+      copyAllBtn.classList.toggle("is-reserved", ocrActive && !canCopyAll);
+      copyAllBtn.disabled = ocrActive && !canCopyAll;
+      if (ocrActive && !canCopyAll) {
+        copyAllBtn.setAttribute("aria-hidden", "true");
+      } else {
+        copyAllBtn.removeAttribute("aria-hidden");
+      }
     }
     if (!ocrActive && !qrActive && (ocrWasActive || qrWasActive)) {
       editor?.setTool(editor.tool());
@@ -528,9 +537,11 @@ export function mountPreview(root: HTMLElement): () => void {
     }
     ocrWasActive = ocrActive;
     qrWasActive = qrActive;
-    syncToolDataset();
+    if (toolbarChanged) {
+      syncToolDataset();
+      requestOverflowLayout();
+    }
     redraw();
-    requestOverflowLayout();
   };
 
   const syncWritebackUi = (): void => {
@@ -1557,6 +1568,20 @@ export function mountPreview(root: HTMLElement): () => void {
     syncToolDataset();
   };
 
+  // 拖选期间的裁剪条同步按帧合并:选区端点仍逐事件更新(松开取值准确),
+  // 工具条/裁剪条的 DOM 写与几何读(getBoundingClientRect/offsetWidth)每帧
+  // 至多一次,不再以鼠标事件频率写后读强制布局。
+  let cropUiFrame = 0;
+  const scheduleCropUi = (): void => {
+    if (cropUiFrame) {
+      return;
+    }
+    cropUiFrame = requestAnimationFrame(() => {
+      cropUiFrame = 0;
+      syncCropUi();
+    });
+  };
+
   const syncActivity = (): void => {
     const active = busy || loading;
     root.setAttribute("aria-busy", String(active));
@@ -1788,7 +1813,12 @@ export function mountPreview(root: HTMLElement): () => void {
     setBusy(true);
     setNoteKey("preview.note.updating_pin");
     try {
+      const generation = previewLoad;
       await invoke("update_pin_from_preview", { annotations: editor?.exportList() ?? [] });
+      // 成功后 Rust 已隐藏预览窗(复用不销毁):同步释放驻留位图。
+      if (generation === previewLoad) {
+        releasePreviewMemory();
+      }
     } catch (error) {
       setNote(invokeError(error, t("preview.error.update_pin_fallback")), "error");
     } finally {
@@ -1796,10 +1826,29 @@ export function mountPreview(root: HTMLElement): () => void {
     }
   };
 
+  /// 预览关闭(后端已隐藏复用窗口)后释放源画布与显示画布的后备存储,
+  /// 避免托盘常驻的隐藏 WebView 按整幅截图分辨率驻留;下一次 loadPreview
+  /// 全量复位并按新帧重设画布尺寸。
+  const releasePreviewMemory = (): void => {
+    source = null;
+    frame = null;
+    if (canvas.width !== 0 || canvas.height !== 0) {
+      canvas.width = 0;
+      canvas.height = 0;
+    }
+  };
+
   const closePreview = (): void => {
-    void invoke("close_preview").catch((error) => {
-      setNote(invokeError(error, t("preview.error.close_fallback")), "error");
-    });
+    const generation = previewLoad;
+    void invoke("close_preview")
+      .then(() => {
+        if (generation === previewLoad) {
+          releasePreviewMemory();
+        }
+      })
+      .catch((error) => {
+        setNote(invokeError(error, t("preview.error.close_fallback")), "error");
+      });
   };
 
   // 裁剪拖选优先;取字/二维码识别期间交给共享模型,画布不接受标注输入。
@@ -1834,7 +1883,7 @@ export function mountPreview(root: HTMLElement): () => void {
         return;
       }
       cropCurrent = physicalPoint(event);
-      syncCropUi();
+      scheduleCropUi();
       redraw();
       return;
     }

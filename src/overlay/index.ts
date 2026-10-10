@@ -259,6 +259,8 @@ export function mountOverlay(root: HTMLElement): () => void {
   const SNAP_DRAG_THRESHOLD = 3;
   /// 最近一次指针在宿主内的 CSS 坐标。尺寸徽标用它避开光标热点。
   let pointer: { x: number; y: number } | null = null;
+  /// 最近一次指针的窗口客户区坐标;徽标布局按帧合并时再换算宿主坐标。
+  let pointerEvent: { x: number; y: number } | null = null;
   /// 当前徽标对应的帧矩形;为空则不显示。
   let badgeTarget: Selection | null = null;
   /// R21:即时标注会话阶段;"select" 拖选区,"annotate" 选区固定后可标注。
@@ -615,10 +617,24 @@ export function mountOverlay(root: HTMLElement): () => void {
       canvas.width = geometry.width;
       canvas.height = geometry.height;
     }
-    canvas.style.width = `${geometry.cssWidth}px`;
-    canvas.style.height = `${geometry.cssHeight}px`;
-    canvas.style.left = `${geometry.left}px`;
-    canvas.style.top = `${geometry.top}px`;
+    // 样式写入同样只在变化时执行:逐帧 draw 不再弄脏布局,鼠标事件的
+    // 几何读恢复为浏览器缓存命中。
+    const cssWidth = `${geometry.cssWidth}px`;
+    const cssHeight = `${geometry.cssHeight}px`;
+    const cssLeft = `${geometry.left}px`;
+    const cssTop = `${geometry.top}px`;
+    if (canvas.style.width !== cssWidth) {
+      canvas.style.width = cssWidth;
+    }
+    if (canvas.style.height !== cssHeight) {
+      canvas.style.height = cssHeight;
+    }
+    if (canvas.style.left !== cssLeft) {
+      canvas.style.left = cssLeft;
+    }
+    if (canvas.style.top !== cssTop) {
+      canvas.style.top = cssTop;
+    }
   };
 
   const physicalPoint = (event: MouseEvent): { x: number; y: number } => {
@@ -827,6 +843,26 @@ export function mountOverlay(root: HTMLElement): () => void {
   const placeBadge = (crop: Selection): void => {
     badgeTarget = crop;
     layoutBadge();
+  };
+
+  // 徽标跟随光标:指针宿主坐标换算与徽标几何读按帧合并,高频 mousemove
+  // 只记账不触发布局,写后读的强制重排降到每帧至多一次。
+  let badgeLayoutRaf = 0;
+  const scheduleBadgeLayout = (): void => {
+    if (badgeLayoutRaf) {
+      return;
+    }
+    badgeLayoutRaf = requestAnimationFrame(() => {
+      badgeLayoutRaf = 0;
+      if (!pointerEvent) {
+        return;
+      }
+      const host = root.getBoundingClientRect();
+      pointer = { x: pointerEvent.x - host.left, y: pointerEvent.y - host.top };
+      if (badgeTarget && !dragging) {
+        layoutBadge();
+      }
+    });
   };
 
   // 结果面板左右槽:顶距与边距跟 overlay.css 一致。没有正面积矩形时留在右侧。
@@ -1100,6 +1136,7 @@ export function mountOverlay(root: HTMLElement): () => void {
       clearSnap();
       clearBadge();
       pointer = null;
+      pointerEvent = null;
       // 旧帧位图先摘除,避免重置标注会话触发的重绘读到未加载的新图。
       image = null;
       annotationBase = null;
@@ -1175,6 +1212,37 @@ export function mountOverlay(root: HTMLElement): () => void {
     }
   };
 
+  /// 会话收尾(确认/取消/工作区导出成功,后端已隐藏本窗)后立即释放冻帧
+  /// 位图与各画布后备存储,避免托盘常驻的隐藏 WebView 按显示器分辨率驻留。
+  /// 复用路径全部重建兜底:load() 重取帧,ensureAnnotationLayer/
+  /// ensureAnnotationBase/fitCanvas 按新会话尺寸重分配。
+  const releaseSessionMemory = (): void => {
+    image = null;
+    annotationBase = null;
+    if (annotationLayer) {
+      annotationLayer.width = 0;
+      annotationLayer.height = 0;
+      annotationLayer = null;
+    }
+    if (canvas.width !== 0 || canvas.height !== 0) {
+      canvas.width = 0;
+      canvas.height = 0;
+    }
+  };
+
+  /// 会话收尾命令:成功后经代际校验再释放(新会话已 load 时不触碰);
+  /// 失败照旧抛给调用方的既有重试路径。
+  const invokeSessionEnd = async (
+    command: string,
+    args?: Record<string, unknown>,
+  ): Promise<void> => {
+    const generation = loadGeneration;
+    await invoke(command, args);
+    if (generation === loadGeneration) {
+      releaseSessionMemory();
+    }
+  };
+
   const finishRegion = async (): Promise<void> => {
     // 录屏与区域截图都走 confirm_region。选区太小只留说明,不收起覆盖层。
     if (finishing || !frame || !isRegionSelectionMode(frame.mode)) {
@@ -1191,7 +1259,7 @@ export function mountOverlay(root: HTMLElement): () => void {
     const annotations = editor?.exportList() ?? [];
     setFinishing(true);
     try {
-      await invoke("confirm_region", {
+      await invokeSessionEnd("confirm_region", {
         x: crop.x,
         y: crop.y,
         width: crop.width,
@@ -1212,7 +1280,7 @@ export function mountOverlay(root: HTMLElement): () => void {
     }
     setFinishing(true);
     try {
-      await invoke("confirm_window", { windowId });
+      await invokeSessionEnd("confirm_window", { windowId });
     } catch (error) {
       setFinishing(false);
       showFailure(invokeError(error, t("overlay.error.capture_failed")), () => {
@@ -1416,7 +1484,7 @@ export function mountOverlay(root: HTMLElement): () => void {
   });
 
   const afterExport = async (kind: string, name?: string): Promise<void> => {
-    await invoke("complete_workspace", { kind, name: name ?? null });
+    await invokeSessionEnd("complete_workspace", { kind, name: name ?? null });
   };
 
   const copyWorkspace = async (): Promise<void> => {
@@ -1496,7 +1564,7 @@ export function mountOverlay(root: HTMLElement): () => void {
     editor?.commitText();
     setFinishing(true);
     try {
-      await invoke("edit_workspace_further", { annotations: currentAnnotations() });
+      await invokeSessionEnd("edit_workspace_further", { annotations: currentAnnotations() });
     } catch (error) {
       setFinishing(false);
       showNotice(invokeError(error, t("overlay.error.capture_failed")), false, "error");
@@ -1563,11 +1631,8 @@ export function mountOverlay(root: HTMLElement): () => void {
   });
 
   window.addEventListener("mousemove", (event) => {
-    const host = root.getBoundingClientRect();
-    pointer = { x: event.clientX - host.left, y: event.clientY - host.top };
-    if (badgeTarget && !dragging) {
-      layoutBadge();
-    }
+    pointerEvent = { x: event.clientX, y: event.clientY };
+    scheduleBadgeLayout();
     if (!frame) {
       return;
     }
@@ -1681,7 +1746,7 @@ export function mountOverlay(root: HTMLElement): () => void {
   const cancel = (): void => {
     loadGeneration += 1;
     dragging = false;
-    void invoke("cancel_capture");
+    void invokeSessionEnd("cancel_capture");
   };
 
   // 窗口模式下右键=取消(Esc 失焦卡住时的兜底);区域模式右键=动作菜单,

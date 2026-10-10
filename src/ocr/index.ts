@@ -342,8 +342,20 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
     button.textContent = t(key);
     button.classList.remove("is-copied");
   };
+  // 文案宽度按语言+类名缓存:图上拖橡皮筋时 renderPanel→syncActions 每个鼠标
+  // 事件都会走到,克隆探针逐次 append+测量会在事件频率上强制整页布局。
+  // 与 progressWidthCache/searchCountWidthCache 同一套思路。
+  const buttonTextWidthCache = new Map<string, string>();
   const reserveButtonTextWidth = (button: HTMLButtonElement, texts: readonly string[]): void => {
     if (!button.isConnected) {
+      return;
+    }
+    const cacheKey = `${currentLanguage()}|${button.className}|${texts.join("\u0000")}`;
+    const cached = buttonTextWidthCache.get(cacheKey);
+    if (cached !== undefined) {
+      if (button.style.minWidth !== cached) {
+        button.style.minWidth = cached;
+      }
       return;
     }
     const probe = button.cloneNode(false);
@@ -366,7 +378,9 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
     }
     probe.remove();
     if (widest > 0) {
-      button.style.minWidth = `${Math.ceil(widest)}px`;
+      const minWidth = `${Math.ceil(widest)}px`;
+      buttonTextWidthCache.set(cacheKey, minWidth);
+      button.style.minWidth = minWidth;
     }
   };
   const reserveCopyWidths = (): void => {
@@ -752,19 +766,29 @@ export function mountOcrModel(options: OcrModelOptions): OcrModel {
     stateTitle.hidden = running;
     stateHint.hidden = running;
     retryBtn.hidden = running;
-    stateTitle.textContent = recognitionError ?? t("preview.error.no_text");
+    // 同值不再重建文本节点:renderPanel 随拖橡皮筋逐事件执行,文本节点重建
+    // 会在事件频率上弄脏布局。
+    const stateTitleText = recognitionError ?? t("preview.error.no_text");
+    if (stateTitle.textContent !== stateTitleText) {
+      stateTitle.textContent = stateTitleText;
+    }
     // 引擎失败和「图里没有字」共用这一块。失败用危险色，空结果仍是正文。
     stateTitle.classList.toggle("is-error", recognitionError !== null);
     panel.setAttribute("aria-busy", String(running));
     if (ready && doc) {
-      summary.textContent = t("preview.ocr_panel.count", {
+      const summaryText = t("preview.ocr_panel.count", {
         count: Array.from(doc.fullText).length,
         lines: doc.fullText.split("\n").length,
       });
+      if (summary.textContent !== summaryText) {
+        summary.textContent = summaryText;
+      }
       // 字数本身不是操作说明。有正文时悬停才提示怎么选。
       summary.dataset.tooltip = t("preview.ocr_panel.selection_hint");
     } else {
-      summary.textContent = t("preview.ocr_panel.subtitle");
+      if (summary.textContent !== t("preview.ocr_panel.subtitle")) {
+        summary.textContent = t("preview.ocr_panel.subtitle");
+      }
       delete summary.dataset.tooltip;
     }
     if (ready && !panelHasDomSelection()) {
