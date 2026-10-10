@@ -792,7 +792,7 @@ dependencies = [
 
 [[package]]
 name = "cropmark"
-version = "0.3.23"
+version = "0.3.24"
 dependencies = [
  "ab_glyph",
  "arboard",
