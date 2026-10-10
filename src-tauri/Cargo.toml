@@ -10,7 +10,9 @@ rust-version = "1.85"
 
 [lib]
 name = "cropmark_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# 纯桌面应用:bin 经 rlib 链接本库;staticlib/cdylib 仅供 Tauri 移动端
+# (iOS/Android)使用,本仓库不目标这些平台,不再产出约 500MB 静态库归档。
+crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
