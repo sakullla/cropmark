@@ -393,14 +393,24 @@ fn remove_entry_files(dir: &Path, entry: &HistoryEntry) {
 
 /// 写入一条记录:PNG 与缩略图都编码完成后才进入索引临界区;索引写入失败
 /// 时回滚新文件,淘汰的旧文件在索引更新成功后删除,避免索引引用缺失文件。
+/// `precomputed_png` 为完成路径已编码的同像素 PNG(字节级相同),传入时跳过
+/// 第二次编码;无现成编码(如工作区静默完成)时回退现场编码。
 pub fn record_frame(
     dir: &Path,
     frame: &Frame,
     limit: u32,
     created_at: u64,
     mode: Option<&str>,
+    precomputed_png: Option<&[u8]>,
 ) -> Result<HistoryEntry, String> {
-    let png = encode_png(frame).map_err(|error| error.user_message())?;
+    let encoded;
+    let png: &[u8] = match precomputed_png {
+        Some(png) => png,
+        None => {
+            encoded = encode_png(frame).map_err(|error| error.user_message())?;
+            &encoded
+        }
+    };
     let thumb = thumbnail_png(frame)?;
     let _guard = lock_store();
     fs::create_dir_all(dir)
@@ -638,7 +648,13 @@ pub fn clear_entries(dir: &Path) -> Result<(), String> {
 /// 完成路径调用:仅当 history.enabled 时把最终帧交给后台线程落盘,
 /// 编码与缩略图生成都在 spawn_blocking 内,不阻塞完成路径。
 /// `mode` 由调用方在会话仍在时取好,避免后台线程读到已清空的会话。
-pub fn record_capture(app: &AppHandle, frame: Frame, mode: Option<crate::hotkeys::CaptureMode>) {
+/// `png` 为同一帧的现成编码(完成路径已编码过),后台直接落盘,避免二次编码。
+pub fn record_capture(
+    app: &AppHandle,
+    frame: Frame,
+    mode: Option<crate::hotkeys::CaptureMode>,
+    png: Option<Vec<u8>>,
+) {
     let settings = crate::settings::current_history(app);
     if !settings.enabled {
         log::debug!("history skipped kind=disabled");
@@ -650,9 +666,14 @@ pub fn record_capture(app: &AppHandle, frame: Frame, mode: Option<crate::hotkeys
     let dir = history_dir(app);
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        if let Err(error) =
-            record_frame(&dir, &frame, settings.limit, now_millis(), mode.as_deref())
-        {
+        if let Err(error) = record_frame(
+            &dir,
+            &frame,
+            settings.limit,
+            now_millis(),
+            mode.as_deref(),
+            png.as_deref(),
+        ) {
             log::warn!("history write failed kind=io");
             eprintln!("Cropmark: 无法写入截图历史：{error}");
             crate::capture::ui::show_toast_key(&app, "toast.history_write_failed");
@@ -711,11 +732,20 @@ pub fn get_history_thumbnail(app: AppHandle, id: String) -> Result<tauri::ipc::R
     read_thumbnail(&history_dir(&app), &id).map(tauri::ipc::Response::new)
 }
 
+/// 复制一条历史:读盘、解码与剪贴板写入都在阻塞线程(与 `reedit_history_entry`
+/// 同一约定),主线程不被大图 IO/像素工作占用。
 #[tauri::command]
-pub fn copy_history_entry(app: AppHandle, id: String) -> Result<(), String> {
-    let (_, png) = read_entry(&history_dir(&app), &id)?;
-    let frame = decode_png(&png).map_err(friendly)?;
-    crate::clipboard::copy_frame_with_png(&frame, &png).map_err(friendly)
+pub async fn copy_history_entry(app: AppHandle, id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking({
+        let app = app.clone();
+        move || {
+            let (_, png) = read_entry(&history_dir(&app), &id)?;
+            let frame = decode_png(&png).map_err(friendly)?;
+            crate::clipboard::copy_frame_with_png(&frame, &png).map_err(friendly)
+        }
+    })
+    .await
+    .map_err(|_| i18n::t("error.history.failed"))?
 }
 
 /// 再编辑:把该条历史图像装入现有预览,不写回贴图,也不改历史目录。
@@ -853,7 +883,7 @@ mod tests {
         limit: u32,
         created_at: u64,
     ) -> Result<HistoryEntry, String> {
-        record_frame(dir, frame, limit, created_at, None)
+        record_frame(dir, frame, limit, created_at, None, None)
     }
 
     fn solid(width: u32, height: u32, color: [u8; 4]) -> Frame {
@@ -867,6 +897,19 @@ mod tests {
             rgba,
             scale: 1.0,
         }
+    }
+
+    #[test]
+    fn record_frame_reuses_precomputed_png_bytes() {
+        let dir = temp_dir("precomputed-png");
+        let frame = solid(6, 4, [7, 8, 9, 255]);
+        let encoded = encode_png(&frame).unwrap();
+        let live = record_frame(&dir, &frame, 20, 1, None, None).unwrap();
+        let reused = record_frame(&dir, &frame, 20, 2, None, Some(&encoded)).unwrap();
+        let read = |entry: &HistoryEntry| fs::read(dir.join(&entry.file_name)).unwrap();
+        assert_eq!(read(&live), read(&reused));
+        assert_eq!(read(&reused), encoded);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1050,7 +1093,8 @@ mod tests {
     #[test]
     fn delete_undo_restores_entry_with_metadata_and_is_once_only() {
         let dir = temp_dir("undo-delete");
-        let entry = record_frame(&dir, &solid(8, 8, [1, 1, 1, 255]), 20, 1, Some("long")).unwrap();
+        let entry =
+            record_frame(&dir, &solid(8, 8, [1, 1, 1, 255]), 20, 1, Some("long"), None).unwrap();
         set_favorite(&dir, &entry.id, true).unwrap();
         set_note(&dir, &entry.id, "keep me").unwrap();
         let image = fs::read(dir.join(&entry.file_name)).unwrap();
@@ -1152,10 +1196,10 @@ mod tests {
     #[test]
     fn clear_undo_restores_whole_batch_with_metadata() {
         let dir = temp_dir("undo-clear");
-        let first =
-            record_frame(&dir, &solid(8, 8, [1, 1, 1, 255]), 20, 1, Some("region")).unwrap();
-        let second =
-            record_frame(&dir, &solid(6, 6, [2, 2, 2, 255]), 20, 2, Some("window")).unwrap();
+        let first = record_frame(&dir, &solid(8, 8, [1, 1, 1, 255]), 20, 1, Some("region"), None)
+            .unwrap();
+        let second = record_frame(&dir, &solid(6, 6, [2, 2, 2, 255]), 20, 2, Some("window"), None)
+            .unwrap();
         set_favorite(&dir, &first.id, true).unwrap();
         set_note(&dir, &second.id, "batch note").unwrap();
         assert!(load_pending(&dir).is_none());
@@ -1327,8 +1371,8 @@ mod tests {
         assert!(reloaded[0].favorite);
         assert_eq!(reloaded[0].mode, None);
 
-        let added =
-            record_frame(&dir, &solid(4, 4, [1, 2, 3, 255]), 20, 50, Some("window")).unwrap();
+        let added = record_frame(&dir, &solid(4, 4, [1, 2, 3, 255]), 20, 50, Some("window"), None)
+            .unwrap();
         let (entries, _) = load_index(&dir);
         assert_eq!(entries[0].id, added.id);
         assert_eq!(entries[0].mode.as_deref(), Some("window"));
@@ -1342,7 +1386,8 @@ mod tests {
     #[test]
     fn mode_favorite_and_note_roundtrip_and_unknown_mode_is_dropped() {
         let dir = temp_dir("meta");
-        let long = record_frame(&dir, &solid(4, 4, [9, 9, 9, 255]), 20, 3, Some(" long ")).unwrap();
+        let long = record_frame(&dir, &solid(4, 4, [9, 9, 9, 255]), 20, 3, Some(" long "), None)
+            .unwrap();
         assert_eq!(long.mode.as_deref(), Some("long"));
         let unknown = record_frame(
             &dir,
@@ -1350,6 +1395,7 @@ mod tests {
             20,
             4,
             Some("FULLSCREEN"),
+            None,
         )
         .unwrap();
         assert_eq!(unknown.mode, None);

@@ -2610,7 +2610,8 @@ pub fn complete_workspace(
     ui::hide_window(app, ui::PREVIEW);
     ui::hide_window(app, ui::OVERLAY);
     let mode = current_capture_mode(app);
-    crate::history::record_capture(app, frame, mode);
+    // 工作区路径无现成编码,record_frame 内回退现场编码。
+    crate::history::record_capture(app, frame, mode, None);
     crate::pin::restore_after_capture(app);
     with_session_mut(app, |session| {
         *session = None;
@@ -2820,7 +2821,8 @@ fn finish_with_ttl(
     // 全部在 spawn_blocking 内,不阻塞完成路径。模式随这条记录写入索引(R7)。
     let mode = current_capture_mode(app);
     let (width, height, bytes) = (frame.width, frame.height, png.len());
-    crate::history::record_capture(app, frame, mode);
+    // 历史落盘复用上面已编码的同一份 PNG,不再对相同像素做第二次编码。
+    crate::history::record_capture(app, frame, mode, Some(png));
     crate::pin::restore_after_capture(app);
     if take_cursor_unavailable(app) {
         ui::show_toast_key(app, "toast.cursor_unavailable");

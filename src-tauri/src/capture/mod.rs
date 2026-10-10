@@ -147,9 +147,15 @@ pub fn get_overlay_frame(app: AppHandle) -> Result<ui::OverlayPayload, CaptureEr
     session::overlay_frame(&app)
 }
 
+/// 在会话锁内克隆整份预览载荷(4K 帧为数 MB):挪到阻塞线程,主线程不参与
+/// 像素拷贝。
 #[tauri::command]
-pub fn get_preview_frame(app: AppHandle) -> Result<tauri::ipc::Response, CaptureError> {
-    session::preview_frame(&app).map(|payload| tauri::ipc::Response::new(payload.bytes))
+pub async fn get_preview_frame(app: AppHandle) -> Result<tauri::ipc::Response, CaptureError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        session::preview_frame(&app).map(|payload| tauri::ipc::Response::new(payload.bytes))
+    })
+    .await
+    .map_err(|_| CaptureError::api("error.capture.thread_failed"))?
 }
 
 /// 贴图再标注(R9):把当前贴图内容装入预览会话并记录回写目标 label,
@@ -322,36 +328,48 @@ pub fn complete_workspace(
     session::complete_workspace(&app, &kind, name.as_deref())
 }
 
+/// 下方工作区命令在完成路径做全帧 PNG 编码与载荷构建(与 `confirm_region`
+/// 家族同一套 `finish_with_ttl` 流程):统一放到阻塞线程执行,主线程只等结果。
 #[tauri::command]
-pub fn preview_workspace_ocr(
+pub async fn preview_workspace_ocr(
     app: AppHandle,
     annotations: Vec<crate::annotate::Annotation>,
 ) -> Result<(), CaptureError> {
-    session::preview_workspace_ocr(&app, annotations)
+    tauri::async_runtime::spawn_blocking(move || session::preview_workspace_ocr(&app, annotations))
+        .await
+        .map_err(|_| CaptureError::api("error.capture.thread_failed"))?
 }
 
 #[tauri::command]
-pub fn preview_workspace_qr(
+pub async fn preview_workspace_qr(
     app: AppHandle,
     annotations: Vec<crate::annotate::Annotation>,
 ) -> Result<(), CaptureError> {
-    session::preview_workspace_qr(&app, annotations)
+    tauri::async_runtime::spawn_blocking(move || session::preview_workspace_qr(&app, annotations))
+        .await
+        .map_err(|_| CaptureError::api("error.capture.thread_failed"))?
 }
 
 #[tauri::command]
-pub fn edit_workspace_further(
+pub async fn edit_workspace_further(
     app: AppHandle,
     annotations: Vec<crate::annotate::Annotation>,
 ) -> Result<(), CaptureError> {
-    session::edit_workspace_further(&app, annotations)
+    tauri::async_runtime::spawn_blocking(move || session::edit_workspace_further(&app, annotations))
+        .await
+        .map_err(|_| CaptureError::api("error.capture.thread_failed"))?
 }
 
 #[tauri::command]
-pub fn fallback_workspace_preview(
+pub async fn fallback_workspace_preview(
     app: AppHandle,
     annotations: Vec<crate::annotate::Annotation>,
 ) -> Result<(), CaptureError> {
-    session::fallback_workspace_preview(&app, annotations)
+    tauri::async_runtime::spawn_blocking(move || {
+        session::fallback_workspace_preview(&app, annotations)
+    })
+    .await
+    .map_err(|_| CaptureError::api("error.capture.thread_failed"))?
 }
 
 #[tauri::command]

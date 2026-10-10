@@ -217,12 +217,18 @@ pub fn resolve_target(path: PathBuf, fallback: ExportFormat) -> (PathBuf, Export
     (adjusted, fallback)
 }
 
+/// 预览「复制」:整帧光栅化/美化/编码与剪贴板写入都在阻塞线程执行,
+/// 主线程不被 4K 像素工作占用(与 `save_preview_png` 同一约定)。
 #[tauri::command]
-pub fn copy_preview_png(app: AppHandle, annotations: Vec<Annotation>) -> Result<(), String> {
-    let frame = session::current_preview_frame(&app).map_err(fail)?;
-    let rendered = rasterize(&frame, &annotations).map_err(fail)?;
-    let output = compose_output(&app, rendered)?;
-    clipboard::copy_frame(&output).map_err(fail)
+pub async fn copy_preview_png(app: AppHandle, annotations: Vec<Annotation>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let frame = session::current_preview_frame(&app).map_err(fail)?;
+        let rendered = rasterize(&frame, &annotations).map_err(fail)?;
+        let output = compose_output(&app, rendered)?;
+        clipboard::copy_frame(&output).map_err(fail)
+    })
+    .await
+    .map_err(|_| i18n::t("error.pin.thread_copy"))?
 }
 
 /// 预览保存:目标格式由保存对话框返回的扩展名推导,缺失/未知回退设置的

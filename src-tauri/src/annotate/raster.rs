@@ -366,22 +366,46 @@ fn draw_spotlight(
     }
     let x1 = x + w;
     let y1 = y + h;
-    for py in 0..height {
-        let cy = py as f32 + 0.5;
-        for px in 0..width {
-            let cx = px as f32 + 0.5;
-            if cx >= x && cx < x1 && cy >= y && cy < y1 {
-                continue;
+    // 坐标或明暗含非有限值时保持逐像素混合路径,行为与历史实现一致。
+    if ![x, y, x1, y1, dim].iter().all(|value| value.is_finite()) {
+        for py in 0..height {
+            let cy = py as f32 + 0.5;
+            for px in 0..width {
+                let cx = px as f32 + 0.5;
+                if cx >= x && cx < x1 && cy >= y && cy < y1 {
+                    continue;
+                }
+                blend_pixel(rgba, width, height, px as i32, py as i32, [0, 0, 0, 255], dim);
             }
-            blend_pixel(
-                rgba,
-                width,
-                height,
-                px as i32,
-                py as i32,
-                [0, 0, 0, 255],
-                dim,
-            );
+        }
+        return;
+    }
+    // 黑源按 dim 混合等价于每通道乘 (1-dim) 后四舍五入(与 blend_pixel 的
+    // f32 表达式逐字节一致,含 alpha 置 255)。像素中心 cx=px+0.5 落在
+    // [x,x1) 的整数区间是 [ceil(x-0.5), ceil(x1-0.5)),每行算一次边界,
+    // 行内按段压暗,替代整帧逐像素 blend_pixel 调用。
+    let keep = 1.0 - dim.clamp(0.0, 1.0);
+    let dim_row = |row: &mut [u8]| {
+        for pixel in row.chunks_exact_mut(4) {
+            for c in 0..3 {
+                pixel[c] = (f32::from(pixel[c]) * keep).round() as u8;
+            }
+            pixel[3] = 255;
+        }
+    };
+    let width = width as usize;
+    let height = height as usize;
+    let left = ((x - 0.5).ceil().max(0.0) as usize).min(width);
+    let right = ((x1 - 0.5).ceil().max(0.0) as usize).min(width);
+    for py in 0..height {
+        let row_start = py * width * 4;
+        let row = &mut rgba[row_start..row_start + width * 4];
+        let cy = py as f32 + 0.5;
+        if cy >= y && cy < y1 {
+            dim_row(&mut row[..left * 4]);
+            dim_row(&mut row[right * 4..]);
+        } else {
+            dim_row(row);
         }
     }
 }
@@ -1830,6 +1854,49 @@ mod tests {
         // 边界外侧紧邻像素已变暗,但区域边缘内像素保持原值。
         assert!(pixel_at(&rendered, 5, 5)[0] < 200);
         assert_eq!(pixel_at(&rendered, 6, 6), [200, 200, 200, 255]);
+    }
+
+    /// 行级压暗实现必须与逐像素 blend_pixel 参考路径逐字节一致
+    /// (含非整数边界与矩形部分越界时内外像素的归属)。
+    #[test]
+    fn spotlight_rowwise_matches_per_pixel_reference() {
+        let (width, height) = (10u32, 8u32);
+        let mut base = vec![0u8; (width * height * 4) as usize];
+        for y in 0..height {
+            for x in 0..width {
+                let i = ((y * width + x) * 4) as usize;
+                let value = (x * 13 + y * 29) as u8;
+                base[i..i + 4].copy_from_slice(&[value, 255 - value, value / 2 + 7, 200]);
+            }
+        }
+        for (x, y, w, h, dim) in [
+            (2.3f32, 1.7f32, 4.6f32, 3.2f32, 0.37f32),
+            (-2.5f32, -1.5f32, 6.0f32, 5.0f32, 0.5f32),
+            (7.9f32, 6.9f32, 4.0f32, 4.0f32, 0.9f32),
+        ] {
+            let mut rowwise = base.clone();
+            draw_spotlight(&mut rowwise, width, height, x, y, w, h, dim);
+            let mut reference = base.clone();
+            for py in 0..height {
+                let cy = py as f32 + 0.5;
+                for px in 0..width {
+                    let cx = px as f32 + 0.5;
+                    if cx >= x && cx < x + w && cy >= y && cy < y + h {
+                        continue;
+                    }
+                    blend_pixel(
+                        &mut reference,
+                        width,
+                        height,
+                        px as i32,
+                        py as i32,
+                        [0, 0, 0, 255],
+                        dim,
+                    );
+                }
+            }
+            assert_eq!(rowwise, reference, "mismatch at x={x} y={y} w={w} h={h}");
+        }
     }
 
     #[test]

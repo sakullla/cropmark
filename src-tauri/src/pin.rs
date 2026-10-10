@@ -1389,14 +1389,20 @@ fn broadcast_state(app: &AppHandle) {
 }
 
 /// 读取本窗口源图按当前变换处理后的 PNG:画面、复制、保存共用同一变换。
+/// 打开/旋转/翻转都会触发重拉;整帧克隆/变换与编码放到阻塞线程(与
+/// `copy_pin` 同一管线),主线程不参与像素工作。
 #[tauri::command]
-pub fn get_pin_image(app: AppHandle, label: String) -> Result<tauri::ipc::Response, String> {
-    if app.get_webview_window(&label).is_none() {
-        return Err(i18n::t("error.pin.window_closed"));
-    }
-    let entry = entry_snapshot(&label)?;
-    let png = encode_png(&transformed_frame(&entry)).map_err(fail)?;
-    Ok(tauri::ipc::Response::new(png))
+pub async fn get_pin_image(app: AppHandle, label: String) -> Result<tauri::ipc::Response, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if app.get_webview_window(&label).is_none() {
+            return Err(i18n::t("error.pin.window_closed"));
+        }
+        let entry = entry_snapshot(&label)?;
+        let png = encode_png(&transformed_frame(&entry)).map_err(fail)?;
+        Ok(tauri::ipc::Response::new(png))
+    })
+    .await
+    .map_err(|_| i18n::t("error.pin.failed"))?
 }
 
 #[tauri::command]

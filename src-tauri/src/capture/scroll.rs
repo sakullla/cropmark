@@ -77,9 +77,10 @@ const MIN_APPEND_DELTA: u32 = 4;
 pub(crate) const UNCHANGED_HINT_AFTER: u32 = 12;
 /// 沿滚动轴的拼接长度上限(物理像素):达到后自动完成并提示。
 pub(crate) const MAX_STITCH_LENGTH: u32 = 12_000;
-/// R2:可回退段数上限。每段多存一帧锚点,溢出丢弃最旧段——回退深度受限
-/// 是接受取舍,更早的已拼接内容留在图里不再可回退。
-const MAX_UNDO_SEGMENTS: usize = 64;
+/// R2:可回退段数上限。每段多存一帧全选区尺寸锚点(2560×1400 选区约
+/// 14MB/帧),上限过大会让长会话内存达 GB 级;只保留最近几步,溢出丢弃
+/// 最旧段——回退深度受限是接受取舍,更早的已拼接内容留在图里不再可回退。
+const MAX_UNDO_SEGMENTS: usize = 8;
 /// 拼接像素总量上限:限制超长区域的内存占用(长度上限随之收紧)。
 pub(crate) const MAX_STITCH_PIXELS: u64 = 40_000_000;
 
