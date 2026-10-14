@@ -317,8 +317,12 @@ html[data-view="history"] #app {
 }
 
 html[data-view="overlay"],
-html[data-view="overlay"] body {
+html[data-view="overlay"] body,
+html[data-view="overlay"] #app {
   background: var(--overlay-bg);
+  /* 提示、徽标或画布多出 1px 时不要出现文档滚动条。滚动条会挤窄客户区，
+     鼠标停在右侧时宽度来回变，整屏冻结画面跟着抖。 */
+  overflow: hidden;
 }
 
 .shell {

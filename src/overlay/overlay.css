@@ -314,6 +314,18 @@
   bottom: calc(100% + 6px);
 }
 
+/* 靠右的说明从按钮右缘向左展开。共享提示默认从按钮中线向右延伸，
+   nowrap 文本会画出窗口并撑出横向滚动条。 */
+.overlay-actions > button[data-workspace="pin"][data-tooltip]::after,
+.overlay-actions > button[data-workspace="save"][data-tooltip]::after,
+.overlay-actions > button[data-workspace="copy"][data-tooltip]::after,
+.overlay-tools > .annotation-style > [data-tooltip]::after,
+.overlay-tools > .annotation-more > [data-tooltip]::after {
+  left: auto;
+  right: 0;
+  transform: none;
+}
+
 /* 样式面板已经在工具条上方。里面的提示再向上会画出屏幕，改到选项下方。 */
 .overlay-tools .annotation-style-panel [data-tooltip]::after {
   top: calc(100% + 6px);
