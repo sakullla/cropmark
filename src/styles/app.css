@@ -1,33 +1,34 @@
 :root {
   color-scheme: light dark;
-  --bg: #edf1f7;
-  --panel: #f8fafc;
+  /* 品牌色取自应用图标:深青底 + 薄荷描边。界面强调色与图标、托盘同一色系。 */
+  --bg: #f0f3f3;
+  --panel: #f7f9f9;
   --card: #ffffff;
-  --ink: #192335;
-  --muted: #617087;
-  --line: #dce3ed;
+  --ink: #162123;
+  --muted: #5a6a6d;
+  --line: #dce3e4;
   --control-fill: #ffffff;
-  --accent: #2457db;
-  --accent-soft: #eaf0ff;
-  --on-accent: #f8fafc;
+  --accent: #0f766e;
+  --accent-soft: #e1f3ef;
+  --on-accent: #ffffff;
   --danger: #b42318;
-  --danger-soft: #fde8e6;
+  --danger-soft: #fdeceb;
   --on-danger: #ffffff;
-  --ok: #067647;
-  --ok-soft: #d8f3e4;
+  --ok: #15803d;
+  --ok-soft: #dcf5e3;
   --knob: #ffffff;
-  --track: #c5ced8;
+  --track: #c4cfd1;
   --focus: var(--accent);
   --focus-gap: #ffffff;
-  --overlay-bg: #12161c;
-  --tooltip-bg: #1c2128;
-  --tooltip-ink: #f8fafc;
+  --overlay-bg: #0f1415;
+  --tooltip-bg: #1a2426;
+  --tooltip-ink: #f4f8f8;
   --stroke: #e11d48;
   --ocr-hl: #0ea5e9;
   --ocr-hl-strong: #0369a1;
-  --shadow: 0 12px 36px rgba(24, 39, 64, 0.12), 0 2px 6px rgba(24, 39, 64, 0.06);
-  --shadow-soft: 0 2px 8px rgba(24, 39, 64, 0.04);
-  --row-hover: #eef3fc;
+  --shadow: 0 16px 40px rgba(14, 38, 40, 0.12), 0 2px 6px rgba(14, 38, 40, 0.06);
+  --shadow-soft: 0 1px 2px rgba(14, 38, 40, 0.05), 0 2px 8px rgba(14, 38, 40, 0.04);
+  --row-hover: #edf3f2;
   /* 共享控件规范:圆角层级、状态色、过渡与禁用透明度是各视图的唯一取值来源。 */
   --radius-window: 14px;
   --radius-panel: 12px;
@@ -36,8 +37,9 @@
   --radius-control-sm: 8px;
   --radius-pill: 999px;
   --panel-padding: 12px 14px;
-  --control-hover-bg: var(--accent-soft);
-  --control-hover-border: var(--accent);
+  /* 悬停只用中性色加深;强调色专门表示「已选中 / 已开启」,两种状态不再撞色。 */
+  --control-hover-bg: color-mix(in srgb, var(--ink) 6%, transparent);
+  --control-hover-border: color-mix(in srgb, var(--ink) 30%, var(--line));
   --control-danger-hover-bg: var(--danger-soft);
   --control-danger-hover-border: var(--danger);
   --control-hover-filter: brightness(1.06);
@@ -49,41 +51,44 @@
     color 120ms ease,
     filter 120ms ease,
     opacity 120ms ease;
-  /* 全局界面字体栈的唯一取值来源:各视图(含贴图)一律消费此变量。 */
-  --font-ui: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  /* 全局界面字体栈的唯一取值来源:各视图(含贴图)一律消费此变量。
+     Win11 优先可变 Segoe UI;中文先用为屏幕微调过的雅黑 UI。 */
+  --font-ui: "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace;
   font-family: var(--font-ui);
+  -webkit-font-smoothing: antialiased;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #101722;
-    --panel: #18212f;
-    --card: #1e2a3b;
-    --ink: #eef2f6;
-    --muted: #a8b3c0;
-    --line: #304057;
-    --control-fill: #233146;
-    --accent: #93c5fd;
-    --accent-soft: #1a304c;
-    --on-accent: #0b1220;
-    --danger: #f0b4b4;
-    --danger-soft: #3a2426;
+    --bg: #0e1415;
+    --panel: #141b1d;
+    --card: #1a2326;
+    --ink: #e7eeee;
+    --muted: #9cb0b2;
+    --line: #2b383a;
+    --control-fill: #1f2a2d;
+    --accent: #5eead4;
+    --accent-soft: #123430;
+    --on-accent: #042f2e;
+    --danger: #f6aca6;
+    --danger-soft: #3a2224;
     --on-danger: #2b0603;
-    --ok: #8fd9ae;
-    --ok-soft: #163328;
-    --knob: #eef2f6;
-    --track: #3d4856;
-    --focus: #eef2f6;
-    --focus-gap: #171c23;
-    --overlay-bg: #070a0e;
-    --tooltip-bg: #eef3f8;
-    --tooltip-ink: #1c2128;
+    --ok: #86efac;
+    --ok-soft: #12301f;
+    --knob: #e7eeee;
+    --track: #3a4749;
+    --focus: #e7eeee;
+    --focus-gap: #141b1d;
+    --overlay-bg: #070a0b;
+    --tooltip-bg: #e7eeee;
+    --tooltip-ink: #162123;
     --stroke: #fb7185;
     --ocr-hl: #38bdf8;
     --ocr-hl-strong: #7dd3fc;
-    --shadow: 0 14px 40px rgba(0, 0, 0, 0.3), 0 2px 8px rgba(0, 0, 0, 0.2);
-    --shadow-soft: 0 2px 8px rgba(0, 0, 0, 0.12);
-    --row-hover: #25334a;
+    --shadow: 0 16px 44px rgba(0, 0, 0, 0.38), 0 2px 8px rgba(0, 0, 0, 0.22);
+    --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.2), 0 2px 8px rgba(0, 0, 0, 0.12);
+    --row-hover: #202b2e;
   }
 }
 
@@ -351,7 +356,7 @@ html[data-view="overlay"] body {
 
 .name {
   font-size: 15px;
-  font-weight: 650;
+  font-weight: 600;
   letter-spacing: 0.02em;
 }
 
@@ -361,7 +366,7 @@ html[data-view="guide"] .titlebar .name {
   min-width: 0;
   overflow-wrap: anywhere;
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 600;
   color: var(--muted);
 }
 
@@ -398,8 +403,7 @@ html[data-view="guide"] .titlebar .name {
 .icon-btn:hover,
 .icon-btn:focus-visible,
 .icon-btn:active {
-  background: var(--control-hover-bg);
-  box-shadow: inset 0 0 0 1px var(--control-hover-border);
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
 }
 
 .icon-btn:active {
@@ -431,11 +435,11 @@ html[data-view="settings"] .settings-body {
 }
 
 html[data-view="settings"] .settings-nav {
-  flex: 0 0 184px;
+  flex: 0 0 200px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 20px 12px;
+  gap: 2px;
+  padding: 14px 10px 12px;
   background: var(--panel);
   border-right: 1px solid var(--line);
   min-width: 0;
@@ -444,20 +448,18 @@ html[data-view="settings"] .settings-nav {
 html[data-view="settings"] .settings-nav-item {
   width: 100%;
   border: 0;
-  border-radius: var(--radius-control);
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  align-items: start;
+  border-radius: var(--radius-control-sm);
+  display: flex;
+  align-items: center;
+  gap: 10px;
   /* 左侧留给当前分类的色条，未选中也留同样的空隙，切换时文字不横跳。 */
-  padding: 11px 14px 11px 18px;
+  padding: 9px 12px 9px 14px;
   font: inherit;
   font-size: 14px;
-  /* 650 与 700 在 Segoe UI、微软雅黑上是同一粗体，未选中必须停在 500 才轻于选中项。 */
   font-weight: 500;
   line-height: 1.35;
   text-align: left;
   overflow-wrap: anywhere;
-  /* 分类名是导航，不是说明。灰色会像整栏不可用；当前项仍用强调色和色条分开。 */
   color: var(--ink);
   background: transparent;
   cursor: pointer;
@@ -465,7 +467,27 @@ html[data-view="settings"] .settings-nav-item {
   transition: var(--control-transition);
 }
 
-/* 可见字重是 500，选中才到 650。隐形副本始终按 650 占高，窄窗口里「Records & output」选中时不再多折一行、把下面的分类顶下去。 */
+html[data-view="settings"] .settings-nav-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  color: var(--muted);
+  transition: var(--control-transition);
+}
+
+html[data-view="settings"] .settings-nav-icon svg {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+
+html[data-view="settings"] .settings-nav-text {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+
+/* 可见字重是 500，选中才到 600。隐形副本始终按 600 占高，窄窗口里「Records & output」选中时不再多折一行、把下面的分类顶下去。 */
 html[data-view="settings"] .settings-nav-label,
 html[data-view="settings"] .settings-nav-reserve {
   grid-area: 1 / 1;
@@ -473,7 +495,7 @@ html[data-view="settings"] .settings-nav-reserve {
 }
 
 html[data-view="settings"] .settings-nav-reserve {
-  font-weight: 650;
+  font-weight: 600;
   visibility: hidden;
   pointer-events: none;
   user-select: none;
@@ -482,7 +504,7 @@ html[data-view="settings"] .settings-nav-reserve {
 html[data-view="settings"] .settings-nav-item:hover,
 html[data-view="settings"] .settings-nav-item:focus-visible,
 html[data-view="settings"] .settings-nav-item:active {
-  background: var(--control-hover-bg);
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
   color: var(--ink);
 }
 
@@ -494,22 +516,54 @@ html[data-view="settings"] .settings-nav-item[aria-selected="true"],
 html[data-view="settings"] .settings-nav-item[aria-selected="true"]:hover,
 html[data-view="settings"] .settings-nav-item[aria-selected="true"]:focus-visible,
 html[data-view="settings"] .settings-nav-item[aria-selected="true"]:active {
-  background: var(--card);
+  background: var(--accent-soft);
   color: var(--accent);
-  box-shadow: var(--shadow-soft);
-  font-weight: 650;
+  font-weight: 600;
+}
+
+html[data-view="settings"] .settings-nav-item[aria-selected="true"] .settings-nav-icon {
+  color: var(--accent);
 }
 
 /* 圆角按钮上的内阴影会被角裁短。独立色条收在圆角之内，当前分类更清楚。 */
 html[data-view="settings"] .settings-nav-item[aria-selected="true"]::before {
   content: "";
   position: absolute;
-  left: 6px;
-  top: 9px;
-  bottom: 9px;
+  left: 4px;
+  top: 10px;
+  bottom: 10px;
   width: 3px;
   border-radius: var(--radius-pill);
   background: var(--accent);
+}
+
+/* 导航底部的品牌与版本：装饰性信息，读屏从「关于」读取同一版本号。 */
+html[data-view="settings"] .settings-nav-footer {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px 2px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+  min-width: 0;
+}
+
+html[data-view="settings"] .settings-nav-footer .mark {
+  width: 18px;
+  height: 18px;
+}
+
+html[data-view="settings"] .settings-nav-brand {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+html[data-view="settings"] .settings-nav-version {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 html[data-view="settings"] .settings-main {
@@ -568,7 +622,7 @@ html[data-view="guide"] .card {
 h1 {
   margin: 0 0 4px;
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--muted);
@@ -608,7 +662,7 @@ html[data-view="settings"] .block h2 {
 .block h2 {
   margin: 0 0 4px;
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 600;
   line-height: 1.35;
   color: var(--ink);
   overflow-wrap: anywhere;
@@ -617,7 +671,7 @@ html[data-view="settings"] .block h2 {
 .subheading {
   margin: 16px 0 4px;
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--muted);
@@ -649,7 +703,7 @@ html[data-view="settings"] .hint {
 
 /* 校验句以前和灰色说明一样轻。加粗后才看得出是错误，不是下一条说明。 */
 .error {
-  font-weight: 650;
+  font-weight: 600;
 }
 
 /* 数字在行的右侧。错误句贴右，读完就落在红框旁边，而不是贴在左侧标题下。 */
@@ -671,7 +725,7 @@ html[data-view="settings"] .hint {
   /* 失败横幅以前只有红底，字仍是正文色。保存失败和历史索引损坏要能一眼看成错误。 */
   color: var(--danger);
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 600;
   line-height: 1.45;
   min-width: 0;
   overflow-wrap: anywhere;
@@ -705,7 +759,7 @@ html[data-view="settings"] .notice.notice-success {
   max-width: min(280px, calc(100% - 48px));
   margin: 0 auto;
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 600;
   line-height: 1.4;
   overflow-wrap: anywhere;
   box-shadow: var(--shadow);
@@ -735,7 +789,7 @@ html[data-view="settings"] .notice.notice-success {
   grid-area: label;
   min-width: 0;
   font-size: 15px;
-  font-weight: 650;
+  font-weight: 600;
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
@@ -776,6 +830,10 @@ html[data-view="settings"] .notice.notice-success {
 
 /* 未绑定时仍占住「清除」的宽度。绑定或清除后热键胶囊不再左右跳，
    也不会在清除的瞬间滑到光标底下再被点一次。 */
+.hotkey-clear {
+  order: -1;
+}
+
 .hotkey-clear[data-reserved="true"] {
   visibility: hidden;
   pointer-events: none;
@@ -802,7 +860,7 @@ html[data-view="settings"] .notice.notice-success {
   border-color: var(--accent);
   background: var(--accent-soft);
   color: var(--accent);
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .hotkey-btn.recording {
@@ -958,7 +1016,7 @@ html[data-view="settings"] .notice.notice-success {
 
 .setting-row .label {
   font-size: 15px;
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .number-input {
@@ -1111,7 +1169,7 @@ input[data-filename-template] {
   padding: 4px 12px;
   font: inherit;
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 500;
   line-height: 1.3;
   white-space: normal;
   overflow-wrap: anywhere;
@@ -1137,6 +1195,7 @@ input[data-filename-template] {
 .choice.selected:hover:not(:disabled),
 .choice.selected:focus-visible:not(:disabled),
 .choice.selected:active:not(:disabled) {
+  font-weight: 600;
   border-color: var(--accent);
   background: var(--accent-soft);
   color: var(--accent);
@@ -1287,44 +1346,6 @@ input[data-filename-template] {
   user-select: text;
 }
 
-/* 关于里的图标是装饰,名称与分组标题先出现;图标沿用标题栏的 26px。 */
-.card.about {
-  display: grid;
-  grid-template-columns: 26px minmax(0, 1fr);
-  column-gap: 12px;
-  align-items: center;
-}
-
-.card.about > h1,
-.card.about > .hint,
-.card.about > .setting-row {
-  grid-column: 1 / -1;
-}
-
-.card.about > h1 {
-  grid-row: 1;
-}
-
-.card.about > .mark {
-  grid-column: 1;
-  grid-row: 2;
-  width: 26px;
-  height: 26px;
-  margin: 0;
-}
-
-.card.about > .about-name {
-  grid-column: 2;
-  grid-row: 2;
-  margin: 0;
-  min-width: 0;
-}
-
-.card.about > .hint {
-  grid-row: 3;
-  margin-top: 12px;
-}
-
 /* 自绘提示:约 160ms 出现,比系统 title(~500ms)更容易在小图标上看到。 */
 [data-tooltip] {
   position: relative;
@@ -1370,7 +1391,7 @@ input[data-filename-template] {
   margin-inline-start: 8px;
   color: var(--muted);
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 600;
   line-height: 1;
 }
 
@@ -1398,7 +1419,7 @@ input[data-filename-template] {
 /* 日志路径按等宽列出,整段可选;折行不越行宽。 */
 html[data-view="settings"] [data-log-path],
 html[data-view="guide"] [data-log-path] {
-  font-family: Consolas, "Courier New", monospace;
+  font-family: var(--font-mono);
   font-size: 13px;
   line-height: 1.45;
   color: var(--ink);
@@ -1467,10 +1488,166 @@ html[data-view="settings"] [data-region-tools] .choice.selected::before {
   }
 }
 
+/* ---------------------------------------------------------------------------
+   设置页卡片布局:分组标题(h1)是页面标题,每个小节(.block)是一张独立卡片,
+   卡片内的设置行用发丝线分隔。控件与「标题 + 说明」整块垂直居中,
+   和系统设置的阅读方式一致;长说明折行时开关仍在行的视觉中线。
+   --------------------------------------------------------------------------- */
+html[data-view="settings"] .settings-panel {
+  max-width: 760px;
+  margin-inline: auto;
+}
+
+html[data-view="settings"] .settings-panel > .card {
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+html[data-view="settings"] .card > h1 {
+  margin: 0 0 16px;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+html[data-view="settings"] .block {
+  padding: 16px 18px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--shadow-soft);
+}
+
+html[data-view="settings"] .block + .block {
+  margin-top: 14px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+html[data-view="settings"] .block h2 {
+  margin: 0 0 2px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+html[data-view="settings"] .block > .hint {
+  margin-bottom: 2px;
+}
+
+html[data-view="settings"] .setting-row,
+html[data-view="settings"] .autostart-row {
+  align-items: center;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
+}
+
+/* 小节标题下的第一行不再画分隔线,标题本身已经分开了。 */
+html[data-view="settings"] .block > h2 + .setting-row,
+html[data-view="settings"] .block > h2 + .autostart-row {
+  margin-top: 10px;
+  padding-top: 0;
+  border-top: 0;
+}
+
+html[data-view="settings"] .setting-row .label,
+html[data-view="settings"] .autostart-row .label,
+html[data-view="settings"] .hotkey-row .label {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+html[data-view="settings"] .setting-row .hint,
+html[data-view="settings"] .autostart-row .hint {
+  margin-top: 2px;
+}
+
+/* 居中对齐后不再需要按标题行高上移的补偿。 */
+html[data-view="settings"] .setting-row > .number-input,
+html[data-view="settings"] .setting-row > .input-wrap,
+html[data-view="settings"] .setting-row > .choice,
+html[data-view="settings"] .setting-row > .choices,
+html[data-view="settings"] .setting-row > .switch,
+html[data-view="settings"] .autostart-row > .switch {
+  margin-top: 0;
+}
+
+/* 单选组挂在说明行下面,和上一行属于同一设置,不再另起分隔。 */
+html[data-view="settings"] .block > .choices {
+  margin-top: 10px;
+}
+
+html[data-view="settings"] .rows {
+  gap: 0;
+  margin-top: 10px;
+}
+
+html[data-view="settings"] .hotkey-row {
+  padding: 8px 0;
+}
+
+html[data-view="settings"] .hotkey-row + .hotkey-row {
+  border-top: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
+}
+
+/* 热键做成键帽:等宽数字 + 轻微下沿,一眼认出是按键组合而不是普通按钮。 */
+html[data-view="settings"] .hotkey-btn {
+  border-radius: var(--radius-control-sm);
+  border-color: var(--line);
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--ink) 12%, transparent);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+html[data-view="settings"] .hotkey-btn.is-unbound {
+  border-style: dashed;
+  box-shadow: none;
+}
+
+html[data-view="settings"] .about-hero {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 20px 18px;
+}
+
+html[data-view="settings"] .about-hero .mark {
+  width: 56px;
+  height: 56px;
+  flex: 0 0 auto;
+}
+
+html[data-view="settings"] .about-hero-text {
+  min-width: 0;
+}
+
+html[data-view="settings"] .about-hero .about-name {
+  margin: 0 0 4px;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+html[data-view="settings"] .about-hero + .block > .setting-row:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+html[data-view="settings"] .about-version {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--muted);
+}
+
 /* 窄窗导航保持可读,内容区不被固定侧栏挤出。 */
 @media (max-width: 640px) {
-  html[data-view="settings"] .settings-nav { flex-basis: 132px; padding: 12px 8px; }
-  html[data-view="settings"] .settings-nav-item { padding: 10px 10px 10px 16px; font-size: 13px; }
-  html[data-view="settings"] .settings-panels { padding: 12px; }
-  html[data-view="settings"] .card { padding: 16px; }
+  html[data-view="settings"] .settings-nav { flex-basis: 148px; padding: 12px 8px; }
+  html[data-view="settings"] .settings-nav-item { gap: 8px; padding: 9px 8px 9px 12px; font-size: 13px; }
+  html[data-view="settings"] .settings-nav-version { display: none; }
+  html[data-view="settings"] .settings-panels { padding: 16px 14px; }
+  html[data-view="settings"] .block { padding: 14px; }
 }

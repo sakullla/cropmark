@@ -119,6 +119,13 @@ const SECTION_LABEL_KEY: Record<SettingsSection, CatalogKey> = {
   about: "settings.about.title",
 };
 
+const SECTION_ICON: Record<SettingsSection, string> = {
+  capture: icons.capture,
+  output: icons.folder,
+  general: icons.sliders,
+  about: icons.info,
+};
+
 const HOTKEY_LABEL_KEY: Record<HotkeySlot, CatalogKey> = {
   region: "settings.mode.region",
   window: "settings.mode.window",
@@ -195,7 +202,7 @@ export function mountSettings(root: HTMLElement): () => void {
       <header class="titlebar" data-tauri-drag-region>
         <div class="brand" data-tauri-drag-region>
           <span class="mark" aria-hidden="true"></span>
-          <span class="name">Cropmark</span>
+          <span class="name" data-i18n="settings.window_title">${t("settings.window_title")}</span>
         </div>
         <button type="button" class="icon-btn" data-action="close" data-i18n-aria-label="settings.close" aria-label="关闭">${icons.close}</button>
       </header>
@@ -203,8 +210,13 @@ export function mountSettings(root: HTMLElement): () => void {
         <nav class="settings-nav" role="tablist" aria-orientation="vertical" data-settings-nav data-i18n-aria-label="settings.nav.aria_label" aria-label="设置分类">
           ${SECTIONS.map(
             (section, index) => `
-            <button type="button" class="settings-nav-item" role="tab" id="settings-tab-${section}" aria-controls="settings-panel-${section}" aria-selected="${index === 0 ? "true" : "false"}" tabindex="${index === 0 ? 0 : -1}" data-section="${section}"><span class="settings-nav-label" data-i18n="${SECTION_LABEL_KEY[section]}">${t(SECTION_LABEL_KEY[section])}</span><span class="settings-nav-reserve" data-i18n="${SECTION_LABEL_KEY[section]}" aria-hidden="true">${t(SECTION_LABEL_KEY[section])}</span></button>`,
+            <button type="button" class="settings-nav-item" role="tab" id="settings-tab-${section}" aria-controls="settings-panel-${section}" aria-selected="${index === 0 ? "true" : "false"}" tabindex="${index === 0 ? 0 : -1}" data-section="${section}"><span class="settings-nav-icon" aria-hidden="true">${SECTION_ICON[section]}</span><span class="settings-nav-text"><span class="settings-nav-label" data-i18n="${SECTION_LABEL_KEY[section]}">${t(SECTION_LABEL_KEY[section])}</span><span class="settings-nav-reserve" data-i18n="${SECTION_LABEL_KEY[section]}" aria-hidden="true">${t(SECTION_LABEL_KEY[section])}</span></span></button>`,
           ).join("")}
+          <div class="settings-nav-footer" aria-hidden="true">
+            <span class="mark"></span>
+            <span class="settings-nav-brand">Cropmark</span>
+            <span class="settings-nav-version" data-version-nav></span>
+          </div>
         </nav>
         <div class="settings-main">
           <p class="notice" role="alert" hidden></p>
@@ -439,9 +451,14 @@ export function mountSettings(root: HTMLElement): () => void {
             <section class="settings-panel" role="tabpanel" id="settings-panel-about" aria-labelledby="settings-tab-about" data-panel="about" hidden>
               <section class="card about" aria-labelledby="about-title">
                 <h1 id="about-title" data-i18n="settings.about.title">关于</h1>
-                <span class="mark" aria-hidden="true"></span>
-                <p class="about-name">Cropmark</p>
-                <p class="hint" data-i18n="settings.about.hint">独立系统截图工具，界面与托盘只使用 Cropmark 名称与图标。</p>
+                <section class="block about-hero">
+                  <span class="mark" aria-hidden="true"></span>
+                  <div class="about-hero-text">
+                    <p class="about-name">Cropmark</p>
+                    <p class="hint" data-i18n="settings.about.hint">独立系统截图工具，界面与托盘只使用 Cropmark 名称与图标。</p>
+                  </div>
+                </section>
+                <section class="block">
                 <div class="setting-row">
                   <div>
                     <div class="label" id="about-version-label" data-i18n="settings.about.version_label">版本</div>
@@ -455,6 +472,7 @@ export function mountSettings(root: HTMLElement): () => void {
                   </div>
                   <button type="button" class="choice danger" data-action="quit" aria-labelledby="quit-label" aria-live="polite" data-i18n="settings.about.quit_button">退出</button>
                 </div>
+                </section>
               </section>
             </section>
           </div>
@@ -2030,9 +2048,13 @@ export function mountSettings(root: HTMLElement): () => void {
 
   // R19:关于组显示当前版本;读取失败时保持占位符,不阻塞其余设置。
   if (versionEl instanceof HTMLElement) {
+    const navVersionEl = root.querySelector("[data-version-nav]");
     void getVersion()
       .then((version) => {
         versionEl.textContent = version;
+        if (navVersionEl instanceof HTMLElement) {
+          navVersionEl.textContent = `v${version}`;
+        }
       })
       .catch(() => {
         versionEl.textContent = "—";

@@ -33,10 +33,12 @@ export function mountOnboarding(root: HTMLElement): () => void {
       <main class="content">
         <p class="hint" data-i18n="guide.intro">Cropmark 启动后留在系统托盘，不占用主窗口。关闭本页不会退出应用，热键和之后的截图都不受影响。</p>
         <section class="card guide-section" aria-labelledby="guide-tray-title">
+          <span class="guide-icon" aria-hidden="true">${icons.tray}</span>
           <h2 id="guide-tray-title" data-i18n="guide.tray.title">托盘常驻</h2>
           <p class="hint" data-i18n="guide.tray.body">从托盘图标打开区域、窗口或全屏截图，也可以进入历史和设置。退出请使用托盘菜单或设置中的退出。</p>
         </section>
         <section class="card guide-section" aria-labelledby="guide-hotkeys-title">
+          <span class="guide-icon" aria-hidden="true">${icons.keyboard}</span>
           <h2 id="guide-hotkeys-title" data-i18n="guide.hotkeys.title">三种采集热键</h2>
           <p class="hint" data-i18n="guide.hotkeys.body">下面是当前生效的组合，可在设置里修改。</p>
           <ul class="guide-hotkeys">
@@ -55,26 +57,32 @@ export function mountOnboarding(root: HTMLElement): () => void {
           </ul>
         </section>
         <section class="card guide-section" aria-labelledby="guide-pin-title">
+          <span class="guide-icon" aria-hidden="true">${icons.pin}</span>
           <h2 id="guide-pin-title" data-i18n="guide.pin.title">贴图</h2>
           <p class="hint" data-i18n="guide.pin.body">截图后可以贴在屏幕上对照查看。关掉贴图不会退出托盘中的 Cropmark。</p>
         </section>
         <section class="card guide-section" aria-labelledby="guide-ocr-title">
+          <span class="guide-icon" aria-hidden="true">${icons.ocr}</span>
           <h2 id="guide-ocr-title" data-i18n="guide.ocr.title">文字识别</h2>
           <p class="hint" data-i18n="guide.ocr.body">在预览中识别画面文字，可按点击位置、框选或全部复制。开启结果面板后还能搜索并复制一段文字。识别使用本机模型，无需联网。</p>
         </section>
         <section class="card guide-section" aria-labelledby="guide-history-title">
+          <span class="guide-icon" aria-hidden="true">${icons.history}</span>
           <h2 id="guide-history-title" data-i18n="guide.history.title">历史</h2>
           <p class="hint" data-i18n="guide.history.body">完成的截图会进入历史，可再次复制、贴图或删除。设置里可以打开历史并调整保留数量。</p>
         </section>
         <section class="card guide-section" aria-labelledby="guide-logs-title">
+          <span class="guide-icon" aria-hidden="true">${icons.file}</span>
           <h2 id="guide-logs-title" data-i18n="guide.logs.title">日志位置</h2>
           <p class="hint" data-i18n="guide.logs.body">诊断日志保存在本机，不含截图、剪贴板或识别文字。下面是日志文件的位置，也可以在设置的通用分组里再次打开。</p>
           <p class="hint" data-log-path>—</p>
           <p class="hint" data-log-error role="alert" hidden></p>
           <button type="button" class="choice" data-action="open-logs" data-i18n="guide.logs.button">打开日志文件夹</button>
         </section>
-        <button type="button" class="guide-done" data-action="close" data-i18n="guide.done">知道了</button>
       </main>
+      <footer class="guide-footer">
+        <button type="button" class="guide-done" data-action="close" data-i18n="guide.done">知道了</button>
+      </footer>
     </div>
   `;
 

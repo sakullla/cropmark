@@ -42,7 +42,8 @@
 }
 
 .preview-titlebar .brand,
-.preview-titlebar .preview-note {
+.preview-titlebar .preview-note,
+.preview-titlebar-spacer {
   cursor: move;
   -webkit-app-region: drag;
   app-region: drag;
@@ -80,16 +81,18 @@
 }
 
 /* 进行中停在原文上，直到结果或错误替换；脉冲只提亮，不把提示淡掉。 */
+/* 状态胶囊按文字收宽,右侧空白由拖动垫片占住:成功/失败是一枚小标签,
+   不再是横贯标题栏的色带。 */
 .preview-note {
-  flex: 1;
+  flex: 0 1 auto;
   min-width: 0;
-  margin: 0;
+  margin: 0 0 0 4px;
   padding: 3px 10px;
   border: 1px solid transparent;
   border-radius: var(--radius-pill);
-  color: var(--ink);
+  color: var(--muted);
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 500;
   line-height: 1.4;
   /* 省略放在内层文字上。本体若 overflow:hidden，截断后的悬停全文会被裁掉。 */
   overflow: visible;
@@ -127,10 +130,23 @@
   }
 }
 
+/* 普通操作说明只是旁注:不加底色,弱于成功与失败两种结果。 */
 .preview-note.is-feedback {
-  background: var(--accent-soft);
-  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
-  color: var(--accent);
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+}
+
+.preview-note.is-success,
+.preview-note.is-error {
+  font-weight: 600;
+}
+
+.preview-titlebar-spacer {
+  flex: 1 1 0;
+  align-self: stretch;
+  min-width: 16px;
+  margin: -12px 0;
 }
 
 .preview-note.is-error {
@@ -344,8 +360,8 @@
   background: transparent;
 }
 
-.preview-overflow-menu button:hover:not(:disabled):not([aria-disabled="true"]),
-.preview-overflow-menu button:focus-visible:not([aria-disabled="true"]) {
+.preview-overflow-menu button:hover:not(:disabled):not([aria-disabled="true"]):not(.active),
+.preview-overflow-menu button:focus-visible:not([aria-disabled="true"]):not(.active) {
   background: var(--control-hover-bg);
 }
 
@@ -402,7 +418,7 @@
 /* 选区小于最小边长时，说明改成原因，和红色尺寸同一颜色。确认仍禁用。 */
 .preview-crop-hint.is-too-small {
   color: var(--danger);
-  font-weight: 650;
+  font-weight: 600;
 }
 
 /* 拖选时的像素尺寸要能盯着看:提示保持灰色,数字用正文色和等宽数字。 */
@@ -422,7 +438,7 @@
   max-width: 100%;
   color: var(--ink);
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   overflow: hidden;
@@ -478,9 +494,9 @@
   app-region: no-drag;
 }
 
-.preview-named:hover:not(.primary):not(:disabled):not([aria-disabled="true"]),
-.preview-named:focus-visible:not(.primary):not(:disabled):not([aria-disabled="true"]),
-.preview-named:active:not(.primary):not(:disabled):not([aria-disabled="true"]),
+.preview-named:hover:not(.primary):not(.active):not(:disabled):not([aria-disabled="true"]),
+.preview-named:focus-visible:not(.primary):not(.active):not(:disabled):not([aria-disabled="true"]),
+.preview-named:active:not(.primary):not(.active):not(:disabled):not([aria-disabled="true"]),
 .preview-crop-bar button:hover:not(.primary):not(:disabled),
 .preview-crop-bar button:focus-visible:not(.primary):not(:disabled),
 .preview-crop-bar button:active:not(.primary):not(:disabled) {
@@ -531,7 +547,7 @@
   background: var(--accent);
   border-color: transparent;
   color: var(--on-accent);
-  font-weight: 650;
+  font-weight: 600;
   padding: 0 16px;
 }
 
@@ -702,7 +718,7 @@
 /* 失败和加载共用这一块，但失败不是进行中：用危险色，避免看起来还在转圈。 */
 .preview-load-state.is-error {
   color: var(--danger);
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .preview-load-state .progress { width: 24px; height: 24px; }
@@ -719,7 +735,7 @@
   color: var(--on-accent);
   cursor: pointer;
   font: inherit;
-  font-weight: 650;
+  font-weight: 600;
   transition: var(--control-transition);
 }
 
@@ -772,7 +788,7 @@
   background: var(--card);
   color: var(--ink);
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 600;
   line-height: 30px;
   font-variant-numeric: tabular-nums;
   overflow: hidden;
@@ -911,7 +927,7 @@
   color: var(--ink);
   font: inherit;
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 600;
   cursor: pointer;
   transition: var(--control-transition);
 }

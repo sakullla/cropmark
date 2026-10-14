@@ -29,7 +29,7 @@
 .ocr-panel-bar h2 {
   margin: 0;
   font-size: 16px;
-  font-weight: 650;
+  font-weight: 600;
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
@@ -78,7 +78,7 @@
   gap: 3px;
   margin-left: auto;
 }
-.ocr-panel-count { font-size: 13px; color: var(--ink); font-weight: 650; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ocr-panel-count { font-size: 13px; color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .ocr-panel-count.is-empty { color: var(--danger); }
 .ocr-panel button:not(.icon-btn) {
   display: inline-flex;
@@ -108,7 +108,7 @@
   background: var(--accent);
   border-color: var(--accent);
   color: var(--on-accent);
-  font-weight: 650;
+  font-weight: 600;
 }
 .ocr-panel-actions button.primary:hover:not(:disabled):not([aria-disabled="true"]),
 .ocr-panel-actions button.primary:focus-visible:not(:disabled):not([aria-disabled="true"]),
@@ -202,7 +202,7 @@
   overflow-wrap: anywhere;
 }
 .ocr-panel-state p { margin: 0; max-width: 28em; }
-.ocr-panel-state p:first-child { font-weight: 650; }
+.ocr-panel-state p:first-child { font-weight: 600; }
 .ocr-panel-state [data-ocr-state-title].is-error { color: var(--danger); }
 /* 空结果和识别失败时，重新识别是这块里唯一的下一步。 */
 .ocr-panel-state button {
@@ -210,7 +210,7 @@
   background: var(--accent);
   border-color: var(--accent);
   color: var(--on-accent);
-  font-weight: 650;
+  font-weight: 600;
 }
 .ocr-panel-state button:hover:not(:disabled):not(:active),
 .ocr-panel-state button:focus-visible:not(:disabled):not(:active),

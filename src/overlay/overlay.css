@@ -101,12 +101,17 @@
   background: transparent;
   border: 0;
   box-shadow: none;
-  color: var(--ink);
+  color: var(--muted);
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 500;
   line-height: 1.4;
   overflow-wrap: anywhere;
   text-align: center;
+}
+
+/* 选区阶段顶栏只有说明和取消。说明是这一屏唯一的指引，保持正文色。 */
+.overlay-chrome:has(.overlay-actions[hidden]) .overlay-hint {
+  color: var(--ink);
 }
 
 /* 首个会话从未写入内容时不显示空胶囊(模板保持无空白文本节点)。 */
@@ -146,7 +151,7 @@
   color: var(--ink);
   font: inherit;
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 600;
   box-shadow: none;
   transition: var(--control-transition);
 }
@@ -194,10 +199,27 @@
   pointer-events: auto;
 }
 
+.overlay-actions-sep {
+  flex: 0 0 auto;
+  align-self: center;
+  width: 1px;
+  height: 20px;
+  margin: 0 2px;
+  background: var(--line);
+}
+
+.overlay-actions button svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  display: block;
+}
+
 .overlay-actions button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 6px;
   /* 文案保持一行。放不下时整颗按钮换行，不把「进一步编辑」拆进按钮里。 */
   flex: 0 0 auto;
   white-space: nowrap;
@@ -206,12 +228,12 @@
   border-radius: var(--radius-control-sm);
   min-width: 32px;
   min-height: 32px;
-  padding: 0 12px;
+  padding: 0 12px 0 10px;
   background: var(--panel);
   color: var(--ink);
   font: inherit;
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 500;
   box-shadow: none;
   transition: var(--control-transition);
 }
@@ -234,6 +256,7 @@
 
 /* 动作行只有复制是实心主操作。其余沿用中性胶囊。这里不放录屏入口。 */
 .overlay-actions button.primary {
+  font-weight: 600;
   background: var(--accent);
   border-color: transparent;
   color: var(--on-accent);
@@ -377,7 +400,7 @@
   color: var(--ink);
   font: inherit;
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 600;
   box-shadow: var(--shadow);
   transition: var(--control-transition);
 }
@@ -417,7 +440,7 @@
 .capability-panel h2 {
   margin: 0 0 8px;
   font-size: 16px;
-  font-weight: 650;
+  font-weight: 600;
   line-height: 1.35;
   color: var(--ink);
   overflow-wrap: anywhere;
@@ -443,7 +466,7 @@
 
 .capability-panel dt {
   color: var(--muted);
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .capability-panel dd {
@@ -486,7 +509,7 @@
   background: var(--accent-soft);
   border-color: color-mix(in srgb, var(--accent) 45%, transparent);
   color: var(--accent);
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .overlay-notice.is-error {
@@ -520,7 +543,7 @@
   background: var(--accent);
   color: var(--on-accent);
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 600;
   line-height: 1.2;
   letter-spacing: 0.01em;
   box-shadow: 0 2px 8px color-mix(in srgb, #000 28%, transparent);
@@ -593,7 +616,7 @@
 .window-item .title {
   min-width: 0;
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 600;
   line-height: 1.35;
   /* 浏览器标签和长路径会把一行窗口撑得很高。最多两行，完整名称仍在按钮的系统提示里。 */
   display: -webkit-box;
@@ -771,7 +794,7 @@
   color: var(--ink);
   font: inherit;
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 600;
   padding: 0 14px;
   white-space: nowrap;
   cursor: pointer;
@@ -826,6 +849,35 @@
   /* 整窗禁止选择，失败说明却是唯一能带走的信息。正文可选中复制，关闭按钮仍不可选。 */
   user-select: text;
   cursor: text;
+}
+
+.error-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 8px;
+}
+
+.error-icon {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-control-sm);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.error-icon svg {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+
+.error-head h1 {
+  margin: 0;
 }
 
 .error-body h1 {

@@ -123,8 +123,8 @@ button.annotation-chrome svg {
   display: none;
 }
 
-.annotation-tools button:hover:not(:disabled):not([aria-disabled="true"]),
-.annotation-tools button:focus-visible:not(:disabled):not([aria-disabled="true"]) {
+.annotation-tools button:hover:not(:disabled):not([aria-disabled="true"]):not(.active),
+.annotation-tools button:focus-visible:not(:disabled):not([aria-disabled="true"]):not(.active) {
   background: var(--control-hover-bg);
   border-color: var(--control-hover-border);
 }
@@ -236,7 +236,7 @@ button.annotation-chrome[data-action="delete"]:focus-visible:not(:disabled):not(
 .style-label {
   color: var(--ink);
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 600;
   line-height: 1.2;
   /* 宽面板仍按整词排成一行。窄面板里列被压窄时折行，不再盖住色块。 */
   overflow-wrap: anywhere;
@@ -370,7 +370,7 @@ button.annotation-chrome[data-action="delete"]:focus-visible:not(:disabled):not(
   max-width: 16rem;
   color: var(--danger);
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 600;
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
@@ -561,7 +561,7 @@ button.annotation-chrome[data-action="delete"]:focus-visible:not(:disabled):not(
   color: var(--muted);
   font: inherit;
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .annotation-context button:hover,

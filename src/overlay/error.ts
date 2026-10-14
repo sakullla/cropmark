@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { t } from "../i18n";
+import { icons } from "../icons";
 import "./overlay.css";
 
 interface CaptureError {
@@ -13,7 +14,10 @@ export function mountCaptureError(root: HTMLElement): () => void {
   root.className = "error-root";
   root.innerHTML = `
     <div class="error-body">
-      <h1 data-i18n="error.title">无法截取</h1>
+      <div class="error-head">
+        <span class="error-icon" aria-hidden="true">${icons.alert}</span>
+        <h1 data-i18n="error.title">无法截取</h1>
+      </div>
       <p class="message"></p>
       <p class="hint"></p>
     </div>

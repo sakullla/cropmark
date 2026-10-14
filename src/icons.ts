@@ -81,6 +81,34 @@ export const icons = {
   more: svg(`<circle cx="5.2" cy="12" r="1.45" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.45" fill="currentColor" stroke="none"/><circle cx="18.8" cy="12" r="1.45" fill="currentColor" stroke="none"/>`),
   chevronDown: svg(`<path d="M6.4 9.2 12 14.6 17.6 9.2"/>`),
   close: svg(`<path d="M6.6 6.6 17.4 17.4M17.4 6.6 6.6 17.4"/>`),
+  capture: svg(
+    `<path d="M4 8.4V6.2A2.2 2.2 0 0 1 6.2 4h2.2M15.6 4h2.2A2.2 2.2 0 0 1 20 6.2v2.2M20 15.6v2.2a2.2 2.2 0 0 1-2.2 2.2h-2.2M8.4 20H6.2A2.2 2.2 0 0 1 4 17.8v-2.2"/><rect x="8.2" y="9.2" width="7.6" height="5.6" rx="1.2"/>`,
+  ),
+  folder: svg(
+    `<path d="M3.8 7.2A2.2 2.2 0 0 1 6 5h3.4l2 2.2H18a2.2 2.2 0 0 1 2.2 2.2v7.4A2.2 2.2 0 0 1 18 19H6a2.2 2.2 0 0 1-2.2-2.2z"/>`,
+  ),
+  sliders: svg(
+    `<path d="M4.6 7.4h8.6M17.4 7.4h2M4.6 16.6h2M10.8 16.6h8.6"/><circle cx="15.3" cy="7.4" r="2.1"/><circle cx="8.7" cy="16.6" r="2.1"/>`,
+  ),
+  info: svg(
+    `<circle cx="12" cy="12" r="8.2"/><path d="M12 11v5.2"/><circle cx="12" cy="7.9" r="1" fill="currentColor" stroke="none"/>`,
+  ),
+  keyboard: svg(
+    `<rect x="3.4" y="6.4" width="17.2" height="11.2" rx="2.2"/><path d="M7 10h.01M10.3 10h.01M13.7 10h.01M17 10h.01M8.4 14h7.2"/>`,
+  ),
+  tray: svg(
+    `<rect x="3.6" y="4.6" width="16.8" height="11.6" rx="2"/><path d="M9 19.4h6M12 16.2v3.2"/><circle cx="16.6" cy="12.6" r="1" fill="currentColor" stroke="none"/>`,
+  ),
+  history: svg(
+    `<path d="M4.4 12a7.6 7.6 0 1 0 2.2-5.4"/><path d="M4.2 4.6v3.6h3.6"/><path d="M12 8.2V12l2.6 1.8"/>`,
+  ),
+  file: svg(
+    `<path d="M7 3.8h6.6l4.4 4.4v10a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-12.4a2 2 0 0 1 2-2Z"/><path d="M13.4 3.8v4.6H18M8.6 13h6.8M8.6 16.4h4.4"/>`,
+  ),
+  alert: svg(
+    `<path d="M10.3 4.6 3.4 16.8A2 2 0 0 0 5.1 19.8h13.8a2 2 0 0 0 1.7-3L13.7 4.6a2 2 0 0 0-3.4 0Z"/><path d="M12 9.4v4.2"/><circle cx="12" cy="16.4" r="0.9" fill="currentColor" stroke="none"/>`,
+  ),
+  power: svg(`<path d="M12 3.8v7.4"/><path d="M7.4 6.6a7.2 7.2 0 1 0 9.2 0"/>`),
   trash: svg(
     `<path d="M5.2 7.4h13.6"/><path d="M9.4 7.4V5.6A1.6 1.6 0 0 1 11 4h2a1.6 1.6 0 0 1 1.6 1.6v1.8"/><path d="M8 7.4 8.8 19.2A1.7 1.7 0 0 0 10.5 20.8h3a1.7 1.7 0 0 0 1.7-1.6L16 7.4"/><path d="M10.4 10.6v6.2M13.6 10.6v6.2"/>`,
   ),

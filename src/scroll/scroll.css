@@ -129,7 +129,7 @@ html[data-view="scroll"] #app {
 .scroll-appended {
   color: var(--ink);
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -167,7 +167,7 @@ html[data-view="scroll"] #app {
   background: transparent;
   color: var(--ink);
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 600;
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
@@ -207,7 +207,7 @@ html[data-view="scroll"] #app {
   margin: 0;
   color: var(--ink);
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 600;
   line-height: 1.4;
   overflow-wrap: anywhere;
 }

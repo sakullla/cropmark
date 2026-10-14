@@ -431,7 +431,7 @@ const WIDTH_STYLE_TOOLS: ReadonlySet<AnnotationTool> = new Set([
 ]);
 
 const FALLBACK_STROKE = "#e11d48";
-const FALLBACK_SELECT = "#1d4ed8";
+const FALLBACK_SELECT = "#0f766e";
 export const TEXT_FONT_STACK = '"Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif';
 
 // 与 Rust annotate::HIGHLIGHTER_ALPHA / MIN_BLUR_SIGMA / MAX_BLUR_SIGMA 对齐。

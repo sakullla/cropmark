@@ -1219,6 +1219,10 @@
     "zh-CN": "关闭",
     "en": "Close"
   },
+  "settings.window_title": {
+    "zh-CN": "设置",
+    "en": "Settings"
+  },
   "settings.nav.aria_label": {
     "zh-CN": "设置分类",
     "en": "Settings sections"

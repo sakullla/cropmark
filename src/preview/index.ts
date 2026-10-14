@@ -65,7 +65,7 @@ const PREVIEW_TOOL_DEFAULTS: RegionTools = {
 /** 裁剪确认条离画面边缘的间距,与样式里的 12px 悬浮一致。 */
 const CROP_BAR_INSET = 12;
 /** 与 app.css 亮色 --accent 一致;令牌缺失时的最终回退。 */
-const FALLBACK_CROP_EDGE = "#2457db";
+const FALLBACK_CROP_EDGE = "#0f766e";
 
 type NoteKind = "success" | "feedback" | "error" | "plain";
 
@@ -95,6 +95,7 @@ export function mountPreview(root: HTMLElement): () => void {
         <span class="name">Cropmark</span>
       </div>
       <p class="preview-note is-feedback" role="status" data-drag-handle data-tauri-drag-region><span class="preview-note-text" data-note-text>${t("preview.note.loading")}</span></p>
+      <span class="preview-titlebar-spacer" data-drag-handle data-tauri-drag-region aria-hidden="true"></span>
       <button type="button" class="preview-close icon-btn" data-action="close" data-i18n-aria-label="preview.close" aria-label="关闭">${icons.close}</button>
     </header>
     <div class="preview-toolbar" data-preview-toolbar>

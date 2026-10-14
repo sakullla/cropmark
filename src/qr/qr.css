@@ -32,7 +32,7 @@
 .qr-panel-bar h2 {
   margin: 0;
   font-size: 16px;
-  font-weight: 650;
+  font-weight: 600;
   color: var(--ink);
 }
 
@@ -110,7 +110,7 @@
   background: var(--accent);
   border-color: var(--accent);
   color: var(--on-accent);
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .qr-item-copy.primary:hover:not(:disabled):not(:active),
@@ -137,7 +137,7 @@
   background: var(--ok);
   border-color: var(--ok);
   color: var(--on-accent);
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .qr-item-copy:disabled {

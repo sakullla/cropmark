@@ -12,6 +12,7 @@ import { currentLanguage, t, type CatalogKey } from "../i18n";
 import { mountOcrModel, type OcrModel } from "../ocr";
 import { mountQrModel, type QrModel } from "../qr";
 import { NOTICE_AUTO_HIDE_MS } from "../feedback";
+import { icons } from "../icons";
 import { canvasGeometry } from "./geometry";
 import "./overlay.css";
 
@@ -149,7 +150,7 @@ const REDUCED_CAPABILITIES: Array<{ nameKey: CatalogKey; detailKey: CatalogKey }
   { nameKey: "overlay.caps.nudge_name", detailKey: "overlay.caps.nudge_detail" },
 ];
 
-const FALLBACK_SELECTION = "#1d4ed8";
+const FALLBACK_SELECTION = "#0f766e";
 const FALLBACK_SELECTION_HALO = "#ffffff";
 const FALLBACK_IDLE_STROKE = "#1c2128";
 
@@ -188,12 +189,13 @@ export function mountOverlay(root: HTMLElement): () => void {
       <div class="overlay-hint" role="status"></div>
       <button type="button" class="overlay-retry" data-i18n="overlay.retry" hidden>重试</button>
       <div class="overlay-actions" hidden>
-        <button type="button" data-workspace="ocr" data-i18n="overlay.action.ocr" data-i18n-title="overlay.action.ocr_title" data-tooltip="${t("overlay.action.ocr_title")}">取字</button>
-        <button type="button" data-workspace="qr" data-i18n="overlay.action.qr" data-i18n-title="overlay.action.qr_title" data-tooltip="${t("overlay.action.qr_title")}">识别二维码</button>
-        <button type="button" data-workspace="pin" data-i18n="overlay.action.pin" data-i18n-title="overlay.action.pin_title" data-tooltip="${t("overlay.action.pin_title")}">贴图</button>
-        <button type="button" data-workspace="save" data-i18n="overlay.action.save" data-i18n-title="overlay.action.save_title" data-tooltip="${t("overlay.action.save_title")}">保存</button>
-        <button type="button" class="primary" data-workspace="copy" data-i18n="overlay.action.copy" data-i18n-title="overlay.action.copy_title" data-tooltip="${t("overlay.action.copy_title")}">复制</button>
-        <button type="button" data-workspace="edit" data-i18n="overlay.action.edit" data-i18n-title="overlay.action.edit_title" data-tooltip="${t("overlay.action.edit_title")}">进一步编辑</button>
+        <button type="button" data-workspace="ocr" data-i18n-title="overlay.action.ocr_title" data-tooltip="${t("overlay.action.ocr_title")}">${icons.ocr}<span data-i18n="overlay.action.ocr">取字</span></button>
+        <button type="button" data-workspace="qr" data-i18n-title="overlay.action.qr_title" data-tooltip="${t("overlay.action.qr_title")}">${icons.qr}<span data-i18n="overlay.action.qr">识别二维码</span></button>
+        <button type="button" data-workspace="edit" data-i18n-title="overlay.action.edit_title" data-tooltip="${t("overlay.action.edit_title")}">${icons.annotate}<span data-i18n="overlay.action.edit">进一步编辑</span></button>
+        <span class="overlay-actions-sep" aria-hidden="true"></span>
+        <button type="button" data-workspace="pin" data-i18n-title="overlay.action.pin_title" data-tooltip="${t("overlay.action.pin_title")}">${icons.pin}<span data-i18n="overlay.action.pin">贴图</span></button>
+        <button type="button" data-workspace="save" data-i18n-title="overlay.action.save_title" data-tooltip="${t("overlay.action.save_title")}">${icons.save}<span data-i18n="overlay.action.save">保存</span></button>
+        <button type="button" class="primary" data-workspace="copy" data-i18n-title="overlay.action.copy_title" data-tooltip="${t("overlay.action.copy_title")}">${icons.copy}<span data-i18n="overlay.action.copy">复制</span></button>
       </div>
       <button type="button" class="overlay-capabilities" aria-haspopup="dialog" aria-controls="overlay-capability-panel" aria-expanded="false" data-i18n="overlay.capabilities" hidden>能力说明</button>
       <button type="button" class="overlay-cancel" data-i18n="overlay.cancel">取消 Esc</button>

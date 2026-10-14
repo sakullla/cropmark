@@ -4,7 +4,7 @@
 html[data-view="toast"],
 html[data-view="toast"] body,
 html[data-view="toast"] #app {
-  background: #1b1f26;
+  background: #172022;
   color: #f7f8fa;
 }
 
@@ -14,14 +14,15 @@ html[data-view="toast"] #app {
   margin: 0;
   display: flex;
   align-items: center;
-  justify-content: center;
-  padding: 0 14px;
+  justify-content: flex-start;
+  gap: 12px;
+  padding: 0 16px 0 14px;
   user-select: none;
   /* 窗高固定 62px（Rust 侧 TOAST_HEIGHT）：超长文案在窗内截断而非撑出圆角边界。 */
   overflow: hidden;
-  background: #1b1f26;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 10px;
+  background: #172022;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
 }
 
@@ -31,7 +32,7 @@ html[data-view="toast"] #app {
   color: #f7f8fa;
   font: inherit;
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 600;
   line-height: 1.35;
   white-space: normal;
   overflow-wrap: anywhere;
@@ -40,4 +41,12 @@ html[data-view="toast"] #app {
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
   overflow: hidden;
+}
+
+/* 品牌标记让系统级提示一眼认出来自 Cropmark,不和其它应用的通知混淆。 */
+.toast-mark {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  background: url("../../src-tauri/icons/v2/128x128.png") center / contain no-repeat;
 }

@@ -12,14 +12,56 @@
   line-height: 1.5;
 }
 
-.guide-section {
+html[data-view="guide"] .guide-root .content {
+  flex: 1 1 auto;
+  min-height: 0;
+  gap: 10px;
+}
+
+/* 每节左侧一枚图标徽章:扫一眼就能找到想看的那一节。 */
+html[data-view="guide"] .guide-section {
+  position: relative;
   min-width: 0;
+  padding: 16px 18px 16px 64px;
+}
+
+.guide-icon {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-control);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.guide-icon svg {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+
+/* 「知道了」固定在窗口底部,不用滚到最后才能关掉帮助。 */
+.guide-footer {
+  flex: 0 0 auto;
+  display: flex;
+  padding: 12px 16px 14px;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.guide-footer .guide-done {
+  flex: 1 1 auto;
 }
 
 .guide-section h2 {
   margin: 0 0 4px;
-  font-size: 16px;
-  font-weight: 700;
+  font-size: 15px;
+  font-weight: 600;
   line-height: 1.35;
   letter-spacing: 0;
   text-transform: none;
@@ -35,7 +77,7 @@
 .guide-section [data-log-error] {
   color: var(--danger);
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 600;
   line-height: 1.45;
 }
 
@@ -61,7 +103,7 @@
   gap: 12px;
   min-width: 0;
   font-size: 14px;
-  font-weight: 650;
+  font-weight: 500;
 }
 
 .guide-hotkey > span {
@@ -79,12 +121,12 @@
   max-width: min(60%, 100%);
   padding: 4px 10px;
   border: 1px solid var(--line);
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-control-sm);
   background: var(--control-fill);
   color: var(--ink);
   font-family: inherit;
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
   /* 与设置里的热键按钮相同：在加号处折行，键名本身放得下就不断开。 */
   overflow-wrap: break-word;
@@ -105,7 +147,7 @@
   color: var(--on-accent);
   font: inherit;
   font-size: 14px;
-  font-weight: 650;
+  font-weight: 600;
   overflow-wrap: anywhere;
   cursor: pointer;
   transition: var(--control-transition);

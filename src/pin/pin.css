@@ -196,7 +196,7 @@
 .pin-menu button[data-menu-action="close"] {
   display: block;
   color: var(--danger);
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .pin-menu button[data-menu-action="close"]:hover,
@@ -326,4 +326,29 @@
 .pin-note.is-clamped {
   pointer-events: auto;
   cursor: help;
+}
+
+/* 菜单按用途分组:输出 / 变换 / 显示 / 管理 / 关闭。分隔线让长菜单一眼可扫。 */
+.pin-menu [data-menu-action="rotate"],
+.pin-menu .pin-menu-row,
+.pin-menu [data-menu-action="group"],
+.pin-menu [data-menu-action="group"][hidden] + [data-menu-action="ungroup"],
+.pin-menu [data-menu-action="close"] {
+  position: relative;
+  margin-top: 9px;
+}
+
+.pin-menu [data-menu-action="rotate"]::before,
+.pin-menu .pin-menu-row::before,
+.pin-menu [data-menu-action="group"]::before,
+.pin-menu [data-menu-action="group"][hidden] + [data-menu-action="ungroup"]::before,
+.pin-menu [data-menu-action="close"]::before {
+  content: "";
+  position: absolute;
+  top: -5px;
+  left: 6px;
+  right: 6px;
+  height: 1px;
+  background: var(--line);
+  pointer-events: none;
 }
