@@ -342,10 +342,30 @@ pub fn precreate(app: &AppHandle) {
 
 pub fn open_overlay(app: &AppHandle, monitor: &MonitorGeom) -> Result<WebviewWindow, CaptureError> {
     let window = ensure_window(app, OVERLAY, "overlay", 320.0, 240.0, false, true)?;
-    // 浮层精确覆盖显示器物理像素:尺寸按物理值下发,不再依赖"逻辑尺寸×
-    // dpr 恰好等于物理尺寸"的换算(多屏拼接的虚拟显示器 scale=1.0 在缩放
-    // 显示器上曾让画布与帧相差 dpr 倍)。前端按实际窗口几何计算显示框,
-    // 任何平台换算差异都只影响窗口大小,不再影响帧→画布坐标映射。
+    // 铺满显示器的无边框窗不能带阴影。Windows 会为它加 1px 边和圆角,并在
+    // 非客户区计算里按阴影内边距收缩客户区;鼠标一动,DWM 就在翻转合成之间
+    // 来回切,整屏冻结画面跟着抖。
+    let _ = window.set_shadow(false);
+    place_overlay_on_monitor(&window, monitor);
+    let _ = window.set_ignore_cursor_events(false);
+    let _ = window.set_always_on_top(true);
+    let _ = window.show();
+    let _ = window.set_focus();
+    #[cfg(windows)]
+    {
+        suppress_borderless_cover_jitter(&window);
+        // 关掉圆角可能改一帧非客户区,再钉回显示器物理矩形。
+        place_overlay_on_monitor(&window, monitor);
+    }
+    let _ = window.emit("overlay-reload", ());
+    Ok(window)
+}
+
+/// 浮层精确覆盖显示器物理像素:尺寸按物理值下发,不再依赖"逻辑尺寸×
+/// dpr 恰好等于物理尺寸"的换算(多屏拼接的虚拟显示器 scale=1.0 在缩放
+/// 显示器上曾让画布与帧相差 dpr 倍)。前端按实际窗口几何计算显示框,
+/// 任何平台换算差异都只影响窗口大小,不再影响帧→画布坐标映射。
+fn place_overlay_on_monitor(window: &WebviewWindow, monitor: &MonitorGeom) {
     let _ = window.set_position(Position::Physical(PhysicalPosition {
         x: monitor.physical_x,
         y: monitor.physical_y,
@@ -354,12 +374,6 @@ pub fn open_overlay(app: &AppHandle, monitor: &MonitorGeom) -> Result<WebviewWin
         width: monitor.physical_width.max(1),
         height: monitor.physical_height.max(1),
     }));
-    let _ = window.set_ignore_cursor_events(false);
-    let _ = window.set_always_on_top(true);
-    let _ = window.show();
-    let _ = window.set_focus();
-    let _ = window.emit("overlay-reload", ());
-    Ok(window)
 }
 
 pub fn open_preview(app: &AppHandle, frame: &Frame) -> Result<WebviewWindow, CaptureError> {
@@ -625,6 +639,38 @@ fn overlay_park_placement() -> (LogicalPosition<f64>, LogicalSize<f64>) {
     )
 }
 
+/// 覆盖层会铺满整块显示器,不能要无边框阴影。其余不透明窗保留阴影。
+fn window_uses_shadow(label: &str, transparent: bool) -> bool {
+    !transparent && label != OVERLAY
+}
+
+/// 关掉 Windows 11 对无边框窗的圆角裁剪。圆角和阴影内边距会在鼠标移动时
+/// 被 DWM 重算,铺满显示器的冻结画面就整屏抖。
+#[cfg(windows)]
+fn suppress_borderless_cover_jitter(window: &WebviewWindow) {
+    let Ok(hwnd) = window.hwnd() else {
+        return;
+    };
+    unsafe { suppress_borderless_cover_jitter_hwnd(hwnd) };
+}
+
+/// # Safety
+/// `hwnd` 必须是仍有效的覆盖层窗口。
+#[cfg(windows)]
+unsafe fn suppress_borderless_cover_jitter_hwnd(hwnd: windows::Win32::Foundation::HWND) {
+    use windows::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
+    };
+
+    let corners = DWMWCP_DONOTROUND;
+    let _ = DwmSetWindowAttribute(
+        hwnd,
+        DWMWA_WINDOW_CORNER_PREFERENCE,
+        std::ptr::from_ref(&corners).cast(),
+        std::mem::size_of_val(&corners) as u32,
+    );
+}
+
 /// Windows 前台锁:热键/覆盖层 hide 之后 SetForegroundWindow 常被拒绝,
 /// 预览会变成“看得见但点不到”的置顶窗。把前台线程输入队列临时挂过来。
 #[cfg(windows)]
@@ -710,7 +756,7 @@ fn builder<'a>(
     .title("Cropmark")
     .decorations(false)
     .transparent(transparent)
-    .shadow(!transparent)
+    .shadow(window_uses_shadow(label, transparent))
     .skip_taskbar(skip_taskbar)
     .resizable(label == PREVIEW)
     .maximizable(false)
@@ -763,6 +809,14 @@ fn preview_size(frame: &Frame, work_w: f64, work_h: f64) -> (f64, f64) {
 mod tests {
     use super::*;
     use crate::capture::buffer::Frame;
+
+    #[test]
+    fn overlay_covering_a_monitor_does_not_use_a_window_shadow() {
+        assert!(!window_uses_shadow(OVERLAY, false));
+        assert!(!window_uses_shadow(OVERLAY, true));
+        assert!(window_uses_shadow(PREVIEW, false));
+        assert!(!window_uses_shadow(PREVIEW, true));
+    }
 
     /// 头部之后的 JSON 长度与 PNG 起点(测试共用)。
     fn payload_parts(bytes: &[u8]) -> (usize, &[u8], &[u8]) {
