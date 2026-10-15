@@ -1409,6 +1409,9 @@ export function mountRecordControl(root: HTMLElement): () => void {
       overlayNoticeTimer = null;
     }
     appliedHeight = -1;
+    previewKey = "";
+    previewError = "";
+    releasePreview();
   });
   void listen<{ tool?: string }>("record-annotate-active", (event) => {
     const tool = event.payload.tool;

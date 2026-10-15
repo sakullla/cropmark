@@ -1773,8 +1773,14 @@ export function mountPreview(root: HTMLElement): () => void {
       return;
     }
     setBusy(true);
+    const generation = previewLoad;
     try {
       await invoke("capture_again_long");
+      // 受理成功后隐藏前置已把预览窗收起(不再可见):同步释放驻留位图,
+      // 与贴图回写/关闭预览同一条策略;被拒绝时窗口仍在,不释放。
+      if (generation === previewLoad) {
+        releasePreviewMemory();
+      }
     } catch (error) {
       setNote(invokeError(error, t("preview.error.again_fallback")), "error");
     } finally {
@@ -2561,6 +2567,9 @@ export function mountPreview(root: HTMLElement): () => void {
     cropCurrent = null;
     editor?.setAnnotations(result.annotations);
     ocrModel?.setDocument(result.ocr);
+    // 二维码结果没有坐标重映射:旋转/裁剪后旧内容与码身矩形都已过期,
+    // 清空缓存,下一次识别按变换后的当前帧重新解码。
+    qrModel?.reset();
     const loaded = await loadFramePixels(generation);
     if (generation !== previewLoad) {
       return;

@@ -96,7 +96,7 @@ export function mountPin(root: HTMLElement): () => void {
       <button type="button" data-menu-action="reset" data-i18n="pin.menu.reset">缩放重置</button>
       <button type="button" data-menu-action="close" data-i18n="pin.menu.close">关闭贴图</button>
     </div>
-    <div class="pin-note" data-note hidden></div>
+    <div class="pin-note" data-note role="status" aria-live="polite" hidden></div>
   `;
 
   const stage = root.querySelector(".pin-stage");
