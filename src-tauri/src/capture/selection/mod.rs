@@ -1753,7 +1753,7 @@ impl SelectionEngine {
                 self.draft.as_mut()
             {
                 let last = points.last().copied();
-                let reaches = last.map_or(true, |point| {
+                let reaches = last.is_none_or(|point| {
                     (point.x - cursor.0 as f64).hypot(point.y - cursor.1 as f64) >= 1.0
                 });
                 if reaches {
@@ -2229,18 +2229,18 @@ impl SelectionEngine {
             id: String::new(),
             logical_x: 0,
             logical_y: 0,
-            logical_width: self.width.max(0) as u32,
-            logical_height: self.height.max(0) as u32,
+            logical_width: self.width,
+            logical_height: self.height,
             physical_x: 0,
             physical_y: 0,
-            physical_width: self.width.max(0) as u32,
-            physical_height: self.height.max(0) as u32,
+            physical_width: self.width,
+            physical_height: self.height,
             scale,
         };
         let region = crate::record::RecordRegion::new(rect.x, rect.y, rect.width, rect.height);
         let spec = crate::record::hud::chrome_spec_for(&monitor, format);
         match crate::record::hud::plan_recording_chrome(region, &monitor, spec) {
-            Ok(plan) => match plan.capture.for_format(format) {
+            Some(plan) => match plan.capture.for_format(format) {
                 Ok(capture) => Ok(PhysicalRect {
                     x: capture.x,
                     y: capture.y,
@@ -2249,7 +2249,7 @@ impl SelectionEngine {
                 }),
                 Err(error) => Err(error.user_message()),
             },
-            Err(()) => Err(crate::i18n::t("error.record.region")),
+            None => Err(crate::i18n::t("error.record.region")),
         }
     }
 
@@ -3236,7 +3236,7 @@ mod tests {
         );
         drag(&mut engine, (40, 30), (200, 120));
         let toolbar = engine.unified_toolbar().expect("toolbar");
-        assert!(toolbar.buttons.len() >= 1);
+        assert!(!toolbar.buttons.is_empty());
         // 选保存按钮(非末项取消/更多,取消走 Cancelled)。
         let (expected, rect) = toolbar
             .buttons
@@ -4417,14 +4417,86 @@ mod tests {
         engine.handle_event(InputEvent::LeftDown { x: 200, y: 300 });
         engine.handle_event(InputEvent::PointerMove { x: 300, y: 360 });
         engine.handle_event(InputEvent::LeftUp { x: 300, y: 360 });
-        assert!(matches!(engine.annotations()[1], Annotation::Blur { .. }));
+        // 100×60 的模糊草稿:短边/8 取整 → 8,与预览 blurSigma 同值。
+        assert!(matches!(
+            engine.annotations()[1],
+            Annotation::Blur { sigma, .. } if (sigma - 8.0).abs() < f64::EPSILON
+        ));
         // 横条上的马赛克按钮切回默认模式(模糊只留在「更多」)。
         click_action(&mut engine, SelectionAction::Tool(AnnotationTool::Mosaic));
         assert_eq!(engine.tool(), Some(AnnotationTool::Mosaic));
         engine.handle_event(InputEvent::LeftDown { x: 380, y: 300 });
         engine.handle_event(InputEvent::PointerMove { x: 460, y: 360 });
         engine.handle_event(InputEvent::LeftUp { x: 460, y: 360 });
-        assert!(matches!(engine.annotations()[2], Annotation::Mosaic { .. }));
+        // 引擎 scale 1.0:块边长 12,与预览 mosaicBlock 同值。
+        assert!(matches!(
+            engine.annotations()[2],
+            Annotation::Mosaic { block, .. } if block == 12
+        ));
+    }
+
+    /// 草稿入栈下限与马赛克/模糊参数是选区壳与预览编辑器共享的数值契约:
+    /// 两侧漂移会让壳上草稿与最终导出的隐私处理不一致(马赛克块越小越容易
+    /// 读出原文)。这里按字面值锁定规则本身。
+    #[test]
+    fn draft_metrics_mirror_the_preview_editor_rules() {
+        assert_eq!(mosaic_block(0.0), 12);
+        assert_eq!(mosaic_block(1.0), 12);
+        assert_eq!(mosaic_block(2.0), 24);
+        assert_eq!(mosaic_block(2.5), 30);
+
+        // 短边自适应,夹在 3..=48。
+        assert_eq!(blur_sigma(8.0, 8.0), 3.0);
+        assert_eq!(blur_sigma(80.0, 40.0), 5.0);
+        assert_eq!(blur_sigma(400.0, 300.0), 38.0);
+        assert_eq!(blur_sigma(4000.0, 4000.0), 48.0);
+
+        assert_eq!(polyline_length(&[]), 0.0);
+        assert_eq!(polyline_length(&[Point { x: 3.0, y: 4.0 }]), 0.0);
+        assert_eq!(
+            polyline_length(&[
+                Point { x: 0.0, y: 0.0 },
+                Point { x: 3.0, y: 4.0 },
+                Point { x: 3.0, y: 5.0 },
+            ]),
+            6.0
+        );
+
+        // 入栈下限:矩形两边都要达到 MIN_DRAW_SIZE,箭头按长度判定,
+        // 画笔/荧光笔不足 1 像素的折线丢弃。
+        let rect = |width: f64, height: f64| Annotation::Rect {
+            x: 0.0,
+            y: 0.0,
+            width,
+            height,
+            color: DEFAULT_COLOR.to_string(),
+            stroke_width: None,
+        };
+        assert!(!is_meaningful_draft(&rect(3.0, 2.0)));
+        assert!(is_meaningful_draft(&rect(3.0, 3.0)));
+        assert!(is_meaningful_draft(&rect(-3.0, -3.0)));
+        assert!(!is_meaningful_draft(&Annotation::Arrow {
+            from: Point { x: 0.0, y: 0.0 },
+            to: Point { x: 2.0, y: 2.0 },
+            color: DEFAULT_COLOR.to_string(),
+            stroke_width: None,
+        }));
+        assert!(is_meaningful_draft(&Annotation::Arrow {
+            from: Point { x: 0.0, y: 0.0 },
+            to: Point { x: 3.0, y: 4.0 },
+            color: DEFAULT_COLOR.to_string(),
+            stroke_width: None,
+        }));
+        assert!(!is_meaningful_draft(&Annotation::Pen {
+            points: vec![Point { x: 0.0, y: 0.0 }],
+            color: DEFAULT_COLOR.to_string(),
+            stroke_width: None,
+        }));
+        assert!(is_meaningful_draft(&Annotation::Pen {
+            points: vec![Point { x: 0.0, y: 0.0 }, Point { x: 0.0, y: 1.5 }],
+            color: DEFAULT_COLOR.to_string(),
+            stroke_width: None,
+        }));
     }
 
     /// R5:新增拖拽工具(聚光灯/放大镜/内容擦除)可创建并撤销。

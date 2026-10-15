@@ -341,7 +341,7 @@ pub fn open(app: &AppHandle, region: RecordRegion, monitor: MonitorGeom) {
 fn apply_chrome(app: &AppHandle, region: RecordRegion, monitor: &MonitorGeom) {
     let format = settings::current_recording(app).format;
     let spec = chrome_spec_for(monitor, format);
-    let Some(plan) = plan_recording_chrome(region, monitor, spec).ok() else {
+    let Some(plan) = plan_recording_chrome(region, monitor, spec) else {
         return;
     };
     let capabilities = capabilities();
@@ -419,7 +419,7 @@ fn replay_chrome(app: &AppHandle, region: RecordRegion, monitor: &MonitorGeom, p
         hud.confirmed_region = Some(region);
     }
     if let Some(control) = app.get_webview_window(CONTROL) {
-        let _ = place_screen_rect(&control, plan.control);
+        place_screen_rect(&control, plan.control);
     }
     sync_borders(app, &plan.borders);
     if let Some(overlay) = app.get_webview_window(OVERLAY) {
@@ -860,16 +860,16 @@ pub fn plan_recording_chrome(
     region: RecordRegion,
     monitor: &MonitorGeom,
     spec: ChromeSpec,
-) -> Result<ChromePlan, ()> {
+) -> Option<ChromePlan> {
     let mon_w = i32::try_from(monitor.physical_width).unwrap_or(i32::MAX);
     let mon_h = i32::try_from(monitor.physical_height).unwrap_or(i32::MAX);
     if mon_w <= 0 || mon_h <= 0 {
-        return Err(());
+        return None;
     }
-    let mut x = i32::try_from(region.x).map_err(|_| ())?;
-    let mut y = i32::try_from(region.y).map_err(|_| ())?;
-    let mut w = i32::try_from(region.width).map_err(|_| ())?;
-    let mut h = i32::try_from(region.height).map_err(|_| ())?;
+    let mut x = i32::try_from(region.x).ok()?;
+    let mut y = i32::try_from(region.y).ok()?;
+    let mut w = i32::try_from(region.width).ok()?;
+    let mut h = i32::try_from(region.height).ok()?;
     if x < 0
         || y < 0
         || w <= 0
@@ -877,7 +877,7 @@ pub fn plan_recording_chrome(
         || x.saturating_add(w) > mon_w
         || y.saturating_add(h) > mon_h
     {
-        return Err(());
+        return None;
     }
     let border = spec.border.max(1);
     let margin = spec.control_margin.max(0);
@@ -894,7 +894,7 @@ pub fn plan_recording_chrome(
         if spec.capture_protection {
             overlap_border = true;
         } else if w < border * 2 + min_edge || h < border * 2 + min_edge {
-            return Err(());
+            return None;
         } else {
             x += border;
             y += border;
@@ -909,19 +909,19 @@ pub fn plan_recording_chrome(
     } else if h >= band + min_edge {
         h -= band;
     } else {
-        return Err(());
+        return None;
     }
     if spec.even {
         let even_w = w & !1;
         let even_h = h & !1;
         if even_w < min_edge || even_h < min_edge {
-            return Err(());
+            return None;
         }
         w = even_w;
         h = even_h;
     }
     if w < min_edge || h < min_edge {
-        return Err(());
+        return None;
     }
     let bottom_space = mon_h - (y + h);
     let top_space = y;
@@ -930,7 +930,7 @@ pub fn plan_recording_chrome(
     } else if top_space >= control_h + gap {
         y - control_h - gap
     } else {
-        return Err(());
+        return None;
     };
     let control_x = (x + (w - control_w) / 2).clamp(0, (mon_w - control_w).max(0));
     let control_y = control_y.clamp(0, (mon_h - control_h).max(0));
@@ -943,7 +943,7 @@ pub fn plan_recording_chrome(
     let capture_screen = screen(x, y, w, h);
     let control = screen(control_x, control_y, control_w, control_h);
     if control.intersects(capture_screen) {
-        return Err(());
+        return None;
     }
     let space = outside(x, y, w, h);
     let mut borders = [None, None, None, None];
@@ -984,7 +984,7 @@ pub fn plan_recording_chrome(
             .flatten()
             .any(|border_rect| border_rect.intersects(capture_screen))
     {
-        return Err(());
+        return None;
     }
     let capture = RecordRegion::new(
         u32::try_from(x).unwrap_or(0),
@@ -996,7 +996,7 @@ pub fn plan_recording_chrome(
         || capture.y != region.y
         || capture.width != region.width
         || capture.height != region.height;
-    Ok(ChromePlan {
+    Some(ChromePlan {
         capture,
         borders,
         control,
@@ -1729,7 +1729,7 @@ pub fn update_recording_region(
     // 让位宽度不足):压缩回上一个可规划成功的尺寸,而不是整块拒绝。
     let mut plan = plan_recording_chrome(clamped, &monitor, spec);
     let mut candidate = clamped;
-    if plan.is_err() && clamped.width > display.width && clamped.height > display.height {
+    if plan.is_none() && clamped.width > display.width && clamped.height > display.height {
         // 同时放大两个方向失败:退回只沿拖动方向扩展(单边放大更容易成功)。
         let narrow = clamp_region_target(
             RegionTarget {
@@ -1742,13 +1742,13 @@ pub fn update_recording_region(
             format,
         );
         if let Some(fallback) = narrow {
-            if let Ok(trial) = plan_recording_chrome(fallback, &monitor, spec) {
+            if let Some(trial) = plan_recording_chrome(fallback, &monitor, spec) {
                 candidate = fallback;
-                plan = Ok(trial);
+                plan = Some(trial);
             }
         }
     }
-    let Ok(plan) = plan else {
+    let Some(plan) = plan else {
         return false;
     };
     // 录制中槽位捕获矩形的宽高必须是编码器锁死的尺寸——重放出的 plan
@@ -2003,7 +2003,7 @@ mod tests {
     fn chrome_refuses_a_region_too_small_for_the_control_bar() {
         let screen = MonitorGeom::from_physical("tiny", 0, 0, 40, 40, 1.0);
         let region = RecordRegion::new(0, 0, 40, 40);
-        assert!(plan_recording_chrome(region, &screen, spec(false, false)).is_err());
+        assert!(plan_recording_chrome(region, &screen, spec(false, false)).is_none());
     }
 
     #[test]

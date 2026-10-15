@@ -753,7 +753,7 @@ fn hide_session_surface(app: &AppHandle, label: &str) -> Result<(), CaptureError
 }
 
 fn show_delay(app: &AppHandle, delay_ms: u64, mode: CaptureMode) -> Result<(), CaptureError> {
-    ui::open_delay(app, delay_ms)?;
+    ui::open_delay(app)?;
     let _ = app.emit("capture-delay", DelayPayload { delay_ms, mode });
     Ok(())
 }
@@ -762,7 +762,7 @@ async fn wait_delay(app: &AppHandle, delay_ms: u64, generation: u64) -> Result<b
     let steps = (delay_ms / 100).max(1);
     for _ in 0..steps {
         if is_cancelled(app) {
-            cancel_internal(app, None)?;
+            cancel_internal(app, Some(generation))?;
             return Err(CaptureError::cancelled());
         }
         // 旧会话被看门狗替换后立即中止倒计时,不再触碰新会话(ADR-16)。
@@ -908,7 +908,7 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
         let annotation_options = annotation_options_from(&handle);
         set_shell_app(Some(handle.clone()));
         let _clear_shell_app = ClearShellApp;
-        let picked = super::native_overlay::pick_region(
+        super::native_overlay::pick_region(
             &frame,
             &monitor,
             flags,
@@ -917,8 +917,7 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
                 copy_color: copy_color_feedback,
                 notify: shell_notice,
             },
-        );
-        picked
+        )
     })
     .await
     .map_err(|_| CaptureError::api("error.capture.thread_failed"))??;
@@ -1175,7 +1174,7 @@ fn prepare_recording_region(
         crate::record::RecordRegion::new(selection.x, selection.y, selection.width, selection.height);
     let spec = crate::record::hud::chrome_spec_for(monitor, format);
     let planned = crate::record::hud::plan_recording_chrome(region, monitor, spec)
-        .map_err(|_| crate::i18n::t("error.record.region"))?;
+        .ok_or_else(|| crate::i18n::t("error.record.region"))?;
     planned
         .capture
         .for_format(format)

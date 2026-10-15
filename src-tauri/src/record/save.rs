@@ -9,6 +9,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::{Duration, SystemTime};
 
 use serde::Serialize;
 use tauri::AppHandle;
@@ -18,6 +19,7 @@ use crate::filename_template::unique_path;
 use crate::i18n;
 use crate::settings;
 
+use super::encoder::TEMP_FILE_PREFIX;
 use super::{RecordFormat, RecordingOutput};
 
 /// 保存失败时登记的待处理产物(按失败顺序):对应的临时文件保留在磁盘上,
@@ -81,6 +83,53 @@ pub struct RecordSaveResult {
 /// 丢弃录制产物(用户取消保存或应用退出清理):删除临时文件。
 pub fn discard_recording(output: &RecordingOutput) {
     let _ = std::fs::remove_file(&output.temp_path);
+}
+
+/// 遗留临时文件的保留窗口:错误文案承诺"不会自动删除",最近的文件可能仍被
+/// 用户按提示手动抢救,只有确认过期的孤儿产物才在启动时回收。
+const STALE_TEMP_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
+/// 启动清理入口:上一(几)次运行遗留的录制临时文件在保留窗口后回收
+/// (后台线程,不阻塞启动,R15)。运行期内的待处理产物仍由 HUD 重试/丢弃管理。
+pub fn sweep_stale_temp_files_on_startup() {
+    tauri::async_runtime::spawn_blocking(|| {
+        let removed = sweep_stale_temp_files(
+            &std::env::temp_dir(),
+            SystemTime::now(),
+            STALE_TEMP_RETENTION,
+        );
+        if removed > 0 {
+            log::info!("record temp sweep removed={removed}");
+        }
+    });
+}
+
+/// 删除 `dir` 中带录制前缀且早于保留窗口的文件,返回删除数量;其余文件
+/// (最近产物、无关文件、读取失败项)保持原样。
+fn sweep_stale_temp_files(dir: &Path, now: SystemTime, retention: Duration) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        if !entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(TEMP_FILE_PREFIX)
+        {
+            continue;
+        }
+        let expired = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age >= retention);
+        if expired && std::fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 /// 用户输入路径 → 目标路径:扩展名与录制格式一致(大小写不敏感)时保留;
@@ -358,6 +407,40 @@ mod tests {
         // 重试取消/失败路径放回后仍可再次取出。
         keep_pending_recording(output.clone());
         assert!(remove_pending_recording(&output.temp_path).is_some());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 启动清理:只回收带录制前缀且超过保留窗口的孤儿文件;最近的文件
+    /// (可能属于仍在运行的实例或用户正按提示抢救)与无关文件保持不动。
+    #[test]
+    fn stale_recording_temp_files_are_swept_only_after_the_retention_window() {
+        let dir =
+            std::env::temp_dir().join(format!("cropmark-record-sweep-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let now = SystemTime::now();
+        let stale = dir.join(format!("{TEMP_FILE_PREFIX}1-100-0.mp4"));
+        let fresh = dir.join(format!("{TEMP_FILE_PREFIX}2-200-0.gif"));
+        let unrelated = dir.join("cropmark-hud-pending.webp");
+        for path in [&stale, &fresh, &unrelated] {
+            fs::write(path, b"recorded-bytes").expect("temp file");
+        }
+        fs::File::options()
+            .write(true)
+            .open(&stale)
+            .expect("stale file")
+            .set_modified(now - STALE_TEMP_RETENTION - Duration::from_secs(1))
+            .expect("backdate stale file");
+
+        let removed = sweep_stale_temp_files(&dir, now, STALE_TEMP_RETENTION);
+
+        assert_eq!(removed, 1, "only the expired recording temp file is swept");
+        assert!(!stale.exists());
+        assert!(fresh.exists(), "recent temp files must stay for recovery");
+        assert!(
+            unrelated.exists(),
+            "unrelated temp files must stay untouched"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -48,16 +48,6 @@ impl RecordFormat {
             Self::Mp4 => "MP4",
         }
     }
-
-    /// 已知扩展名(大小写不敏感)返回格式,其余返回 None。
-    pub fn from_extension(extension: &str) -> Option<Self> {
-        match extension.to_ascii_lowercase().as_str() {
-            "gif" => Some(Self::Gif),
-            "webp" => Some(Self::Webp),
-            "mp4" => Some(Self::Mp4),
-            _ => None,
-        }
-    }
 }
 
 /// GIF 帧尺寸上限(格式本身为 u16)。
@@ -129,6 +119,9 @@ fn gif_cs(timestamp_ms: u64) -> u64 {
     timestamp_ms / 10
 }
 
+/// 录制临时文件前缀:启动清理按此前缀识别遗留产物,命名与识别必须同源。
+pub(crate) const TEMP_FILE_PREFIX: &str = "cropmark-recording-";
+
 fn temp_path(format: RecordFormat) -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let sequence = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -137,7 +130,7 @@ fn temp_path(format: RecordFormat) -> PathBuf {
         .map(|elapsed| elapsed.as_millis())
         .unwrap_or_default();
     std::env::temp_dir().join(format!(
-        "cropmark-recording-{}-{stamp}-{sequence}.{}",
+        "{TEMP_FILE_PREFIX}{}-{stamp}-{sequence}.{}",
         std::process::id(),
         format.extension()
     ))

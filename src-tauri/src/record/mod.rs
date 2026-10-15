@@ -36,7 +36,8 @@ use crate::settings;
 pub use encoder::RecordFormat;
 pub use save::{
     discard_recording, keep_pending_recording, move_output_atomic, pending_recordings,
-    save_recording_with_dialog, take_pending_recordings, RecordSaveResult,
+    save_recording_with_dialog, sweep_stale_temp_files_on_startup, take_pending_recordings,
+    RecordSaveResult,
 };
 
 /// 默认目标帧率:固定帧率抓帧,与现有平台单帧抓取 API 的能力一致。
@@ -497,7 +498,7 @@ impl RecordingSession {
             Some(monitor) => {
                 let spec = hud::chrome_spec_for(monitor, config.format);
                 let plan = hud::plan_recording_chrome(confirmed, monitor, spec)
-                    .map_err(|_| RecordError::Region)?;
+                    .ok_or(RecordError::Region)?;
                 (plan.capture, hud::annotation_inset(confirmed, plan.capture))
             }
             None => (confirmed, (0, 0)),

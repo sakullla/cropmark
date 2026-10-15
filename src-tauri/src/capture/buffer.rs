@@ -67,8 +67,10 @@ pub fn accept_buffer(raw: RawBuffer) -> Result<Frame, CaptureError> {
     if raw.bytes.is_empty() {
         return Err(CaptureError::invalid_buffer("error.capture.buffer_empty"));
     }
-    let expected = raw.width as usize * raw.height as usize * 4;
-    if raw.bytes.len() != expected {
+    let expected = (raw.width as usize)
+        .checked_mul(raw.height as usize)
+        .and_then(|pixels| pixels.checked_mul(4));
+    if expected != Some(raw.bytes.len()) {
         return Err(CaptureError::invalid_buffer("error.capture.buffer_empty"));
     }
     Ok(Frame {
@@ -431,6 +433,15 @@ mod tests {
     #[test]
     fn length_mismatch_is_invalid_buffer() {
         let error = accept_buffer(RawBuffer::ready(2, 2, vec![1, 2, 3])).unwrap_err();
+        assert_eq!(
+            error.kind,
+            super::super::error::CaptureErrorKind::InvalidBuffer
+        );
+    }
+
+    #[test]
+    fn dimensions_whose_size_overflows_are_rejected_without_panicking() {
+        let error = accept_buffer(RawBuffer::ready(u32::MAX, u32::MAX, vec![0; 4])).unwrap_err();
         assert_eq!(
             error.kind,
             super::super::error::CaptureErrorKind::InvalidBuffer

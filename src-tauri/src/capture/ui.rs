@@ -105,7 +105,8 @@ impl OverlayCapabilities {
         }
     }
 
-    /// 浮层确实挂不上工作区动作时的能力说明(R8)。
+    /// 浮层确实挂不上工作区动作时的能力说明(R8);R19 后仅测试用来描述该分支。
+    #[cfg(test)]
     pub fn unhosted() -> Self {
         Self {
             inline_annotation: false,
@@ -396,9 +397,9 @@ pub fn open_preview(app: &AppHandle, frame: &Frame) -> Result<WebviewWindow, Cap
     Ok(window)
 }
 
-pub fn open_delay(app: &AppHandle, delay_ms: u64) -> Result<WebviewWindow, CaptureError> {
+pub fn open_delay(app: &AppHandle) -> Result<WebviewWindow, CaptureError> {
     close_window(app, DELAY);
-    let window = builder(app, DELAY, "delay", true, true)?
+    builder(app, DELAY, "delay", true, true)?
         .inner_size(280.0, 88.0)
         .always_on_top(true)
         .focused(false)
@@ -407,15 +408,7 @@ pub fn open_delay(app: &AppHandle, delay_ms: u64) -> Result<WebviewWindow, Captu
         .build()
         .map_err(|error| {
             CaptureError::api_detail("error.capture.window_build", &error.to_string())
-        })?;
-    let _ = window.emit(
-        "capture-delay",
-        DelayPayload {
-            delay_ms,
-            mode: CaptureMode::Region,
-        },
-    );
-    Ok(window)
+        })
 }
 
 pub fn open_error(app: &AppHandle, error: &CaptureError) -> Result<(), CaptureError> {

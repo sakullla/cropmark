@@ -171,7 +171,10 @@ fn accepted_copy<'a>(contents: &'a [String], requested: &str) -> Result<&'a str,
 pub fn decode_frame(frame: &crate::capture::buffer::Frame) -> Result<Vec<QrCode>, QrError> {
     let width = frame.width as usize;
     let height = frame.height as usize;
-    if width == 0 || height == 0 || frame.rgba.len() < width * height * 4 {
+    let expected = width
+        .checked_mul(height)
+        .and_then(|pixels| pixels.checked_mul(4));
+    if width == 0 || height == 0 || expected.is_none_or(|expected| frame.rgba.len() < expected) {
         return Err(QrError::Failed);
     }
     let rgba = &frame.rgba;

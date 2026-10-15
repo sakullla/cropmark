@@ -295,6 +295,8 @@ pub fn run() {
             pin::restore_persisted(app.handle());
             // R6:清理异常退出遗留的历史限时撤销标记(后台线程,不阻塞启动)。
             history::sweep_on_startup(app.handle());
+            // R3:回收上次运行遗留的录制临时文件(保留窗口内的不动)。
+            record::sweep_stale_temp_files_on_startup();
             // R15:托盘(或降级)、热键与预建窗口就绪,启动路径到此结束;
             // 门控日志只读时钟,不引入启动期同步 IO。
             log::info!(
