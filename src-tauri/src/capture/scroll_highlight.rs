@@ -427,6 +427,7 @@ fn glyph(ch: char) -> [u8; 7] {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn fill_rect(
     rgba: &mut [u8],
     width: u32,
@@ -596,6 +597,7 @@ unsafe extern "system" fn mouse_hook(code: i32, wparam: WPARAM, lparam: LPARAM) 
 /// MSLLHOOKSTRUCT 的最小镜像(只用到 pt/flags/mouseData 的低位 Shift 态;
 /// windows crate 0.61 未导出该结构体,布局按公开文档手工对齐)。
 #[repr(C)]
+#[allow(clippy::upper_case_acronyms)]
 struct MSLLHOOKSTRUCT {
     pt: POINT,
     mouse_data: u32,
@@ -756,15 +758,15 @@ unsafe fn present(
         out[2] = src[0];
         out[3] = src[3];
     }
-    let mut origin = POINT {
+    let origin = POINT {
         x: origin_x,
         y: origin_y,
     };
-    let mut size = windows::Win32::Foundation::SIZE {
+    let size = windows::Win32::Foundation::SIZE {
         cx: width as i32,
         cy: height as i32,
     };
-    let mut source = POINT { x: 0, y: 0 };
+    let source = POINT { x: 0, y: 0 };
     let blend = BLENDFUNCTION {
         BlendOp: AC_SRC_OVER as u8,
         BlendFlags: 0,
@@ -774,10 +776,10 @@ unsafe fn present(
     let _ = UpdateLayeredWindow(
         hwnd,
         Some(screen),
-        Some(&mut origin),
-        Some(&mut size),
+        Some(&origin),
+        Some(&size),
         Some(mem),
-        Some(&mut source),
+        Some(&source),
         COLORREF(0),
         Some(&blend),
         ULW_ALPHA,

@@ -69,6 +69,22 @@ pub fn key_count() -> usize {
     catalog().len()
 }
 
+/// 词条是否存在(源码扫描测试用:缺键在运行期会把键名原样显示给用户)。
+#[cfg(test)]
+pub fn contains(key: &str) -> bool {
+    catalog().contains_key(key)
+}
+
+/// 全部顶层命名空间(键的第一段),供源码扫描判断字面量"像不像键"。
+#[cfg(test)]
+pub fn namespaces() -> std::collections::BTreeSet<String> {
+    catalog()
+        .keys()
+        .filter_map(|key| key.split('.').next())
+        .map(str::to_string)
+        .collect()
+}
+
 /// 占位符替换:`{name}` → 参数值;未提供的占位符原样保留(不产生空白)。
 pub fn substitute(template: &str, params: &[(&str, &str)]) -> String {
     let mut text = template.to_string();

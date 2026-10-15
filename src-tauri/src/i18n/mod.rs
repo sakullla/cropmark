@@ -225,4 +225,275 @@ mod tests {
         // 结果必须是受支持语言且不 panic。
         assert!(matches!(system_language(), Language::ZhCn | Language::En));
     }
+
+    fn collect_crate_sources(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
+        let entries = std::fs::read_dir(dir).expect("read crate source dir");
+        for entry in entries {
+            let path = entry.expect("read crate source entry").path();
+            if path.is_dir() {
+                collect_crate_sources(&path, files);
+            } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+                files.push(path);
+            }
+        }
+    }
+
+    /// 生产代码:截到 `#[cfg(test)] mod tests` 之前,测试夹具不参与扫描。
+    fn production_source(source: &str) -> &str {
+        const MARKER: &str = "#[cfg(test)]";
+        let mut rest = source;
+        while let Some(index) = rest.find(MARKER) {
+            let after = &rest[index + MARKER.len()..];
+            if after
+                .chars()
+                .take(24)
+                .collect::<String>()
+                .contains("mod tests")
+            {
+                return &rest[..index];
+            }
+            rest = after;
+        }
+        source
+    }
+
+    /// 提取字符串字面量;`r#"…"#` 形态按 `"#` 收尾整体跳过(内容不是键)。
+    fn string_literals(source: &str) -> Vec<String> {
+        let bytes = source.as_bytes();
+        let mut literals = Vec::new();
+        let mut index = 0;
+        while index < bytes.len() {
+            if bytes[index] == b'r' && bytes.get(index + 1) == Some(&b'#') {
+                let mut cursor = index + 1;
+                while bytes.get(cursor) == Some(&b'#') {
+                    cursor += 1;
+                }
+                if bytes.get(cursor) == Some(&b'"') {
+                    let mut end = cursor + 1;
+                    while end + 1 < bytes.len() && !(bytes[end] == b'"' && bytes[end + 1] == b'#') {
+                        end += 1;
+                    }
+                    index = end + 2;
+                    continue;
+                }
+            }
+            if bytes[index] != b'"' {
+                index += 1;
+                continue;
+            }
+            let mut value = String::new();
+            let mut cursor = index + 1;
+            while cursor < bytes.len() {
+                match bytes[cursor] {
+                    b'\\' => cursor += 2,
+                    b'"' => break,
+                    byte => {
+                        value.push(byte as char);
+                        cursor += 1;
+                    }
+                }
+            }
+            literals.push(value);
+            index = cursor + 1;
+        }
+        literals
+    }
+
+    /// `t`/`tp`/`tr` 与 toast 入口调用里的字面量键(键是首个字面量参数)。
+    fn call_site_literals(source: &str) -> Vec<String> {
+        const MARKERS: [&str; 5] = [
+            "i18n::t(",
+            "i18n::tp(",
+            "i18n::tr(",
+            "show_toast_key(",
+            "show_toast_key_params(",
+        ];
+        let mut keys = Vec::new();
+        for marker in MARKERS {
+            let mut rest = source;
+            while let Some(index) = rest.find(marker) {
+                let after = &rest[index + marker.len()..];
+                if let Some(key) = first_literal_in_call(after) {
+                    keys.push(key);
+                }
+                rest = after;
+            }
+        }
+        keys
+    }
+
+    /// 该次调用(以左括号后为起点)中第一个字符串字面量;调用在字面量前
+    /// 结束时返回 None。
+    fn first_literal_in_call(after_open_paren: &str) -> Option<String> {
+        let mut depth = 1usize;
+        let mut chars = after_open_paren.chars().peekable();
+        while let Some(ch) = chars.next() {
+            match ch {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return None;
+                    }
+                }
+                '"' => {
+                    let mut value = String::new();
+                    while let Some(next) = chars.next() {
+                        if next == '\\' {
+                            chars.next();
+                        } else if next == '"' {
+                            return Some(value);
+                        } else {
+                            value.push(next);
+                        }
+                    }
+                    return None;
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// 键样式:小写点分,每段由小写字母/数字/下划线组成(至少两段)。
+    fn looks_like_key(value: &str) -> bool {
+        value.contains('.')
+            && value
+                .chars()
+                .next()
+                .is_some_and(|ch| ch.is_ascii_lowercase())
+            && value.split('.').all(|part| {
+                !part.is_empty()
+                    && part
+                        .chars()
+                        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
+            })
+    }
+
+    /// 文件名形态:末段是常见文件后缀(键不会这样收尾,`settings.json` 等
+    /// 路径字面量必须排除)。
+    fn looks_like_file_name(value: &str) -> bool {
+        const SUFFIXES: [&str; 18] = [
+            "json", "png", "jpg", "jpeg", "webp", "gif", "mp4", "toml", "log", "txt", "ico",
+            "icns", "exe", "dmg", "deb", "appimage", "html", "css",
+        ];
+        value
+            .rsplit_once('.')
+            .is_some_and(|(_, suffix)| SUFFIXES.contains(&suffix))
+    }
+
+    /// 扫描器自身的约定:测试模块被截掉、键从调用点/存量字面量两路提取、
+    /// 缺键会被识别出来而不是被过滤器吞掉。
+    #[test]
+    fn catalog_scan_helpers_behave_as_specified() {
+        let source = r#"
+fn sample() {
+    let _ = i18n::t("error.capture.buffer_empty");
+    let _ = i18n::tp("toast.saved", &[("name", &name)]);
+    let unregistered_namespace = "notakind.zzz";
+    let missing = i18n::t("error.capture.not_a_real_key");
+    let path = "settings.json";
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn fixture() {
+        let _ = i18n::t("error.capture.fixture_only");
+    }
+}
+"#;
+        let code = production_source(source);
+        assert!(
+            !code.contains("fixture_only"),
+            "tests module must be cut before scanning"
+        );
+
+        let namespaces = catalog::namespaces();
+        let mut keys = call_site_literals(code);
+        keys.extend(string_literals(code).into_iter().filter(|value| {
+            looks_like_key(value)
+                && !looks_like_file_name(value)
+                && value
+                    .split_once('.')
+                    .is_some_and(|(namespace, _)| namespaces.contains(namespace))
+        }));
+        keys.sort();
+        keys.dedup();
+
+        assert!(keys.contains(&"error.capture.buffer_empty".to_string()));
+        assert!(keys.contains(&"toast.saved".to_string()));
+        assert!(keys.contains(&"error.capture.not_a_real_key".to_string()));
+        assert!(!keys.contains(&"name".to_string()));
+        assert!(
+            !keys.contains(&"notakind.zzz".to_string()),
+            "unknown namespaces must not be treated as keys"
+        );
+        assert!(
+            !keys.contains(&"settings.json".to_string()),
+            "file names must not be treated as keys"
+        );
+        let missing: Vec<&String> = keys.iter().filter(|key| !catalog::contains(key)).collect();
+        assert_eq!(
+            missing,
+            vec![&"error.capture.not_a_real_key".to_string()],
+            "the scan must report exactly the unknown key"
+        );
+        assert!(looks_like_file_name("settings.json"));
+        assert!(!looks_like_file_name("error.capture.buffer_empty"));
+        assert!(!looks_like_key("error.capture."));
+        assert!(!looks_like_key("Error.Capture"));
+    }
+
+    /// 源码扫描:生产代码里的键字面量必须存在于词条表中。运行期缺键会把
+    /// 键名原样显示给用户;调用点不做命名空间过滤(前缀拼错也要抓到),
+    /// 存量键(错误构造器、通知键等)按词条顶层命名空间过滤,避免把
+    /// 坐标/标识符样式的字面量误判成键。
+    #[test]
+    fn literal_keys_in_production_sources_exist_in_the_catalog() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        collect_crate_sources(&root, &mut files);
+        assert!(files.len() > 40, "scan must see the crate: {}", files.len());
+
+        let namespaces = catalog::namespaces();
+        let mut checked = 0usize;
+        let mut missing = Vec::new();
+        for path in &files {
+            let source = std::fs::read_to_string(path).expect("read crate source");
+            let code = production_source(&source);
+            for key in call_site_literals(code) {
+                if !looks_like_key(&key) {
+                    continue;
+                }
+                checked += 1;
+                if !catalog::contains(&key) {
+                    missing.push(format!("{}: {key}", path.display()));
+                }
+            }
+            for literal in string_literals(code) {
+                if !looks_like_key(&literal) || looks_like_file_name(&literal) {
+                    continue;
+                }
+                let Some((namespace, _)) = literal.split_once('.') else {
+                    continue;
+                };
+                if !namespaces.contains(namespace) {
+                    continue;
+                }
+                checked += 1;
+                if !catalog::contains(&literal) {
+                    missing.push(format!("{}: {literal}", path.display()));
+                }
+            }
+        }
+        assert!(
+            checked > 200,
+            "expected to scan the crate keys, saw {checked}"
+        );
+        assert!(
+            missing.is_empty(),
+            "keys missing from the catalog: {missing:#?}"
+        );
+    }
 }

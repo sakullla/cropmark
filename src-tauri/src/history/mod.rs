@@ -429,7 +429,7 @@ pub fn record_frame(
         favorite: false,
         note: String::new(),
     };
-    fs::write(dir.join(&entry.file_name), &png).map_err(|error| {
+    fs::write(dir.join(&entry.file_name), png).map_err(|error| {
         i18n::tp(
             "error.history.write_image",
             &[("error", &error.to_string())],

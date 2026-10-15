@@ -45,10 +45,12 @@ pub fn demote_if_idle(app: &AppHandle) {
 }
 
 /// 仅在既没有产品窗口、也没有选区壳时才应退回托盘常驻。
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn should_demote(product_ui_visible: bool, shell_active: bool) -> bool {
     !product_ui_visible && !shell_active
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn product_ui_visible(app: &AppHandle) -> bool {
     [SETTINGS, HISTORY, PREVIEW, ERROR, GUIDE]
         .into_iter()
@@ -59,11 +61,13 @@ fn product_ui_visible(app: &AppHandle) -> bool {
         })
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 fn shell_is_active() -> bool {
     crate::capture::native_overlay::shell_is_active()
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 fn shell_is_active() -> bool {
     false

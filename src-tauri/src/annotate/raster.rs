@@ -387,8 +387,8 @@ fn draw_spotlight(
     let keep = 1.0 - dim.clamp(0.0, 1.0);
     let dim_row = |row: &mut [u8]| {
         for pixel in row.chunks_exact_mut(4) {
-            for c in 0..3 {
-                pixel[c] = (f32::from(pixel[c]) * keep).round() as u8;
+            for channel in &mut pixel[..3] {
+                *channel = (f32::from(*channel) * keep).round() as u8;
             }
             pixel[3] = 255;
         }

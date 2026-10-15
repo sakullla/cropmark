@@ -1487,7 +1487,6 @@ impl Composer {
                     && prev.more_open == scene.more_open
                     && prev.flags == scene.flags
             });
-        let mut dirty = dirty;
         if cursor_follow {
             let chrome = self.scene_visual_bounds(scene, Some(overlay), screen);
             if !chrome.intersect(dirty).is_empty() {
@@ -2039,12 +2038,9 @@ impl Composer {
                 (SelectionAction::Mode(mode), Some(overlay)) => {
                     overlay.tool == Some(mode.tool()) && overlay.mode == Some(*mode)
                 }
-                (SelectionAction::More, Some(overlay)) => overlay.tool.is_some_and(|tool| {
-                    toolbar
-                        .menu
-                        .iter()
-                        .any(|item| *item == SelectionAction::Tool(tool))
-                }),
+                (SelectionAction::More, Some(overlay)) => overlay
+                    .tool
+                    .is_some_and(|tool| toolbar.menu.contains(&SelectionAction::Tool(tool))),
                 (_, _) => false,
             };
             // 只有复制是实心主操作。当前工具用浅底,避免第二个实心强调。
@@ -2058,16 +2054,17 @@ impl Composer {
             let icon_cx = rect.x + rect.width / 2;
             let icon_cy = rect.y + rect.height / 2;
             self.draw_action_icon(rgba, w, h, *action, icon_cx, icon_cy, metrics.bar_icon, ink);
-            let group_break = match (previous, *action) {
-                (Some(SelectionAction::Tool(_)), SelectionAction::Undo) => true,
-                (Some(SelectionAction::Undo | SelectionAction::Redo), SelectionAction::Pin)
-                | (Some(SelectionAction::Undo | SelectionAction::Redo), SelectionAction::Save)
-                | (Some(SelectionAction::Undo | SelectionAction::Redo), SelectionAction::Copy)
-                | (Some(SelectionAction::Undo | SelectionAction::Redo), SelectionAction::Cancel) => {
-                    true
-                }
-                _ => false,
-            };
+            let group_break = matches!(
+                (previous, *action),
+                (Some(SelectionAction::Tool(_)), SelectionAction::Undo)
+                    | (
+                        Some(SelectionAction::Undo | SelectionAction::Redo),
+                        SelectionAction::Pin
+                            | SelectionAction::Save
+                            | SelectionAction::Copy
+                            | SelectionAction::Cancel
+                    )
+            );
             if group_break {
                 for y in rect.y + rect.height / 4..rect.bottom() - rect.height / 4 {
                     blend(rgba, w, h, rect.x, y, CHROME_BORDER);
@@ -2203,6 +2200,7 @@ impl Composer {
     }
 
     /// 亮底 pill 深字加粗徽标,落在不压光标、不与横条重叠且仍在画面内的最远角外侧。
+    #[allow(clippy::too_many_arguments)]
     fn draw_size_badge(
         &self,
         rgba: &mut [u8],
@@ -2710,6 +2708,7 @@ fn outline_selection(rgba: &mut [u8], w: u32, h: u32, rect: PhysicalRect) {
 }
 
 /// 矩形外圈 `thickness` 像素(向内),越界像素由 `put` 丢弃。
+#[allow(clippy::too_many_arguments)]
 fn paint_outline_band(
     rgba: &mut [u8],
     w: u32,
@@ -2786,15 +2785,15 @@ fn selection_accent() -> [u8; 4] {
 fn system_prefers_dark() -> Option<bool> {
     #[cfg(windows)]
     {
-        return windows_prefers_dark();
+        windows_prefers_dark()
     }
     #[cfg(target_os = "macos")]
     {
-        return macos_prefers_dark();
+        macos_prefers_dark()
     }
     #[cfg(target_os = "linux")]
     {
-        return linux_prefers_dark();
+        linux_prefers_dark()
     }
     #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     {
