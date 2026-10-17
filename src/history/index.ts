@@ -740,9 +740,8 @@ export function mountHistory(root: HTMLElement): () => void {
       button.className = className;
       button.dataset.entryAction = action;
       button.textContent = t(labelKey);
-      if (action === "copy" && copyButtonMinWidth) {
-        button.style.minWidth = copyButtonMinWidth;
-      }
+      // 卡片上的操作是图标钮,名称同时挂成系统提示;列表会裁掉自绘气泡。
+      button.title = t(labelKey);
       if (entry.imageMissing && action !== "delete") {
         button.dataset.missingDisabled = "true";
         // 真正 disabled 时，系统提示在 Chromium 里不会出现。用 aria-disabled
@@ -769,28 +768,6 @@ export function mountHistory(root: HTMLElement): () => void {
     main.append(meta, actions);
     row.append(holder, main);
     return row;
-  };
-
-  let copyButtonMinWidth = "";
-  const measureCopyButtonMinWidth = (): string => {
-    const probe = document.createElement("button");
-    probe.type = "button";
-    probe.className = "history-btn history-btn-quiet";
-    probe.style.position = "absolute";
-    probe.style.visibility = "hidden";
-    probe.style.pointerEvents = "none";
-    probe.style.width = "auto";
-    probe.style.minWidth = "0";
-    probe.style.left = "0";
-    probe.style.top = "0";
-    root.append(probe);
-    let widest = 0;
-    for (const key of ["history.copy", "history.copy_done"] as const) {
-      probe.textContent = t(key);
-      widest = Math.max(widest, probe.getBoundingClientRect().width);
-    }
-    probe.remove();
-    return widest > 0 ? `${Math.ceil(widest)}px` : "";
   };
 
   // 原生下拉宽度跟着当前选项走。「今天」换成「最近 30 天」、或「All modes」换成
@@ -932,7 +909,6 @@ export function mountHistory(root: HTMLElement): () => void {
         break;
       }
     }
-    copyButtonMinWidth = toolsEnabled ? measureCopyButtonMinWidth() : "";
     applyingDom = true;
     try {
       listEl.replaceChildren();
@@ -1314,14 +1290,6 @@ export function mountHistory(root: HTMLElement): () => void {
     }
     selectWidthCache.clear();
     reserveSelectWidths();
-    const next = measureCopyButtonMinWidth();
-    if (!next || next === copyButtonMinWidth) {
-      return;
-    }
-    copyButtonMinWidth = next;
-    root.querySelectorAll<HTMLButtonElement>("[data-entry-action=copy]").forEach((button) => {
-      button.style.minWidth = next;
-    });
   });
 
   // 语言切换:重建动态文案(状态、确认条、列表时间/动作),静态标签由 main 应用。

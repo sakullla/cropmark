@@ -1,37 +1,56 @@
 :root {
   color-scheme: light dark;
-  /* 品牌色取自应用图标:深青底 + 薄荷描边。界面强调色与图标、托盘同一色系。 */
-  --bg: #f0f3f3;
-  --panel: #f7f9f9;
+  /* 品牌色取自应用图标:深青底 + 薄荷描边。界面强调色与图标、托盘同一色系。
+     表面改为中性冷灰,只让强调色承担「选中 / 主操作」,层级靠明度与阴影区分。 */
+  --bg: #f3f4f6;
+  --panel: #f9fafb;
   --card: #ffffff;
-  --ink: #162123;
-  --muted: #5a6a6d;
-  --line: #dce3e4;
+  --ink: #12161b;
+  --muted: #5f6772;
+  --line: #e3e6ea;
+  --line-strong: #d3d7dd;
   --control-fill: #ffffff;
-  --accent: #0f766e;
-  --accent-soft: #e1f3ef;
+  --accent: #0b7d72;
+  --accent-strong: #096a61;
+  --accent-soft: #e5f4f1;
+  --accent-ring: color-mix(in srgb, var(--accent) 28%, transparent);
   --on-accent: #ffffff;
-  --danger: #b42318;
-  --danger-soft: #fdeceb;
+  --danger: #c0262d;
+  --danger-soft: #fdeeee;
   --on-danger: #ffffff;
   --ok: #15803d;
-  --ok-soft: #dcf5e3;
+  --ok-soft: #e3f6e9;
   --knob: #ffffff;
-  --track: #c4cfd1;
+  --track: #cdd2d8;
   --focus: var(--accent);
   --focus-gap: #ffffff;
   --overlay-bg: #0f1415;
-  --tooltip-bg: #1a2426;
-  --tooltip-ink: #f4f8f8;
+  --tooltip-bg: #1b1f24;
+  --tooltip-ink: #f5f7f9;
   --stroke: #e11d48;
   --ocr-hl: #0ea5e9;
   --ocr-hl-strong: #0369a1;
-  --shadow: 0 16px 40px rgba(14, 38, 40, 0.12), 0 2px 6px rgba(14, 38, 40, 0.06);
-  --shadow-soft: 0 1px 2px rgba(14, 38, 40, 0.05), 0 2px 8px rgba(14, 38, 40, 0.04);
-  --row-hover: #edf3f2;
+  --shadow:
+    0 0 0 1px rgba(17, 24, 39, 0.04),
+    0 4px 10px -2px rgba(17, 24, 39, 0.06),
+    0 18px 40px -10px rgba(17, 24, 39, 0.2);
+  --shadow-soft: 0 1px 2px rgba(17, 24, 39, 0.04), 0 1px 3px rgba(17, 24, 39, 0.04);
+  --shadow-pop:
+    0 0 0 1px rgba(17, 24, 39, 0.05),
+    0 8px 16px -4px rgba(17, 24, 39, 0.1),
+    0 24px 48px -12px rgba(17, 24, 39, 0.28);
+  /* 主操作按钮:实心强调色 + 顶部高光 + 同色投影,在任何底色上都是这一屏最先被看到的按钮。 */
+  --primary-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 1px 2px color-mix(in srgb, var(--accent) 35%, transparent),
+    0 4px 12px -3px color-mix(in srgb, var(--accent) 45%, transparent);
+  --row-hover: #f1f3f5;
+  /* 浮层表面(菜单、面板、工具条):略透 + 背景模糊,压在截图上仍是实感的一块。 */
+  --glass: color-mix(in srgb, var(--card) 88%, transparent);
+  --glass-blur: saturate(1.6) blur(22px);
   /* 共享控件规范:圆角层级、状态色、过渡与禁用透明度是各视图的唯一取值来源。 */
   --radius-window: 14px;
-  --radius-panel: 12px;
+  --radius-panel: 14px;
   --radius-menu: 12px;
   --radius-control: 10px;
   --radius-control-sm: 8px;
@@ -39,21 +58,24 @@
   --panel-padding: 12px 14px;
   /* 悬停只用中性色加深;强调色专门表示「已选中 / 已开启」,两种状态不再撞色。 */
   --control-hover-bg: color-mix(in srgb, var(--ink) 6%, transparent);
-  --control-hover-border: color-mix(in srgb, var(--ink) 30%, var(--line));
+  --control-hover-border: color-mix(in srgb, var(--ink) 22%, var(--line));
   --control-danger-hover-bg: var(--danger-soft);
   --control-danger-hover-border: var(--danger);
   --control-hover-filter: brightness(1.06);
   --control-pressed-filter: brightness(0.94);
-  --control-disabled-opacity: 0.45;
+  --control-disabled-opacity: 0.42;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --control-transition:
-    background-color 120ms ease,
-    border-color 120ms ease,
-    color 120ms ease,
-    filter 120ms ease,
-    opacity 120ms ease;
+    background-color 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease,
+    box-shadow 140ms ease,
+    filter 140ms ease,
+    opacity 140ms ease;
   /* 全局界面字体栈的唯一取值来源:各视图(含贴图)一律消费此变量。
      Win11 优先可变 Segoe UI;中文先用为屏幕微调过的雅黑 UI。 */
-  --font-ui: "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+  --font-ui: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+  --font-display: "Segoe UI Variable Display", "Segoe UI", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
   --font-mono: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace;
   font-family: var(--font-ui);
   -webkit-font-smoothing: antialiased;
@@ -61,35 +83,104 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0e1415;
-    --panel: #141b1d;
-    --card: #1a2326;
-    --ink: #e7eeee;
-    --muted: #9cb0b2;
-    --line: #2b383a;
-    --control-fill: #1f2a2d;
-    --accent: #5eead4;
-    --accent-soft: #123430;
-    --on-accent: #042f2e;
-    --danger: #f6aca6;
-    --danger-soft: #3a2224;
+    --bg: #0e1013;
+    --panel: #14171b;
+    --card: #1b1f24;
+    --ink: #eceef1;
+    --muted: #9aa2ad;
+    --line: #2a2f36;
+    --line-strong: #383e46;
+    --control-fill: #20252b;
+    --accent: #3ddbc4;
+    --accent-strong: #5ee8d3;
+    --accent-soft: #123631;
+    --on-accent: #032b27;
+    --danger: #ff8f8a;
+    --danger-soft: #3a1f21;
     --on-danger: #2b0603;
-    --ok: #86efac;
+    --ok: #7ee2a2;
     --ok-soft: #12301f;
-    --knob: #e7eeee;
-    --track: #3a4749;
-    --focus: #e7eeee;
-    --focus-gap: #141b1d;
+    --knob: #eceef1;
+    --track: #3a4048;
+    --focus: #eceef1;
+    --focus-gap: #14171b;
     --overlay-bg: #070a0b;
-    --tooltip-bg: #e7eeee;
-    --tooltip-ink: #162123;
+    --tooltip-bg: #eceef1;
+    --tooltip-ink: #12161b;
     --stroke: #fb7185;
     --ocr-hl: #38bdf8;
     --ocr-hl-strong: #7dd3fc;
-    --shadow: 0 16px 44px rgba(0, 0, 0, 0.38), 0 2px 8px rgba(0, 0, 0, 0.22);
-    --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.2), 0 2px 8px rgba(0, 0, 0, 0.12);
-    --row-hover: #202b2e;
+    --shadow:
+      0 0 0 1px rgba(255, 255, 255, 0.04),
+      0 4px 12px -2px rgba(0, 0, 0, 0.35),
+      0 20px 44px -10px rgba(0, 0, 0, 0.55);
+    --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.24);
+    --shadow-pop:
+      0 0 0 1px rgba(255, 255, 255, 0.05),
+      0 10px 20px -4px rgba(0, 0, 0, 0.4),
+      0 28px 56px -12px rgba(0, 0, 0, 0.6);
+    --primary-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.28),
+      0 1px 2px rgba(0, 0, 0, 0.3),
+      0 6px 16px -4px color-mix(in srgb, var(--accent) 40%, transparent);
+    --row-hover: #20252b;
   }
+}
+
+/* 浮在屏幕上的 HUD(选区覆盖层、贴图、录屏控制、长截图、延时、结果提示)统一深色玻璃:
+   截图内容千变万化,深色 HUD 在任意画面上对比稳定,也和系统截图工具的习惯一致。
+   这些视图只消费令牌,在这里整体改写即可,画布读到的描边色同样随之切换。 */
+html[data-view="overlay"],
+html[data-view="pin"],
+html[data-view="record-control"],
+html[data-view="record-overlay"],
+html[data-view="scroll"],
+html[data-view="delay"],
+html[data-view="toast"] {
+  color-scheme: dark;
+  --bg: #0f1114;
+  --panel: #191c21;
+  --card: #1f2329;
+  --ink: #f1f3f5;
+  --muted: #a3aab4;
+  --line: rgba(255, 255, 255, 0.1);
+  --line-strong: rgba(255, 255, 255, 0.18);
+  --control-fill: rgba(255, 255, 255, 0.06);
+  --accent: #3ddbc4;
+  --accent-strong: #5ee8d3;
+  /* 淡底用实色:录屏控制条、长截图面板等是透明窗,半透明淡底会直接透出桌面。 */
+  --accent-soft: #1b3a37;
+  --on-accent: #032b27;
+  --danger: #ff8f8a;
+  --danger-soft: #3b2427;
+  --on-danger: #2b0603;
+  --ok: #7ee2a2;
+  --ok-soft: #1f3529;
+  --knob: #f1f3f5;
+  --track: #3a4048;
+  --focus: #f1f3f5;
+  --focus-gap: #191c21;
+  --tooltip-bg: #f1f3f5;
+  --tooltip-ink: #12161b;
+  --stroke: #fb7185;
+  --ocr-hl: #38bdf8;
+  --ocr-hl-strong: #7dd3fc;
+  --control-hover-bg: rgba(255, 255, 255, 0.09);
+  --control-hover-border: rgba(255, 255, 255, 0.2);
+  --shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.35),
+    0 8px 20px -4px rgba(0, 0, 0, 0.45),
+    0 24px 56px -12px rgba(0, 0, 0, 0.6);
+  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-pop:
+    0 0 0 1px rgba(0, 0, 0, 0.4),
+    0 12px 24px -6px rgba(0, 0, 0, 0.5),
+    0 28px 64px -12px rgba(0, 0, 0, 0.65);
+  --primary-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.3),
+    0 4px 14px -4px rgba(61, 219, 196, 0.55);
+  --glass: rgba(26, 29, 34, 0.84);
+  --row-hover: rgba(255, 255, 255, 0.07);
 }
 
 /* 设置、历史、截图工作区共用一套表面与状态色,明暗主题保持相同层级。 */
@@ -97,7 +188,7 @@ html[data-view="settings"] .shell,
 html[data-view="guide"] .shell,
 html[data-view="history"] .shell {
   background: var(--bg);
-  border-color: color-mix(in srgb, var(--ink) 8%, transparent);
+  border-color: color-mix(in srgb, var(--ink) 9%, transparent);
 }
 
 * {
@@ -340,38 +431,42 @@ html[data-view="overlay"] #app {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 12px 12px 16px;
+  min-height: 52px;
+  padding: 10px 10px 10px 16px;
   border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--card) 70%, var(--bg));
   user-select: none;
 }
 
 .brand {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
 
 .mark {
   width: 26px;
   height: 26px;
   flex-shrink: 0;
+  border-radius: 7px;
   background: url("../../src-tauri/icons/v2/128x128.png") center / contain no-repeat;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.12));
 }
 
 .name {
+  font-family: var(--font-display);
   font-size: 15px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
+  font-weight: 650;
+  letter-spacing: 0.005em;
 }
 
-/* 设置与帮助的标题栏是窗口装饰,名称让给下方主卡片。 */
-html[data-view="settings"] .titlebar .name,
+/* 帮助窗的标题栏是窗口装饰,名称让给下方主卡片。 */
 html[data-view="guide"] .titlebar .name {
   min-width: 0;
   overflow-wrap: anywhere;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
-  color: var(--muted);
+  color: var(--ink);
 }
 
 .icon-btn,
@@ -389,7 +484,7 @@ html[data-view="guide"] .titlebar .name {
   border: 0;
   border-radius: var(--radius-control-sm);
   background: transparent;
-  color: var(--ink);
+  color: var(--muted);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -408,6 +503,14 @@ html[data-view="guide"] .titlebar .name {
 .icon-btn:focus-visible,
 .icon-btn:active {
   background: color-mix(in srgb, var(--ink) 8%, transparent);
+  color: var(--ink);
+}
+
+/* 标题栏的关闭钮:悬停转危险色,和最小化之类的普通图标钮区分。 */
+.titlebar .icon-btn[data-action="close"]:hover,
+.settings-topbar .icon-btn[data-action="close"]:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 
 .icon-btn:active {
@@ -422,15 +525,18 @@ html[data-view="guide"] .titlebar .name {
   overflow: auto;
 }
 
-html[data-view="settings"] .content,
 html[data-view="guide"] .content {
   padding: 16px;
   gap: 16px;
   min-width: 0;
 }
 
-/* R8:设置页宽版两栏。导航固定在左且不随内容滚动;右侧面板是唯一滚动容器。
-   全部选择器限定 settings 视图,复用 .shell/.card 的引导窗不受影响。 */
+/* R8:设置页宽版两栏。侧栏从窗口顶边铺到底边,品牌、分类与版本都在这一列;
+   右侧只有一条拖动条和唯一的滚动面板。全部选择器限定 settings 视图。 */
+html[data-view="settings"] .shell {
+  flex-direction: row;
+}
+
 html[data-view="settings"] .settings-body {
   flex: 1;
   display: flex;
@@ -438,26 +544,76 @@ html[data-view="settings"] .settings-body {
   min-width: 0;
 }
 
+html[data-view="settings"] .settings-sidebar {
+  flex: 0 0 216px;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  padding: 0 10px 12px;
+  background: color-mix(in srgb, var(--panel) 60%, var(--bg));
+  border-right: 1px solid var(--line);
+}
+
+html[data-view="settings"] .settings-sidebar-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 64px;
+  padding: 14px 8px 12px;
+  user-select: none;
+  min-width: 0;
+}
+
+html[data-view="settings"] .settings-sidebar-head .mark {
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+}
+
+html[data-view="settings"] .settings-sidebar-title {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.2;
+}
+
+html[data-view="settings"] .settings-sidebar-brand {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: var(--ink);
+}
+
+html[data-view="settings"] .settings-sidebar-title .name {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
 html[data-view="settings"] .settings-nav {
-  flex: 0 0 200px;
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 14px 10px 12px;
-  background: var(--panel);
-  border-right: 1px solid var(--line);
+  padding-top: 6px;
   min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 html[data-view="settings"] .settings-nav-item {
   width: 100%;
   border: 0;
-  border-radius: var(--radius-control-sm);
+  border-radius: var(--radius-control);
   display: flex;
   align-items: center;
   gap: 10px;
-  /* 左侧留给当前分类的色条，未选中也留同样的空隙，切换时文字不横跳。 */
-  padding: 9px 12px 9px 14px;
+  padding: 8px 10px;
   font: inherit;
   font-size: 14px;
   font-weight: 500;
@@ -471,16 +627,23 @@ html[data-view="settings"] .settings-nav-item {
   transition: var(--control-transition);
 }
 
+/* 分类图标放进一枚小方块:未选中是中性底,选中换成强调色实底,扫一眼就知道停在哪一类。 */
 html[data-view="settings"] .settings-nav-icon {
   flex: 0 0 auto;
   display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-control-sm);
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
   color: var(--muted);
   transition: var(--control-transition);
 }
 
 html[data-view="settings"] .settings-nav-icon svg {
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   display: block;
 }
 
@@ -520,52 +683,54 @@ html[data-view="settings"] .settings-nav-item[aria-selected="true"],
 html[data-view="settings"] .settings-nav-item[aria-selected="true"]:hover,
 html[data-view="settings"] .settings-nav-item[aria-selected="true"]:focus-visible,
 html[data-view="settings"] .settings-nav-item[aria-selected="true"]:active {
-  background: var(--accent-soft);
-  color: var(--accent);
+  background: var(--card);
+  color: var(--ink);
   font-weight: 600;
+  box-shadow:
+    0 0 0 1px var(--line),
+    var(--shadow-soft);
 }
 
 html[data-view="settings"] .settings-nav-item[aria-selected="true"] .settings-nav-icon {
-  color: var(--accent);
-}
-
-/* 圆角按钮上的内阴影会被角裁短。独立色条收在圆角之内，当前分类更清楚。 */
-html[data-view="settings"] .settings-nav-item[aria-selected="true"]::before {
-  content: "";
-  position: absolute;
-  left: 4px;
-  top: 10px;
-  bottom: 10px;
-  width: 3px;
-  border-radius: var(--radius-pill);
   background: var(--accent);
+  color: var(--on-accent);
+  box-shadow: var(--primary-shadow);
 }
 
-/* 导航底部的品牌与版本：装饰性信息，读屏从「关于」读取同一版本号。 */
+/* 侧栏底部:常驻状态与版本。装饰性信息，读屏从「关于」读取同一版本号。 */
 html[data-view="settings"] .settings-nav-footer {
-  margin-top: auto;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 12px 2px;
-  border-top: 1px solid var(--line);
+  margin-top: 8px;
+  padding: 10px 10px;
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
   color: var(--muted);
   font-size: 12px;
   min-width: 0;
 }
 
-html[data-view="settings"] .settings-nav-footer .mark {
-  width: 18px;
-  height: 18px;
+html[data-view="settings"] .settings-nav-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ok);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent);
 }
 
-html[data-view="settings"] .settings-nav-brand {
-  color: var(--ink);
-  font-weight: 600;
+html[data-view="settings"] .settings-nav-status {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 html[data-view="settings"] .settings-nav-version {
   margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -577,10 +742,22 @@ html[data-view="settings"] .settings-main {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+  background: var(--bg);
+}
+
+/* 右栏顶边是窗口拖动条,只放关闭钮;分类标题在下面的面板里。 */
+html[data-view="settings"] .settings-topbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  height: 44px;
+  padding: 8px 10px 0;
+  user-select: none;
 }
 
 html[data-view="settings"] .settings-main > .notice {
-  margin: 12px 16px 0;
+  margin: 0 28px 12px;
 }
 
 html[data-view="settings"] .settings-panels {
@@ -592,7 +769,10 @@ html[data-view="settings"] .settings-panels {
   overflow-x: hidden;
   /* 分类间滚动条有无不一,预留槽位让右缘的开关/按钮列不再横向跳动。 */
   scrollbar-gutter: stable;
-  padding: 24px;
+  padding: 10px 24px 28px 28px;
+  /* 滚入顶边的内容淡出,不在拖动条下沿切出一道硬边。 */
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
 }
 
 /* 保存药丸盖在滚动区底边上。只在它出现时把滚入区域上移，最后一项不会被挡住，平时也不多出一块空白。 */
@@ -602,6 +782,18 @@ html[data-view="settings"] .settings-main:has([data-saved-notice]:not([hidden]))
 
 html[data-view="settings"] .settings-panel {
   min-width: 0;
+  animation: settings-panel-in 220ms var(--ease-out);
+}
+
+@keyframes settings-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 html[data-view="settings"] .settings-panel > .card {
@@ -722,9 +914,9 @@ html[data-view="settings"] .hint {
 
 .notice {
   margin: 0;
-  padding: 10px 12px;
+  padding: 10px 14px;
   background: var(--danger-soft);
-  border: 1px solid var(--danger);
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
   border-radius: var(--radius-control);
   /* 失败横幅以前只有红底，字仍是正文色。保存失败和历史索引损坏要能一眼看成错误。 */
   color: var(--danger);
@@ -739,7 +931,7 @@ html[data-view="settings"] .hint {
 .notice.notice-success {
   color: var(--ok);
   background: var(--ok-soft);
-  border-color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 45%, transparent);
 }
 
 /* 中性通知:托盘状态等非成败信息,复用 .notice 布局,仅换强调色淡底。 */
@@ -760,15 +952,44 @@ html[data-view="settings"] .notice.notice-success {
   left: 24px;
   z-index: 30;
   width: max-content;
-  max-width: min(280px, calc(100% - 48px));
+  max-width: min(320px, calc(100% - 48px));
   margin: 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px 8px 10px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  /* 反色药丸:和面板内容拉开层级,读起来是一条短暂的系统反馈。 */
+  background: var(--tooltip-bg);
+  color: var(--tooltip-ink);
   font-size: 13px;
   font-weight: 600;
   line-height: 1.4;
   overflow-wrap: anywhere;
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-pop);
   pointer-events: none;
-  animation: surface-in 160ms ease;
+  animation: toast-pop 260ms var(--ease-out);
+}
+
+html[data-view="settings"] .notice.notice-success::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--ok) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4.5 8.2l2.2 2.2 4.8-4.8' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 14px 14px no-repeat;
+}
+
+@keyframes toast-pop {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 .rows {
@@ -1079,6 +1300,8 @@ input[data-filename-template] {
 .number-input:focus-visible {
   border-color: var(--accent);
   background: var(--control-fill);
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-ring);
 }
 
 .number-input[aria-invalid="true"] {
@@ -1090,9 +1313,14 @@ input[data-filename-template] {
   border-color: var(--danger);
 }
 
-.number-input[aria-invalid="true"]:focus-visible {
+.number-input[aria-invalid="true"]:focus-visible,
+.number-input.is-full:focus-visible,
+.number-input.is-unsafe:focus-visible,
+.number-input.is-trimmed:focus-visible,
+.number-input.is-reserved:focus-visible {
   outline-color: var(--danger);
   border-color: var(--danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 22%, transparent);
 }
 
 /* 写满、含非法字符、首尾空格/句点，或系统保留名时，保存结果都会和输入不一样。红框留在原处。 */
@@ -1200,9 +1428,52 @@ input[data-filename-template] {
 .choice.selected:focus-visible:not(:disabled),
 .choice.selected:active:not(:disabled) {
   font-weight: 600;
-  border-color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 70%, transparent);
   background: var(--accent-soft);
   color: var(--accent);
+}
+
+/* 语言、录制格式与帧率是互斥的少量选项:做成分段控件,当前项是抬起的一块。 */
+html[data-view="settings"] [data-language],
+html[data-view="settings"] [data-recording-formats],
+html[data-view="settings"] [data-recording-fps] {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  width: fit-content;
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 4%, transparent);
+}
+
+html[data-view="settings"] [data-language] .choice,
+html[data-view="settings"] [data-recording-formats] .choice,
+html[data-view="settings"] [data-recording-fps] .choice {
+  min-height: 30px;
+  min-width: 56px;
+  padding: 4px 14px;
+  border: 0;
+  border-radius: calc(var(--radius-control) - 3px);
+  background: transparent;
+  color: var(--muted);
+  box-shadow: none;
+}
+
+html[data-view="settings"] [data-language] .choice:hover:not(:disabled):not(.selected),
+html[data-view="settings"] [data-recording-formats] .choice:hover:not(:disabled):not(.selected),
+html[data-view="settings"] [data-recording-fps] .choice:hover:not(:disabled):not(.selected) {
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+  color: var(--ink);
+}
+
+html[data-view="settings"] [data-language] .choice.selected,
+html[data-view="settings"] [data-recording-formats] .choice.selected,
+html[data-view="settings"] [data-recording-fps] .choice.selected {
+  background: var(--card);
+  color: var(--ink);
+  box-shadow:
+    0 1px 2px color-mix(in srgb, #000 12%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--ink) 6%, transparent);
 }
 
 .choice.selected:hover:not(:disabled):not(:active),
@@ -1313,12 +1584,24 @@ input[data-filename-template] {
   height: 20px;
   border-radius: 50%;
   background: var(--knob);
-  box-shadow: 0 1px 3px color-mix(in srgb, var(--ink) 28%, transparent);
-  transition: transform 120ms ease;
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.18),
+    0 2px 6px rgba(0, 0, 0, 0.12);
+  transition: transform 200ms var(--ease-out), width 160ms var(--ease-out);
+}
+
+/* 按住时滑块略微拉长,松开再弹到另一端,和系统开关的手感一致。 */
+.switch:active:not(:disabled) .knob {
+  width: 24px;
+}
+
+.switch.on:active:not(:disabled) .knob {
+  transform: translateX(14px);
 }
 
 .switch.on {
   background: var(--accent);
+  box-shadow: inset 0 1px 2px color-mix(in srgb, #000 18%, transparent);
 }
 
 .switch.on .knob {
@@ -1361,18 +1644,20 @@ input[data-filename-template] {
   left: 50%;
   top: calc(100% + 6px);
   z-index: 40;
-  padding: 4px 8px;
-  border-radius: var(--radius-control-sm);
+  padding: 5px 9px;
+  border-radius: 7px;
   background: var(--tooltip-bg);
   color: var(--tooltip-ink);
   font-size: 12px;
-  font-weight: 600;
-  line-height: 1.3;
+  font-weight: 550;
+  line-height: 1.35;
+  letter-spacing: 0.005em;
   white-space: nowrap;
+  box-shadow: 0 6px 16px -4px rgba(0, 0, 0, 0.28);
   opacity: 0;
   pointer-events: none;
   transform: translateX(-50%);
-  transition: opacity 60ms linear 140ms;
+  transition: opacity 80ms linear 140ms;
 }
 
 [data-tooltip]:hover::after,
@@ -1498,7 +1783,7 @@ html[data-view="settings"] [data-region-tools] .choice.selected::before {
    和系统设置的阅读方式一致;长说明折行时开关仍在行的视觉中线。
    --------------------------------------------------------------------------- */
 html[data-view="settings"] .settings-panel {
-  max-width: 760px;
+  max-width: 720px;
   margin-inline: auto;
 }
 
@@ -1511,14 +1796,16 @@ html[data-view="settings"] .settings-panel > .card {
 }
 
 html[data-view="settings"] .card > h1 {
-  margin: 0 0 16px;
-  font-size: 22px;
-  font-weight: 600;
-  line-height: 1.3;
+  margin: 0 0 18px;
+  font-family: var(--font-display);
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
 }
 
 html[data-view="settings"] .block {
-  padding: 16px 18px;
+  padding: 18px 20px;
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: var(--radius-panel);
@@ -1526,15 +1813,29 @@ html[data-view="settings"] .block {
 }
 
 html[data-view="settings"] .block + .block {
-  margin-top: 14px;
-  padding-top: 16px;
+  margin-top: 16px;
+  padding-top: 18px;
   border-top: 1px solid var(--line);
 }
 
+/* 节标题前加一枚强调色短条:卡片多时也能沿左缘一路扫下去。 */
 html[data-view="settings"] .block h2 {
-  margin: 0 0 2px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 4px;
   font-size: 15px;
-  font-weight: 600;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+
+html[data-view="settings"] .block h2::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 3px;
+  height: 14px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
 }
 
 html[data-view="settings"] .block > .hint {
@@ -1544,15 +1845,15 @@ html[data-view="settings"] .block > .hint {
 html[data-view="settings"] .setting-row,
 html[data-view="settings"] .autostart-row {
   align-items: center;
-  margin-top: 12px;
-  padding-top: 12px;
+  margin-top: 14px;
+  padding-top: 14px;
   border-top: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
 }
 
 /* 小节标题下的第一行不再画分隔线,标题本身已经分开了。 */
 html[data-view="settings"] .block > h2 + .setting-row,
 html[data-view="settings"] .block > h2 + .autostart-row {
-  margin-top: 10px;
+  margin-top: 12px;
   padding-top: 0;
   border-top: 0;
 }
@@ -1582,7 +1883,7 @@ html[data-view="settings"] .autostart-row > .switch {
 
 /* 单选组挂在说明行下面,和上一行属于同一设置,不再另起分隔。 */
 html[data-view="settings"] .block > .choices {
-  margin-top: 10px;
+  margin-top: 12px;
 }
 
 html[data-view="settings"] .rows {
@@ -1591,38 +1892,81 @@ html[data-view="settings"] .rows {
 }
 
 html[data-view="settings"] .hotkey-row {
-  padding: 8px 0;
+  padding: 10px 0;
 }
 
 html[data-view="settings"] .hotkey-row + .hotkey-row {
   border-top: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
 }
 
-/* 热键做成键帽:等宽数字 + 轻微下沿,一眼认出是按键组合而不是普通按钮。 */
+/* 热键是一条浅底「输入槽」,里面一枚枚键帽:一眼认出是按键组合,点一下就进入录键。 */
 html[data-view="settings"] .hotkey-btn {
-  border-radius: var(--radius-control-sm);
+  width: auto;
+  min-width: 148px;
+  min-height: 36px;
+  gap: 4px;
+  padding: 4px 6px;
+  border-radius: var(--radius-control);
   border-color: var(--line);
-  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--ink) 12%, transparent);
+  background: color-mix(in srgb, var(--ink) 3.5%, var(--card));
   font-weight: 600;
   letter-spacing: 0.01em;
 }
 
+html[data-view="settings"] .hotkey-btn.has-keycaps {
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+html[data-view="settings"] .hotkey-btn:hover:not(.recording),
+html[data-view="settings"] .hotkey-btn:focus-visible:not(.recording) {
+  border-color: var(--control-hover-border);
+  background: color-mix(in srgb, var(--ink) 6%, var(--card));
+}
+
 html[data-view="settings"] .hotkey-btn.is-unbound {
   border-style: dashed;
-  box-shadow: none;
+  background: transparent;
+}
+
+.keycap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--ink);
+  font: 600 12px/1 var(--font-ui);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  box-shadow:
+    inset 0 -2px 0 color-mix(in srgb, var(--ink) 7%, transparent),
+    0 1px 1px color-mix(in srgb, var(--ink) 6%, transparent);
 }
 
 html[data-view="settings"] .about-hero {
   display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 20px 18px;
+  gap: 18px;
+  padding: 24px 22px;
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--accent) 16%, transparent) 0%, transparent 55%),
+    radial-gradient(90% 120% at 100% 100%, color-mix(in srgb, var(--accent) 9%, transparent) 0%, transparent 60%),
+    var(--card);
 }
 
 html[data-view="settings"] .about-hero .mark {
-  width: 56px;
-  height: 56px;
+  width: 64px;
+  height: 64px;
   flex: 0 0 auto;
+  border-radius: 16px;
+  filter: drop-shadow(0 6px 14px color-mix(in srgb, var(--accent) 35%, transparent));
 }
 
 html[data-view="settings"] .about-hero-text {
@@ -1631,8 +1975,10 @@ html[data-view="settings"] .about-hero-text {
 
 html[data-view="settings"] .about-hero .about-name {
   margin: 0 0 4px;
-  font-size: 20px;
-  font-weight: 600;
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
 }
 
 html[data-view="settings"] .about-hero + .block > .setting-row:first-child {
@@ -1642,16 +1988,70 @@ html[data-view="settings"] .about-hero + .block > .setting-row:first-child {
 }
 
 html[data-view="settings"] .about-version {
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--muted);
+  padding: 3px 10px;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--ink);
+}
+
+/* 导出美化的实时样张:按当前背景、留白、圆角与阴影画一块示意截图。 */
+html[data-view="settings"] .beautify-sample {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 14px;
+  height: 148px;
+  border-radius: var(--radius-control);
+  background:
+    linear-gradient(45deg, color-mix(in srgb, var(--ink) 5%, transparent) 25%, transparent 25%, transparent 75%, color-mix(in srgb, var(--ink) 5%, transparent) 75%) 0 0 / 16px 16px,
+    linear-gradient(45deg, color-mix(in srgb, var(--ink) 5%, transparent) 25%, transparent 25%, transparent 75%, color-mix(in srgb, var(--ink) 5%, transparent) 75%) 8px 8px / 16px 16px,
+    var(--bg);
+  border: 1px solid var(--line);
+  overflow: hidden;
+}
+
+html[data-view="settings"] .beautify-sample-frame {
+  display: flex;
+  padding: var(--sample-padding, 14px);
+  border-radius: 6px;
+  background: var(--sample-bg, transparent);
+  transition: padding 180ms var(--ease-out), background-color 180ms ease;
+}
+
+html[data-view="settings"] .beautify-sample-shot {
+  width: 150px;
+  height: 84px;
+  border-radius: var(--sample-radius, 6px);
+  background:
+    linear-gradient(#fff, #fff) 10px 10px / 46% 6px no-repeat,
+    linear-gradient(#e6e9ee, #e6e9ee) 10px 24px / 70% 5px no-repeat,
+    linear-gradient(#e6e9ee, #e6e9ee) 10px 35px / 58% 5px no-repeat,
+    linear-gradient(#e6e9ee, #e6e9ee) 10px 46px / 64% 5px no-repeat,
+    linear-gradient(135deg, #0f766e, #3ddbc4);
+  box-shadow: var(--sample-shadow, none);
+  transition: border-radius 180ms var(--ease-out), box-shadow 180ms ease;
+}
+
+html[data-view="settings"] .beautify-sample.is-off .beautify-sample-frame {
+  --sample-bg: transparent;
+  --sample-padding: 0px;
+}
+
+html[data-view="settings"] .beautify-sample.is-off .beautify-sample-shot {
+  --sample-radius: 0px;
+  --sample-shadow: none;
 }
 
 /* 窄窗导航保持可读,内容区不被固定侧栏挤出。 */
-@media (max-width: 640px) {
-  html[data-view="settings"] .settings-nav { flex-basis: 148px; padding: 12px 8px; }
-  html[data-view="settings"] .settings-nav-item { gap: 8px; padding: 9px 8px 9px 12px; font-size: 13px; }
-  html[data-view="settings"] .settings-nav-version { display: none; }
-  html[data-view="settings"] .settings-panels { padding: 16px 14px; }
-  html[data-view="settings"] .block { padding: 14px; }
+@media (max-width: 720px) {
+  html[data-view="settings"] .settings-sidebar { flex-basis: 176px; padding: 0 8px 10px; }
+  html[data-view="settings"] .settings-nav-item { gap: 8px; padding: 7px 8px; font-size: 13px; }
+  html[data-view="settings"] .settings-nav-status { display: none; }
+  html[data-view="settings"] .settings-panels { padding: 0 16px 20px 18px; }
+  html[data-view="settings"] .block { padding: 16px; }
+  html[data-view="settings"] .card > h1 { font-size: 22px; }
 }

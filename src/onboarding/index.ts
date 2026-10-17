@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { t } from "../i18n";
 import { icons } from "../icons";
-import { displayAccelerator, type Hotkeys } from "../settings";
+import { appendKeycaps, type Hotkeys } from "../settings";
 import "./onboarding.css";
 
 type CaptureSlot = "region" | "window" | "fullscreen";
@@ -31,7 +31,7 @@ export function mountOnboarding(root: HTMLElement): () => void {
         <button type="button" class="icon-btn" data-action="close" data-i18n-aria-label="guide.close" aria-label="关闭引导">${icons.close}</button>
       </header>
       <main class="content">
-        <p class="hint" data-i18n="guide.intro">Cropmark 启动后留在系统托盘，不占用主窗口。关闭本页不会退出应用，热键和之后的截图都不受影响。</p>
+        <p class="hint guide-intro" data-i18n="guide.intro">Cropmark 启动后留在系统托盘，不占用主窗口。关闭本页不会退出应用，热键和之后的截图都不受影响。</p>
         <section class="card guide-section" aria-labelledby="guide-tray-title">
           <span class="guide-icon" aria-hidden="true">${icons.tray}</span>
           <h2 id="guide-tray-title" data-i18n="guide.tray.title">托盘常驻</h2>
@@ -44,15 +44,15 @@ export function mountOnboarding(root: HTMLElement): () => void {
           <ul class="guide-hotkeys">
             <li class="guide-hotkey">
               <span data-i18n="settings.mode.region">区域</span>
-              <kbd data-hotkey="region">Alt+Shift+A</kbd>
+              <span class="guide-keys" data-hotkey="region">Alt+Shift+A</span>
             </li>
             <li class="guide-hotkey">
               <span data-i18n="settings.mode.window">窗口</span>
-              <kbd data-hotkey="window">Alt+Shift+W</kbd>
+              <span class="guide-keys" data-hotkey="window">Alt+Shift+W</span>
             </li>
             <li class="guide-hotkey">
               <span data-i18n="settings.mode.fullscreen">全屏</span>
-              <kbd data-hotkey="fullscreen">Alt+Shift+S</kbd>
+              <span class="guide-keys" data-hotkey="fullscreen">Alt+Shift+S</span>
             </li>
           </ul>
         </section>
@@ -95,7 +95,7 @@ export function mountOnboarding(root: HTMLElement): () => void {
         continue;
       }
       const value = hotkeys[slot].trim() || FALLBACK[slot];
-      element.textContent = displayAccelerator(value);
+      appendKeycaps(element, value);
     }
   };
 

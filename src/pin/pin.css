@@ -63,11 +63,14 @@
   height: 28px;
   min-height: 28px;
   padding: 0;
-  border: none;
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: var(--radius-control-sm);
-  /* 贴图内容任意。58% 的底在浅色画面上会把图标冲淡到看不清，提到接近实底。 */
-  background: color-mix(in srgb, var(--tooltip-bg) 92%, transparent);
-  color: var(--tooltip-ink);
+  /* 贴图内容任意。深色玻璃底 + 背景模糊,浅色或深色画面上图标都站得住。 */
+  background: rgba(17, 20, 24, 0.8);
+  -webkit-backdrop-filter: blur(12px) saturate(1.4);
+  backdrop-filter: blur(12px) saturate(1.4);
+  color: #f3f4f6;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);
   cursor: pointer;
   transition: var(--control-transition);
 }
@@ -155,8 +158,8 @@
 .pin-root[aria-busy="true"] .pin-toolbar button:not(.pin-close):not(.is-copied):hover,
 .pin-root[aria-busy="true"] .pin-toolbar button:not(.pin-close):not(.is-copied):focus-visible,
 .pin-root[aria-busy="true"] .pin-toolbar button:not(.pin-close):not(.is-copied):active {
-  background: color-mix(in srgb, var(--tooltip-bg) 92%, transparent);
-  color: var(--tooltip-ink);
+  background: rgba(17, 20, 24, 0.8);
+  color: #f3f4f6;
   filter: none;
 }
 
@@ -185,11 +188,11 @@
   width: max-content;
   max-width: calc(100% - 8px);
   overflow-x: hidden;
-  padding: 4px;
+  padding: 5px;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--radius-menu);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-pop);
 }
 
 /* 关闭是立刻生效的。文字留着，颜色和历史里的删除一致，避免和复制、保存混在一起。 */
@@ -225,7 +228,7 @@
 .pin-menu button:hover,
 .pin-menu button:focus-visible {
   background: var(--control-hover-bg);
-  color: var(--accent);
+  color: var(--ink);
 }
 
 .pin-menu button:active {
@@ -297,14 +300,16 @@
   z-index: 6;
   /* 大贴图上点击穿透的恢复说明不再拉成一整条。窄贴图仍贴边折行，四行内能读完。 */
   max-width: min(28rem, calc(100% - 16px));
-  padding: 4px 10px;
+  padding: 5px 12px;
   transform: translateX(-50%);
   border-radius: var(--radius-control);
   /* 点击穿透后这是唯一的恢复说明，必须压在任意画面上都读得清。
      描边用 border:本条 overflow 会裁掉向外的阴影。 */
-  background: var(--tooltip-bg);
-  color: var(--tooltip-ink);
-  border: 1px solid color-mix(in srgb, var(--tooltip-ink) 28%, transparent);
+  background: rgba(17, 20, 24, 0.88);
+  -webkit-backdrop-filter: blur(12px) saturate(1.4);
+  backdrop-filter: blur(12px) saturate(1.4);
+  color: #f3f4f6;
+  border: 1px solid rgba(255, 255, 255, 0.16);
   /* 点击穿透后这是唯一的恢复说明，12px 细字压在照片上不好认。 */
   font: 650 13px/1.4 var(--font-ui);
   /* 锚在 bottom:8px，增高向上长。短成功句仍是一行。点击穿透的恢复说明

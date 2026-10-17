@@ -3458,5 +3458,9 @@
   "preview.ocr_panel.selection_hint": {
     "zh-CN": "拖选文字，或在图片上框选后复制",
     "en": "Select text here or drag over text in the image"
+  },
+  "settings.nav.footer_status": {
+    "zh-CN": "正在后台运行",
+    "en": "Running in background"
   }
 }

@@ -67,11 +67,13 @@
   /* 定宽后长提示才能在屏内换行。容器不接事件，透明空隙不挡选区。 */
   width: fit-content;
   max-width: calc(100% - 32px);
-  padding: 8px;
+  padding: 6px 6px 6px 10px;
   border: 1px solid var(--line);
-  border-radius: var(--radius-panel);
-  background: var(--panel);
-  box-shadow: var(--shadow);
+  border-radius: 16px;
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--shadow-pop);
   margin-inline: auto;
   z-index: 3;
   display: flex;
@@ -89,7 +91,7 @@
 }
 
 .overlay-hint {
-  flex: 1 1 18rem;
+  flex: 1 1 auto;
   /* 窄时不再缩成几字一列。最多两行，长错误不再把顶栏拉成满屏一条。 */
   min-width: min(100%, 18rem);
   max-width: min(100%, 36rem);
@@ -143,11 +145,11 @@
   justify-content: center;
   cursor: pointer;
   border: 1px solid var(--line);
-  border-radius: var(--radius-control-sm);
+  border-radius: var(--radius-control);
   min-width: 32px;
   min-height: 32px;
   padding: 0 14px;
-  background: var(--panel);
+  background: var(--control-fill);
   color: var(--ink);
   font: inherit;
   font-size: 13px;
@@ -224,12 +226,12 @@
   flex: 0 0 auto;
   white-space: nowrap;
   cursor: pointer;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-control-sm);
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
   min-width: 32px;
-  min-height: 32px;
+  min-height: 34px;
   padding: 0 12px 0 10px;
-  background: var(--panel);
+  background: var(--control-fill);
   color: var(--ink);
   font: inherit;
   font-size: 13px;
@@ -260,6 +262,7 @@
   background: var(--accent);
   border-color: transparent;
   color: var(--on-accent);
+  box-shadow: var(--primary-shadow);
 }
 
 .overlay-actions button.primary:hover:not(:disabled):not(:active),
@@ -294,11 +297,13 @@
   flex-wrap: wrap;
   gap: 4px 2px;
   max-width: calc(100% - 32px);
-  padding: 6px 8px;
+  padding: 6px;
   border: 1px solid var(--line);
-  border-radius: var(--radius-window);
-  background: var(--panel);
-  box-shadow: var(--shadow);
+  border-radius: 16px;
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--shadow-pop);
   pointer-events: auto;
 }
 
@@ -404,16 +409,16 @@
   justify-content: center;
   cursor: pointer;
   border: 1px solid var(--line);
-  border-radius: var(--radius-control-sm);
+  border-radius: var(--radius-control);
   min-width: 32px;
   min-height: 32px;
   padding: 0 12px;
-  background: var(--panel);
+  background: var(--control-fill);
   color: var(--ink);
   font: inherit;
   font-size: 13px;
   font-weight: 600;
-  box-shadow: var(--shadow);
+  box-shadow: none;
   transition: var(--control-transition);
 }
 
@@ -438,13 +443,15 @@
   z-index: 4;
   width: min(520px, 86vw);
   max-height: calc(100% - 80px);
-  padding: var(--panel-padding);
+  padding: 14px 16px;
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: var(--radius-panel);
-  background: var(--panel);
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
   color: var(--ink);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-pop);
   cursor: default;
   pointer-events: auto;
 }
@@ -497,10 +504,12 @@
   margin-inline: auto;
   z-index: 4;
   max-width: min(560px, 86vw);
-  padding: 10px 14px;
+  padding: 9px 16px;
   border: 1px solid var(--line);
-  border-radius: var(--radius-menu);
-  background: var(--panel);
+  border-radius: 14px;
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
   color: var(--ink);
   font-size: 13px;
   line-height: 1.45;
@@ -508,7 +517,7 @@
   /* 三行够放下选区说明。更长的错误不再往上盖住画面和工具条。 */
   max-height: calc(4.35em + 20px);
   overflow: hidden;
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-pop);
   pointer-events: none;
 }
 
@@ -544,27 +553,48 @@
 
 /* left/top 由脚本按选区写入；必须脱离文档流，否则会被铺满的画布盖住。
    层级低于顶栏，贴顶时不透明徽标不能盖住提示文字。 */
+/* 尺寸徽标:深色玻璃药丸 + 等宽数字,前面一枚强调色圆点和选区描边呼应。 */
 .size-badge {
   position: absolute;
   z-index: 2;
   display: inline-flex;
   align-items: center;
+  gap: 6px;
   max-width: calc(100% - 8px);
-  padding: 4px 8px;
-  border-radius: var(--radius-control-sm);
-  background: var(--accent);
-  color: var(--on-accent);
-  font-size: 13px;
+  padding: 4px 10px 4px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: var(--radius-pill);
+  background: rgba(14, 16, 19, 0.82);
+  -webkit-backdrop-filter: blur(12px) saturate(1.4);
+  backdrop-filter: blur(12px) saturate(1.4);
+  color: #f4f6f8;
+  font-family: var(--font-mono);
+  font-size: 12px;
   font-weight: 600;
   line-height: 1.2;
-  letter-spacing: 0.01em;
-  box-shadow: 0 2px 8px color-mix(in srgb, #000 28%, transparent);
+  letter-spacing: 0;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
   overflow-wrap: anywhere;
 }
 
+.size-badge::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
 .size-badge.is-too-small {
+  background: rgba(14, 16, 19, 0.82);
+  color: var(--danger);
+}
+
+.size-badge.is-too-small::before {
   background: var(--danger);
-  color: var(--on-danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 25%, transparent);
 }
 
 .window-list {
@@ -577,12 +607,14 @@
   z-index: 2;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
   padding: 6px;
-  background: var(--panel);
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
   border: 1px solid var(--line);
   border-radius: var(--radius-panel);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-pop);
   pointer-events: auto;
 }
 
@@ -613,7 +645,7 @@
 .window-item.active,
 .window-item.active:hover,
 .window-item.active:focus-visible {
-  border-color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
   background: var(--accent-soft);
 }
 
@@ -639,8 +671,9 @@
 }
 
 .window-item .meta {
-  margin-top: 4px;
-  font-size: 13px;
+  margin-top: 3px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
@@ -741,6 +774,7 @@
 .delay-root .count {
   flex: 1 1 auto;
   min-width: 0;
+  font-family: var(--font-display);
   font-size: 18px;
   font-weight: 700;
   line-height: 1.2;
@@ -752,8 +786,8 @@
    prefers-reduced-motion 下退化为静态文本+数字。 */
 .delay-root .count-ring {
   flex-shrink: 0;
-  width: 22px;
-  height: 22px;
+  width: 26px;
+  height: 26px;
   border-radius: 50%;
   background: conic-gradient(
     var(--accent) calc(var(--ring, 1) * 1turn),
@@ -799,10 +833,10 @@
   align-items: center;
   justify-content: center;
   border: 0;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-control);
   min-width: 32px;
   min-height: 32px;
-  background: var(--accent-soft);
+  background: var(--control-fill);
   color: var(--ink);
   font: inherit;
   font-size: 13px;
@@ -830,6 +864,7 @@
   align-self: flex-end;
   background: var(--accent);
   color: var(--on-accent);
+  box-shadow: var(--primary-shadow);
 }
 
 .error-root button:hover:not(:active),
@@ -872,12 +907,12 @@
 
 .error-icon {
   flex: 0 0 auto;
-  width: 28px;
-  height: 28px;
+  width: 34px;
+  height: 34px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--radius-control-sm);
+  border-radius: var(--radius-control);
   background: var(--danger-soft);
   color: var(--danger);
 }

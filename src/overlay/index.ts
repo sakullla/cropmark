@@ -181,6 +181,51 @@ function strokeWithHalo(
   ctx.strokeRect(x, y, width, height);
 }
 
+// 选区四角的裁切角标:比细描边粗一档,带同一条晕边。只是显示层,不影响裁剪与输出像素。
+function drawCropMarks(
+  ctx: CanvasRenderingContext2D,
+  rect: { x: number; y: number; width: number; height: number },
+  stroke: string,
+  halo: string,
+  dpr: number,
+): void {
+  const thickness = Math.max(3, Math.round(3 * dpr));
+  const length = Math.min(Math.round(16 * dpr), rect.width / 2, rect.height / 2);
+  if (length < thickness * 2) {
+    return;
+  }
+  const half = thickness / 2;
+  const left = rect.x + half;
+  const top = rect.y + half;
+  const right = rect.x + rect.width - half;
+  const bottom = rect.y + rect.height - half;
+  const corners: Array<[number, number, number, number]> = [
+    [left, top, 1, 1],
+    [right, top, -1, 1],
+    [left, bottom, 1, -1],
+    [right, bottom, -1, -1],
+  ];
+  ctx.save();
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  for (const [color, width, alpha] of [
+    [halo, thickness + Math.max(2, Math.round(2 * dpr)), 0.5],
+    [stroke, thickness, 1],
+  ] as const) {
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.beginPath();
+    for (const [x, y, dx, dy] of corners) {
+      ctx.moveTo(x + dx * length, y);
+      ctx.lineTo(x, y);
+      ctx.lineTo(x, y + dy * length);
+    }
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
 export function mountOverlay(root: HTMLElement): () => void {
   root.className = "overlay-root";
   root.innerHTML = `
@@ -1088,6 +1133,9 @@ export function mountOverlay(root: HTMLElement): () => void {
         stroke,
         selectionHalo,
       );
+    }
+    if (frame.fixed !== true && !tooSmall) {
+      drawCropMarks(ctx, mapped, stroke, selectionHalo, window.devicePixelRatio || 1);
     }
     placeBadge(crop);
     // R2:取字三态画在最上层(已选 > 当前命中 > 搜索命中)。

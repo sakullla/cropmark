@@ -9,8 +9,9 @@
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: var(--radius-panel);
-  background: var(--panel);
+  background: var(--card);
   color: var(--ink);
+  box-shadow: var(--shadow);
   -webkit-app-region: no-drag;
   app-region: no-drag;
 }
@@ -56,7 +57,7 @@
   padding: 0 9px;
   line-height: 30px;
   border: 1px solid var(--line);
-  border-radius: var(--radius-control-sm);
+  border-radius: var(--radius-control);
   background: var(--control-fill);
   color: var(--ink);
   font: inherit;
@@ -70,6 +71,8 @@
 .ocr-panel-query:focus-visible {
   border-color: var(--accent);
   background: var(--control-fill);
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-ring);
 }
 .ocr-panel-nav {
   display: flex;
@@ -85,9 +88,9 @@
   align-items: center;
   justify-content: center;
   min-height: 32px;
-  padding: 0 10px;
+  padding: 0 12px;
   border: 1px solid var(--line);
-  border-radius: var(--radius-control-sm);
+  border-radius: var(--radius-control);
   background: var(--control-fill);
   color: var(--ink);
   font: inherit;
@@ -109,6 +112,7 @@
   border-color: var(--accent);
   color: var(--on-accent);
   font-weight: 600;
+  box-shadow: var(--primary-shadow);
 }
 .ocr-panel-actions button.primary:hover:not(:disabled):not([aria-disabled="true"]),
 .ocr-panel-actions button.primary:focus-visible:not(:disabled):not([aria-disabled="true"]),

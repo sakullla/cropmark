@@ -163,10 +163,14 @@ const BEAUTIFY_PRESETS: Array<{ id: string; labelKey: CatalogKey; swatch: string
   { id: "paper", labelKey: "settings.export.preset.paper", swatch: "#f4f1ea" },
   { id: "slate", labelKey: "settings.export.preset.slate", swatch: "#334155" },
   { id: "ink", labelKey: "settings.export.preset.ink", swatch: "#0b1220" },
-  { id: "dawn", labelKey: "settings.export.preset.dawn", swatch: "#fde68a" },
-  { id: "ocean", labelKey: "settings.export.preset.ocean", swatch: "#38bdf8" },
-  { id: "dusk", labelKey: "settings.export.preset.dusk", swatch: "#312e81" },
+  { id: "dawn", labelKey: "settings.export.preset.dawn", swatch: "linear-gradient(to bottom right, #fde68a, #fb7185)" },
+  { id: "ocean", labelKey: "settings.export.preset.ocean", swatch: "linear-gradient(to bottom right, #38bdf8, #1e3a8a)" },
+  { id: "dusk", labelKey: "settings.export.preset.dusk", swatch: "linear-gradient(to bottom right, #312e81, #f472b6)" },
 ];
+
+/// 设置页美化样张按比例缩小留白与圆角,真实截图通常比样张宽得多;上限避免样张被留白吃掉。
+const SAMPLE_SCALE = 0.4;
+const SAMPLE_MAX = 36;
 
 interface ExportAppearance {
   beautify: BeautifyOptions;
@@ -199,26 +203,31 @@ export function mountSettings(root: HTMLElement): () => void {
   // R9 移除的功能/工具开关不再出现,五项普通选项以开关行呈现。
   root.innerHTML = `
     <div class="shell">
-      <header class="titlebar" data-tauri-drag-region>
-        <div class="brand" data-tauri-drag-region>
-          <span class="mark" aria-hidden="true"></span>
-          <span class="name" data-i18n="settings.window_title">${t("settings.window_title")}</span>
-        </div>
-        <button type="button" class="icon-btn" data-action="close" data-i18n-aria-label="settings.close" aria-label="关闭">${icons.close}</button>
-      </header>
       <main class="settings-body">
+        <aside class="settings-sidebar">
+        <div class="settings-sidebar-head" data-tauri-drag-region>
+          <span class="mark" aria-hidden="true" data-tauri-drag-region></span>
+          <span class="settings-sidebar-title" data-tauri-drag-region>
+            <span class="settings-sidebar-brand" data-tauri-drag-region>Cropmark</span>
+            <span class="name" data-tauri-drag-region data-i18n="settings.window_title">${t("settings.window_title")}</span>
+          </span>
+        </div>
         <nav class="settings-nav" role="tablist" aria-orientation="vertical" data-settings-nav data-i18n-aria-label="settings.nav.aria_label" aria-label="设置分类">
           ${SECTIONS.map(
             (section, index) => `
             <button type="button" class="settings-nav-item" role="tab" id="settings-tab-${section}" aria-controls="settings-panel-${section}" aria-selected="${index === 0 ? "true" : "false"}" tabindex="${index === 0 ? 0 : -1}" data-section="${section}"><span class="settings-nav-icon" aria-hidden="true">${SECTION_ICON[section]}</span><span class="settings-nav-text"><span class="settings-nav-label" data-i18n="${SECTION_LABEL_KEY[section]}">${t(SECTION_LABEL_KEY[section])}</span><span class="settings-nav-reserve" data-i18n="${SECTION_LABEL_KEY[section]}" aria-hidden="true">${t(SECTION_LABEL_KEY[section])}</span></span></button>`,
           ).join("")}
-          <div class="settings-nav-footer" aria-hidden="true">
-            <span class="mark"></span>
-            <span class="settings-nav-brand">Cropmark</span>
-            <span class="settings-nav-version" data-version-nav></span>
-          </div>
         </nav>
+        <div class="settings-nav-footer" aria-hidden="true">
+          <span class="settings-nav-dot"></span>
+          <span class="settings-nav-status" data-i18n="settings.nav.footer_status">${t("settings.nav.footer_status")}</span>
+          <span class="settings-nav-version" data-version-nav></span>
+        </div>
+        </aside>
         <div class="settings-main">
+          <header class="settings-topbar" data-tauri-drag-region>
+            <button type="button" class="icon-btn" data-action="close" data-i18n-aria-label="settings.close" aria-label="关闭">${icons.close}</button>
+          </header>
           <p class="notice" role="alert" hidden></p>
           <p class="notice invoke-notice" data-invoke-notice role="alert" hidden></p>
           <p class="notice notice-info tray-notice" data-tray-notice role="status" hidden></p>
@@ -360,6 +369,7 @@ export function mountSettings(root: HTMLElement): () => void {
                     </div>
                   </div>
                   <div class="choices" data-beautify-presets role="radiogroup" aria-labelledby="preset-label"></div>
+                  <div class="beautify-sample" data-beautify-sample aria-hidden="true"><div class="beautify-sample-frame"><div class="beautify-sample-shot"></div></div></div>
                   <div class="setting-row">
                     <div>
                       <div class="label" id="padding-label" data-i18n="settings.export.padding_label">留白</div>
@@ -993,8 +1003,12 @@ export function mountSettings(root: HTMLElement): () => void {
               })
             : t("settings.hotkey.aria_unbound", { mode: slotLabel }),
       );
-      button.textContent =
-        recording === slot ? recordingButtonLabel() : display;
+      if (recording === slot || !accelerator) {
+        button.textContent = recording === slot ? recordingButtonLabel() : display;
+      } else {
+        // 已绑定的组合拆成一枚枚键帽;读屏名称仍由上面的 aria-label 给出。
+        appendKeycaps(button, accelerator);
+      }
       if (recording === slot) {
         button.classList.add("recording");
       } else if (!accelerator) {
@@ -1195,6 +1209,27 @@ export function mountSettings(root: HTMLElement): () => void {
         .querySelector<HTMLButtonElement>(`[data-beautify-preset="${activePreset}"]`)
         ?.focus();
     }
+    syncBeautifySample();
+  };
+
+  // 样张跟随当前背景、留白、圆角与阴影;未开启套用美化时显示原图的样子。
+  const syncBeautifySample = (): void => {
+    const sample = root.querySelector<HTMLElement>("[data-beautify-sample]");
+    if (!sample) {
+      return;
+    }
+    const { beautify, applyBeautify } = exportAppearance;
+    const preset = BEAUTIFY_PRESETS.find((item) => item.id === beautify.preset) ?? BEAUTIFY_PRESETS[0];
+    const scaled = (value: number): string =>
+      `${Math.min(SAMPLE_MAX, Math.round(value * SAMPLE_SCALE))}px`;
+    sample.classList.toggle("is-off", !applyBeautify);
+    sample.style.setProperty("--sample-bg", preset.swatch);
+    sample.style.setProperty("--sample-padding", scaled(beautify.padding));
+    sample.style.setProperty("--sample-radius", scaled(beautify.radius));
+    sample.style.setProperty(
+      "--sample-shadow",
+      beautify.shadow ? "0 10px 22px -8px rgba(15, 23, 42, 0.55)" : "none",
+    );
   };
 
   const applyAppearance = async (
@@ -2185,6 +2220,21 @@ export function displayAccelerator(accelerator: string): string {
     .replaceAll("Super", superLabel)
     .replaceAll("Meta", superLabel)
     .replaceAll("+", "+\u200b");
+}
+
+/** 把加速键拆成键帽:Ctrl、Shift、A 各一枚,和按键实物的读法一致。 */
+export function appendKeycaps(host: HTMLElement, accelerator: string): void {
+  host.replaceChildren();
+  host.classList.add("has-keycaps");
+  for (const part of displayAccelerator(accelerator).split("+\u200b")) {
+    if (!part) {
+      continue;
+    }
+    const key = document.createElement("kbd");
+    key.className = "keycap";
+    key.textContent = part;
+    host.append(key);
+  }
 }
 
 function codeToKey(code: string): string | null {

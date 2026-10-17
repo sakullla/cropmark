@@ -112,11 +112,29 @@ button.annotation-chrome svg {
   max-width: calc(100vw - 16px);
   /* 1px 时相邻悬停底会粘成一块。和工具条的行距一样留 4px，换行后上下也分开。 */
   gap: 4px;
-  padding: 4px;
+  padding: 5px;
   border: 1px solid var(--line);
-  border-radius: var(--radius-control-sm);
-  background: var(--panel);
-  box-shadow: var(--shadow);
+  border-radius: var(--radius-menu);
+  background: var(--card);
+  box-shadow: var(--shadow-pop);
+  animation: annotation-pop 160ms var(--ease-out);
+}
+
+@keyframes annotation-pop {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .annotation-more-panel,
+  .annotation-style-panel,
+  .annotation-context {
+    animation: none;
+  }
 }
 
 .annotation-more-panel[hidden] {
@@ -144,9 +162,10 @@ button.annotation-chrome svg {
   filter: var(--control-pressed-filter);
 }
 
+/* 当前工具:强调色淡底 + 强调色图标。描边只留一圈淡色,不再像被框住的按钮。 */
 .annotation-tools button.active {
   background: var(--accent-soft);
-  border-color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
   color: var(--accent);
 }
 
@@ -197,15 +216,14 @@ button.annotation-chrome[data-action="delete"]:focus-visible:not(:disabled):not(
   min-width: min(292px, calc(100vw - 16px));
   max-width: calc(100vw - 16px);
   scrollbar-width: thin;
-  padding: 14px;
+  padding: 14px 16px;
   border: 1px solid var(--line);
-  border-radius: var(--radius-menu);
+  border-radius: var(--radius-panel);
   /* 实底。半透明会把截图像素透进来，选项和色块都发虚。 */
   background-color: var(--card);
   color: var(--ink);
-  box-shadow:
-    var(--shadow),
-    0 0 0 1px color-mix(in srgb, var(--ink) 6%, transparent);
+  box-shadow: var(--shadow-pop);
+  animation: annotation-pop 160ms var(--ease-out);
 }
 
 .annotation-style-panel[hidden] {
@@ -234,8 +252,8 @@ button.annotation-chrome[data-action="delete"]:focus-visible:not(:disabled):not(
 }
 
 .style-label {
-  color: var(--ink);
-  font-size: 13px;
+  color: var(--muted);
+  font-size: 12px;
   font-weight: 600;
   line-height: 1.2;
   /* 宽面板仍按整词排成一行。窄面板里列被压窄时折行，不再盖住色块。 */
@@ -286,6 +304,7 @@ button.annotation-chrome[data-action="delete"]:focus-visible:not(:disabled):not(
   border-color: var(--accent);
   background-color: var(--accent);
   color: var(--on-accent);
+  box-shadow: var(--primary-shadow);
 }
 
 .style-options button.active:hover:not(:disabled):not(:active),
@@ -315,6 +334,7 @@ button.annotation-chrome[data-action="delete"]:focus-visible:not(:disabled):not(
   background-color: transparent;
   color: var(--ink);
   border-color: transparent;
+  box-shadow: none;
 }
 
 .style-options input[data-style-number-start] {
@@ -384,10 +404,17 @@ button.annotation-chrome[data-action="delete"]:focus-visible:not(:disabled):not(
 .style-options button[data-style-color]::before {
   content: "";
   position: absolute;
-  inset: 3px;
+  inset: 4px;
   border-radius: 50%;
   background: var(--swatch);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 14%, transparent);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--ink) 20%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.25);
+  transition: inset 140ms var(--ease-out), box-shadow 140ms ease;
+}
+
+.style-options button[data-style-color]:hover::before {
+  inset: 3px;
 }
 
 /* 色块按钮的透明边框在基础规则中重置,悬停描边需在此恢复。 */
@@ -398,10 +425,11 @@ button.annotation-chrome[data-action="delete"]:focus-visible:not(:disabled):not(
 }
 
 .style-options button[data-style-color].active::before {
+  inset: 5px;
   box-shadow:
     0 0 0 2px var(--card),
     0 0 0 4px var(--accent),
-    inset 0 0 0 1px color-mix(in srgb, var(--ink) 14%, transparent);
+    inset 0 0 0 1px color-mix(in srgb, var(--ink) 20%, transparent);
 }
 
 /* R5:贴纸素材缩略图(同一套色块按钮的选中态)。 */
@@ -523,11 +551,12 @@ button.annotation-chrome[data-action="delete"]:focus-visible:not(:disabled):not(
   width: max-content;
   min-width: 132px;
   max-width: calc(100vw - 16px);
-  padding: 4px;
+  padding: 5px;
   border: 1px solid var(--line);
   border-radius: var(--radius-menu);
-  background: var(--panel);
-  box-shadow: var(--shadow);
+  background: var(--card);
+  box-shadow: var(--shadow-pop);
+  animation: annotation-pop 140ms var(--ease-out);
 }
 
 .annotation-context[hidden] {
@@ -567,8 +596,7 @@ button.annotation-chrome[data-action="delete"]:focus-visible:not(:disabled):not(
 .annotation-context button:hover,
 .annotation-context button:focus-visible {
   background: var(--control-hover-bg);
-  box-shadow: inset 0 0 0 1px var(--control-hover-border);
-  color: var(--accent);
+  color: var(--ink);
 }
 
 /* 菜单里只有删除。和历史、录屏的删除一样用危险色，避免看起来像普通命令。 */

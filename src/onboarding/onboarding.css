@@ -6,10 +6,15 @@
   min-width: 0;
 }
 
-/* 开篇说明弱于各节卡片,主内容先被看到。 */
-.guide-root .content > .hint {
-  font-size: 12px;
-  line-height: 1.5;
+/* 开篇说明是一条淡强调色的提示条,和下面的分节卡片分开。 */
+.guide-root .content > .guide-intro {
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  border-radius: var(--radius-panel);
+  background: var(--accent-soft);
+  color: var(--ink);
+  font-size: 12.5px;
+  line-height: 1.55;
 }
 
 html[data-view="guide"] .guide-root .content {
@@ -22,7 +27,7 @@ html[data-view="guide"] .guide-root .content {
 html[data-view="guide"] .guide-section {
   position: relative;
   min-width: 0;
-  padding: 16px 18px 16px 64px;
+  padding: 16px 18px 16px 66px;
 }
 
 .guide-icon {
@@ -35,8 +40,9 @@ html[data-view="guide"] .guide-section {
   align-items: center;
   justify-content: center;
   border-radius: var(--radius-control);
-  background: var(--accent-soft);
+  background: linear-gradient(145deg, color-mix(in srgb, var(--accent) 22%, var(--card)), var(--accent-soft));
   color: var(--accent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
 .guide-icon svg {
@@ -51,7 +57,7 @@ html[data-view="guide"] .guide-section {
   display: flex;
   padding: 12px 16px 14px;
   border-top: 1px solid var(--line);
-  background: var(--panel);
+  background: color-mix(in srgb, var(--card) 70%, var(--bg));
 }
 
 .guide-footer .guide-done {
@@ -112,26 +118,15 @@ html[data-view="guide"] .guide-section {
   overflow-wrap: anywhere;
 }
 
-.guide-hotkey kbd {
+/* 和设置里的热键同一套键帽:一组按键各占一枚,放不下时在键与键之间折行。 */
+.guide-keys {
   flex: 0 1 auto;
   display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
   min-width: 0;
   max-width: min(60%, 100%);
-  padding: 4px 10px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-control-sm);
-  background: var(--control-fill);
-  color: var(--ink);
-  font-family: inherit;
-  font-size: 13px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  /* 与设置里的热键按钮相同：在加号处折行，键名本身放得下就不断开。 */
-  overflow-wrap: break-word;
-  text-align: center;
-  box-shadow: 0 1px 0 color-mix(in srgb, var(--ink) 16%, transparent);
 }
 
 .guide-done {
@@ -141,10 +136,11 @@ html[data-view="guide"] .guide-section {
   align-self: stretch;
   max-width: 100%;
   border: 0;
-  min-height: 36px;
+  min-height: 38px;
   border-radius: var(--radius-control);
   background: var(--accent);
   color: var(--on-accent);
+  box-shadow: var(--primary-shadow);
   font: inherit;
   font-size: 14px;
   font-weight: 600;

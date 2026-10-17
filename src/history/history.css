@@ -26,9 +26,12 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 13px;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
+  font-size: 12px;
   font-weight: 600;
-  color: var(--ink);
+  color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
 
@@ -52,12 +55,12 @@
 .history-search,
 .history-note-input {
   border: 1px solid var(--line);
-  border-radius: var(--radius-control-sm);
-  background: var(--control-fill);
+  border-radius: var(--radius-control);
+  background-color: var(--control-fill);
   color: var(--ink);
   font: inherit;
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 500;
   transition: var(--control-transition);
 }
 
@@ -73,6 +76,8 @@
 .history-note-input:focus-visible {
   border-color: var(--accent);
   background-color: var(--control-fill);
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-ring);
 }
 
 /* 非「全部」时下拉和搜索框要能看出正在筛。只改边框色，背景用 background-color，避免清掉下拉箭头。 */
@@ -102,9 +107,10 @@
 
 .history-select,
 .history-search {
-  height: 32px;
-  /* 边框各 1px，行高填满内容区，关闭态的文字才落在 32px 框的中线。 */
-  line-height: 30px;
+  height: 34px;
+  /* 边框各 1px，行高填满内容区，关闭态的文字才落在框的中线。 */
+  line-height: 32px;
+  box-shadow: var(--shadow-soft);
 }
 
 .history-select {
@@ -125,10 +131,19 @@
   }
 }
 
+/* 搜索框前一枚放大镜:和两个下拉区分开,一眼认出可以输入。 */
 .history-search {
   flex: 1 1 140px;
   min-width: 120px;
-  padding: 0 10px;
+  padding: 0 10px 0 32px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Ccircle cx='7' cy='7' r='4.6' fill='none' stroke='%23858c96' stroke-width='1.6'/%3E%3Cpath d='M10.4 10.4 13.5 13.5' stroke='%23858c96' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: 10px center;
+  background-size: 16px 16px;
+}
+
+.history-search:placeholder-shown:not(:focus-visible) {
+  background-color: var(--control-fill);
 }
 
 .history-filter-clear {
@@ -186,24 +201,27 @@
 
 /* R6:限时撤销条。删除/清空后出现,随 8 秒窗口到期自动消失;撤销点击交由
    后端 pending-delete 决定成败。 */
+/* 撤销条做成反色浮条:和卡片网格拉开层级,读起来是一条短暂的系统反馈。 */
 .history-undo {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   margin: 0;
-  padding: 8px 12px;
-  border: 1px solid var(--accent);
+  padding: 6px 6px 6px 14px;
+  border: 0;
   border-radius: var(--radius-control);
-  background: var(--accent-soft);
-  animation: surface-in 160ms ease;
+  background: var(--tooltip-bg);
+  box-shadow: var(--shadow-pop);
+  animation: surface-in 200ms var(--ease-out);
 }
 
 .history-undo-text {
   min-width: 0;
   font-size: 13px;
+  font-weight: 500;
   line-height: 1.45;
-  color: var(--ink);
+  color: var(--tooltip-ink);
   overflow-wrap: anywhere;
 }
 
@@ -239,11 +257,12 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 10px 12px;
-  border: 1px solid var(--danger);
+  padding: 8px 8px 8px 14px;
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
   border-radius: var(--radius-control);
   background: var(--danger-soft);
-  animation: surface-in 160ms ease;
+  box-shadow: var(--shadow-soft);
+  animation: surface-in 200ms var(--ease-out);
 }
 
 .history-confirm-text {
@@ -286,9 +305,9 @@
 .history-list {
   display: grid;
   flex: 1;
-  grid-template-columns: repeat(auto-fill, minmax(288px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(216px, 1fr));
   align-content: start;
-  gap: 12px;
+  gap: 14px;
   min-height: 0;
   /* 焦点环和卡片阴影在滚动区边缘不被裁掉。 */
   padding: 2px 2px 8px;
@@ -302,46 +321,48 @@
   display: none;
 }
 
+/* 画廊卡片:大缩略图在上,操作浮在缩略图底边(悬停或键盘进入时出现),时间与尺寸在下。
+   .history-main 只做分组,用 display:contents 让说明和操作各自进卡片网格。 */
 .history-item {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   grid-template-areas:
     "thumb"
-    "main"
+    "meta"
     "note";
   row-gap: 8px;
   align-content: start;
-  padding: 10px;
+  padding: 6px 6px 8px;
   border: 1px solid var(--line);
   border-radius: var(--radius-panel);
   background: var(--card);
   box-shadow: var(--shadow-soft);
   transition:
-    background-color 120ms ease,
-    border-color 120ms ease,
-    box-shadow 120ms ease;
+    background-color 160ms ease,
+    border-color 160ms ease,
+    box-shadow 200ms ease,
+    transform 200ms var(--ease-out);
 }
 
 .history-item:not(:has(.history-note)) {
   grid-template-areas:
     "thumb"
-    "main";
+    "meta";
 }
 
 .history-item:hover,
 .history-item:focus-within {
-  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  border-color: color-mix(in srgb, var(--ink) 14%, var(--line));
   box-shadow: var(--shadow);
+  transform: translateY(-1px);
 }
 
 .history-item.is-favorite {
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
-  background: color-mix(in srgb, var(--accent) 5%, var(--card));
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
 }
 
-.history-item.is-favorite:hover,
-.history-item.is-favorite:focus-within {
-  background: color-mix(in srgb, var(--accent) 8%, var(--card));
+.history-main {
+  display: contents;
 }
 
 .history-thumb {
@@ -352,9 +373,12 @@
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
-  border-radius: var(--radius-control-sm);
-  background: var(--bg);
+  border-radius: calc(var(--radius-panel) - 5px);
+  background:
+    linear-gradient(45deg, color-mix(in srgb, var(--ink) 4%, transparent) 25%, transparent 25%, transparent 75%, color-mix(in srgb, var(--ink) 4%, transparent) 75%) 0 0 / 14px 14px,
+    linear-gradient(45deg, color-mix(in srgb, var(--ink) 4%, transparent) 25%, transparent 25%, transparent 75%, color-mix(in srgb, var(--ink) 4%, transparent) 75%) 7px 7px / 14px 14px,
+    var(--bg);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 7%, transparent);
   color: var(--muted);
   font-size: 12px;
   line-height: 1.3;
@@ -369,15 +393,15 @@
 
 .history-thumb.is-reedit:hover,
 .history-item:has(.history-meta.is-reedit:hover) .history-thumb.is-reedit {
-  border-color: var(--accent);
+  box-shadow: inset 0 0 0 2px var(--accent);
 }
 
 .history-thumb img {
-  transition: transform 160ms ease;
+  transition: transform 280ms var(--ease-out);
 }
 
-.history-thumb.is-reedit:hover img {
-  transform: scale(1.02);
+.history-item:hover .history-thumb.is-reedit img {
+  transform: scale(1.03);
 }
 
 /* 缺失不是普通说明，用正文色，和还在加载的灰底分开。 */
@@ -399,19 +423,10 @@
   object-fit: contain;
 }
 
-.history-main {
-  grid-area: main;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px 12px;
-  min-width: 0;
-}
-
 .history-meta {
-  flex: 1 1 8.5rem;
-  min-width: min(100%, 8.5rem);
+  grid-area: meta;
+  min-width: 0;
+  padding: 0 6px;
 }
 
 .history-meta.is-reedit {
@@ -419,7 +434,7 @@
 }
 
 .history-time {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
   line-height: 1.35;
   font-variant-numeric: tabular-nums;
@@ -428,8 +443,8 @@
 
 .history-size,
 .history-mode {
-  margin-top: 2px;
-  font-size: 13px;
+  margin-top: 1px;
+  font-size: 12px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
   overflow-wrap: break-word;
@@ -438,15 +453,16 @@
 .history-note {
   grid-area: note;
   display: block;
-  margin: 0;
+  margin: -2px 0 0;
   min-width: 0;
 }
 
 .history-note-input {
   width: 100%;
-  height: 32px;
-  padding: 0 8px;
-  line-height: 30px;
+  height: 30px;
+  padding: 0 6px;
+  line-height: 28px;
+  font-size: 12px;
 }
 
 /* 空备注平时只留「添加备注」，避免每行一个实框。悬停或键盘停在这一条时再露出输入框。 */
@@ -492,12 +508,9 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
-  min-height: 32px;
   padding: 0;
-  /* 未收藏也是可点动作，灰色会像禁用。实心收藏态仍用强调色。 */
-  color: var(--ink);
+  /* 收藏放在操作条最左,和右侧的编辑、复制、贴图、删除分开。 */
+  margin-inline-end: auto;
 }
 
 .history-fav svg {
@@ -506,15 +519,10 @@
   height: 16px;
 }
 
-.history-fav:hover:not(:disabled),
-.history-fav:focus-visible {
-  color: var(--accent);
-  background: var(--accent-soft);
-  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
-}
-
-.history-fav.is-on {
-  color: var(--accent);
+.history-fav.is-on,
+.history-actions > .history-fav.is-on,
+.history-actions > .history-fav.is-on:hover:not(:disabled) {
+  color: #fbbf24;
 }
 
 .history-fav.is-on svg path {
@@ -528,14 +536,47 @@
   color: var(--danger);
 }
 
+/* 操作条叠在缩略图同一格的底边。按钮是深色玻璃小圆钮,任何截图上都看得清。 */
 .history-actions {
+  grid-area: thumb;
+  align-self: end;
+  z-index: 1;
   display: flex;
-  flex: 1 1 100%;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: flex-start;
-  max-width: 100%;
-  gap: 2px;
+  justify-content: flex-end;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px;
+  pointer-events: none;
+}
+
+.history-actions > .history-btn {
+  pointer-events: auto;
+  opacity: 0;
+  transform: translateY(4px);
+  transition:
+    var(--control-transition),
+    transform 200ms var(--ease-out);
+}
+
+.history-item:hover .history-actions > .history-btn,
+.history-item:focus-within .history-actions > .history-btn,
+.history-actions > .history-fav.is-on,
+.history-actions > .history-btn.is-copied {
+  opacity: 1;
+  transform: none;
+}
+
+/* 原图缺失时操作不可用,但删除和原因要一直看得见,不必悬停才发现。 */
+.history-actions > .history-btn[aria-disabled="true"],
+.history-item:has(.history-missing-note) .history-actions > .history-btn {
+  opacity: 1;
+  transform: none;
+}
+
+.history-item:has(.history-missing-note) .history-actions > .history-btn[aria-disabled="true"] {
+  opacity: var(--control-disabled-opacity);
 }
 
 /* 操作换行时，独立分隔线会掉到行尾。改挂在删除按钮左侧，跟着删除走。 */
@@ -590,17 +631,89 @@
   justify-content: center;
   border: 1px solid transparent;
   min-height: 32px;
-  padding: 0 8px;
+  padding: 0 10px;
   border-radius: var(--radius-control-sm);
   background: transparent;
+  color: var(--ink);
   font-size: 13px;
   font-weight: 500;
   white-space: nowrap;
 }
 
+/* 卡片操作:图标钮。文字仍在按钮里供读屏与系统提示,视觉上换成图标。 */
+.history-actions > .history-btn {
+  position: relative;
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  min-height: 30px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 9px;
+  background: rgba(17, 20, 24, 0.72);
+  -webkit-backdrop-filter: blur(12px) saturate(1.4);
+  backdrop-filter: blur(12px) saturate(1.4);
+  color: #f3f4f6;
+  font-size: 0;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+
+.history-actions > .history-btn:not(.history-fav)::before {
+  content: "";
+  width: 16px;
+  height: 16px;
+  background: currentColor;
+  -webkit-mask: var(--history-icon) center / 16px 16px no-repeat;
+  mask: var(--history-icon) center / 16px 16px no-repeat;
+}
+
+.history-actions > [data-entry-action="reedit"] {
+  --history-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16v4z'/%3E%3Cpath d='M13.5 6.5l4 4'/%3E%3C/svg%3E");
+}
+
+.history-actions > [data-entry-action="copy"] {
+  --history-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='8' y='8' width='12' height='12' rx='2.5'/%3E%3Cpath d='M16 8V6.5A2.5 2.5 0 0 0 13.5 4h-7A2.5 2.5 0 0 0 4 6.5v7A2.5 2.5 0 0 0 6.5 16H8'/%3E%3C/svg%3E");
+}
+
+.history-actions > [data-entry-action="copy"].is-copied {
+  --history-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12.5l4.5 4.5L19 7.5'/%3E%3C/svg%3E");
+}
+
+.history-actions > [data-entry-action="pin"] {
+  --history-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 21s-6-5.6-6-11a6 6 0 0 1 12 0c0 5.4-6 11-6 11z'/%3E%3Ccircle cx='12' cy='10' r='2.2'/%3E%3C/svg%3E");
+}
+
+.history-actions > [data-entry-action="delete"] {
+  --history-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 7h16'/%3E%3Cpath d='M10 11v6M14 11v6'/%3E%3Cpath d='M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12'/%3E%3Cpath d='M9 7V4.5h6V7'/%3E%3C/svg%3E");
+}
+
+.history-actions > .history-btn:hover:not(:disabled):not([aria-disabled="true"]),
+.history-actions > .history-btn:focus-visible:not(:disabled):not([aria-disabled="true"]) {
+  background: rgba(17, 20, 24, 0.9);
+  border-color: rgba(255, 255, 255, 0.24);
+  color: #ffffff;
+  filter: none;
+}
+
+/* 再编辑是卡片的主操作:强调色实心钮,和其它中性钮区分。 */
+.history-actions > .history-btn-edit,
+.history-actions > .history-btn-edit:hover:not(:disabled):not([aria-disabled="true"]),
+.history-actions > .history-btn-edit:focus-visible:not(:disabled):not([aria-disabled="true"]) {
+  background: #3ddbc4;
+  border-color: transparent;
+  color: #032b27;
+}
+
+.history-actions > .history-btn-danger:hover:not(:disabled),
+.history-actions > .history-btn-danger:focus-visible:not(:disabled) {
+  background: #e5484d;
+  border-color: transparent;
+  color: #ffffff;
+}
+
 /* 每张卡片都有再编辑。实心主色铺满一屏会喧宾夺主,改用淡底强调色。 */
 .history-btn-edit {
-  margin-right: 4px;
+  margin-right: 0;
   border-color: transparent;
   background: var(--accent-soft);
   color: var(--accent);
@@ -636,9 +749,9 @@
 .history-btn-quiet.is-copied:hover:not(:disabled):not(:active),
 .history-btn-quiet.is-copied:focus-visible:not(:disabled):not(:active),
 .history-btn-quiet.is-copied:active:not(:disabled) {
-  border-color: var(--ok);
-  background: var(--ok);
-  color: var(--on-accent);
+  border-color: transparent;
+  background: #22c55e;
+  color: #ffffff;
 }
 
 .history-btn-quiet.is-copied:hover:not(:disabled):not(:active),
@@ -650,28 +763,15 @@
   filter: var(--control-pressed-filter);
 }
 
-/* 删除始终靠卡片右缘,和复制/贴图拉开距离,减少误点。 */
+/* 删除和复制/贴图之间多留一点距离,减少误点。 */
 .history-actions .history-btn-danger {
   position: relative;
-  margin-inline-start: auto;
+  margin-inline-start: 6px;
 }
 
 .history-btn-danger {
   color: var(--danger);
   font-weight: 600;
-}
-
-.history-actions .history-btn-danger::before {
-  display: none;
-  content: "";
-  position: absolute;
-  left: -6px;
-  top: 50%;
-  width: 1px;
-  height: 16px;
-  transform: translateY(-50%);
-  background: var(--line);
-  pointer-events: none;
 }
 
 .history-btn-danger:hover:not(:disabled),
@@ -710,7 +810,7 @@
 
 .history-empty {
   margin: auto 8px;
-  padding: 28px 20px;
+  padding: 36px 20px;
   text-align: center;
   /* 空列表时这是唯一正文，灰色会像禁用说明。虚线框已经表达“还没有”。 */
   color: var(--ink);
@@ -770,7 +870,8 @@
 
 @media (prefers-reduced-motion: reduce) {
   .history-thumb img,
-  .history-thumb.is-reedit:hover img {
+  .history-item:hover .history-thumb.is-reedit img,
+  .history-actions > .history-btn {
     transition: none;
     transform: none;
   }

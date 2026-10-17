@@ -11,12 +11,13 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 10px;
+  padding: 12px;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: var(--radius-panel);
-  background: var(--panel);
+  background: var(--card);
   color: var(--ink);
+  box-shadow: var(--shadow);
   -webkit-app-region: no-drag;
   app-region: no-drag;
 }
@@ -111,6 +112,7 @@
   border-color: var(--accent);
   color: var(--on-accent);
   font-weight: 600;
+  box-shadow: var(--primary-shadow);
 }
 
 .qr-item-copy.primary:hover:not(:disabled):not(:active),
