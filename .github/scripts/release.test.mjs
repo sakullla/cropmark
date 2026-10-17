@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
-import { checkProject, formatNotes, generateNotes, readVersions, validateVersions, verifyRelease } from "./release.mjs";
+import { checkProject, checkTauriVersions, formatNotes, generateNotes, readVersions, validateVersions, verifyRelease } from "./release.mjs";
 
 const version = "0.1.0";
 const versions = Object.fromEntries(Object.keys(readVersions()).map((key) => [key, version]));
@@ -73,6 +73,35 @@ test("release builds overlap CI but publication waits for validation and verifie
 
 test("repository versions and bundled models are consistent", () => {
   assert.equal(checkProject(), readVersions()["package.json"]);
+});
+
+test("Tauri lockfile check catches the release mismatch and permits different patches", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "cropmark-tauri-test-"));
+  t.after(() => {
+    assert.equal(dirname(resolve(root)), resolve(tmpdir()));
+    rmSync(root, { recursive: true, force: true });
+  });
+  mkdirSync(join(root, "src-tauri"));
+  writeFileSync(join(root, "package-lock.json"), JSON.stringify({
+    packages: { "node_modules/@tauri-apps/api": { version: "2.12.4" } },
+  }));
+  const cargoLock = join(root, "src-tauri/Cargo.lock");
+  const crate = (version) => `[[package]]\nname = "tauri"\nversion = "${version}"\n`;
+  for (const version of ["2.11.5", "3.12.4"]) {
+    writeFileSync(cargoLock, crate(version));
+    assert.throws(() => checkTauriVersions(root), /Tauri version mismatch/);
+  }
+  for (const version of ["2.12.0", "2.12.4"]) {
+    writeFileSync(cargoLock, crate(version));
+    assert.doesNotThrow(() => checkTauriVersions(root));
+  }
+  for (const contents of ["", crate("invalid"), crate("2.12.4") + crate("2.11.5")]) {
+    writeFileSync(cargoLock, contents);
+    assert.throws(() => checkTauriVersions(root), /Lockfiles must contain/);
+  }
+  writeFileSync(cargoLock, crate("2.12.4"));
+  writeFileSync(join(root, "package-lock.json"), "{}");
+  assert.throws(() => checkTauriVersions(root), /Lockfiles must contain/);
 });
 
 test("every manifest and lockfile entry must match the release tag", () => {

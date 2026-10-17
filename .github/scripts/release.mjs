@@ -53,11 +53,28 @@ export function validateVersions(versions, tag) {
 
 export function checkProject(tag, root = ROOT) {
   const version = validateVersions(readVersions(root), tag);
+  checkTauriVersions(root);
   for (const name of MODELS) {
     const path = resolve(root, "src-tauri/models", name);
     if (statSync(path).size < 1024) throw new Error(`Missing model data or Git LFS pointer: ${name}`);
   }
   return version;
+}
+
+export function checkTauriVersions(root = ROOT) {
+  const lock = json(resolve(root, "package-lock.json"));
+  const api = lock.packages?.["node_modules/@tauri-apps/api"]?.version;
+  const crates = readFileSync(resolve(root, "src-tauri/Cargo.lock"), "utf8")
+    .split(/^\[\[package\]\]/m).filter((section) => field(section, "name") === "tauri");
+  const tauri = crates.length === 1 ? field(crates[0], "version") : undefined;
+  if (!api || !tauri || !SEMVER.test(api) || !SEMVER.test(tauri)) {
+    throw new Error("Lockfiles must contain one tauri crate and @tauri-apps/api with valid versions.");
+  }
+  // Tauri's build command requires the Rust crate and JS API to share major/minor.
+  // CLI, build helpers and plugins have independent version numbers.
+  if (tauri.split(".").slice(0, 2).join(".") !== api.split(".").slice(0, 2).join(".")) {
+    throw new Error(`Tauri version mismatch: tauri ${tauri} (Cargo.lock) vs @tauri-apps/api ${api} (package-lock.json). Update both lockfiles to the same major/minor release.`);
+  }
 }
 
 export function formatNotes(subjects, previous) {

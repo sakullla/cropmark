@@ -195,7 +195,7 @@ fn classify_gdi_failure(api: &'static str, error: windows::core::Error) -> Captu
 }
 
 fn classify_gdi_last_error(api: &'static str) -> CaptureError {
-    classify_gdi_failure(api, windows::core::Error::from_win32())
+    classify_gdi_failure(api, windows::core::Error::from_thread())
 }
 
 unsafe fn screen_dc() -> Result<HDC, CaptureError> {
