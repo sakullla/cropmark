@@ -3462,5 +3462,141 @@
   "settings.nav.footer_status": {
     "zh-CN": "正在后台运行",
     "en": "Running in background"
+  },
+  "settings.capture.eyebrow": {
+    "zh-CN": "CAPTURE",
+    "en": "CAPTURE"
+  },
+  "settings.capture.lead": {
+    "zh-CN": "热键、截图行为与录制方式，一次调顺手。",
+    "en": "Tune hotkeys, capture behavior, and recording to fit your flow."
+  },
+  "settings.output.eyebrow": {
+    "zh-CN": "OUTPUT",
+    "en": "OUTPUT"
+  },
+  "settings.output.lead": {
+    "zh-CN": "历史、命名与导出美化，都在这里管理。",
+    "en": "Manage history, file naming, and export styling."
+  },
+  "settings.general.eyebrow": {
+    "zh-CN": "PREFERENCES",
+    "en": "PREFERENCES"
+  },
+  "settings.general.lead": {
+    "zh-CN": "主题、语言与启动方式，按你的习惯来。",
+    "en": "Theme, language, and startup—set up the way you work."
+  },
+  "settings.about.eyebrow": {
+    "zh-CN": "ABOUT",
+    "en": "ABOUT"
+  },
+  "settings.about.lead": {
+    "zh-CN": "关于 Cropmark 与本地运行状态。",
+    "en": "About Cropmark and its local-only design."
+  },
+  "settings.appearance.title": {
+    "zh-CN": "外观",
+    "en": "Appearance"
+  },
+  "settings.appearance.hint": {
+    "zh-CN": "切换界面明暗主题。跟随系统会随系统设置自动变化。",
+    "en": "Choose the interface theme. System follows your OS setting."
+  },
+  "settings.appearance.label": {
+    "zh-CN": "主题",
+    "en": "Theme"
+  },
+  "settings.appearance.system": {
+    "zh-CN": "跟随系统",
+    "en": "System"
+  },
+  "settings.appearance.light": {
+    "zh-CN": "浅色",
+    "en": "Light"
+  },
+  "settings.appearance.dark": {
+    "zh-CN": "深色",
+    "en": "Dark"
+  },
+  "preview.shortcuts.label": {
+    "zh-CN": "快捷操作",
+    "en": "Shortcuts"
+  },
+  "preview.shortcuts.copy": {
+    "zh-CN": "复制",
+    "en": "Copy"
+  },
+  "preview.shortcuts.save": {
+    "zh-CN": "保存",
+    "en": "Save"
+  },
+  "preview.shortcuts.pin": {
+    "zh-CN": "贴图",
+    "en": "Pin"
+  },
+  "preview.shortcuts.crop": {
+    "zh-CN": "裁剪",
+    "en": "Crop"
+  },
+  "guide.eyebrow": {
+    "zh-CN": "GET STARTED",
+    "en": "GET STARTED"
+  },
+  "guide.headline": {
+    "zh-CN": "截图，本该如此顺手。",
+    "en": "Screenshots, made effortless."
+  },
+  "guide.lead": {
+    "zh-CN": "Cropmark 常驻托盘，按一下热键，截取、标注、取字、贴图一步到位。关闭本页不会退出应用。",
+    "en": "Cropmark lives in the tray. One hotkey opens capture, annotation, OCR, and pinning. Closing this page won't quit the app."
+  },
+  "guide.quickstart.title": {
+    "zh-CN": "三步开始",
+    "en": "Three steps to start"
+  },
+  "guide.quickstart.step1.title": {
+    "zh-CN": "按下热键",
+    "en": "Press a hotkey"
+  },
+  "guide.quickstart.step1.body": {
+    "zh-CN": "区域、窗口或全屏，随取随截。",
+    "en": "Grab a region, window, or the whole screen."
+  },
+  "guide.quickstart.step2.title": {
+    "zh-CN": "标注与取字",
+    "en": "Annotate & extract"
+  },
+  "guide.quickstart.step2.body": {
+    "zh-CN": "箭头、高亮、马赛克，或直接识别文字。",
+    "en": "Arrows, highlights, redaction, or text recognition."
+  },
+  "guide.quickstart.step3.title": {
+    "zh-CN": "复制或贴图",
+    "en": "Copy or pin"
+  },
+  "guide.quickstart.step3.body": {
+    "zh-CN": "一键复制，或把截图钉在屏幕上对照。",
+    "en": "Copy in one click, or pin it on screen for reference."
+  },
+  "guide.offline_badge": {
+    "zh-CN": "100% 本地 · 无账号 · 不上传",
+    "en": "100% local · No account · Nothing uploaded"
+  },
+  "guide.start": {
+    "zh-CN": "开始使用",
+    "en": "Get started"
+  },
+  "guide.open_logs": {
+    "zh-CN": "打开",
+    "en": "Open"
+  },
+  "guide.feature.title": {
+    "zh-CN": "更多能力",
+    "en": "More to explore"
+  },
+  "guide.logs.unavailable": {
+    "zh-CN": "暂不可用",
+    "en": "Unavailable"
   }
 }

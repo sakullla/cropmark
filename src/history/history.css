@@ -876,3 +876,253 @@
     transform: none;
   }
 }
+
+/* ==========================================================================
+   2026 gallery refresh
+   历史是「按图找图」：弱化容器边框，放大缩略图与时间信息，操作条只在需要时浮出。
+   ========================================================================== */
+
+.history-root .shell {
+  background:
+    radial-gradient(110% 75% at 100% 0%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 55%),
+    var(--bg);
+  border-radius: 20px;
+}
+
+.history-root .titlebar {
+  min-height: 64px;
+  padding: 12px 14px 12px 20px;
+  background: color-mix(in srgb, var(--panel) 82%, transparent);
+  backdrop-filter: saturate(1.4) blur(18px);
+  -webkit-backdrop-filter: saturate(1.4) blur(18px);
+}
+
+.history-root .titlebar .mark {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+}
+
+.history-root .titlebar .name {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 720;
+  letter-spacing: -0.02em;
+}
+
+.history-count {
+  padding: 3px 9px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent-strong);
+  font-size: 11.5px;
+}
+
+.history-clear {
+  padding: 0 10px;
+  border-radius: 9px;
+  color: var(--muted);
+  font-weight: 550;
+}
+
+.history-clear:hover:not(:disabled),
+.history-clear:focus-visible:not(:disabled) {
+  color: var(--danger);
+}
+
+.history-content {
+  padding: 18px 20px 22px;
+  gap: 14px;
+}
+
+.history-filters {
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--ink) 8%, var(--line));
+  border-radius: 16px;
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--shadow-soft);
+}
+
+.history-select,
+.history-search {
+  height: 36px;
+  line-height: 34px;
+  border-radius: 10px;
+  border-color: color-mix(in srgb, var(--ink) 9%, var(--line));
+  background-color: color-mix(in srgb, var(--card) 92%, transparent);
+  box-shadow: none;
+}
+
+.history-select {
+  padding-inline: 12px 30px;
+  background-position: right 10px center;
+}
+
+.history-search {
+  padding-inline: 34px 12px;
+  background-position: 11px center;
+}
+
+.history-filter-clear {
+  height: 34px;
+  border-radius: 9px;
+}
+
+.history-list {
+  grid-template-columns: repeat(auto-fill, minmax(238px, 1fr));
+  gap: 16px;
+  padding: 2px 2px 14px;
+}
+
+.history-item {
+  padding: 7px 7px 10px;
+  border-color: color-mix(in srgb, var(--ink) 7%, var(--line));
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, #fff 12%, var(--card)), var(--card));
+  box-shadow: var(--shadow-soft);
+}
+
+.history-item:hover,
+.history-item:focus-within {
+  border-color: color-mix(in srgb, var(--ink) 13%, var(--line));
+  box-shadow:
+    0 2px 6px -2px rgba(0, 0, 0, 0.1),
+    0 20px 42px -22px rgba(0, 0, 0, 0.35);
+  transform: translateY(-2px);
+}
+
+.history-item.is-favorite {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--line));
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 16%, transparent),
+    var(--shadow-soft);
+}
+
+.history-thumb {
+  aspect-ratio: 4 / 3;
+  border-radius: 12px;
+  background:
+    radial-gradient(90% 80% at 50% 0%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 70%),
+    linear-gradient(45deg, color-mix(in srgb, var(--ink) 4%, transparent) 25%, transparent 25%, transparent 75%, color-mix(in srgb, var(--ink) 4%, transparent) 75%) 0 0 / 16px 16px,
+    linear-gradient(45deg, color-mix(in srgb, var(--ink) 4%, transparent) 25%, transparent 25%, transparent 75%, color-mix(in srgb, var(--ink) 4%, transparent) 75%) 8px 8px / 16px 16px,
+    var(--bg);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 6%, transparent);
+}
+
+.history-thumb img {
+  border-radius: 12px;
+}
+
+.history-actions {
+  padding: 26px 8px 8px;
+  border-radius: 0 0 12px 12px;
+  background: linear-gradient(to top, rgba(7, 11, 13, 0.38), transparent);
+}
+
+.history-actions > .history-btn {
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
+  border-radius: 9px;
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(10, 14, 16, 0.7);
+  -webkit-backdrop-filter: blur(14px) saturate(1.5);
+  backdrop-filter: blur(14px) saturate(1.5);
+  box-shadow: 0 4px 12px -4px rgba(0, 0, 0, 0.42);
+}
+
+.history-actions > .history-btn-edit,
+.history-actions > .history-btn-edit:hover:not(:disabled):not([aria-disabled="true"]),
+.history-actions > .history-btn-edit:focus-visible:not(:disabled):not([aria-disabled="true"]) {
+  background: linear-gradient(135deg, #5ae9d2, #28bfa8);
+  border-color: transparent;
+  color: #042b26;
+  box-shadow: 0 6px 16px -6px rgba(78, 227, 200, 0.7);
+}
+
+.history-meta {
+  padding: 1px 8px 0;
+}
+
+.history-time {
+  font-size: 13.5px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.history-size,
+.history-mode {
+  font-size: 11.5px;
+}
+
+.history-mode {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+  color: var(--muted);
+}
+
+.history-note {
+  padding: 0 7px;
+}
+
+.history-note-input {
+  height: 32px;
+  line-height: 30px;
+  border-radius: 9px;
+}
+
+.history-empty {
+  padding: 48px 20px;
+  border-radius: 20px;
+}
+
+.history-empty::before {
+  width: 76px;
+  height: 76px;
+  border-radius: 24px;
+  background: linear-gradient(145deg, var(--accent), color-mix(in srgb, var(--accent) 55%, var(--accent-2)));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.25),
+    0 14px 34px -16px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
+.history-empty p {
+  font-size: 13px;
+}
+
+.history-undo {
+  border-radius: 12px;
+  background: var(--tooltip-bg);
+}
+
+.history-confirm {
+  border-radius: 12px;
+}
+
+.history-loading {
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+}
+
+@media (max-width: 620px) {
+  .history-content {
+    padding: 14px;
+  }
+
+  .history-filters {
+    padding: 9px;
+  }
+
+  .history-list {
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 12px;
+  }
+}

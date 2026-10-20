@@ -766,3 +766,109 @@ html[data-chrome="border"] #app {
   color: var(--danger);
   font-weight: 600;
 }
+
+/* 2026 refresh: 录制 HUD 与截图工具坞使用同一套玻璃、圆角与主操作。 */
+.record-card {
+  padding: 10px 10px 10px 15px;
+  border-color: rgba(255, 255, 255, 0.13);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.06), transparent 56%),
+    color-mix(in srgb, var(--panel) 92%, transparent);
+  -webkit-backdrop-filter: saturate(1.6) blur(24px);
+  backdrop-filter: saturate(1.6) blur(24px);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.32),
+    var(--shadow-pop);
+}
+
+.record-time {
+  font-size: 15.5px;
+  letter-spacing: -0.01em;
+}
+
+.record-btn {
+  height: 32px;
+  min-height: 32px;
+  padding: 0 11px;
+  border-radius: 9px;
+  border-color: var(--line);
+  background: color-mix(in srgb, var(--control-fill) 88%, transparent);
+  font-weight: 550;
+}
+
+.record-primary {
+  background: linear-gradient(135deg, var(--accent-strong), color-mix(in srgb, var(--accent-strong) 74%, #053d37));
+  border-color: transparent;
+  color: var(--on-accent);
+  font-weight: 680;
+}
+
+.record-primary:hover:not(:disabled):not([aria-disabled="true"]):not(:active),
+.record-primary:focus-visible:not(:disabled):not([aria-disabled="true"]):not(:active),
+.record-primary:active:not(:disabled):not([aria-disabled="true"]) {
+  background: linear-gradient(135deg, var(--accent-strong), color-mix(in srgb, var(--accent-strong) 74%, #053d37));
+  border-color: transparent;
+  color: var(--on-accent);
+}
+
+.record-overlay-root .record-tools,
+.record-overlay-root .record-draw-actions {
+  border-color: rgba(255, 255, 255, 0.13);
+  border-radius: 16px;
+  background: rgba(15, 19, 21, 0.86);
+  -webkit-backdrop-filter: saturate(1.8) blur(28px);
+  backdrop-filter: saturate(1.8) blur(28px);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.35),
+    0 18px 52px -12px rgba(0, 0, 0, 0.7);
+}
+
+.record-overlay-root .record-draw-actions {
+  padding: 7px 7px 7px 15px;
+}
+
+.record-annotate button {
+  height: 34px;
+  min-height: 34px;
+  border-radius: 9px;
+  border-color: transparent;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.record-annotate button.is-active,
+.record-annotate button.is-active:hover:not(:disabled),
+.record-annotate button.is-active:focus-visible:not(:disabled) {
+  border-color: rgba(78, 227, 200, 0.38);
+  background: rgba(78, 227, 200, 0.16);
+  color: #6ff2dd;
+}
+
+.record-draw-done {
+  background: linear-gradient(135deg, #5ae9d2, #28bfa8);
+  border-color: transparent;
+  color: #042b26;
+  font-weight: 700;
+}
+
+.record-draw-done:hover:not(:disabled):not(:active),
+.record-draw-done:focus-visible:not(:disabled):not(:active),
+.record-draw-done:active:not(:disabled) {
+  background: linear-gradient(135deg, #6ff2dd, #31cdb5);
+  border-color: transparent;
+  color: #042b26;
+}
+
+.record-overlay-notice {
+  border-color: rgba(255, 255, 255, 0.13);
+  border-radius: 11px;
+  background: rgba(15, 19, 21, 0.9);
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
+  box-shadow: var(--shadow-pop);
+}
+
+.record-pending-item {
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--card) 82%, transparent);
+}

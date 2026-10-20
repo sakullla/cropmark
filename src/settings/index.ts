@@ -8,6 +8,7 @@ import { autostartHelp, hotkeyErrorText } from "../errors";
 import { NOTICE_AUTO_HIDE_MS } from "../feedback";
 import { currentLanguage, t, type CatalogKey } from "../i18n";
 import { icons } from "../icons";
+import { getTheme, setTheme, type ThemeSetting } from "../theme";
 
 export type CaptureMode = "region" | "window" | "fullscreen";
 
@@ -234,8 +235,15 @@ export function mountSettings(root: HTMLElement): () => void {
           <p class="notice notice-success" data-saved-notice role="status" hidden></p>
           <div class="settings-panels" data-settings-panels>
             <section class="settings-panel" role="tabpanel" id="settings-panel-capture" aria-labelledby="settings-tab-capture" data-panel="capture">
+              <header class="settings-panel-head">
+                <span class="settings-panel-icon" aria-hidden="true">${SECTION_ICON.capture}</span>
+                <div class="settings-panel-heading">
+                  <span class="settings-panel-eyebrow" data-i18n="settings.capture.eyebrow">CAPTURE</span>
+                  <h1 id="group-capture-title" data-i18n="settings.group.capture">采集</h1>
+                  <p class="settings-panel-lead" data-i18n="settings.capture.lead">热键、截图行为与录制方式，一次调顺手。</p>
+                </div>
+              </header>
               <section class="card" aria-labelledby="group-capture-title">
-                <h1 id="group-capture-title" data-i18n="settings.group.capture">采集</h1>
                 <section class="block" aria-labelledby="hotkeys-title">
                   <h2 id="hotkeys-title" data-i18n="settings.hotkeys.title">热键</h2>
                   <p class="hint" data-i18n="settings.hotkeys.hint">点击热键按钮后按下新组合，Esc 取消；改动立即生效。</p>
@@ -308,8 +316,15 @@ export function mountSettings(root: HTMLElement): () => void {
               </section>
             </section>
             <section class="settings-panel" role="tabpanel" id="settings-panel-output" aria-labelledby="settings-tab-output" data-panel="output" hidden>
+              <header class="settings-panel-head">
+                <span class="settings-panel-icon" aria-hidden="true">${SECTION_ICON.output}</span>
+                <div class="settings-panel-heading">
+                  <span class="settings-panel-eyebrow" data-i18n="settings.output.eyebrow">OUTPUT</span>
+                  <h1 id="group-output-title" data-i18n="settings.group.output">记录与输出</h1>
+                  <p class="settings-panel-lead" data-i18n="settings.output.lead">历史、命名与导出美化，都在这里管理。</p>
+                </div>
+              </header>
               <section class="card" aria-labelledby="group-output-title">
-                <h1 id="group-output-title" data-i18n="settings.group.output">记录与输出</h1>
                 <section class="block" aria-labelledby="history-title">
                   <h2 id="history-title" data-i18n="settings.history.title">历史记录</h2>
                   <p class="hint" data-i18n="settings.history.hint">截图完成后在本机保留最近记录，可重新复制、贴图或删除；数据只保存在本机。</p>
@@ -396,8 +411,29 @@ export function mountSettings(root: HTMLElement): () => void {
               </section>
             </section>
             <section class="settings-panel" role="tabpanel" id="settings-panel-general" aria-labelledby="settings-tab-general" data-panel="general" hidden>
+              <header class="settings-panel-head">
+                <span class="settings-panel-icon" aria-hidden="true">${SECTION_ICON.general}</span>
+                <div class="settings-panel-heading">
+                  <span class="settings-panel-eyebrow" data-i18n="settings.general.eyebrow">PREFERENCES</span>
+                  <h1 id="group-general-title" data-i18n="settings.group.general">通用</h1>
+                  <p class="settings-panel-lead" data-i18n="settings.general.lead">主题、语言与启动方式，按你的习惯来。</p>
+                </div>
+              </header>
               <section class="card" aria-labelledby="group-general-title">
-                <h1 id="group-general-title" data-i18n="settings.group.general">通用</h1>
+                <section class="block" aria-labelledby="appearance-title">
+                  <h2 id="appearance-title" data-i18n="settings.appearance.title">外观</h2>
+                  <p class="hint" data-i18n="settings.appearance.hint">切换界面明暗主题。跟随系统会随系统设置自动变化。</p>
+                  <div class="setting-row">
+                    <div>
+                      <div class="label" id="theme-label" data-i18n="settings.appearance.label">主题</div>
+                    </div>
+                    <div class="choices theme-choices" data-theme-choice role="radiogroup" aria-labelledby="theme-label">
+                      <button type="button" class="choice" role="radio" data-theme-value="system" aria-checked="false" data-i18n="settings.appearance.system">跟随系统</button>
+                      <button type="button" class="choice" role="radio" data-theme-value="light" aria-checked="false" data-i18n="settings.appearance.light">浅色</button>
+                      <button type="button" class="choice" role="radio" data-theme-value="dark" aria-checked="false" data-i18n="settings.appearance.dark">深色</button>
+                    </div>
+                  </div>
+                </section>
                 <section class="block" aria-labelledby="language-title">
                   <h2 id="language-title" data-i18n="settings.language.title">语言</h2>
                   <p class="hint" data-i18n="settings.language.hint">切换后界面立即更新，无需重启；选择会跨会话保留。</p>
@@ -459,8 +495,15 @@ export function mountSettings(root: HTMLElement): () => void {
               </section>
             </section>
             <section class="settings-panel" role="tabpanel" id="settings-panel-about" aria-labelledby="settings-tab-about" data-panel="about" hidden>
+              <header class="settings-panel-head">
+                <span class="settings-panel-icon" aria-hidden="true">${SECTION_ICON.about}</span>
+                <div class="settings-panel-heading">
+                  <span class="settings-panel-eyebrow" data-i18n="settings.about.eyebrow">ABOUT</span>
+                  <h1 id="about-title" data-i18n="settings.about.title">关于</h1>
+                  <p class="settings-panel-lead" data-i18n="settings.about.lead">关于 Cropmark 与本地运行状态。</p>
+                </div>
+              </header>
               <section class="card about" aria-labelledby="about-title">
-                <h1 id="about-title" data-i18n="settings.about.title">关于</h1>
                 <section class="block about-hero">
                   <span class="mark" aria-hidden="true"></span>
                   <div class="about-hero-text">
@@ -530,6 +573,7 @@ export function mountSettings(root: HTMLElement): () => void {
   const openLogsEl = root.querySelector("[data-action=open-logs]");
   const quitEl = root.querySelector("[data-action=quit]");
   const languageRoot = root.querySelector("[data-language]");
+  const themeRoot = root.querySelector("[data-theme-choice]");
   const versionEl = root.querySelector("[data-version]");
   if (
     !(noticeEl instanceof HTMLElement) ||
@@ -570,7 +614,8 @@ export function mountSettings(root: HTMLElement): () => void {
     !(logPathEl instanceof HTMLElement) ||
     !(openLogsEl instanceof HTMLButtonElement) ||
     !(quitEl instanceof HTMLButtonElement) ||
-    !(languageRoot instanceof HTMLElement)
+    !(languageRoot instanceof HTMLElement) ||
+    !(themeRoot instanceof HTMLElement)
   ) {
     return () => undefined;
   }
@@ -935,6 +980,16 @@ export function mountSettings(root: HTMLElement): () => void {
       button.tabIndex = selected ? 0 : -1;
     });
   };
+
+  const renderTheme = (theme: ThemeSetting): void => {
+    themeRoot.querySelectorAll<HTMLButtonElement>("[data-theme-value]").forEach((button) => {
+      const selected = button.dataset.themeValue === theme;
+      button.setAttribute("aria-checked", selected ? "true" : "false");
+      button.classList.toggle("selected", selected);
+      button.tabIndex = selected ? 0 : -1;
+    });
+  };
+  renderTheme(getTheme());
 
   const render = (settings: UiSettings): void => {
     lastSettings = settings;
@@ -1908,6 +1963,25 @@ export function mountSettings(root: HTMLElement): () => void {
   // radio 组方向键漫游(R6)已提取到 src/a11y.ts 共享;此处仅绑定。
   languageRoot.addEventListener("keydown", (event) => {
     handleRadioGroupKeydown(event, languageRoot, "[data-language-value]");
+  });
+  themeRoot.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) {
+      return;
+    }
+    const button = target.closest("[data-theme-value]");
+    if (!(button instanceof HTMLButtonElement)) {
+      return;
+    }
+    const value = button.dataset.themeValue as ThemeSetting | undefined;
+    if (!value || value === getTheme()) {
+      return;
+    }
+    setTheme(value);
+    renderTheme(value);
+  });
+  themeRoot.addEventListener("keydown", (event) => {
+    handleRadioGroupKeydown(event, themeRoot, "[data-theme-value]");
   });
   presetRoot.addEventListener("keydown", (event) => {
     handleRadioGroupKeydown(event, presetRoot, "[data-beautify-preset]");

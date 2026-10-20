@@ -146,3 +146,37 @@
   opacity: var(--control-disabled-opacity);
   cursor: default;
 }
+
+/* 2026 refresh */
+.qr-panel {
+  border-color: color-mix(in srgb, var(--ink) 8%, var(--line));
+  border-radius: 18px;
+  background:
+    radial-gradient(100% 60% at 100% 0%, color-mix(in srgb, var(--accent) 5%, transparent), transparent 60%),
+    var(--card);
+  box-shadow: var(--shadow-soft);
+  padding: 14px;
+}
+
+.qr-panel-bar h2 {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 720;
+  letter-spacing: -0.02em;
+}
+
+.qr-item {
+  border-radius: 11px;
+  border-color: color-mix(in srgb, var(--ink) 8%, var(--line));
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+}
+
+.qr-item-copy {
+  border-radius: 9px;
+}
+
+.qr-item-copy.primary {
+  background: linear-gradient(135deg, var(--accent-strong), color-mix(in srgb, var(--accent-strong) 74%, #053d37));
+  border-color: transparent;
+  box-shadow: var(--primary-shadow);
+}

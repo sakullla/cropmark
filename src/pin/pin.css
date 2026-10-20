@@ -357,3 +357,83 @@
   background: var(--line);
   pointer-events: none;
 }
+
+/* 2026 refresh: 贴图工具条收成一枚悬浮玻璃胶囊，悬停才浮出，不抢画面。 */
+.pin-toolbar {
+  top: 8px;
+  right: 8px;
+  gap: 4px;
+  padding: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 13px;
+  background: rgba(10, 14, 16, 0.62);
+  -webkit-backdrop-filter: saturate(1.7) blur(22px);
+  backdrop-filter: saturate(1.7) blur(22px);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.24),
+    0 14px 34px -14px rgba(0, 0, 0, 0.6);
+}
+
+.pin-toolbar button {
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  min-height: 30px;
+  border-color: transparent;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: none;
+}
+
+.pin-toolbar button:hover,
+.pin-toolbar button:focus-visible {
+  background: linear-gradient(135deg, #5ae9d2, #28bfa8);
+  color: #042b26;
+}
+
+.pin-toolbar .pin-opacity {
+  min-width: 54px;
+  padding: 0 9px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.pin-toolbar .pin-close:hover,
+.pin-toolbar .pin-close:focus-visible,
+.pin-toolbar .pin-close:active {
+  background: linear-gradient(135deg, #ef6b6b, #c93c42);
+  color: #fff;
+}
+
+.pin-menu {
+  padding: 6px;
+  border-color: rgba(255, 255, 255, 0.13);
+  border-radius: 14px;
+  background: rgba(20, 25, 28, 0.94);
+  -webkit-backdrop-filter: saturate(1.8) blur(28px);
+  backdrop-filter: saturate(1.8) blur(28px);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.35),
+    var(--shadow-pop);
+}
+
+.pin-menu button {
+  border-radius: 9px;
+  font-size: 13px;
+}
+
+.pin-menu button.active,
+.pin-menu button.active:hover,
+.pin-menu button.active:focus-visible {
+  background: rgba(78, 227, 200, 0.16);
+  color: #6ff2dd;
+}
+
+.pin-note {
+  padding: 6px 13px;
+  border-color: rgba(255, 255, 255, 0.16);
+  border-radius: 9px;
+  background: rgba(10, 14, 16, 0.86);
+  font-size: 12.5px;
+  box-shadow: 0 10px 28px -12px rgba(0, 0, 0, 0.6);
+}

@@ -1,5 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { applyTranslations, initI18n, onLanguageChanged } from "./i18n";
+import { initTheme } from "./theme";
 
 // 视图标记必须在挂载前同步写上。覆盖层背景等选择器依赖 data-view，
 // 且不能留在 HTML 内联脚本里，否则会被 script-src 'self' 拦住。
@@ -13,8 +14,8 @@ void listen("capture-requested", () => {
 });
 
 void (async () => {
-  // R12:先解析当前界面语言再挂载,首帧即为正确语言。
-  await initI18n();
+  // 主题与语言都在挂载前解析，首帧即为最终外观。
+  await Promise.all([initTheme(), initI18n()]);
   const root = document.querySelector("#app");
   if (!(root instanceof HTMLElement)) {
     return;

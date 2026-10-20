@@ -320,3 +320,70 @@ html[data-view="scroll"] #app {
   border-color: var(--control-danger-hover-border);
   background: var(--control-danger-hover-bg);
 }
+
+/* 2026 refresh: 长截图控制卡片与截图 HUD 同一套玻璃质感。 */
+.scroll-card {
+  padding: 15px 16px;
+  border-color: rgba(255, 255, 255, 0.13);
+  border-radius: 17px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.055), transparent 58%),
+    color-mix(in srgb, var(--card) 94%, transparent);
+  -webkit-backdrop-filter: saturate(1.7) blur(26px);
+  backdrop-filter: saturate(1.7) blur(26px);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.32),
+    0 18px 48px -14px rgba(0, 0, 0, 0.68);
+}
+
+.scroll-axis {
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+
+.scroll-axis-option {
+  height: 28px;
+  border-radius: 7px;
+}
+
+.scroll-axis-option.is-active {
+  border-color: transparent;
+  background: var(--card);
+  color: var(--ink);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.16);
+}
+
+.scroll-actions button {
+  height: 34px;
+  min-height: 34px;
+  border-radius: 9px;
+  font-weight: 550;
+}
+
+.scroll-actions .scroll-start,
+.scroll-actions .scroll-finish {
+  background: linear-gradient(135deg, #5ae9d2, #28bfa8);
+  border-color: transparent;
+  color: #042b26;
+  font-weight: 680;
+}
+
+.scroll-actions .scroll-start:hover:not(:disabled):not(:active),
+.scroll-actions .scroll-finish:hover:not(:disabled):not(:active),
+.scroll-actions .scroll-start:focus-visible:not(:disabled):not(:active),
+.scroll-actions .scroll-finish:focus-visible:not(:disabled):not(:active),
+.scroll-actions .scroll-start:active:not(:disabled),
+.scroll-actions .scroll-finish:active:not(:disabled) {
+  background: linear-gradient(135deg, #6ff2dd, #31cdb5);
+  border-color: transparent;
+  color: #042b26;
+}
+
+.scroll-actions .scroll-finish.is-secondary,
+.scroll-actions .scroll-finish.is-secondary:hover:not(:disabled):not(:active),
+.scroll-actions .scroll-finish.is-secondary:focus-visible:not(:disabled):not(:active),
+.scroll-actions .scroll-finish.is-secondary:active:not(:disabled) {
+  background: var(--control-fill);
+  border-color: var(--line);
+  color: var(--ink);
+}

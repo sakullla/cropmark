@@ -165,6 +165,13 @@ export function mountPreview(root: HTMLElement): () => void {
           <button type="button" data-preview-zoom="fit" aria-pressed="true" data-i18n="preview.zoom.fit" data-i18n-title="preview.zoom.fit_title" data-i18n-aria-label="preview.zoom.fit_title">适应窗口</button>
           <button type="button" data-preview-zoom="actual" aria-pressed="false" data-i18n-title="preview.zoom.actual" data-i18n-aria-label="preview.zoom.actual">100%</button>
         </div>
+        <div class="preview-shortcuts" aria-hidden="true">
+          <span class="preview-shortcuts-label" data-i18n="preview.shortcuts.label">快捷操作</span>
+          <span class="preview-shortcut"><kbd>Ctrl/⌘</kbd><kbd>C</kbd><span data-i18n="preview.shortcuts.copy">复制</span></span>
+          <span class="preview-shortcut"><kbd>Ctrl/⌘</kbd><kbd>S</kbd><span data-i18n="preview.shortcuts.save">保存</span></span>
+          <span class="preview-shortcut"><kbd>I</kbd><span data-i18n="preview.shortcuts.pin">贴图</span></span>
+          <span class="preview-shortcut"><kbd>V</kbd><span data-i18n="preview.shortcuts.crop">裁剪</span></span>
+        </div>
       </div>
     </div>
   `;

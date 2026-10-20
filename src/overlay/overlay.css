@@ -943,3 +943,304 @@
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
+
+/* ==========================================================================
+   2026 HUD refresh
+   选区覆盖层是用户对 Cropmark 的第一印象：顶部是轻量命令条，底部是工具坞，
+   所有浮层共享同一套深色玻璃、16px 圆角与薄荷色主操作。
+   ========================================================================== */
+
+.overlay-chrome {
+  top: 18px;
+  max-width: calc(100% - 28px);
+  padding: 7px 7px 7px 14px;
+  gap: 10px;
+  border-color: rgba(255, 255, 255, 0.13);
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.07), transparent 58%),
+    rgba(15, 19, 21, 0.86);
+  -webkit-backdrop-filter: saturate(1.8) blur(28px);
+  backdrop-filter: saturate(1.8) blur(28px);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.35),
+    0 18px 52px -12px rgba(0, 0, 0, 0.7);
+}
+
+.overlay-hint {
+  padding: 2px 6px;
+  color: rgba(241, 245, 244, 0.72);
+  font-size: 12.5px;
+  font-weight: 550;
+  letter-spacing: 0.002em;
+}
+
+.overlay-chrome:has(.overlay-actions[hidden]) .overlay-hint {
+  color: var(--ink);
+}
+
+.overlay-hint.is-error {
+  padding: 6px 12px;
+  border-radius: 9px;
+  background: rgba(201, 60, 66, 0.18);
+  color: #ffb4b4;
+  box-shadow: inset 0 0 0 1px rgba(255, 143, 138, 0.45);
+}
+
+.overlay-cancel,
+.overlay-retry {
+  min-height: 34px;
+  padding: 0 14px;
+  border-radius: 10px;
+  border-color: rgba(255, 255, 255, 0.13);
+  background: rgba(255, 255, 255, 0.055);
+  color: var(--ink);
+  font-weight: 620;
+}
+
+.overlay-cancel:hover,
+.overlay-cancel:focus-visible {
+  border-color: rgba(255, 255, 255, 0.24);
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.overlay-actions {
+  gap: 5px;
+}
+
+.overlay-actions button {
+  min-height: 36px;
+  padding: 0 13px 0 11px;
+  border-radius: 10px;
+  border-color: transparent;
+  background: rgba(255, 255, 255, 0.055);
+  font-weight: 550;
+}
+
+.overlay-actions button:hover:not(:disabled):not(.primary),
+.overlay-actions button:focus-visible:not(:disabled):not(.primary) {
+  border-color: rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.overlay-actions button.primary {
+  padding-inline: 16px 15px;
+  background: linear-gradient(135deg, #5ae9d2, #28bfa8);
+  color: #042b26;
+  border-color: transparent;
+  font-weight: 700;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.35),
+    0 6px 18px -6px rgba(78, 227, 200, 0.72);
+}
+
+.overlay-actions button.primary:hover:not(:disabled):not(:active),
+.overlay-actions button.primary:focus-visible:not(:disabled):not(:active) {
+  background: linear-gradient(135deg, #6ff2dd, #31cdb5);
+  color: #042b26;
+}
+
+.overlay-actions-sep {
+  width: 1px;
+  height: 22px;
+  margin: 0 3px;
+  background: linear-gradient(to bottom, transparent, rgba(255, 255, 255, 0.18), transparent);
+}
+
+.overlay-tools {
+  bottom: 22px;
+  padding: 7px;
+  gap: 3px;
+  border-color: rgba(255, 255, 255, 0.13);
+  border-radius: 17px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.065), transparent 58%),
+    rgba(15, 19, 21, 0.86);
+  -webkit-backdrop-filter: saturate(1.8) blur(28px);
+  backdrop-filter: saturate(1.8) blur(28px);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.35),
+    0 18px 52px -12px rgba(0, 0, 0, 0.72);
+}
+
+.overlay-tools.annotation-tools > button,
+.overlay-tools.annotation-tools > .annotation-more > button,
+.overlay-tools.annotation-tools > .annotation-style > button {
+  width: 38px;
+  min-width: 38px;
+  height: 38px;
+  min-height: 38px;
+  border-radius: 10px;
+}
+
+.overlay-tools.annotation-tools > button.active,
+.overlay-tools.annotation-tools > .annotation-more > button.active,
+.overlay-tools.annotation-tools > .annotation-style > button.active {
+  position: relative;
+  background: rgba(78, 227, 200, 0.16);
+  border-color: rgba(78, 227, 200, 0.38);
+  color: #6ff2dd;
+  box-shadow: inset 0 0 0 1px rgba(78, 227, 200, 0.12);
+}
+
+.overlay-tools.annotation-tools > button.active::after,
+.overlay-tools.annotation-tools > .annotation-more > button.active::after,
+.overlay-tools.annotation-tools > .annotation-style > button.active::after {
+  content: "";
+  position: absolute;
+  bottom: 4px;
+  left: 50%;
+  width: 4px;
+  height: 4px;
+  margin-left: -2px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.overlay-tools .annotation-style-panel,
+.overlay-tools .annotation-more-panel {
+  bottom: calc(100% + 10px);
+  border-radius: 14px;
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(20, 25, 28, 0.96);
+  -webkit-backdrop-filter: saturate(1.8) blur(28px);
+  backdrop-filter: saturate(1.8) blur(28px);
+}
+
+.size-badge {
+  gap: 7px;
+  padding: 5px 11px 5px 9px;
+  border-color: rgba(255, 255, 255, 0.16);
+  border-radius: 10px;
+  background: rgba(12, 16, 18, 0.9);
+  -webkit-backdrop-filter: saturate(1.6) blur(18px);
+  backdrop-filter: saturate(1.6) blur(18px);
+  font-size: 12px;
+  font-weight: 620;
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.28),
+    0 10px 28px -8px rgba(0, 0, 0, 0.62);
+}
+
+.size-badge::before {
+  width: 6px;
+  height: 6px;
+  box-shadow: 0 0 0 3px rgba(78, 227, 200, 0.22);
+}
+
+.overlay-notice {
+  bottom: 28px;
+  padding: 10px 16px;
+  border-color: rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), transparent 60%),
+    rgba(18, 23, 26, 0.9);
+  -webkit-backdrop-filter: saturate(1.7) blur(24px);
+  backdrop-filter: saturate(1.7) blur(24px);
+  font-size: 12.5px;
+  box-shadow: var(--shadow-pop);
+}
+
+.overlay-notice.is-attention {
+  background: rgba(18, 58, 53, 0.94);
+  border-color: rgba(78, 227, 200, 0.42);
+  color: #6ff2dd;
+}
+
+.overlay-notice.is-success {
+  background: rgba(18, 48, 31, 0.94);
+  border-color: rgba(126, 226, 162, 0.42);
+  color: #a9f0c4;
+}
+
+.overlay-notice.is-error {
+  background: rgba(58, 31, 33, 0.95);
+  border-color: rgba(255, 143, 138, 0.42);
+  color: #ffb4b4;
+}
+
+.window-list {
+  padding: 7px;
+  border-color: rgba(255, 255, 255, 0.13);
+  border-radius: 16px;
+  background: rgba(15, 19, 21, 0.9);
+  -webkit-backdrop-filter: saturate(1.8) blur(28px);
+  backdrop-filter: saturate(1.8) blur(28px);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.35),
+    0 18px 52px -12px rgba(0, 0, 0, 0.7);
+}
+
+.window-item {
+  padding: 10px 11px;
+  border-radius: 10px;
+}
+
+.window-item:hover,
+.window-item:focus-visible {
+  border-color: rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.window-item.active,
+.window-item.active:hover,
+.window-item.active:focus-visible {
+  border-color: rgba(78, 227, 200, 0.36);
+  background: rgba(78, 227, 200, 0.14);
+}
+
+.window-item.active .title {
+  color: #6ff2dd;
+}
+
+.window-item .meta {
+  font-size: 11px;
+}
+
+.capability-panel {
+  border-color: rgba(255, 255, 255, 0.14);
+  border-radius: 16px;
+  background: rgba(18, 23, 26, 0.92);
+  -webkit-backdrop-filter: saturate(1.8) blur(28px);
+  backdrop-filter: saturate(1.8) blur(28px);
+}
+
+.delay-root,
+.error-root {
+  border-color: rgba(255, 255, 255, 0.13);
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.055), transparent 60%),
+    var(--panel);
+  box-shadow: var(--shadow-pop);
+}
+
+.delay-root .count {
+  font-size: 19px;
+  letter-spacing: -0.02em;
+}
+
+.delay-root button,
+.error-root button {
+  border-radius: 10px;
+}
+
+@media (max-width: 640px) {
+  .overlay-chrome {
+    top: 10px;
+    max-width: calc(100% - 16px);
+    padding: 6px 6px 6px 10px;
+    gap: 6px;
+  }
+
+  .overlay-actions button {
+    padding-inline: 10px;
+    font-size: 12px;
+  }
+
+  .overlay-tools {
+    bottom: 12px;
+    max-width: calc(100% - 16px);
+  }
+}

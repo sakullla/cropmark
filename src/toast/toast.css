@@ -72,3 +72,22 @@ html[data-view="toast"] #app {
   background: url("../../src-tauri/icons/v2/128x128.png") center / contain no-repeat;
   filter: drop-shadow(0 2px 6px rgba(61, 219, 196, 0.3));
 }
+
+/* 2026 refresh: 系统级提示带一条品牌色高光，和托盘图标保持同一识别。 */
+.toast-root {
+  border-color: rgba(255, 255, 255, 0.12);
+  border-radius: 14px;
+  background:
+    linear-gradient(90deg, rgba(78, 227, 200, 0.16), transparent 28%),
+    radial-gradient(120% 160% at 0% 0%, rgba(78, 227, 200, 0.12), transparent 55%),
+    #14191b;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 14px 34px -12px rgba(0, 0, 0, 0.55);
+}
+
+.toast-message {
+  font-size: 13px;
+  font-weight: 620;
+  letter-spacing: -0.005em;
+}

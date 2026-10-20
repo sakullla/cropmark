@@ -615,3 +615,55 @@ button.annotation-chrome[data-action="delete"]:focus-visible:not(:disabled):not(
 .annotation-context button:active {
   filter: var(--control-pressed-filter);
 }
+
+/* 2026 refresh: 标注浮层与工具坞保持同一套圆角、玻璃与主操作。 */
+.annotation-more-panel {
+  border-radius: 14px;
+  border-color: color-mix(in srgb, var(--ink) 10%, var(--line));
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+}
+
+.annotation-style-panel {
+  padding: 16px 17px;
+  border-radius: 16px;
+  border-color: color-mix(in srgb, var(--ink) 10%, var(--line));
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+}
+
+.style-options button {
+  height: 33px;
+  min-height: 33px;
+  border-radius: 10px;
+  font-weight: 550;
+}
+
+.style-options button.active {
+  background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+  border-color: transparent;
+  color: var(--on-accent);
+}
+
+.annotation-text {
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  box-shadow:
+    0 0 0 2px var(--panel),
+    0 0 0 5px var(--editor-ink, var(--accent)),
+    0 16px 38px -18px rgba(0, 0, 0, 0.48);
+}
+
+.annotation-context {
+  border-radius: 12px;
+  border-color: color-mix(in srgb, var(--ink) 10%, var(--line));
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+}
+
+.annotation-context button {
+  border-radius: 8px;
+}
