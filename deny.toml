@@ -24,11 +24,9 @@ ignore = [
   { id = "RUSTSEC-2024-0436", reason = "paste 1.0.15 is an unmaintained proc-macro via image/rav1e/nalgebra. No patched release and no vulnerability." },
   { id = "RUSTSEC-2024-0370", reason = "proc-macro-error 1.0.4 is an unmaintained build dep of Tauri's Linux gtk 0.18 macros. No patched release and no vulnerability." },
   { id = "RUSTSEC-2026-0192", reason = "ttf-parser 0.25.1 is unmaintained via ab_glyph (annotation text). No patched release and no vulnerability. skrifa would be a separate font-stack change." },
-  { id = "RUSTSEC-2025-0081", reason = "unic-char-property is an unmaintained transitive of tauri-utils/urlpattern. No patched release and no vulnerability." },
-  { id = "RUSTSEC-2025-0075", reason = "unic-char-range is an unmaintained transitive of tauri-utils/urlpattern. No patched release and no vulnerability." },
-  { id = "RUSTSEC-2025-0080", reason = "unic-common is an unmaintained transitive of tauri-utils/urlpattern. No patched release and no vulnerability." },
-  { id = "RUSTSEC-2025-0100", reason = "unic-ucd-ident is an unmaintained transitive of tauri-utils/urlpattern. No patched release and no vulnerability." },
-  { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version is an unmaintained transitive of tauri-utils/urlpattern. No patched release and no vulnerability." },
+  { id = "RUSTSEC-2026-0370", reason = "zvariant 5.15.0 is an unmaintained transitive of zbus 5 (ashpd/tauri-plugin-opener). Absorbed into zbus 6's wire module; no patched release and no vulnerability. Tauri plugins have not shipped zbus 6 (plugins-workspace#3716)." },
+  { id = "RUSTSEC-2026-0371", reason = "zbus_names 4.3.4 is an unmaintained transitive of zbus 5 (ashpd/tauri-plugin-opener). Absorbed into zbus 6; no patched release and no vulnerability. Tauri plugins have not shipped zbus 6 (plugins-workspace#3716)." },
+  { id = "RUSTSEC-2026-0372", reason = "zvariant_derive 5.15.0 is an unmaintained transitive of zbus 5 (ashpd/tauri-plugin-opener). Absorbed into zbus 6; no patched release and no vulnerability. Tauri plugins have not shipped zbus 6 (plugins-workspace#3716)." },
 ]
 
 [licenses]
