@@ -662,6 +662,11 @@ pub struct SelectionEngine {
     snap_index: usize,
     /// R7:按下左键时记录的高亮区域;松开前未拖动则采纳为选区(点击确认)。
     snap_click: Option<PhysicalRect>,
+    /// 非悬停态到达、且代际与光标当时仍匹配的结果。未形成选区再决定写入或丢弃。
+    /// 不回填已经开始的这次 `snap_click`。
+    held_snap: Option<SnapResult>,
+    /// 按下之后光标离开过请求点。未形成选区时丢掉保留结果并重新入队。
+    snap_gesture_moved: bool,
     menu_scroll: i32,
     /// 录屏区域放不进格式时的说明。壳取走后提示用户,不结束选区。
     notice: Option<String>,
@@ -742,6 +747,8 @@ impl SelectionEngine {
             snap_stack: SnapStack::empty(),
             snap_index: 0,
             snap_click: None,
+            held_snap: None,
+            snap_gesture_moved: false,
             menu_scroll: 0,
             notice: None,
             magnifier_zoom: crate::annotate::DEFAULT_MAGNIFIER_ZOOM,
@@ -794,18 +801,29 @@ impl SelectionEngine {
         self.pending_snap.take()
     }
 
-    /// 应用 worker 结果。代际不是最新、光标已变、或已离开悬停态时丢弃。
-    /// 栈内容有变化时返回 true,调用方据此重绘。
+    /// 应用 worker 结果。代际不是最新或光标已变时丢弃。
+    /// 代际与光标仍匹配但不是悬停态时先保留;回到 Idle 且整段手势都没移动,
+    /// 再写入栈。不回填这次按下的 `snap_click`。栈有变化时返回 true。
     pub fn apply_snap_result(&mut self, result: SnapResult) -> bool {
         if !self.snap_enabled
-            || self.state != EngineState::Idle
             || result.generation != self.snap_generation
             || result.cursor != self.cursor
-            || result.stack == self.snap_stack
         {
             return false;
         }
-        self.snap_stack = result.stack;
+        if self.state != EngineState::Idle {
+            self.held_snap = Some(result);
+            return false;
+        }
+        self.commit_snap_stack(result.stack)
+    }
+
+    fn commit_snap_stack(&mut self, stack: SnapStack) -> bool {
+        self.held_snap = None;
+        if stack == self.snap_stack {
+            return false;
+        }
+        self.snap_stack = stack;
         self.snap_index = self.snap_stack.default_index().unwrap_or(0);
         true
     }
@@ -1114,10 +1132,13 @@ impl SelectionEngine {
     }
 
     /// R7:清空命中栈与高亮(进入拖动/选区/终态时调用)。
+    /// 选区确认时一并丢掉尚未写入的保留结果。
     fn clear_snap(&mut self) {
         self.snap_stack = SnapStack::empty();
         self.snap_index = 0;
         self.snap_click = None;
+        self.held_snap = None;
+        self.snap_gesture_moved = false;
     }
 
     fn clamp_point(&self, x: i32, y: i32) -> (i32, i32) {
@@ -1128,8 +1149,32 @@ impl SelectionEngine {
     }
 
     fn adopt_cursor(&mut self, x: i32, y: i32) {
-        self.cursor = self.clamp_point(x, y);
+        let next = self.clamp_point(x, y);
+        if next != self.cursor && self.state != EngineState::Idle {
+            self.snap_gesture_moved = true;
+        }
+        self.cursor = next;
         self.cursor_valid = true;
+    }
+
+    /// 点击没有形成选区:光标没离开过请求点则写入保留结果;离开过则重新入队。
+    fn finish_unselected_hover(&mut self) {
+        if !self.snap_enabled {
+            return;
+        }
+        self.drop_highlight_if_cursor_left();
+        if self.snap_gesture_moved || self.snap_cursor != Some(self.cursor) {
+            self.held_snap = None;
+            self.snap_gesture_moved = false;
+            self.snap_cursor = None;
+            self.queue_snap_request();
+            return;
+        }
+        if let Some(held) = self.held_snap.take() {
+            if held.generation == self.snap_generation && held.cursor == self.cursor {
+                self.commit_snap_stack(held.stack);
+            }
+        }
     }
 
     fn update_drag(&mut self) {
@@ -1314,6 +1359,7 @@ impl SelectionEngine {
                 } else {
                     self.selection = None;
                     self.state = EngineState::Idle;
+                    self.finish_unselected_hover();
                 }
                 EngineOutcome::Redraw
             }
@@ -2644,6 +2690,7 @@ fn annotation_bounds(op: &Annotation) -> Option<(f64, f64, f64, f64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::snap::SnapProvider;
 
     /// 选区几何/交互测试基准:关闭即时标注与光标提示之外无关的开关,
     /// 避免横条覆盖选区内部探针;标注行为由专门测试覆盖。
@@ -3243,6 +3290,114 @@ mod tests {
             stack: first_result.stack,
         }));
         assert!(engine.snap_highlight().is_some());
+    }
+
+    #[test]
+    fn result_arriving_while_pressed_is_kept_for_the_next_click() {
+        let mut engine = snap_engine();
+        let worker = snap_worker(&engine);
+        engine.handle_event(InputEvent::PointerMove { x: 50, y: 40 });
+        let request = engine.take_snap_request().expect("hover request");
+        engine.handle_event(InputEvent::LeftDown { x: 50, y: 40 });
+        worker.submit(request);
+        let result = worker
+            .poll_timeout(std::time::Duration::from_secs(2))
+            .expect("worker result");
+        assert_eq!(result.cursor, (50, 40));
+        assert!(
+            !engine.apply_snap_result(result),
+            "a press still in progress must not publish the highlight"
+        );
+        assert!(engine.snap_highlight().is_none());
+        assert_eq!(
+            engine.handle_event(InputEvent::LeftUp { x: 50, y: 40 }),
+            EngineOutcome::Redraw
+        );
+        assert_eq!(engine.selection(), None);
+        assert_eq!(engine.state(), &EngineState::Idle);
+        let expected = PhysicalRect {
+            x: 20,
+            y: 20,
+            width: 40,
+            height: 30,
+        };
+        assert_eq!(engine.snap_highlight(), Some(expected));
+        assert!(
+            engine.take_snap_request().is_none(),
+            "the same cursor must not be queried again"
+        );
+
+        engine.handle_event(InputEvent::LeftDown { x: 50, y: 40 });
+        engine.handle_event(InputEvent::LeftUp { x: 50, y: 40 });
+        assert_eq!(engine.selection(), Some(expected));
+        assert_eq!(engine.state(), &EngineState::Selected);
+        assert!(engine.snap_highlight().is_none());
+    }
+
+    #[test]
+    fn gesture_that_moves_and_forms_no_selection_requeues_snap() {
+        let mut engine = snap_engine();
+        engine.handle_event(InputEvent::PointerMove { x: 50, y: 40 });
+        let first = engine.take_snap_request().expect("hover request");
+        engine.handle_event(InputEvent::LeftDown { x: 50, y: 40 });
+        engine.handle_event(InputEvent::PointerMove { x: 80, y: 70 });
+        let stale = SnapResult {
+            generation: first.generation,
+            cursor: first.cursor,
+            stack: TEST_SNAP.hit(snap_context(), 50, 40),
+        };
+        assert!(!engine.apply_snap_result(stale.clone()));
+        engine.handle_event(InputEvent::PointerMove { x: 50, y: 40 });
+        engine.handle_event(InputEvent::LeftUp { x: 50, y: 40 });
+        assert_eq!(engine.selection(), None);
+        assert_eq!(engine.state(), &EngineState::Idle);
+        assert!(engine.snap_highlight().is_none());
+        assert!(!engine.apply_snap_result(stale));
+        let again = engine
+            .take_snap_request()
+            .expect("gesture moved, so the same cursor is queried again");
+        assert_eq!(again.cursor, (50, 40));
+        assert!(again.generation > first.generation);
+        assert!(engine.apply_snap_result(SnapResult {
+            generation: again.generation,
+            cursor: again.cursor,
+            stack: TEST_SNAP.hit(snap_context(), 50, 40),
+        }));
+        assert!(engine.snap_highlight().is_some());
+    }
+
+    #[test]
+    fn confirmed_selection_drops_a_held_snap_result() {
+        let mut engine = snap_engine();
+        engine.handle_event(InputEvent::PointerMove { x: 50, y: 40 });
+        let request = engine.take_snap_request().expect("hover request");
+        engine.handle_event(InputEvent::LeftDown { x: 50, y: 40 });
+        assert!(!engine.apply_snap_result(SnapResult {
+            generation: request.generation,
+            cursor: request.cursor,
+            stack: TEST_SNAP.hit(snap_context(), 50, 40),
+        }));
+        engine.handle_event(InputEvent::PointerMove { x: 90, y: 80 });
+        engine.handle_event(InputEvent::LeftUp { x: 90, y: 80 });
+        assert_eq!(engine.state(), &EngineState::Selected);
+        assert_eq!(
+            engine.selection(),
+            Some(PhysicalRect {
+                x: 50,
+                y: 40,
+                width: 41,
+                height: 41,
+            })
+        );
+        assert!(engine.snap_highlight().is_none());
+        assert!(engine.take_snap_request().is_none());
+        assert!(!engine.apply_snap_result(SnapResult {
+            generation: request.generation,
+            cursor: request.cursor,
+            stack: TEST_SNAP.hit(snap_context(), 50, 40),
+        }));
+        assert_eq!(engine.state(), &EngineState::Selected);
+        assert!(engine.snap_highlight().is_none());
     }
 
     #[test]
