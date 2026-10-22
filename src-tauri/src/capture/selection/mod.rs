@@ -591,6 +591,8 @@ pub enum EngineState {
 pub struct Scene {
     pub selection: Option<PhysicalRect>,
     pub cursor: (i32, i32),
+    /// 坐标是否来自真实指针。无效时合成器不画放大镜、读数和高亮徽标。
+    pub cursor_valid: bool,
     pub flags: FeatureFlags,
     /// 统一横条可见(有效选区固定后的单一 chrome)。
     pub toolbar_visible: bool,
@@ -613,6 +615,8 @@ pub struct SelectionEngine {
     state: EngineState,
     selection: Option<PhysicalRect>,
     cursor: (i32, i32),
+    /// 首帧前没有指针消息时为 false，避免把 (0,0) 当成真实热点。
+    cursor_valid: bool,
     menu_anchor: (i32, i32),
     /// 冻结帧 DPI 缩放:全部 chrome(菜单/操作条/徽标/手柄)与放大镜面板
     /// 尺寸/命中共用同一份派生来源(ChromeMetrics),默认 1.0。
@@ -703,6 +707,7 @@ impl SelectionEngine {
             state: EngineState::Idle,
             selection: None,
             cursor: (0, 0),
+            cursor_valid: false,
             menu_anchor: (0, 0),
             scale: 1.0,
             annotations: Vec::new(),
@@ -871,6 +876,15 @@ impl SelectionEngine {
         self.cursor
     }
 
+    pub fn cursor_valid(&self) -> bool {
+        self.cursor_valid
+    }
+
+    /// 首帧呈现前写入已知指针。坐标钳制进帧内并标为有效，不查询吸附。
+    pub fn seed_cursor(&mut self, x: i32, y: i32) {
+        self.adopt_cursor(x, y);
+    }
+
     pub fn menu_anchor(&self) -> (i32, i32) {
         self.menu_anchor
     }
@@ -878,11 +892,12 @@ impl SelectionEngine {
     /// 指定点的光标提示:chrome 优先于选区几何——菜单打开时菜单项(手型)
     /// 优先;放大镜面板(箭头)恒判定;统一横条/「更多」面板可见时按钮(手型)
     /// 优先;其后才是手柄/边→resize 箭头、选区内部→move、其他→crosshair。
-    /// 拖动手柄/边/移动期间保持对应提示。
+    /// 拖动手柄/边/移动期间保持对应提示。光标尚未有效时固定十字。
     pub fn cursor_for(&self, x: i32, y: i32) -> CursorHint {
         // R24:关闭光标提示后所有位置(手柄/边/内部/chrome/空白)固定十字,
         // 三种壳(Windows/macOS/X11)都从本函数取提示,无需各自分支。
-        if !self.flags.cursor_hints {
+        // 未知光标同样回退十字:此时没有放大镜可悬停,也不能把 (0,0) 当热点。
+        if !self.flags.cursor_hints || !self.cursor_valid {
             return CursorHint::Crosshair;
         }
         match self.state {
@@ -948,6 +963,7 @@ impl SelectionEngine {
         Scene {
             selection: self.selection,
             cursor: self.cursor,
+            cursor_valid: self.cursor_valid,
             flags: self.flags,
             toolbar_visible: self.toolbar_visible(),
             menu_open: self.state == EngineState::Menu,
@@ -961,22 +977,22 @@ impl SelectionEngine {
     pub fn handle_event(&mut self, event: InputEvent) -> EngineOutcome {
         match event {
             InputEvent::PointerMove { x, y } => {
-                self.cursor = self.clamp_point(x, y);
+                self.adopt_cursor(x, y);
                 self.refresh_snap();
                 self.update_drag();
                 EngineOutcome::Redraw
             }
             InputEvent::LeftDown { x, y } => {
-                self.cursor = self.clamp_point(x, y);
+                self.adopt_cursor(x, y);
                 self.refresh_snap();
                 self.on_left_down()
             }
             InputEvent::LeftUp { x, y } => {
-                self.cursor = self.clamp_point(x, y);
+                self.adopt_cursor(x, y);
                 self.on_left_up()
             }
             InputEvent::RightDown { x, y } => {
-                self.cursor = self.clamp_point(x, y);
+                self.adopt_cursor(x, y);
                 self.on_right_down()
             }
             InputEvent::Key { key, shift } => self.on_key(key, shift),
@@ -1049,6 +1065,11 @@ impl SelectionEngine {
             x.clamp(0, self.width as i32 - 1),
             y.clamp(0, self.height as i32 - 1),
         )
+    }
+
+    fn adopt_cursor(&mut self, x: i32, y: i32) {
+        self.cursor = self.clamp_point(x, y);
+        self.cursor_valid = true;
     }
 
     fn update_drag(&mut self) {
@@ -3663,6 +3684,8 @@ mod tests {
         let mut engine = new_engine();
         let scene = engine.scene();
         assert!(!scene.toolbar_visible && !scene.menu_open && scene.selection.is_none());
+        assert!(!scene.cursor_valid);
+        assert_eq!(scene.cursor, (0, 0));
         drag(&mut engine, (40, 30), (200, 120));
         let scene = engine.scene();
         assert!(scene.toolbar_visible);
@@ -3692,6 +3715,103 @@ mod tests {
         assert!(!menu.contains(&SelectionAction::Annotate));
         assert!(menu.contains(&SelectionAction::Ocr));
         assert!(!menu.contains(&SelectionAction::Cancel));
+    }
+
+    #[test]
+    fn fresh_cursor_stays_invalid_for_region_record_and_long_capture() {
+        let cases = [
+            FeatureFlags::default(),
+            FeatureFlags {
+                long_capture: true,
+                ..FeatureFlags::default()
+            },
+            FeatureFlags {
+                recording: true,
+                recording_entry: true,
+                record_fps: 30,
+                ..FeatureFlags::default()
+            },
+        ];
+        for flags in cases {
+            let engine = SelectionEngine::new(320, 200, flags);
+            let scene = engine.scene();
+            assert!(!engine.cursor_valid());
+            assert!(!scene.cursor_valid);
+            assert_eq!(engine.cursor(), (0, 0));
+            assert_eq!(scene.cursor, (0, 0));
+            // 放大镜若按 (0,0) 布局会盖住这块探针;未知光标必须仍是十字。
+            assert_eq!(engine.cursor_for(40, 40), CursorHint::Crosshair);
+        }
+    }
+
+    #[test]
+    fn seed_cursor_clamps_marks_valid_and_skips_snap() {
+        let mut engine = snap_engine();
+        engine.seed_cursor(-30, 5_000);
+        assert!(engine.cursor_valid());
+        assert_eq!(engine.cursor(), (0, 199));
+        assert!(engine.scene().cursor_valid);
+        assert_eq!(engine.scene().cursor, (0, 199));
+        assert!(engine.snap_highlight().is_none());
+
+        let mut engine = snap_engine();
+        engine.seed_cursor(9_999, -8);
+        assert_eq!(engine.cursor(), (319, 0));
+        assert!(engine.scene().cursor_valid);
+        assert!(engine.snap_highlight().is_none());
+
+        let mut engine = snap_engine();
+        engine.seed_cursor(50, 50);
+        assert_eq!(engine.cursor(), (50, 50));
+        assert!(engine.cursor_valid());
+        assert!(
+            engine.snap_highlight().is_none(),
+            "seed must not query snap"
+        );
+        let panel = composer::magnifier_rect(engine.cursor(), engine.size(), 1.0);
+        let (px, py) = panel.center();
+        assert_eq!(engine.cursor_for(px, py), CursorHint::Arrow);
+    }
+
+    #[test]
+    fn pointer_events_mark_cursor_valid_and_clamp() {
+        let samples = [
+            InputEvent::PointerMove { x: 12, y: 34 },
+            InputEvent::LeftDown { x: 12, y: 34 },
+            InputEvent::LeftUp { x: 12, y: 34 },
+            InputEvent::RightDown { x: 12, y: 34 },
+        ];
+        for event in samples {
+            let mut engine = new_engine();
+            assert!(!engine.cursor_valid());
+            engine.handle_event(event);
+            assert!(engine.cursor_valid());
+            assert!(engine.scene().cursor_valid);
+            assert_eq!(engine.cursor(), (12, 34));
+            assert_eq!(engine.scene().cursor, (12, 34));
+        }
+
+        let mut engine = new_engine();
+        engine.handle_event(InputEvent::PointerMove { x: -40, y: 10_000 });
+        assert_eq!(engine.cursor(), (0, 199));
+        assert!(engine.scene().cursor_valid);
+        engine.handle_event(InputEvent::LeftDown { x: 10_000, y: -1 });
+        assert_eq!(engine.cursor(), (319, 0));
+        engine.handle_event(InputEvent::LeftUp { x: -1, y: -1 });
+        assert_eq!(engine.cursor(), (0, 0));
+        assert!(engine.cursor_valid());
+        engine.handle_event(InputEvent::RightDown { x: 500, y: 80 });
+        assert_eq!(engine.cursor(), (319, 80));
+
+        let mut fresh = new_engine();
+        fresh.handle_event(InputEvent::Wheel { delta: 1 });
+        fresh.handle_event(InputEvent::Key {
+            key: LogicalKey::ArrowLeft,
+            shift: false,
+        });
+        assert!(!fresh.cursor_valid());
+        assert_eq!(fresh.cursor(), (0, 0));
+        assert_eq!(fresh.cursor_for(40, 40), CursorHint::Crosshair);
     }
 
     #[test]

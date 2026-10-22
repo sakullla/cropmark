@@ -915,6 +915,14 @@ pub fn magnifier_hit(cursor: (i32, i32), screen: (u32, u32), scale: f32, x: i32,
     magnifier_rect(cursor, screen, scale).contains(x, y)
 }
 
+fn magnifier_visible(scene: &Scene) -> bool {
+    scene.cursor_valid && scene.flags.magnifier
+}
+
+fn cursor_over(scene: &Scene, rect: IntRect) -> bool {
+    scene.cursor_valid && rect.contains(scene.cursor.0, scene.cursor.1)
+}
+
 pub fn handle_anchor(rect: PhysicalRect, kind: HandleKind) -> (i32, i32) {
     let x0 = rect.x as i32;
     let y0 = rect.y as i32;
@@ -1486,6 +1494,7 @@ impl Composer {
                     && prev.menu_anchor == scene.menu_anchor
                     && prev.more_open == scene.more_open
                     && prev.flags == scene.flags
+                    && prev.cursor_valid == scene.cursor_valid
             });
         if cursor_follow {
             let chrome = self.scene_visual_bounds(scene, Some(overlay), screen);
@@ -1507,15 +1516,17 @@ impl Composer {
                 if !chrome.intersect(dirty).is_empty() {
                     outline_selection(out, self.width, self.height, selection);
                     self.draw_handles(out, self.width, self.height, selection);
-                    self.draw_size_badge(
-                        out,
-                        self.width,
-                        self.height,
-                        selection,
-                        scene.cursor,
-                        self.size_badge_obstacle(scene, selection, overlay.text_input),
-                        scene.flags.record_fps,
-                    );
+                    if scene.cursor_valid {
+                        self.draw_size_badge(
+                            out,
+                            self.width,
+                            self.height,
+                            selection,
+                            scene.cursor,
+                            self.size_badge_obstacle(scene, selection, overlay.text_input),
+                            scene.flags.record_fps,
+                        );
+                    }
                     if scene.toolbar_visible {
                         self.draw_unified_toolbar(
                             out,
@@ -1529,12 +1540,15 @@ impl Composer {
                 }
             } else if let Some(rect) = scene.snap_highlight {
                 // R7:恢复暗幕会擦掉高亮,按同一矩形重绘(含尺寸徽标)。
-                self.draw_snap_highlight(out, self.width, self.height, rect, scene.cursor);
+                self.draw_snap_highlight(out, self.width, self.height, rect);
+                if scene.cursor_valid {
+                    self.draw_size_badge(out, self.width, self.height, rect, scene.cursor, None, 0);
+                }
             }
             if scene.menu_open {
                 self.draw_menu(out, self.width, self.height, scene, overlay.text_input);
             }
-            if scene.flags.magnifier {
+            if magnifier_visible(scene) {
                 self.draw_magnifier(out, self.width, self.height, scene.cursor);
             }
             if !scene.more_open {
@@ -1574,27 +1588,32 @@ impl Composer {
             outline_selection(out, w, h, selection);
             self.draw_handles(out, w, h, selection);
             let text_input = overlay.map(|overlay| overlay.text_input).unwrap_or(false);
-            self.draw_size_badge(
-                out,
-                w,
-                h,
-                selection,
-                scene.cursor,
-                self.size_badge_obstacle(scene, selection, text_input),
-                scene.flags.record_fps,
-            );
+            if scene.cursor_valid {
+                self.draw_size_badge(
+                    out,
+                    w,
+                    h,
+                    selection,
+                    scene.cursor,
+                    self.size_badge_obstacle(scene, selection, text_input),
+                    scene.flags.record_fps,
+                );
+            }
             if scene.toolbar_visible {
                 self.draw_unified_toolbar(out, w, h, selection, scene, overlay);
             }
         } else if let Some(rect) = scene.snap_highlight {
             // R7:尚无选区时的悬停吸附高亮(窗口/控件边界 + 尺寸徽标)。
-            self.draw_snap_highlight(out, w, h, rect, scene.cursor);
+            self.draw_snap_highlight(out, w, h, rect);
+            if scene.cursor_valid {
+                self.draw_size_badge(out, w, h, rect, scene.cursor, None, 0);
+            }
         }
         if scene.menu_open {
             let text_input = overlay.map(|overlay| overlay.text_input).unwrap_or(false);
             self.draw_menu(out, w, h, scene, text_input);
         }
-        if scene.flags.magnifier {
+        if magnifier_visible(scene) {
             self.draw_magnifier(out, w, h, scene.cursor);
         }
         if !scene.more_open {
@@ -1630,7 +1649,8 @@ impl Composer {
             && prev.menu_open == scene.menu_open
             && prev.menu_anchor == scene.menu_anchor
             && prev.more_open == scene.more_open
-            && prev.flags == scene.flags;
+            && prev.flags == scene.flags
+            && prev.cursor_valid == scene.cursor_valid;
         let mut dirty = if cursor_only {
             IntRect {
                 x: 0,
@@ -1642,25 +1662,24 @@ impl Composer {
             self.scene_visual_bounds(prev, overlay, screen)
                 .union(self.scene_visual_bounds(scene, overlay, screen))
         };
-        if scene.flags.magnifier || prev.flags.magnifier {
-            dirty = dirty
-                .union(magnifier_rect(
-                    prev.cursor,
-                    (self.width, self.height),
-                    self.scale,
-                ))
-                .union(magnifier_rect(
-                    scene.cursor,
+        for sample in [prev, scene] {
+            if magnifier_visible(sample) {
+                dirty = dirty.union(magnifier_rect(
+                    sample.cursor,
                     (self.width, self.height),
                     self.scale,
                 ));
+            }
         }
         dirty = dirty
             .union(self.hover_bounds(prev, overlay, screen))
             .union(self.hover_bounds(scene, overlay, screen));
-        if prev.cursor != scene.cursor {
+        if prev.cursor != scene.cursor || prev.cursor_valid != scene.cursor_valid {
             let text_input = overlay.map(|overlay| overlay.text_input).unwrap_or(false);
             for scene_ref in [scene, prev] {
+                if !scene_ref.cursor_valid {
+                    continue;
+                }
                 let Some(rect) = scene_ref.selection.or(scene_ref.snap_highlight) else {
                     continue;
                 };
@@ -1699,8 +1718,10 @@ impl Composer {
                 .max(self.metrics.badge_margin + 36);
             bounds = bounds.union(IntRect::from(selection).inflate(pad));
             let avoid = self.size_badge_obstacle(scene, selection, text_input);
-            if let Some(badge) = self.size_badge_rect(selection, scene.cursor, avoid) {
-                bounds = bounds.union(badge);
+            if scene.cursor_valid {
+                if let Some(badge) = self.size_badge_rect(selection, scene.cursor, avoid) {
+                    bounds = bounds.union(badge);
+                }
             }
             if scene.toolbar_visible {
                 if let Some(toolbar) = unified_toolbar(
@@ -1743,8 +1764,10 @@ impl Composer {
             // R7:悬停高亮本身 + 其尺寸徽标(徽标在矩形上方/下方,留出余量)。
             let pad = self.metrics.badge_margin + 40;
             bounds = bounds.union(IntRect::from(rect).inflate(pad));
-            if let Some(badge) = self.size_badge_rect(rect, scene.cursor, None) {
-                bounds = bounds.union(badge);
+            if scene.cursor_valid {
+                if let Some(badge) = self.size_badge_rect(rect, scene.cursor, None) {
+                    bounds = bounds.union(badge);
+                }
             }
         }
         if scene.menu_open {
@@ -2037,7 +2060,7 @@ impl Composer {
         let radius = (metrics.panel_radius - btn_inset).max(6);
         let mut previous: Option<SelectionAction> = None;
         for (action, rect) in toolbar.buttons.iter() {
-            let hover = rect.contains(scene.cursor.0, scene.cursor.1);
+            let hover = cursor_over(scene, *rect);
             let selected_tool = match (action, overlay) {
                 (SelectionAction::Tool(tool), Some(overlay)) => overlay.tool == Some(*tool),
                 (SelectionAction::Mode(mode), Some(overlay)) => {
@@ -2100,7 +2123,7 @@ impl Composer {
         draw_panel_chrome(rgba, w, h, panel, metrics.panel_radius);
         for (action, rect) in scrolled_action_rects(metrics, panel, &items, scene.menu_scroll, false)
         {
-            let hover = rect.contains(scene.cursor.0, scene.cursor.1);
+            let hover = cursor_over(scene, rect);
             if hover {
                 fill_round_blend(rgba, w, h, rect, metrics.menu_hover_radius, ACTIVE_BG);
             }
@@ -2234,16 +2257,9 @@ impl Composer {
         );
     }
 
-    /// R7:悬停吸附高亮——低透明强调色填充 + 与选区同款晕边描边,并复用
-    /// 尺寸徽标(尺寸显示随高亮更新)。仅在尚无选区时出现。
-    fn draw_snap_highlight(
-        &self,
-        rgba: &mut [u8],
-        w: u32,
-        h: u32,
-        rect: PhysicalRect,
-        cursor: (i32, i32),
-    ) {
+    /// R7:悬停吸附高亮——低透明强调色填充 + 与选区同款晕边描边。
+    /// 尺寸徽标由调用方在光标有效时另画。仅在尚无选区时出现。
+    fn draw_snap_highlight(&self, rgba: &mut [u8], w: u32, h: u32, rect: PhysicalRect) {
         let sel = IntRect::from(rect);
         if sel.is_empty() {
             return;
@@ -2286,7 +2302,6 @@ impl Composer {
             2,
             accent,
         );
-        self.draw_size_badge(rgba, w, h, rect, cursor, None, 0);
     }
 
     /// 动作图标:长截图与录屏没有位图资产,用几何笔画(长截图=竖框+箭头、
@@ -2344,7 +2359,7 @@ impl Composer {
                     return toolbar
                         .buttons
                         .into_iter()
-                        .find(|(_, rect)| rect.contains(scene.cursor.0, scene.cursor.1));
+                        .find(|(_, rect)| cursor_over(scene, *rect));
                 };
                 let panel = more_panel(
                     self.metrics,
@@ -2355,7 +2370,7 @@ impl Composer {
                 );
                 if let Some(hit) = more_item_rects(self.metrics, panel, &items)
                     .into_iter()
-                    .find(|(_, rect)| rect.contains(scene.cursor.0, scene.cursor.1))
+                    .find(|(_, rect)| cursor_over(scene, *rect))
                 {
                     return Some(hit);
                 }
@@ -2364,7 +2379,7 @@ impl Composer {
         toolbar
             .buttons
             .into_iter()
-            .find(|(_, rect)| rect.contains(scene.cursor.0, scene.cursor.1))
+            .find(|(_, rect)| cursor_over(scene, *rect))
     }
 
     fn draw_hover_tooltip(
@@ -2419,7 +2434,7 @@ impl Composer {
         for (action, rect) in
             scrolled_action_rects(metrics, panel, &items, scene.menu_scroll, separate)
         {
-            let hover = rect.contains(scene.cursor.0, scene.cursor.1);
+            let hover = cursor_over(scene, rect);
             if hover {
                 fill_round_blend(rgba, w, h, rect, metrics.menu_hover_radius, ACTIVE_BG);
             }
@@ -3183,6 +3198,7 @@ mod tests {
         Scene {
             selection: Some(selection),
             cursor: (300, 300),
+            cursor_valid: true,
             flags,
             toolbar_visible: false,
             menu_open: false,
@@ -3277,6 +3293,7 @@ mod tests {
         let idle = Scene {
             selection: None,
             cursor: (10, 10),
+            cursor_valid: true,
             flags: no_magnifier_flags(),
             toolbar_visible: false,
             menu_open: false,
@@ -3448,6 +3465,7 @@ mod tests {
         let scene = Scene {
             selection: Some(selection),
             cursor,
+            cursor_valid: true,
             flags: FeatureFlags::default(),
             toolbar_visible: false,
             menu_open: false,
@@ -3472,6 +3490,7 @@ mod tests {
         let scene = Scene {
             selection: Some(selection),
             cursor,
+            cursor_valid: true,
             flags,
             toolbar_visible: false,
             menu_open: true,
@@ -3551,6 +3570,7 @@ mod tests {
         let mode_scene = |selection: PhysicalRect, flags: FeatureFlags, more: bool| Scene {
             selection: Some(selection),
             cursor: (8, 8),
+            cursor_valid: true,
             flags,
             toolbar_visible: true,
             menu_open: false,
@@ -4418,6 +4438,7 @@ mod tests {
         let scene = Scene {
             selection: Some(selection),
             cursor: (0, 0),
+            cursor_valid: true,
             flags: no_magnifier_flags(),
             toolbar_visible: false,
             menu_open: false,
@@ -4606,6 +4627,7 @@ mod tests {
         let scene = Scene {
             selection: None,
             cursor: (200, 150),
+            cursor_valid: true,
             flags: FeatureFlags::default(),
             toolbar_visible: false,
             menu_open: false,
@@ -4649,6 +4671,7 @@ mod tests {
         let scene = Scene {
             selection: None,
             cursor: (300, 200),
+            cursor_valid: true,
             flags: FeatureFlags::default(),
             toolbar_visible: false,
             menu_open: false,
@@ -4688,6 +4711,7 @@ mod tests {
         let selected = Scene {
             selection: Some(selection),
             cursor: (40, 40),
+            cursor_valid: true,
             flags: FeatureFlags::default(),
             toolbar_visible: true,
             menu_open: false,
@@ -4713,6 +4737,7 @@ mod tests {
         let idle_a = Scene {
             selection: None,
             cursor: (80, 80),
+            cursor_valid: true,
             flags: FeatureFlags::default(),
             toolbar_visible: false,
             menu_open: false,
@@ -4723,6 +4748,7 @@ mod tests {
         };
         let idle_b = Scene {
             cursor: (100, 90),
+            cursor_valid: true,
             ..idle_a
         };
         let full_idle_a = composer.compose_with_overlay(&idle_a, &overlay);
@@ -4779,6 +4805,7 @@ mod tests {
         let scene_a = Scene {
             selection: Some(selection),
             cursor: (300, 40),
+            cursor_valid: true,
             flags,
             toolbar_visible: true,
             menu_open: false,
@@ -4789,6 +4816,7 @@ mod tests {
         };
         let scene_b = Scene {
             cursor: (320, 50),
+            cursor_valid: true,
             ..scene_a
         };
         let full_a = composer.compose_with_overlay(&scene_a, &overlay);
@@ -4824,6 +4852,7 @@ mod tests {
         let scene = |flags| Scene {
             selection: None,
             cursor,
+            cursor_valid: true,
             flags,
             toolbar_visible: false,
             menu_open: false,
@@ -4847,6 +4876,150 @@ mod tests {
         assert_eq!(read(&off, px, py), [104, 52, 26]);
     }
 
+    fn chrome_count(buf: &[u8]) -> usize {
+        buf.chunks_exact(4)
+            .filter(|px| near_chrome([px[0], px[1], px[2]]))
+            .count()
+    }
+
+    /// 未知光标不画放大镜/读数/高亮徽标。录屏与长截图走同一合成器,
+    /// 首帧同样不能在左上角留下放大镜。
+    #[test]
+    fn invalid_cursor_hides_magnifier_readout_and_badges() {
+        let frame = solid_frame(400, 300, [200, 100, 50, 255]);
+        let composer = Composer::new(&frame).unwrap();
+        let dimmed = [104u8, 52, 26];
+        let panel = magnifier_rect((0, 0), (400, 300), 1.0);
+        let layout = mag_layout(1.0);
+        let px = panel.x + (panel.width - layout.edge) / 2;
+        let py = panel.y + layout.pad;
+        let read = |buf: &[u8], x: i32, y: i32| {
+            let i = ((y as u32 * 400 + x as u32) * 4) as usize;
+            [buf[i], buf[i + 1], buf[i + 2]]
+        };
+        let base = |flags: FeatureFlags, cursor: (i32, i32), valid: bool| Scene {
+            selection: None,
+            cursor,
+            cursor_valid: valid,
+            flags,
+            toolbar_visible: false,
+            menu_open: false,
+            menu_anchor: (0, 0),
+            more_open: false,
+            snap_highlight: None,
+            menu_scroll: 0,
+        };
+        for flags in [
+            FeatureFlags::default(),
+            FeatureFlags {
+                long_capture: true,
+                ..FeatureFlags::default()
+            },
+            FeatureFlags {
+                recording: true,
+                recording_entry: true,
+                record_fps: 30,
+                ..FeatureFlags::default()
+            },
+        ] {
+            let composed = composer.compose(&base(flags, (0, 0), false));
+            assert_eq!(read(&composed, px, py), dimmed, "{flags:?}");
+            assert_eq!(
+                read(
+                    &composed,
+                    panel.x + panel.width / 2,
+                    panel.y + panel.height / 2
+                ),
+                dimmed,
+                "{flags:?}"
+            );
+        }
+
+        let seeded = composer.compose(&base(FeatureFlags::default(), (200, 150), true));
+        let seeded_panel = magnifier_rect((200, 150), (400, 300), 1.0);
+        let sx = seeded_panel.x + (seeded_panel.width - layout.edge) / 2;
+        let sy = seeded_panel.y + layout.pad;
+        assert_eq!(read(&seeded, sx, sy), [200, 100, 50]);
+
+        let selection = PhysicalRect {
+            x: 40,
+            y: 80,
+            width: 100,
+            height: 50,
+        };
+        let invalid_badge = Scene {
+            selection: Some(selection),
+            cursor: (0, 0),
+            cursor_valid: false,
+            flags: no_magnifier_flags(),
+            toolbar_visible: false,
+            menu_open: false,
+            menu_anchor: (0, 0),
+            more_open: false,
+            snap_highlight: None,
+            menu_scroll: 0,
+        };
+        let valid_badge = Scene {
+            cursor: (300, 190),
+            cursor_valid: true,
+            ..invalid_badge
+        };
+        let hidden = composer.compose(&invalid_badge);
+        let shown = composer.compose(&valid_badge);
+        let badge_y = 80 - (text::line_height(BADGE_FONT).ceil() as i32) - BADGE_PAD_Y * 2
+            + BADGE_PAD_Y
+            - BADGE_MARGIN;
+        assert_eq!(read(&hidden, 60, badge_y), dimmed);
+        assert!(
+            near_chrome(read(&shown, 60, badge_y)),
+            "valid cursor should keep the size readout, got {:?}",
+            read(&shown, 60, badge_y)
+        );
+        assert!(chrome_count(&shown) > chrome_count(&hidden) + 20);
+
+        let highlight = PhysicalRect {
+            x: 80,
+            y: 70,
+            width: 120,
+            height: 80,
+        };
+        let snap_hidden = Scene {
+            selection: None,
+            snap_highlight: Some(highlight),
+            ..invalid_badge
+        };
+        let snap_shown = Scene {
+            cursor: (300, 250),
+            cursor_valid: true,
+            ..snap_hidden
+        };
+        let snap_off = composer.compose(&snap_hidden);
+        let snap_on = composer.compose(&snap_shown);
+        let snap_badge_y = 70 - (text::line_height(BADGE_FONT).ceil() as i32) - BADGE_PAD_Y * 2
+            + BADGE_PAD_Y
+            - BADGE_MARGIN;
+        assert_eq!(read(&snap_off, 100, snap_badge_y), dimmed);
+        assert!(
+            near_chrome(read(&snap_on, 100, snap_badge_y)),
+            "valid cursor should keep the snap badge, got {:?}",
+            read(&snap_on, 100, snap_badge_y)
+        );
+        let stroke = selection_accent();
+        assert_eq!(
+            read(&snap_off, highlight.x as i32, 100),
+            [stroke[0], stroke[1], stroke[2]]
+        );
+
+        let overlay = annotation_overlay(&[], None, None, 0);
+        let unknown = base(FeatureFlags::default(), (0, 0), false);
+        let known = base(FeatureFlags::default(), (200, 150), true);
+        let mut buf = composer.dimmed.clone();
+        let _ = composer.compose_into_dirty(&unknown, &overlay, &mut buf, None);
+        assert_eq!(buf, composer.compose_with_overlay(&unknown, &overlay));
+        let _ = composer.compose_into_dirty(&known, &overlay, &mut buf, Some(&unknown));
+        assert_eq!(buf, composer.compose_with_overlay(&known, &overlay));
+    }
+
     #[test]
     fn handles_have_white_core_and_accent_ring() {
         let frame = solid_frame(320, 200, [10, 200, 90, 255]);
@@ -4860,6 +5033,7 @@ mod tests {
         let scene = Scene {
             selection: Some(selection),
             cursor: (300, 190),
+            cursor_valid: true,
             flags: no_magnifier_flags(),
             toolbar_visible: false,
             menu_open: false,
@@ -4893,6 +5067,7 @@ mod tests {
         let scene = Scene {
             selection: Some(selection),
             cursor: (300, 190),
+            cursor_valid: true,
             flags: no_magnifier_flags(),
             toolbar_visible: false,
             menu_open: false,
@@ -4983,6 +5158,7 @@ mod tests {
         let closed = Scene {
             selection: Some(selection),
             cursor: (12, 12),
+            cursor_valid: true,
             flags,
             toolbar_visible: true,
             menu_open: false,
@@ -5159,6 +5335,7 @@ mod tests {
         let scene = Scene {
             selection: Some(selection),
             cursor: first_rect.center(),
+            cursor_valid: true,
             flags,
             toolbar_visible: true,
             menu_open: false,
@@ -5245,6 +5422,7 @@ mod tests {
         let mut scene = Scene {
             selection: Some(selection),
             cursor: (cx, cy),
+            cursor_valid: true,
             flags,
             toolbar_visible: true,
             menu_open: false,
@@ -5475,6 +5653,7 @@ mod tests {
         let scene = Scene {
             selection: Some(selection),
             cursor: (600, 390),
+            cursor_valid: true,
             flags,
             toolbar_visible: true,
             menu_open: false,
@@ -5519,6 +5698,7 @@ mod tests {
         let scene = Scene {
             selection: Some(selection),
             cursor: (600, 390),
+            cursor_valid: true,
             flags,
             toolbar_visible: false,
             menu_open: true,
@@ -5569,6 +5749,7 @@ mod tests {
         let scene = Scene {
             selection: Some(selection),
             cursor: (880, 390),
+            cursor_valid: true,
             flags,
             toolbar_visible: true,
             menu_open: false,
