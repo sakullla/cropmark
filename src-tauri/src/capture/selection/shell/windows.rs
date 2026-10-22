@@ -6,7 +6,8 @@
 //! Esc=取消;Enter 确认;操作条/菜单动作经 `RegionOutcome` 交回会话层分发。
 //! 元素吸附不在 UI 线程同步查询:引擎只产生请求,`SnapWorker` 命中后
 //! `PostMessage` `WM_SNAP_RESULT`,壳再取结果并重绘。没有结果时立即返回,
-//! 移动、取消和自由框选不等待 UIA。
+//! 移动、取消和自由框选不等待 UIA。首帧前读到的有效指针在窗口句柄绑定后
+//! 入队,不依赖第一条移动消息,也不在首帧上等待命中。
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -368,6 +369,7 @@ fn run_shell(
     });
     // UpdateWindow 会在第一条指针消息前触发 WM_PAINT。先按显示器物理原点
     // 映射指针;读失败或落在帧外则保持无效,避免首帧在 (0,0) 画放大镜。
+    // 吸附请求必须等 bind 之后:此前 worker 还不能 PostMessage,命中完成会丢唤醒。
     let screen = read_screen_cursor();
     STATE.with(|slot| {
         if let Some(state) = slot.borrow_mut().as_mut() {
@@ -401,6 +403,8 @@ fn run_shell(
             if let Some(snap) = state.snap.as_ref() {
                 snap.bind(hwnd);
             }
+            // 句柄已可唤醒。有效种子只入队,首帧已经画出,这里不等 UIA。
+            submit_seeded_snap(state);
         }
     });
     unsafe {
@@ -476,6 +480,21 @@ fn submit_pending_snap(state: &mut ShellState) {
         return;
     };
     snap.worker.submit(request);
+}
+
+/// 把首帧前的有效指针交给 worker。`seed_cursor` 本身不产生请求;
+/// 须在 `SnapSession::bind` 之后调用,否则命中完成时窗口句柄仍为 0,唤醒被丢掉。
+/// 不调用 provider,也不等待命中。光标无效或没有会话时立即返回。
+fn submit_seeded_snap(state: &mut ShellState) {
+    if state.snap.is_none() || !state.canvas.engine.cursor_valid() {
+        return;
+    }
+    let (x, y) = state.canvas.engine.cursor();
+    let _ = state
+        .canvas
+        .engine
+        .handle_event(InputEvent::PointerMove { x, y });
+    submit_pending_snap(state);
 }
 
 /// `WM_SNAP_RESULT`:取走已完成的结果并在命中变化时重绘。无结果则立即返回。
@@ -3368,15 +3387,53 @@ mod tests {
     }
 
     #[test]
-    fn seed_does_not_submit_a_snap_request() {
+    fn seeded_snap_request_is_queued_only_after_bind() {
+        let src = include_str!("windows.rs");
+        let start = src.find("fn run_shell(").expect("run_shell");
+        let end = src
+            .find("fn hold_recording_rect(")
+            .expect("end of run_shell");
+        let body = &src[start..end];
+        let seed = body.find("seed_frame_cursor(").expect("seed");
+        let window = body.find("create_overlay_window(").expect("window");
+        let bind = body.find("snap.bind(hwnd)").expect("bind");
+        let submit = body.find("submit_seeded_snap(").expect("submit");
+        assert!(
+            seed < window && window < bind && bind < submit,
+            "valid seed is queued only after the worker can post WM_SNAP_RESULT"
+        );
+    }
+
+    #[test]
+    fn seeded_cursor_submits_snap_after_bind_without_waiting() {
         let gate: &'static HitGate = Box::leak(Box::new(HitGate::new()));
         let _release = ReleaseOnDrop(gate);
         let provider: &'static HungSnap = Box::leak(Box::new(HungSnap {
             gate,
-            rect: snap::SnapRect::new(0, 0, 8, 8),
+            rect: snap::SnapRect::new(20, 16, 40, 30),
         }));
         let mut state = test_state(320, 200);
         enable_snap(&mut state, provider);
+
+        assert!(!seed_frame_cursor(
+            &mut state.canvas.engine,
+            None,
+            (0, 0),
+            (320, 200)
+        ));
+        assert!(!seed_frame_cursor(
+            &mut state.canvas.engine,
+            Some((-4, 8)),
+            (0, 0),
+            (320, 200)
+        ));
+        let started = Instant::now();
+        submit_seeded_snap(&mut state);
+        assert!(started.elapsed() < Duration::from_millis(200));
+        assert!(!state.canvas.engine.cursor_valid());
+        assert!(state.canvas.engine.take_snap_request().is_none());
+        assert!(gate.threads().is_empty());
+
         assert!(seed_frame_cursor(
             &mut state.canvas.engine,
             Some((40, 30)),
@@ -3384,9 +3441,76 @@ mod tests {
             (320, 200)
         ));
         assert!(state.canvas.engine.cursor_valid());
+        assert_eq!(state.canvas.engine.cursor(), (40, 30));
+        // 种子只写放大镜坐标,请求要等壳在 bind 之后入队。
         assert!(state.canvas.engine.take_snap_request().is_none());
-        std::thread::sleep(Duration::from_millis(80));
-        assert!(gate.threads().is_empty());
+
+        state.snap.as_ref().unwrap().bind(HWND::default());
+        let started = Instant::now();
+        submit_seeded_snap(&mut state);
+        present(false, HWND::default(), &mut state.canvas);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "first frame waited on snap: {:?}",
+            started.elapsed()
+        );
+        assert!(state.canvas.engine.snap_highlight().is_none());
+        assert_eq!(
+            state
+                .canvas
+                .last_scene
+                .as_ref()
+                .map(|scene| scene.snap_highlight),
+            Some(None)
+        );
+        assert!(state.canvas.engine.take_snap_request().is_none());
+        gate.wait_hits(1);
+        assert_ne!(gate.threads()[0], std::thread::current().id());
+
+        let started = Instant::now();
+        apply_snap_wake(&mut state, HWND::default());
+        assert!(started.elapsed() < Duration::from_millis(200));
+        assert!(state.canvas.engine.snap_highlight().is_none());
+
+        gate.release();
+        let expected = PhysicalRect {
+            x: 20,
+            y: 16,
+            width: 40,
+            height: 30,
+        };
+        wait_for_highlight(&mut state, HWND::default(), expected);
+        assert_eq!(state.canvas.engine.cursor(), (40, 30));
+    }
+
+    #[test]
+    fn seeded_highlight_is_adopted_without_another_move() {
+        let provider: &'static CursorSnap = Box::leak(Box::new(CursorSnap));
+        let mut state = test_state(320, 200);
+        enable_snap(&mut state, provider);
+        assert!(seed_frame_cursor(
+            &mut state.canvas.engine,
+            Some((50, 40)),
+            (0, 0),
+            (320, 200)
+        ));
+        state.snap.as_ref().unwrap().bind(HWND::default());
+        submit_seeded_snap(&mut state);
+        assert!(state.canvas.engine.snap_highlight().is_none());
+        let expected = control_rect(50, 40);
+        wait_for_highlight(&mut state, HWND::default(), expected);
+        assert!(!feed_event(
+            &mut state,
+            InputEvent::LeftDown { x: 50, y: 40 },
+            HWND::default()
+        ));
+        assert!(!feed_event(
+            &mut state,
+            InputEvent::LeftUp { x: 50, y: 40 },
+            HWND::default()
+        ));
+        assert_eq!(state.canvas.engine.selection(), Some(expected));
+        assert!(state.outcome.is_none());
     }
 
     struct MessageWindow(HWND);
