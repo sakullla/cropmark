@@ -1345,6 +1345,16 @@ pub fn pick_region(
         );
     }
 
+    // 首帧合成前种子化。QueryPointer(root) 失败、指针不在本屏或落在帧外时
+    // 保持光标无效,避免把 (0,0) 画成放大镜。此处不查询吸附。
+    let root = screen.root;
+    seed_pointer_before_present(
+        &mut state.canvas.engine,
+        query_root_pointer(&conn, root),
+        monitor.physical_x,
+        monitor.physical_y,
+    );
+
     // 首帧先合成并写入窗口再映射,避免映射瞬间闪黑(ADR-007:合成只在
     // 引擎 Redraw 时发生,Expose 直接呈现缓存)。
     present(&mut state, &surface);
@@ -1383,6 +1393,66 @@ pub fn pick_region(
     }
     let _ = conn.flush();
     Ok(state.outcome.take().unwrap_or(RegionOutcome::Cancelled))
+}
+
+/// X11 `QueryPointer` 根坐标是 i16。负的副屏原点必须符号扩展。
+fn root_coord(value: i16) -> i32 {
+    i32::from(value)
+}
+
+/// 根窗口指针 → 选区帧像素。
+///
+/// 减去显示器物理原点。点不在半开帧 `[0, frame)` 内时返回 `None`:
+/// `seed_cursor` 会把越界点钳到边缘并标成有效,首帧就会画错位置的放大镜。
+/// 帧内再钳到最后一个可采样像素。坐标已是 X11 物理像素,不乘 `frame.scale`。
+fn map_root_pointer_to_frame(
+    root_x: i32,
+    root_y: i32,
+    origin_x: i32,
+    origin_y: i32,
+    frame_w: u32,
+    frame_h: u32,
+) -> Option<(i32, i32)> {
+    let frame_w = frame_w.max(1);
+    let frame_h = frame_h.max(1);
+    let x = i64::from(root_x) - i64::from(origin_x);
+    let y = i64::from(root_y) - i64::from(origin_y);
+    if x < 0 || y < 0 || x >= i64::from(frame_w) || y >= i64::from(frame_h) {
+        return None;
+    }
+    let max_x = i64::from(frame_w) - 1;
+    let max_y = i64::from(frame_h) - 1;
+    Some((
+        i32::try_from(x.clamp(0, max_x)).ok()?,
+        i32::try_from(y.clamp(0, max_y)).ok()?,
+    ))
+}
+
+/// `present` / `map_window` 之前种子化。
+/// `pointer == None` 表示 `QueryPointer(root)` 失败或指针不在本 X screen。
+fn seed_pointer_before_present(
+    engine: &mut SelectionEngine,
+    pointer: Option<(i32, i32)>,
+    origin_x: i32,
+    origin_y: i32,
+) {
+    let Some((root_x, root_y)) = pointer else {
+        return;
+    };
+    let (width, height) = engine.size();
+    if let Some((x, y)) =
+        map_root_pointer_to_frame(root_x, root_y, origin_x, origin_y, width, height)
+    {
+        engine.seed_cursor(x, y);
+    }
+}
+
+fn query_root_pointer(conn: &RustConnection, root: xproto::Window) -> Option<(i32, i32)> {
+    let reply = conn.query_pointer(root).ok()?.reply().ok()?;
+    if !reply.same_screen {
+        return None;
+    }
+    Some((root_coord(reply.root_x), root_coord(reply.root_y)))
 }
 
 fn shell_unavailable() -> CaptureError {
@@ -2744,6 +2814,154 @@ mod tests {
             y: cursor.1,
         });
         assert_eq!(unscaled.cursor_for(x, y), CursorHint::Crosshair);
+    }
+
+    #[test]
+    fn root_coord_sign_extends_negative_monitor_space() {
+        assert_eq!(root_coord(-1920), -1920);
+        assert_eq!(root_coord(-1), -1);
+        assert_ne!(root_coord(-1), 65_535);
+        assert_eq!(root_coord(i16::MIN), i32::from(i16::MIN));
+        assert_eq!(root_coord(i16::MAX), i32::from(i16::MAX));
+    }
+
+    #[test]
+    fn root_pointer_maps_monitors_and_clamps_inside_frame() {
+        // 主屏右下角最后一个像素。
+        assert_eq!(
+            map_root_pointer_to_frame(1919, 1079, 0, 0, 1920, 1080),
+            Some((1919, 1079))
+        );
+        // 右侧副屏:根坐标减物理原点,不乘 scale。
+        assert_eq!(
+            map_root_pointer_to_frame(2000, 40, 1920, 0, 1920, 1080),
+            Some((80, 40))
+        );
+        // 左侧副屏(负原点)与上方副屏。
+        assert_eq!(
+            map_root_pointer_to_frame(-100, 250, -1920, 100, 1920, 1080),
+            Some((1820, 150))
+        );
+        assert_eq!(
+            map_root_pointer_to_frame(10, -40, 0, -1080, 1920, 1080),
+            Some((10, 1040))
+        );
+        // 帧原点本身是合法种子,包括映射结果恰好为 (0,0)。
+        assert_eq!(
+            map_root_pointer_to_frame(-1920, -100, -1920, -100, 1920, 1080),
+            Some((0, 0))
+        );
+        // 帧外不钳进边缘:恰好等于宽/高,或落在另一块屏上,都不 seed。
+        assert_eq!(
+            map_root_pointer_to_frame(1920, 1079, 0, 0, 1920, 1080),
+            None
+        );
+        assert_eq!(
+            map_root_pointer_to_frame(1919, 1080, 0, 0, 1920, 1080),
+            None
+        );
+        assert_eq!(
+            map_root_pointer_to_frame(100, 100, 1920, 0, 1920, 1080),
+            None
+        );
+        assert_eq!(map_root_pointer_to_frame(-1, 10, 0, 0, 1920, 1080), None);
+        // 原点下溢用 i64 相减,不得回绕成帧内坐标。
+        assert_eq!(
+            map_root_pointer_to_frame(0, 0, i32::MIN, i32::MIN, 320, 200),
+            None
+        );
+    }
+
+    #[test]
+    fn cursor_is_seeded_before_present_and_map() {
+        let src = include_str!("linux.rs");
+        let start = src.find("pub fn pick_region(").expect("pick_region");
+        let body = &src[start..];
+        let seed = body
+            .find("seed_pointer_before_present(")
+            .expect("seed before present");
+        let present = body
+            .find("present(&mut state, &surface)")
+            .expect("first present");
+        let map = body.find("conn.map_window(window)").expect("map_window");
+        assert!(seed < present, "cursor must be seeded before the first present");
+        assert!(present < map, "first present happens before map_window");
+    }
+
+    #[test]
+    fn pointer_seed_skips_failure_and_outside_frame_and_keeps_click() {
+        let modes = [
+            FeatureFlags::default(),
+            FeatureFlags {
+                long_capture: true,
+                ..FeatureFlags::default()
+            },
+            FeatureFlags {
+                recording: true,
+                recording_entry: true,
+                record_fps: 30,
+                ..FeatureFlags::default()
+            },
+        ];
+        for flags in modes {
+            let mut engine = SelectionEngine::new(1920, 1080, flags).with_scale(2.0);
+            // QueryPointer 失败:首帧光标仍无效,放大镜不会钉在 (0,0)。
+            seed_pointer_before_present(&mut engine, None, 0, 0);
+            assert!(!engine.cursor_valid());
+            assert_eq!(engine.cursor(), (0, 0));
+            assert!(!engine.scene().cursor_valid);
+            assert_eq!(engine.cursor_for(40, 40), CursorHint::Crosshair);
+
+            // 帧外(含 seed_cursor 会钳到角落的越界点)不 seed。
+            seed_pointer_before_present(&mut engine, Some((-30, 5_000)), 0, 0);
+            seed_pointer_before_present(&mut engine, Some((1920, 1080)), 0, 0);
+            seed_pointer_before_present(&mut engine, Some((100, 80)), 1920, 0);
+            assert!(!engine.cursor_valid());
+            assert_eq!(engine.cursor(), (0, 0));
+
+            // 2x chrome 缩放不改变 X11 物理像素映射。
+            seed_pointer_before_present(&mut engine, Some((2100, 80)), 1920, 0);
+            assert!(engine.cursor_valid());
+            assert_eq!(engine.cursor(), (180, 80));
+            assert_eq!(engine.scene().cursor, (180, 80));
+            assert_ne!(engine.cursor(), (0, 0));
+
+            // 不移动直接单击仍采用按下坐标,而不是种子或左上角。
+            // 零位移松开不产生选区。
+            engine.handle_event(InputEvent::LeftDown { x: 180, y: 80 });
+            engine.handle_event(InputEvent::LeftUp { x: 180, y: 80 });
+            assert_eq!(engine.cursor(), (180, 80));
+            assert!(engine.cursor_valid());
+            assert!(engine.selection().is_none());
+
+            engine.handle_event(InputEvent::LeftDown { x: 640, y: 480 });
+            engine.handle_event(InputEvent::LeftUp { x: 640, y: 480 });
+            assert_eq!(engine.cursor(), (640, 480));
+            assert!(engine.cursor_valid());
+            assert!(engine.selection().is_none());
+        }
+
+        let frame = test_frame(400, 300, 1.0);
+        let composer = Composer::new(&frame).unwrap();
+        let mut engine = engine_from_frame(&frame);
+        seed_pointer_before_present(&mut engine, None, 0, 0);
+        let hidden = composer.compose(&engine.scene());
+        let mut artifact = engine.scene();
+        artifact.cursor_valid = true;
+        let forced = composer.compose(&artifact);
+        assert!(
+            hidden != forced,
+            "unknown cursor must not draw the origin magnifier"
+        );
+
+        seed_pointer_before_present(&mut engine, Some((350, 250)), 0, 0);
+        assert_eq!(engine.cursor(), (350, 250));
+        let seeded = composer.compose(&engine.scene());
+        assert!(seeded != hidden, "in-frame seed must show the magnifier");
+        assert!(
+            seeded != forced,
+            "seeded magnifier must not stay at the origin"
+        );
     }
 
     #[test]
