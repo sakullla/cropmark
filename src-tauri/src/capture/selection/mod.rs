@@ -11,11 +11,16 @@
 
 pub mod composer;
 pub(crate) mod icons;
+mod snap_worker;
 mod text;
+
+pub use snap_worker::SnapWorker;
 
 use crate::annotate::{Annotation, Point, DEFAULT_COLOR};
 use crate::capture::geometry::PhysicalRect;
-use crate::capture::snap::{FrameSnap, SnapCapability, SnapContext, SnapStack, SnapStep};
+use crate::capture::snap::{
+    SnapCapability, SnapContext, SnapRequest, SnapResult, SnapStack, SnapStep,
+};
 use composer::{ChromeMetrics, IntRect};
 
 /// 选区最小可截尺寸(物理像素),对齐现 Windows 原生路径的 ≥2px。
@@ -641,8 +646,16 @@ pub struct SelectionEngine {
     text_edit: Option<TextEdit>,
     /// 已确认图元变更序号:合成器缓存以它 + 选区矩形为失效键。
     revision: u64,
-    /// R7:平台命中 provider 与冻结帧坐标适配器;未注入时无吸附。
-    snap: Option<FrameSnap>,
+    /// 已注入吸附。命中只在 `SnapWorker` 上执行,引擎不调用 provider。
+    snap_enabled: bool,
+    /// 会话开始时在调用线程取一次的能力;worker 不重新判定。
+    snap_capability: Option<SnapCapability>,
+    /// 壳尚未取走的最新查询。新的光标覆盖旧请求。
+    pending_snap: Option<SnapRequest>,
+    /// 已发出的最新代际。应用结果时必须与它一致。
+    snap_generation: u64,
+    /// 当前代际对应的光标。同一光标不重复发请求。
+    snap_cursor: Option<(i32, i32)>,
     /// R7:当前光标处的命中栈(自最深控件到顶层窗口);悬停态之外为空。
     snap_stack: SnapStack,
     /// R7:当前高亮层级(0 = 最深控件;越大越外层),仅在栈非空时有意义。
@@ -721,7 +734,11 @@ impl SelectionEngine {
             options: AnnotationOptions::default(),
             text_edit: None,
             revision: 0,
-            snap: None,
+            snap_enabled: false,
+            snap_capability: None,
+            pending_snap: None,
+            snap_generation: 0,
+            snap_cursor: None,
             snap_stack: SnapStack::empty(),
             snap_index: 0,
             snap_click: None,
@@ -754,20 +771,43 @@ impl SelectionEngine {
         self
     }
 
-    /// R7:注入平台命中 provider 与显示器几何(帧坐标适配)。未注入或
-    /// 平台检测不可用时,悬停高亮为空,自由框选与像素微调不受影响。
+    /// 记录平台能力。不在调用线程执行命中;壳取走 `take_snap_request`
+    /// 交给 `SnapWorker`,`apply_snap_result` 只接受当前代际与光标。
+    /// 未注入时悬停高亮为空,自由框选与像素微调不受影响。
     pub fn with_snap(
         mut self,
         provider: &'static dyn crate::capture::snap::SnapProvider,
-        context: SnapContext,
+        _context: SnapContext,
     ) -> Self {
-        self.snap = Some(FrameSnap::new(provider, context, (self.width, self.height)));
+        self.snap_capability = Some(provider.capability());
+        self.snap_enabled = true;
         self
     }
 
-    /// R7:当前平台元素检测能力(壳/会话层可用于能力说明)。
+    /// 当前平台元素检测能力(会话开始时缓存的那一次)。
     pub fn snap_capability(&self) -> Option<SnapCapability> {
-        self.snap.map(FrameSnap::capability)
+        self.snap_capability
+    }
+
+    /// 取走最新的吸附请求。没有新光标时返回 None。
+    pub fn take_snap_request(&mut self) -> Option<SnapRequest> {
+        self.pending_snap.take()
+    }
+
+    /// 应用 worker 结果。代际不是最新、光标已变、或已离开悬停态时丢弃。
+    /// 栈内容有变化时返回 true,调用方据此重绘。
+    pub fn apply_snap_result(&mut self, result: SnapResult) -> bool {
+        if !self.snap_enabled
+            || self.state != EngineState::Idle
+            || result.generation != self.snap_generation
+            || result.cursor != self.cursor
+            || result.stack == self.snap_stack
+        {
+            return false;
+        }
+        self.snap_stack = result.stack;
+        self.snap_index = self.snap_stack.default_index().unwrap_or(0);
+        true
     }
 
     /// R7:当前命中栈(悬停态之外为空)。
@@ -777,7 +817,7 @@ impl SelectionEngine {
 
     /// R7:当前高亮区域(帧坐标);无高亮时为 None。
     pub fn snap_highlight(&self) -> Option<PhysicalRect> {
-        if self.state != EngineState::Idle || self.snap.is_none() {
+        if self.state != EngineState::Idle || !self.snap_enabled {
             return None;
         }
         self.snap_stack.frame_rect(self.snap_index)
@@ -977,14 +1017,12 @@ impl SelectionEngine {
     pub fn handle_event(&mut self, event: InputEvent) -> EngineOutcome {
         match event {
             InputEvent::PointerMove { x, y } => {
-                self.adopt_cursor(x, y);
-                self.refresh_snap();
+                self.note_hover_cursor(x, y);
                 self.update_drag();
                 EngineOutcome::Redraw
             }
             InputEvent::LeftDown { x, y } => {
-                self.adopt_cursor(x, y);
-                self.refresh_snap();
+                self.note_hover_cursor(x, y);
                 self.on_left_down()
             }
             InputEvent::LeftUp { x, y } => {
@@ -1010,20 +1048,40 @@ impl SelectionEngine {
         }
     }
 
-    /// R7:刷新光标处的命中栈(仅悬停态查询平台 provider)。命中栈变化时
-    /// 高亮回到默认最深层级;无 provider/检测不可用时保持空栈。
-    fn refresh_snap(&mut self) {
+    /// 悬停态更新光标:移出当前高亮矩形时立刻清空,并只记录查询请求。
+    /// 不调用 provider。拖动/选区中不发请求,避免过时结果盖住新手势。
+    fn note_hover_cursor(&mut self, x: i32, y: i32) {
+        self.adopt_cursor(x, y);
+        self.drop_highlight_if_cursor_left();
+        self.queue_snap_request();
+    }
+
+    fn drop_highlight_if_cursor_left(&mut self) {
         if self.state != EngineState::Idle {
             return;
         }
-        let Some(snap) = self.snap else {
+        let Some(rect) = self.snap_stack.frame_rect(self.snap_index) else {
             return;
         };
-        let stack = snap.hit(self.cursor.0, self.cursor.1);
-        if stack != self.snap_stack {
-            self.snap_stack = stack;
-            self.snap_index = self.snap_stack.default_index().unwrap_or(0);
+        if !IntRect::from(rect).contains(self.cursor.0, self.cursor.1) {
+            self.snap_stack = SnapStack::empty();
+            self.snap_index = 0;
         }
+    }
+
+    fn queue_snap_request(&mut self) {
+        if !self.snap_enabled || self.state != EngineState::Idle {
+            return;
+        }
+        if self.snap_cursor == Some(self.cursor) {
+            return;
+        }
+        self.snap_generation = self.snap_generation.saturating_add(1);
+        self.pending_snap = Some(SnapRequest {
+            generation: self.snap_generation,
+            cursor: self.cursor,
+        });
+        self.snap_cursor = Some(self.cursor);
     }
 
     /// R7:滚轮在命中栈父子层级间切换高亮(端点钳制)。仅悬停态消费。
@@ -1049,7 +1107,9 @@ impl SelectionEngine {
 
     /// R7:命中栈指示的当前高亮区域(不要求悬停态)。
     fn highlighted_snap(&self) -> Option<PhysicalRect> {
-        self.snap?;
+        if !self.snap_enabled {
+            return None;
+        }
         self.snap_stack.frame_rect(self.snap_index)
     }
 
@@ -2881,14 +2941,43 @@ mod tests {
 
     static UNAVAILABLE_SNAP: UnavailableSnapProvider = UnavailableSnapProvider;
 
+    fn snap_context() -> SnapContext {
+        SnapContext::new((0, 0), (0, 0), 1.0)
+    }
+
     fn snap_engine() -> SelectionEngine {
-        new_engine().with_snap(&TEST_SNAP, SnapContext::new((0, 0), (0, 0), 1.0))
+        new_engine().with_snap(&TEST_SNAP, snap_context())
+    }
+
+    fn snap_worker(engine: &SelectionEngine) -> SnapWorker {
+        SnapWorker::spawn(crate::capture::snap::FrameSnap::new(
+            &TEST_SNAP,
+            snap_context(),
+            engine.size(),
+        ))
+    }
+
+    fn settle_snap(engine: &mut SelectionEngine, worker: &SnapWorker) {
+        let Some(request) = engine.take_snap_request() else {
+            return;
+        };
+        worker.submit(request);
+        let result = worker
+            .poll_timeout(std::time::Duration::from_secs(2))
+            .expect("snap worker result");
+        engine.apply_snap_result(result);
     }
 
     #[test]
     fn hover_highlights_deepest_hit_and_click_adopts_the_highlight() {
         let mut engine = snap_engine();
-        engine.handle_event(InputEvent::PointerMove { x: 50, y: 50 });
+        let worker = snap_worker(&engine);
+        engine.handle_event(InputEvent::PointerMove { x: 50, y: 40 });
+        assert!(
+            engine.snap_highlight().is_none(),
+            "PointerMove must not hit on the caller before the worker result is applied"
+        );
+        settle_snap(&mut engine, &worker);
         // 默认高亮最深控件(悬停按钮即高亮按钮边界),尺寸显示随高亮更新
         // 由场景携带的同一矩形驱动。
         let expected = PhysicalRect {
@@ -2901,17 +2990,17 @@ mod tests {
         assert_eq!(engine.scene().snap_highlight, Some(expected));
         assert_eq!(engine.snap_capability(), Some(SnapCapability::Full));
 
-        // 点击(按下/松开无拖动)确认当前高亮区域为选区。
-        engine.handle_event(InputEvent::LeftDown { x: 50, y: 50 });
+        // 点击(按下/松开无拖动)确认当前高亮区域为选区。点落在控件矩形内。
+        engine.handle_event(InputEvent::LeftDown { x: 50, y: 40 });
         assert_eq!(
             engine.state(),
             &EngineState::Dragging {
                 anchor_x: 50,
-                anchor_y: 50
+                anchor_y: 40
             }
         );
         assert_eq!(
-            engine.handle_event(InputEvent::LeftUp { x: 50, y: 50 }),
+            engine.handle_event(InputEvent::LeftUp { x: 50, y: 40 }),
             EngineOutcome::Redraw
         );
         assert_eq!(engine.selection(), Some(expected));
@@ -2941,7 +3030,9 @@ mod tests {
     #[test]
     fn wheel_switches_parent_child_levels_and_clamps_at_ends() {
         let mut engine = snap_engine();
+        let worker = snap_worker(&engine);
         engine.handle_event(InputEvent::PointerMove { x: 50, y: 50 });
+        settle_snap(&mut engine, &worker);
         assert_eq!(engine.snap_stack().len(), 2);
         let control = PhysicalRect {
             x: 20,
@@ -2980,12 +3071,14 @@ mod tests {
         };
         // 1–2px 手抖(含对角)不改变点击语义:松开仍采纳高亮控件。
         let mut engine = snap_engine();
-        engine.handle_event(InputEvent::PointerMove { x: 50, y: 50 });
+        let worker = snap_worker(&engine);
+        engine.handle_event(InputEvent::PointerMove { x: 50, y: 40 });
+        settle_snap(&mut engine, &worker);
         assert_eq!(engine.snap_highlight(), Some(control));
-        engine.handle_event(InputEvent::LeftDown { x: 50, y: 50 });
-        engine.handle_event(InputEvent::PointerMove { x: 51, y: 52 });
+        engine.handle_event(InputEvent::LeftDown { x: 50, y: 40 });
+        engine.handle_event(InputEvent::PointerMove { x: 51, y: 42 });
         assert_eq!(
-            engine.handle_event(InputEvent::LeftUp { x: 51, y: 52 }),
+            engine.handle_event(InputEvent::LeftUp { x: 51, y: 42 }),
             EngineOutcome::Redraw
         );
         assert_eq!(engine.selection(), Some(control));
@@ -2993,10 +3086,12 @@ mod tests {
 
         // 阈值边界(任一分量 = 3px)仍按点击处理,与 Web 覆盖层 ">3" 判定一致。
         let mut engine = snap_engine();
-        engine.handle_event(InputEvent::PointerMove { x: 50, y: 50 });
-        engine.handle_event(InputEvent::LeftDown { x: 50, y: 50 });
-        engine.handle_event(InputEvent::PointerMove { x: 53, y: 47 });
-        engine.handle_event(InputEvent::LeftUp { x: 53, y: 47 });
+        let worker = snap_worker(&engine);
+        engine.handle_event(InputEvent::PointerMove { x: 50, y: 40 });
+        settle_snap(&mut engine, &worker);
+        engine.handle_event(InputEvent::LeftDown { x: 50, y: 40 });
+        engine.handle_event(InputEvent::PointerMove { x: 53, y: 37 });
+        engine.handle_event(InputEvent::LeftUp { x: 53, y: 37 });
         assert_eq!(engine.selection(), Some(control));
         assert_eq!(engine.state(), &EngineState::Selected);
     }
@@ -3006,19 +3101,21 @@ mod tests {
         // 超过阈值(4px)即放弃点击吸附;拖动越过阈值后回到阈值内也不回退,
         // 自由框选始终自按下点起算。
         let mut engine = snap_engine();
-        engine.handle_event(InputEvent::PointerMove { x: 50, y: 50 });
-        engine.handle_event(InputEvent::LeftDown { x: 50, y: 50 });
-        engine.handle_event(InputEvent::PointerMove { x: 54, y: 50 });
-        engine.handle_event(InputEvent::PointerMove { x: 51, y: 51 });
+        let worker = snap_worker(&engine);
+        engine.handle_event(InputEvent::PointerMove { x: 50, y: 40 });
+        settle_snap(&mut engine, &worker);
+        engine.handle_event(InputEvent::LeftDown { x: 50, y: 40 });
+        engine.handle_event(InputEvent::PointerMove { x: 54, y: 40 });
+        engine.handle_event(InputEvent::PointerMove { x: 51, y: 41 });
         assert_eq!(
-            engine.handle_event(InputEvent::LeftUp { x: 51, y: 51 }),
+            engine.handle_event(InputEvent::LeftUp { x: 51, y: 41 }),
             EngineOutcome::Redraw
         );
         assert_eq!(
             engine.selection(),
             Some(PhysicalRect {
                 x: 50,
-                y: 50,
+                y: 40,
                 width: 2,
                 height: 2,
             })
@@ -3029,9 +3126,11 @@ mod tests {
     #[test]
     fn dragging_away_from_a_highlight_keeps_free_selection() {
         let mut engine = snap_engine();
-        engine.handle_event(InputEvent::PointerMove { x: 50, y: 50 });
+        let worker = snap_worker(&engine);
+        engine.handle_event(InputEvent::PointerMove { x: 50, y: 40 });
+        settle_snap(&mut engine, &worker);
         assert!(engine.snap_highlight().is_some());
-        engine.handle_event(InputEvent::LeftDown { x: 50, y: 50 });
+        engine.handle_event(InputEvent::LeftDown { x: 50, y: 40 });
         engine.handle_event(InputEvent::PointerMove { x: 200, y: 120 });
         engine.handle_event(InputEvent::LeftUp { x: 200, y: 120 });
         // 拖动覆盖点击确认:得到自由框选矩形而不是命中高亮。
@@ -3039,9 +3138,9 @@ mod tests {
             engine.selection(),
             Some(PhysicalRect {
                 x: 50,
-                y: 50,
+                y: 40,
                 width: 151,
-                height: 71,
+                height: 81,
             })
         );
         assert_eq!(engine.snap_highlight(), None);
@@ -3081,7 +3180,9 @@ mod tests {
     fn wheel_without_highlight_is_ignored() {
         let mut engine = snap_engine();
         // 光标在无命中区域:滚轮不产生高亮,也不改变选择状态。
+        let worker = snap_worker(&engine);
         engine.handle_event(InputEvent::PointerMove { x: 2, y: 2 });
+        settle_snap(&mut engine, &worker);
         assert_eq!(engine.snap_highlight(), None);
         assert_eq!(
             engine.handle_event(InputEvent::Wheel { delta: 1 }),
@@ -3089,6 +3190,59 @@ mod tests {
         );
         assert_eq!(engine.snap_highlight(), None);
         assert_eq!(engine.selection(), None);
+    }
+
+    #[test]
+    fn pointer_moves_keep_only_the_latest_snap_request() {
+        let mut engine = snap_engine();
+        engine.handle_event(InputEvent::PointerMove { x: 20, y: 20 });
+        engine.handle_event(InputEvent::PointerMove { x: 40, y: 30 });
+        engine.handle_event(InputEvent::PointerMove { x: 55, y: 40 });
+        let request = engine.take_snap_request().expect("latest request");
+        assert!(engine.take_snap_request().is_none());
+        assert_eq!(request.cursor, (55, 40));
+        assert_eq!(request.generation, 3);
+        assert!(engine.snap_highlight().is_none());
+    }
+
+    #[test]
+    fn leaving_highlight_clears_immediately_and_stale_results_are_dropped() {
+        let mut engine = snap_engine();
+        let worker = snap_worker(&engine);
+        engine.handle_event(InputEvent::PointerMove { x: 50, y: 40 });
+        let first = engine.take_snap_request().expect("first request");
+        worker.submit(first);
+        let first_result = worker
+            .poll_timeout(std::time::Duration::from_secs(2))
+            .expect("first result");
+        assert!(engine.apply_snap_result(first_result.clone()));
+        let control = engine.snap_highlight().expect("control highlight");
+
+        // 仍在当前高亮内:先留着旧矩形,同时记下新请求。
+        engine.handle_event(InputEvent::PointerMove { x: 30, y: 30 });
+        assert_eq!(engine.snap_highlight(), Some(control));
+        let inside = engine.take_snap_request().expect("inside request");
+        assert_ne!(inside.generation, first.generation);
+
+        // 指针离开高亮矩形后立刻清空,不等 worker。
+        engine.handle_event(InputEvent::PointerMove { x: 70, y: 40 });
+        assert!(engine.snap_highlight().is_none());
+        let outside = engine.take_snap_request().expect("outside request");
+
+        assert!(!engine.apply_snap_result(first_result.clone()));
+        assert!(engine.snap_highlight().is_none());
+        assert!(!engine.apply_snap_result(SnapResult {
+            generation: inside.generation,
+            cursor: inside.cursor,
+            stack: first_result.stack.clone(),
+        }));
+        assert!(engine.snap_highlight().is_none());
+        assert!(engine.apply_snap_result(SnapResult {
+            generation: outside.generation,
+            cursor: outside.cursor,
+            stack: first_result.stack,
+        }));
+        assert!(engine.snap_highlight().is_some());
     }
 
     #[test]
@@ -3768,6 +3922,7 @@ mod tests {
             engine.snap_highlight().is_none(),
             "seed must not query snap"
         );
+        assert!(engine.take_snap_request().is_none());
         let panel = composer::magnifier_rect(engine.cursor(), engine.size(), 1.0);
         let (px, py) = panel.center();
         assert_eq!(engine.cursor_for(px, py), CursorHint::Arrow);

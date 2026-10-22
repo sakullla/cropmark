@@ -314,6 +314,7 @@ impl FrameSnap {
     }
 
     /// 帧坐标入参;返回已平移到帧坐标并裁进帧内的命中栈。
+    /// UI 线程不得调用;选区会话把查询交给 `SnapWorker`。
     pub fn hit(self, x: i32, y: i32) -> SnapStack {
         if !self.capability().window_level() {
             return SnapStack::empty();
@@ -324,6 +325,30 @@ impl FrameSnap {
             self.frame.1,
         )
     }
+
+    /// 按请求查询,并原样带回代际与光标。过时与否由引擎判定。
+    pub fn query(self, request: SnapRequest) -> SnapResult {
+        SnapResult {
+            generation: request.generation,
+            cursor: request.cursor,
+            stack: self.hit(request.cursor.0, request.cursor.1),
+        }
+    }
+}
+
+/// 一次吸附查询。代际由引擎分配;worker 只保留最新一代。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SnapRequest {
+    pub generation: u64,
+    pub cursor: (i32, i32),
+}
+
+/// worker 回传的命中。调用方只在代际与光标仍是当前值时应用。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnapResult {
+    pub generation: u64,
+    pub cursor: (i32, i32),
+    pub stack: SnapStack,
 }
 
 #[cfg(test)]
@@ -441,6 +466,13 @@ mod tests {
         let stack = snap.hit(50, 40);
         // 返回矩形是屏幕物理像素(120,60),适配后平移到帧坐标 (20,10)。
         assert_eq!(stack.hits()[0].rect, SnapRect::new(20, 10, 200, 100));
+        let result = snap.query(SnapRequest {
+            generation: 7,
+            cursor: (50, 40),
+        });
+        assert_eq!(result.generation, 7);
+        assert_eq!(result.cursor, (50, 40));
+        assert_eq!(result.stack, stack);
     }
 
     #[test]
