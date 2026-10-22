@@ -306,6 +306,19 @@ fn run_shell(
             created_at: Instant::now(),
         });
     });
+    // UpdateWindow 会在第一条指针消息前触发 WM_PAINT。先按显示器物理原点
+    // 映射指针;读失败或落在帧外则保持无效,避免首帧在 (0,0) 画放大镜。
+    let screen = read_screen_cursor();
+    STATE.with(|slot| {
+        if let Some(state) = slot.borrow_mut().as_mut() {
+            seed_frame_cursor(
+                &mut state.canvas.engine,
+                screen,
+                (monitor.physical_x, monitor.physical_y),
+                (width, height),
+            );
+        }
+    });
     let hwnd = unsafe {
         create_overlay_window(
             monitor.physical_x,
@@ -1220,8 +1233,57 @@ fn map_client_to_engine(x: i32, y: i32, client: RECT, engine_w: i32, engine_h: i
     ((x as i64 * ew / cw) as i32, (y as i64 * eh / ch) as i32)
 }
 
+/// 屏幕物理坐标 → 冻结帧坐标。减去当前显示器物理原点,不乘 DPI。
+/// 帧外(其它显示器、负坐标、右/下开边界)返回 None;帧内再钳到最后一像素。
+fn map_screen_to_frame(
+    screen_x: i32,
+    screen_y: i32,
+    origin_x: i32,
+    origin_y: i32,
+    frame_w: i32,
+    frame_h: i32,
+) -> Option<(i32, i32)> {
+    let frame_w = frame_w.max(1);
+    let frame_h = frame_h.max(1);
+    let x = i64::from(screen_x) - i64::from(origin_x);
+    let y = i64::from(screen_y) - i64::from(origin_y);
+    if x < 0 || y < 0 || x >= i64::from(frame_w) || y >= i64::from(frame_h) {
+        return None;
+    }
+    let max_x = i64::from(frame_w - 1);
+    let max_y = i64::from(frame_h - 1);
+    Some((x.clamp(0, max_x) as i32, y.clamp(0, max_y) as i32))
+}
+
+fn read_screen_cursor() -> Option<(i32, i32)> {
+    unsafe {
+        let mut point = POINT::default();
+        GetCursorPos(&mut point).ok()?;
+        Some((point.x, point.y))
+    }
+}
+
+/// 首帧前写入指针。`None` 或帧外不调用 `seed_cursor`,光标保持无效。
+fn seed_frame_cursor(
+    engine: &mut SelectionEngine,
+    screen: Option<(i32, i32)>,
+    origin: (i32, i32),
+    frame: (i32, i32),
+) -> bool {
+    let Some((screen_x, screen_y)) = screen else {
+        return false;
+    };
+    let Some((x, y)) =
+        map_screen_to_frame(screen_x, screen_y, origin.0, origin.1, frame.0, frame.1)
+    else {
+        return false;
+    };
+    engine.seed_cursor(x, y);
+    true
+}
+
 /// 优先 GetCursorPos + ScreenToClient(物理像素、捕获后窗外仍准);
-/// 失败再退回 lParam 的 16 位客户区坐标。
+/// 失败再退回 lParam 的 16 位客户区坐标。按下坐标每次重读,不用 seed。
 unsafe fn engine_point(hwnd: HWND, lparam: LPARAM, engine_w: i32, engine_h: i32) -> (i32, i32) {
     let mut client = RECT::default();
     let _ = GetClientRect(hwnd, &mut client);
@@ -2076,6 +2138,162 @@ mod tests {
     }
 
     #[test]
+    fn map_screen_to_frame_uses_physical_origin_and_rejects_outside() {
+        // 主屏 100%:原点 (0,0),帧内原样,右/下开边界不钳进帧。
+        assert_eq!(
+            map_screen_to_frame(100, 40, 0, 0, 1920, 1080),
+            Some((100, 40))
+        );
+        assert_eq!(
+            map_screen_to_frame(1919, 1079, 0, 0, 1920, 1080),
+            Some((1919, 1079))
+        );
+        assert_eq!(map_screen_to_frame(1920, 40, 0, 0, 1920, 1080), None);
+        assert_eq!(map_screen_to_frame(10, 1080, 0, 0, 1920, 1080), None);
+        assert_eq!(map_screen_to_frame(-1, 10, 0, 0, 1920, 1080), None);
+
+        // 负坐标副屏:减去物理原点,不把全局坐标当帧坐标。
+        assert_eq!(
+            map_screen_to_frame(-100, 40, -1920, 0, 1920, 1080),
+            Some((1820, 40))
+        );
+        assert_eq!(map_screen_to_frame(10, 40, -1920, 0, 1920, 1080), None);
+
+        // 200% 副屏:GetCursorPos 与 physical_* 都是物理像素,不再乘 scale。
+        // 逻辑原点 (1920,0)、scale 2 → 物理原点 (3840,0)、帧 3840×2160。
+        assert_eq!(
+            map_screen_to_frame(3840 + 200, 80, 3840, 0, 3840, 2160),
+            Some((200, 80))
+        );
+        // 虚拟化客户区 1920×1080 的按下点与上面的物理 seed 落到同一引擎像素。
+        let client = RECT {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
+        assert_eq!(map_client_to_engine(100, 40, client, 3840, 2160), (200, 80));
+
+        // 150%:物理帧 2880×1620,客户区一半。指针 (960,540) 即客户区 (640,360)。
+        assert_eq!(
+            map_screen_to_frame(960, 540, 0, 0, 2880, 1620),
+            Some((960, 540))
+        );
+        let client = RECT {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
+        assert_eq!(
+            map_client_to_engine(640, 360, client, 2880, 1620),
+            (960, 540)
+        );
+
+        // 显示器上但超出较小冻结帧:不 seed。
+        assert_eq!(map_screen_to_frame(400, 10, 0, 0, 320, 200), None);
+        // 原点下溢不得回绕成帧内坐标。
+        assert_eq!(
+            map_screen_to_frame(0, 0, i32::MIN, i32::MIN, 320, 200),
+            None
+        );
+    }
+
+    #[test]
+    fn seed_frame_cursor_skips_failure_and_outside_points() {
+        let mut state = test_state(320, 200);
+        assert!(!seed_frame_cursor(
+            &mut state.canvas.engine,
+            None,
+            (0, 0),
+            (320, 200)
+        ));
+        assert!(!state.canvas.engine.cursor_valid());
+        assert_eq!(state.canvas.engine.cursor(), (0, 0));
+
+        assert!(!seed_frame_cursor(
+            &mut state.canvas.engine,
+            Some((400, 10)),
+            (0, 0),
+            (320, 200)
+        ));
+        assert!(!state.canvas.engine.cursor_valid());
+        assert!(!state.canvas.engine.scene().cursor_valid);
+
+        // 负原点副屏上的帧内点映射到帧坐标,不把全局坐标直接写入引擎。
+        assert!(seed_frame_cursor(
+            &mut state.canvas.engine,
+            Some((-1880, 15)),
+            (-1920, -40),
+            (320, 200)
+        ));
+        assert!(state.canvas.engine.cursor_valid());
+        assert_eq!(state.canvas.engine.cursor(), (40, 55));
+        assert_eq!(state.canvas.engine.scene().cursor, (40, 55));
+
+        let mut edge = test_state(320, 200);
+        assert!(seed_frame_cursor(
+            &mut edge.canvas.engine,
+            Some((319, 199)),
+            (0, 0),
+            (320, 200)
+        ));
+        assert_eq!(edge.canvas.engine.cursor(), (319, 199));
+        let mut outside = test_state(320, 200);
+        assert!(!seed_frame_cursor(
+            &mut outside.canvas.engine,
+            Some((320, 199)),
+            (0, 0),
+            (320, 200)
+        ));
+        assert!(!outside.canvas.engine.cursor_valid());
+        assert_eq!(outside.canvas.engine.cursor(), (0, 0));
+    }
+
+    #[test]
+    fn click_without_move_uses_press_point_not_seed() {
+        let mut state = test_state(320, 200);
+        let hwnd = HWND::default();
+        assert!(seed_frame_cursor(
+            &mut state.canvas.engine,
+            Some((240, 150)),
+            (0, 0),
+            (320, 200)
+        ));
+        assert_eq!(state.canvas.engine.cursor(), (240, 150));
+        // 零位移单击走按下坐标;无吸附目标时不产生选区,锚点不是 (0,0)。
+        assert!(!feed_event(
+            &mut state,
+            InputEvent::LeftDown { x: 240, y: 150 },
+            hwnd
+        ));
+        assert!(!feed_event(
+            &mut state,
+            InputEvent::LeftUp { x: 240, y: 150 },
+            hwnd
+        ));
+        assert_eq!(state.canvas.engine.cursor(), (240, 150));
+        assert!(state.canvas.engine.selection().is_none());
+        assert!(state.outcome.is_none());
+
+        // seed 与按下点不同时,按下消息覆盖 seed,不用左上角。
+        let mut state = test_state(320, 200);
+        state.canvas.engine.seed_cursor(12, 8);
+        assert!(!feed_event(
+            &mut state,
+            InputEvent::LeftDown { x: 80, y: 90 },
+            hwnd
+        ));
+        assert_eq!(state.canvas.engine.cursor(), (80, 90));
+        assert!(!feed_event(
+            &mut state,
+            InputEvent::LeftUp { x: 80, y: 90 },
+            hwnd
+        ));
+        assert!(state.canvas.engine.selection().is_none());
+    }
+
+    #[test]
     fn virtual_keys_map_to_engine_logical_keys() {
         assert_eq!(map_virtual_key(VK_RETURN), Some(LogicalKey::Enter));
         assert_eq!(map_virtual_key(VK_ESCAPE), Some(LogicalKey::Escape));
@@ -2583,10 +2801,61 @@ mod tests {
             wnd_proc(HWND::default(), WM_PAINT, WPARAM(0), LPARAM(0));
         }
         let state = STATE.with(|slot| slot.borrow_mut().take().unwrap());
-        assert!(state.canvas.last_scene.is_some(), "首帧必须在鼠标输入前合成");
+        assert!(
+            state.canvas.last_scene.is_some(),
+            "首帧必须在鼠标输入前合成"
+        );
+        assert!(!state.canvas.engine.cursor_valid());
+        assert!(!state.canvas.engine.scene().cursor_valid);
         // 远离左上角放大镜的冻结帧背景:60 * 52% = 31,且 alpha 不透明。
         let pixel = ((180 * 320 + 300) * 4) as usize;
-        assert_eq!(&state.canvas.present_buf[pixel..pixel + 4], &[31, 31, 31, 255]);
+        assert_eq!(
+            &state.canvas.present_buf[pixel..pixel + 4],
+            &[31, 31, 31, 255]
+        );
+        // (0,0) 放大镜面板中心也必须仍是压暗背景,不能画出 chrome。
+        let panel = composer::magnifier_rect((0, 0), (320, 200), 1.0);
+        let (cx, cy) = panel.center();
+        let origin = ((cy * 320 + cx) * 4) as usize;
+        assert_eq!(
+            &state.canvas.present_buf[origin..origin + 4],
+            &[31, 31, 31, 255]
+        );
+    }
+
+    #[test]
+    fn first_paint_draws_magnifier_at_seed_not_origin() {
+        let mut state = test_state(800, 600);
+        assert!(seed_frame_cursor(
+            &mut state.canvas.engine,
+            Some((700, 500)),
+            (0, 0),
+            (800, 600)
+        ));
+        STATE.with(|slot| *slot.borrow_mut() = Some(state));
+        unsafe {
+            wnd_proc(HWND::default(), WM_PAINT, WPARAM(0), LPARAM(0));
+        }
+        let state = STATE.with(|slot| slot.borrow_mut().take().unwrap());
+        assert!(state.canvas.engine.cursor_valid());
+        assert_eq!(state.canvas.engine.cursor(), (700, 500));
+        assert_eq!(state.canvas.engine.scene().cursor, (700, 500));
+        let origin = composer::magnifier_rect((0, 0), (800, 600), 1.0);
+        let (ox, oy) = origin.center();
+        let origin_px = ((oy * 800 + ox) * 4) as usize;
+        assert_eq!(
+            &state.canvas.present_buf[origin_px..origin_px + 4],
+            &[31, 31, 31, 255],
+            "左上角不得再画放大镜"
+        );
+        let seeded = composer::magnifier_rect((700, 500), (800, 600), 1.0);
+        let (sx, sy) = seeded.center();
+        let seeded_px = ((sy * 800 + sx) * 4) as usize;
+        assert_ne!(
+            &state.canvas.present_buf[seeded_px..seeded_px + 4],
+            &[31, 31, 31, 255],
+            "首帧放大镜应落在 seed 位置"
+        );
     }
 
     #[test]
