@@ -645,7 +645,7 @@ pub fn open_pin_with_text(
     let _ = window.set_size(LogicalSize { width, height });
     let _ = window.set_ignore_cursor_events(false);
     let _ = window.set_always_on_top(true);
-    let _ = window.emit("pin-reload", ());
+    emit_pin(app, window.label(), "pin-reload", ());
     let _ = window.show();
     let _ = window.unminimize();
     let _ = window.set_focus();
@@ -1110,7 +1110,7 @@ pub fn restore_persisted(app: &AppHandle) {
         });
         let _ = window.set_ignore_cursor_events(false);
         let _ = window.set_always_on_top(true);
-        let _ = window.emit("pin-reload", ());
+        emit_pin(app, window.label(), "pin-reload", ());
         let _ = window.show();
         kept.push(PinRecord {
             x: position.0,
@@ -1369,23 +1369,36 @@ fn state_for(label: &str) -> Result<PinState, String> {
     state_snapshot_for(label).ok_or_else(|| i18n::t("error.pin.source_gone"))
 }
 
-fn emit_reload(app: &AppHandle, label: &str) {
-    if let Some(window) = app.get_webview_window(label) {
-        let _ = window.emit("pin-reload", ());
+/// 贴图事件只发给目标 label。`Emitter::emit` 会送到全部 webview;
+/// 窗口不存在时忽略,不退回广播。
+fn emit_pin<S: Serialize + Clone>(app: &AppHandle, label: &str, event: &str, payload: S) {
+    if app.get_webview_window(label).is_none() {
+        log::debug!("pin event dropped label={label} event={event} kind=window_missing");
+        return;
     }
+    let _ = app.emit_to(label, event, payload);
 }
 
-/// 广播状态变化(编组/穿透/几何):只更新 UI 状态,不重拉图像。
+fn emit_reload(app: &AppHandle, label: &str) {
+    emit_pin(app, label, "pin-reload", ());
+}
+
+/// 逐槽同步状态(编组/穿透/几何):每个槽位只发给自己的窗口,不重拉图像。
 fn broadcast_state(app: &AppHandle) {
-    for slot in 0..PIN_MAX {
-        let label = slot_label(slot);
+    let labels = with_store(|slots| occupied_state_labels(slots));
+    for label in labels {
         let Some(state) = state_snapshot_for(&label) else {
             continue;
         };
-        if let Some(window) = app.get_webview_window(&label) {
-            let _ = window.emit("pin-state", state);
-        }
+        emit_pin(app, &label, "pin-state", state);
     }
+}
+
+fn occupied_state_labels(slots: &[Option<PinEntry>; PIN_MAX]) -> Vec<String> {
+    (0..PIN_MAX)
+        .filter(|&slot| slots[slot].is_some())
+        .map(slot_label)
+        .collect()
 }
 
 /// 读取本窗口源图按当前变换处理后的 PNG:画面、复制、保存共用同一变换。
@@ -1993,8 +2006,8 @@ pub async fn update_pin_from_preview(
 
     if let Some(window) = app.get_webview_window(&label) {
         let _ = window.set_always_on_top(true);
-        let _ = window.emit("pin-reload", "writeback");
     }
+    emit_pin(&app, &label, "pin-reload", "writeback");
     session::close_preview(&app);
     Ok(())
 }
@@ -2012,24 +2025,26 @@ pub fn finish_pin_edit(app: &AppHandle) {
 
 /// 关闭目标:编组(成员 ≥ 2)时返回整组标签;否则只有自己。
 fn close_targets(label: &str) -> Vec<String> {
-    with_store(|slots| {
-        let Some(slot) = slot_from_label(label) else {
-            return Vec::new();
-        };
-        let Some(entry) = slots[slot].as_ref() else {
-            return Vec::new();
-        };
-        if group_size(slots, &entry.group) <= 1 {
-            return vec![label.to_string()];
-        }
-        let group = entry.group.clone();
-        slots
-            .iter()
-            .enumerate()
-            .filter(|(_, member)| member.as_ref().is_some_and(|member| member.group == group))
-            .map(|(index, _)| slot_label(index))
-            .collect()
-    })
+    with_store(|slots| close_target_labels(slots, label))
+}
+
+fn close_target_labels(slots: &[Option<PinEntry>; PIN_MAX], label: &str) -> Vec<String> {
+    let Some(slot) = slot_from_label(label) else {
+        return Vec::new();
+    };
+    let Some(entry) = slots[slot].as_ref() else {
+        return Vec::new();
+    };
+    if group_size(slots, &entry.group) <= 1 {
+        return vec![label.to_string()];
+    }
+    let group = entry.group.clone();
+    slots
+        .iter()
+        .enumerate()
+        .filter(|(_, member)| member.as_ref().is_some_and(|member| member.group == group))
+        .map(|(index, _)| slot_label(index))
+        .collect()
 }
 
 fn close_entries(app: &AppHandle, labels: &[String]) {
@@ -2046,7 +2061,7 @@ fn close_entries(app: &AppHandle, labels: &[String]) {
         if let Some(window) = app.get_webview_window(label) {
             // 关闭前清掉穿透,避免池窗口带着空输入区被复用。
             let _ = window.set_ignore_cursor_events(false);
-            let _ = window.emit("pin-cleared", ());
+            emit_pin(app, label, "pin-cleared", ());
             park_pin_window(&window);
         }
     }
@@ -2672,6 +2687,91 @@ mod tests {
         let slots = slots_with(vec![(0, entry(frame(1, 1, vec![0; 4])))]);
         let state = state_from(&slots, "pin-1", slots[0].as_ref().unwrap());
         assert_eq!(state.copy_kind, PinCopyKind::Image);
+    }
+
+    #[test]
+    fn close_targets_keep_other_pins_when_ungrouped() {
+        let slots = slots_with(vec![
+            (0, entry(frame(1, 1, vec![0; 4]))),
+            (1, entry(frame(1, 1, vec![1; 4]))),
+            (2, entry(frame(1, 1, vec![2; 4]))),
+        ]);
+        assert_eq!(
+            close_target_labels(&slots, "pin-2"),
+            vec!["pin-2".to_string()]
+        );
+        assert_eq!(
+            close_target_labels(&slots, "pin-1"),
+            vec!["pin-1".to_string()]
+        );
+        assert_eq!(
+            close_target_labels(&slots, "pin-3"),
+            vec!["pin-3".to_string()]
+        );
+    }
+
+    #[test]
+    fn close_targets_close_the_whole_group_only() {
+        let mut first = entry(frame(1, 1, vec![0; 4]));
+        first.group = Some("g1".into());
+        let mut middle = entry(frame(1, 1, vec![1; 4]));
+        middle.group = Some("g1".into());
+        let mut third = entry(frame(1, 1, vec![2; 4]));
+        third.group = Some("g1".into());
+        let mut outsider = entry(frame(1, 1, vec![3; 4]));
+        outsider.group = Some("g2".into());
+        let mut partner = entry(frame(1, 1, vec![4; 4]));
+        partner.group = Some("g2".into());
+        let slots = slots_with(vec![
+            (0, first),
+            (1, middle),
+            (2, third),
+            (3, outsider),
+            (4, partner),
+        ]);
+        assert_eq!(
+            close_target_labels(&slots, "pin-2"),
+            vec![
+                "pin-1".to_string(),
+                "pin-2".to_string(),
+                "pin-3".to_string()
+            ]
+        );
+        assert_eq!(
+            close_target_labels(&slots, "pin-4"),
+            vec!["pin-4".to_string(), "pin-5".to_string()]
+        );
+    }
+
+    #[test]
+    fn close_targets_treat_singleton_group_and_unknown_labels_as_narrow() {
+        let mut loner = entry(frame(1, 1, vec![0; 4]));
+        loner.group = Some("g-only".into());
+        let slots = slots_with(vec![(2, loner)]);
+        assert_eq!(
+            close_target_labels(&slots, "pin-3"),
+            vec!["pin-3".to_string()]
+        );
+        assert!(close_target_labels(&slots, "pin-1").is_empty());
+        assert!(close_target_labels(&slots, "preview").is_empty());
+        assert!(close_target_labels(&slots, "pin-9").is_empty());
+    }
+
+    #[test]
+    fn state_events_address_each_occupied_slot_only() {
+        let slots = slots_with(vec![
+            (0, entry(frame(1, 1, vec![0; 4]))),
+            (2, entry(frame(1, 1, vec![1; 4]))),
+            (5, entry(frame(1, 1, vec![2; 4]))),
+        ]);
+        assert_eq!(
+            occupied_state_labels(&slots),
+            vec![
+                "pin-1".to_string(),
+                "pin-3".to_string(),
+                "pin-6".to_string()
+            ]
+        );
     }
 
     #[test]

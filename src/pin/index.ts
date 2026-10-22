@@ -813,31 +813,46 @@ export function mountPin(root: HTMLElement): () => void {
     }
   });
 
-  // 再标注确认/复用池窗口重新展示时 Rust 广播 pin-reload;写回带 "writeback"
+  // `listen` 默认 target 是 Any,会收到发给其它贴图窗的事件。限定本窗 label
+  // 后,pin-reload / pin-state / pin-cleared 只处理定向到自己的事件。
+  const pinEvent = { target: win.label };
+  // 再标注确认/复用池窗口重新展示时只重载本窗;写回带 "writeback"
   // 载荷,用于区分「贴图已更新」提示。
-  void listen<string | null>("pin-reload", (event) => {
-    void refresh(event.payload === "writeback");
-  });
+  void listen<string | null>(
+    "pin-reload",
+    (event) => {
+      void refresh(event.payload === "writeback");
+    },
+    pinEvent,
+  );
   // 编组/穿透/几何变化只需要同步状态,不重拉图像。
-  void listen<PinState>("pin-state", (event) => {
-    const payload = event.payload;
-    if (!payload || payload.label !== win.label) {
-      return;
-    }
-    applyState(payload);
-  });
+  void listen<PinState>(
+    "pin-state",
+    (event) => {
+      const payload = event.payload;
+      if (!payload || payload.label !== win.label) {
+        return;
+      }
+      applyState(payload);
+    },
+    pinEvent,
+  );
   // 关闭(整组)后清空显示;窗口可能被池复用为下一张贴图。
-  void listen("pin-cleared", () => {
-    image = null;
-    state = null;
-    // clearRect 不释放后备存储:池化的隐藏窗口会按上一贴图的分辨率一直驻留,
-    // 把画布缩到 0 交还内存;下一次 render() 按新图重设尺寸。
-    if (canvas.width !== 0 || canvas.height !== 0) {
-      canvas.width = 0;
-      canvas.height = 0;
-    }
-    syncUi();
-  });
+  void listen(
+    "pin-cleared",
+    () => {
+      image = null;
+      state = null;
+      // clearRect 不释放后备存储:池化的隐藏窗口会按上一贴图的分辨率一直驻留,
+      // 把画布缩到 0 交还内存;下一次 render() 按新图重设尺寸。
+      if (canvas.width !== 0 || canvas.height !== 0) {
+        canvas.width = 0;
+        canvas.height = 0;
+      }
+      syncUi();
+    },
+    pinEvent,
+  );
 
   void win.onMoved(({ payload }) => {
     void reportMove(payload.x, payload.y);
