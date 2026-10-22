@@ -4,12 +4,15 @@
 //! 鼠标(左/右/移动)与键盘(方向键/Shift/Enter/Esc/C)事件以物理像素坐标
 //! 喂给引擎,并把引擎的合成位图 present 到屏幕(ADR-001/006)。右键=菜单、
 //! Esc=取消;Enter 确认;操作条/菜单动作经 `RegionOutcome` 交回会话层分发。
+//! 元素吸附不在 UI 线程同步查询:引擎只产生请求,`SnapWorker` 命中后
+//! `PostMessage` `WM_SNAP_RESULT`,壳再取结果并重绘。没有结果时立即返回,
+//! 移动、取消和自由框选不等待 UIA。
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use windows::core::PCWSTR;
@@ -39,7 +42,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     TranslateMessage, CS_HREDRAW, CS_VREDRAW, HCURSOR, HWND_TOPMOST, ICONINFO, IDC_ARROW, IDC_HAND,
     IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, MSG, PM_NOREMOVE, PM_REMOVE,
     SM_CXCURSOR, SM_CYCURSOR, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_SHOW,
-    SW_SHOWNOACTIVATE, WM_CHAR, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND, WM_IME_COMPOSITION,
+    SW_SHOWNOACTIVATE, WM_APP, WM_CHAR, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND, WM_IME_COMPOSITION,
     WM_IME_ENDCOMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS,
     WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_QUIT, WM_RBUTTONDOWN,
     WM_SETCURSOR, WM_SETFOCUS, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
@@ -53,13 +56,15 @@ use crate::capture::scroll::CaptureAxis;
 use crate::capture::selection::composer::{self, Composer};
 use crate::capture::selection::{
     AnnotationOptions, AnnotationTool, CursorHint, EngineOutcome, FeatureFlags, InputEvent,
-    LogicalKey, Scene, SelectionAction, SelectionEngine, ToolMode,
+    LogicalKey, Scene, SelectionAction, SelectionEngine, SnapWorker, ToolMode,
 };
 use crate::capture::session::QuietAction;
 use crate::capture::snap;
 
 const CLASS: &str = "CropmarkRegionOverlay";
 static CLASS_SERIAL: AtomicU32 = AtomicU32::new(1);
+/// worker 命中完成后投递的私有消息。壳只 poll 已完成的结果,不在这里调用 UIA。
+const WM_SNAP_RESULT: u32 = WM_APP + 0x53;
 
 /// 当前活动壳窗口句柄(0 = 无)。会话层在 stale 重置时经
 /// `request_shell_close` 从任意线程请求关闭,泵退出后旧结果按代际丢弃。
@@ -162,6 +167,56 @@ struct ShellState {
     /// 建窗即 KILLFOCUS 误取消(用户表现为"触发后毫无反应")。
     had_focus: bool,
     created_at: Instant,
+    /// 会话级吸附线程。未注入时只自由框选(测试壳默认如此)。
+    snap: Option<SnapSession>,
+}
+
+/// 本会话的吸附线程,以及它用来 `PostMessage` 的窗口句柄。
+/// 句柄在窗口创建前为 0;销毁时先清零,卡住的 hit 之后不会再投递。
+struct SnapSession {
+    hwnd: Arc<AtomicIsize>,
+    worker: SnapWorker,
+}
+
+impl SnapSession {
+    fn start(
+        provider: &'static dyn snap::SnapProvider,
+        context: snap::SnapContext,
+        frame: (u32, u32),
+    ) -> Self {
+        let hwnd = Arc::new(AtomicIsize::new(0));
+        let wake_hwnd = Arc::clone(&hwnd);
+        let worker = SnapWorker::spawn_with_wake(
+            snap::FrameSnap::new(provider, context, frame),
+            Some(Arc::new(move || post_snap_result(&wake_hwnd))),
+        );
+        Self { hwnd, worker }
+    }
+
+    fn bind(&self, hwnd: HWND) {
+        self.hwnd.store(hwnd.0 as isize, Ordering::SeqCst);
+    }
+}
+
+impl Drop for SnapSession {
+    fn drop(&mut self) {
+        self.hwnd.store(0, Ordering::SeqCst);
+    }
+}
+
+fn post_snap_result(hwnd: &AtomicIsize) {
+    let value = hwnd.load(Ordering::SeqCst);
+    if value == 0 {
+        return;
+    }
+    unsafe {
+        let _ = PostMessageW(
+            Some(HWND(value as *mut c_void)),
+            WM_SNAP_RESULT,
+            WPARAM(0),
+            LPARAM(0),
+        );
+    }
 }
 
 thread_local! {
@@ -272,6 +327,17 @@ fn run_shell(
     let width = frame_w.min(monitor.physical_width).max(1) as i32;
     let height = frame_h.min(monitor.physical_height).max(1) as i32;
     let bytes = frame.rgba.len();
+    let snap_context = snap::SnapContext::new(
+        (monitor.physical_x, monitor.physical_y),
+        (monitor.logical_x, monitor.logical_y),
+        frame.scale,
+    );
+    // 能力在本线程取一次;命中只在 worker 线程执行。
+    let snap_session = SnapSession::start(
+        snap::platform_provider(),
+        snap_context,
+        (width as u32, height as u32),
+    );
     STATE.with(|slot| {
         *slot.borrow_mut() = Some(ShellState {
             hooks,
@@ -282,14 +348,7 @@ fn run_shell(
                     .with_annotation_options(annotation_options)
                     // R7:元素级吸附(窗口/控件命中栈);平台检测不可用时
                     // provider 返回空栈,仅自由框选。
-                    .with_snap(
-                        snap::platform_provider(),
-                        crate::capture::snap::SnapContext::new(
-                            (monitor.physical_x, monitor.physical_y),
-                            (monitor.logical_x, monitor.logical_y),
-                            frame.scale,
-                        ),
-                    ),
+                    .with_snap(snap::platform_provider(), snap_context),
                 composer,
                 scratch: vec![0; bytes],
                 present_buf: vec![0; bytes],
@@ -304,6 +363,7 @@ fn run_shell(
             scale: frame.scale,
             had_focus: false,
             created_at: Instant::now(),
+            snap: Some(snap_session),
         });
     });
     // UpdateWindow 会在第一条指针消息前触发 WM_PAINT。先按显示器物理原点
@@ -319,15 +379,30 @@ fn run_shell(
             );
         }
     });
-    let hwnd = unsafe {
+    let hwnd = match unsafe {
         create_overlay_window(
             monitor.physical_x,
             monitor.physical_y,
             width,
             height,
             frame.scale,
-        )?
+        )
+    } {
+        Ok(hwnd) => hwnd,
+        Err(error) => {
+            STATE.with(|slot| {
+                slot.borrow_mut().take();
+            });
+            return Err(error);
+        }
     };
+    STATE.with(|slot| {
+        if let Some(state) = slot.borrow_mut().as_mut() {
+            if let Some(snap) = state.snap.as_ref() {
+                snap.bind(hwnd);
+            }
+        }
+    });
     unsafe {
         log_present_diagnostics(
             hwnd,
@@ -340,11 +415,14 @@ fn run_shell(
     unsafe {
         drain_thread_quit();
         pump();
+    }
+    // 先丢掉 worker 的窗口句柄再销毁,避免把结果投到已销毁或被复用的 hwnd。
+    let state = STATE.with(|slot| slot.borrow_mut().take());
+    ACTIVE_SHELL_HWND.store(0, Ordering::SeqCst);
+    unsafe {
         let _ = DestroyWindow(hwnd);
         drain_thread_quit();
     }
-    ACTIVE_SHELL_HWND.store(0, Ordering::SeqCst);
-    let state = STATE.with(|slot| slot.borrow_mut().take());
     Ok(state
         .and_then(|state| state.outcome)
         .unwrap_or(RegionOutcome::Cancelled))
@@ -371,15 +449,7 @@ fn hold_recording_rect(state: &mut ShellState, hwnd: HWND) -> bool {
 fn consume_escape(hwnd: HWND) -> bool {
     unsafe {
         let mut msg = MSG::default();
-        while PeekMessageW(
-            &mut msg,
-            Some(hwnd),
-            WM_KEYDOWN,
-            WM_KEYDOWN,
-            PM_REMOVE,
-        )
-        .as_bool()
-        {
+        while PeekMessageW(&mut msg, Some(hwnd), WM_KEYDOWN, WM_KEYDOWN, PM_REMOVE).as_bool() {
             if msg.wParam.0 == VK_ESCAPE as usize {
                 return true;
             }
@@ -394,10 +464,45 @@ fn publish_notice(state: &mut ShellState) {
     }
 }
 
+/// 把引擎记下的最新光标交给 worker。没有会话或没有新请求时立即返回。
+fn submit_pending_snap(state: &mut ShellState) {
+    if state.snap.is_none() {
+        return;
+    }
+    let Some(request) = state.canvas.engine.take_snap_request() else {
+        return;
+    };
+    let Some(snap) = state.snap.as_ref() else {
+        return;
+    };
+    snap.worker.submit(request);
+}
+
+/// `WM_SNAP_RESULT`:取走已完成的结果并在命中变化时重绘。无结果则立即返回。
+fn apply_snap_wake(state: &mut ShellState, hwnd: HWND) {
+    if state.outcome.is_some() {
+        return;
+    }
+    let mut results = Vec::new();
+    if let Some(snap) = state.snap.as_ref() {
+        while let Some(result) = snap.worker.poll() {
+            results.push(result);
+        }
+    }
+    let mut changed = false;
+    for result in results {
+        changed |= state.canvas.engine.apply_snap_result(result);
+    }
+    if changed {
+        present(state.timing, hwnd, &mut state.canvas);
+    }
+}
+
 /// 把一次输入事件交给引擎并处理其输出;返回 true 表示会话已到终态。
 fn feed_event(state: &mut ShellState, event: InputEvent, hwnd: HWND) -> bool {
     let outcome = state.canvas.engine.handle_event(event);
     publish_notice(state);
+    submit_pending_snap(state);
     match outcome {
         EngineOutcome::Redraw => {
             present(state.timing, hwnd, &mut state.canvas);
@@ -1565,6 +1670,16 @@ unsafe extern "system" fn wnd_proc(
             let _ = DestroyWindow(hwnd);
             LRESULT(0)
         }
+        WM_SNAP_RESULT => {
+            STATE.with(|slot| {
+                let mut guard = slot.borrow_mut();
+                let Some(state) = guard.as_mut() else {
+                    return;
+                };
+                apply_snap_wake(state, hwnd);
+            });
+            LRESULT(0)
+        }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
 }
@@ -1677,9 +1792,12 @@ unsafe fn drain_thread_quit() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Condvar;
+    use std::thread::ThreadId;
+
     use crate::capture::buffer::{accept_buffer, RawBuffer};
     use crate::capture::selection::AnnotationTool;
-    use windows::Win32::UI::WindowsAndMessaging::IDC_CROSS;
+    use windows::Win32::UI::WindowsAndMessaging::{HWND_MESSAGE, IDC_CROSS};
 
     /// 合成壳状态:真实引擎+合成器,空 hwnd(blit 守卫跳过真实呈现)。
     /// wnd_proc 只做消息→InputEvent 映射,集成测试直接驱动 feed_event 即
@@ -1698,11 +1816,7 @@ mod tests {
     }
 
     fn activate_action(state: &mut ShellState, hwnd: HWND, action: SelectionAction) -> bool {
-        let toolbar = state
-            .canvas
-            .engine
-            .unified_toolbar()
-            .expect("toolbar");
+        let toolbar = state.canvas.engine.unified_toolbar().expect("toolbar");
         let on_bar = toolbar
             .buttons
             .iter()
@@ -1789,6 +1903,7 @@ mod tests {
             scale: frame.scale,
             had_focus: true,
             created_at: Instant::now() - Duration::from_secs(1),
+            snap: None,
         }
     }
 
@@ -1904,11 +2019,7 @@ mod tests {
         ] {
             assert!(!feed_event(&mut state, event, hwnd));
         }
-        assert!(activate_action(
-            &mut state,
-            hwnd,
-            SelectionAction::Annotate
-        ));
+        assert!(activate_action(&mut state, hwnd, SelectionAction::Annotate));
         // 「标注」必须与 Enter 确认区分:会话层据此强制打开预览编辑器。
         assert_eq!(
             state.outcome,
@@ -2971,5 +3082,436 @@ mod tests {
                 Err(_) => eprintln!("window unavailable; blit not measured"),
             }
         }
+    }
+
+    fn enable_snap(state: &mut ShellState, provider: &'static dyn snap::SnapProvider) {
+        let context = snap::SnapContext::new((0, 0), (0, 0), state.scale);
+        let (width, height) = state.canvas.engine.size();
+        let flags = state.canvas.engine.flags();
+        state.canvas.engine = SelectionEngine::new(width, height, flags)
+            .with_scale(state.scale)
+            .with_annotation_options(AnnotationOptions {
+                text_input: true,
+                ..AnnotationOptions::default()
+            })
+            .with_snap(provider, context);
+        state.snap = Some(SnapSession::start(provider, context, (width, height)));
+    }
+
+    #[derive(Debug)]
+    struct HitGate {
+        threads: Mutex<Vec<ThreadId>>,
+        entered: Condvar,
+        ready: Mutex<bool>,
+        ready_cv: Condvar,
+    }
+
+    impl HitGate {
+        fn new() -> Self {
+            Self {
+                threads: Mutex::new(Vec::new()),
+                entered: Condvar::new(),
+                ready: Mutex::new(false),
+                ready_cv: Condvar::new(),
+            }
+        }
+
+        fn enter(&self, thread: ThreadId) {
+            self.threads
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .push(thread);
+            self.entered.notify_all();
+        }
+
+        fn wait_hits(&self, count: usize) {
+            let mut threads = self.threads.lock().unwrap_or_else(|err| err.into_inner());
+            let started = Instant::now();
+            while threads.len() < count {
+                let remaining = Duration::from_secs(2)
+                    .checked_sub(started.elapsed())
+                    .expect("timed out waiting for snap hit");
+                let (guard, status) = self
+                    .entered
+                    .wait_timeout(threads, remaining)
+                    .unwrap_or_else(|err| err.into_inner());
+                threads = guard;
+                if status.timed_out() {
+                    panic!(
+                        "timed out waiting for {count} snap hits, saw {}",
+                        threads.len()
+                    );
+                }
+            }
+        }
+
+        fn wait(&self) {
+            let mut ready = self.ready.lock().unwrap_or_else(|err| err.into_inner());
+            while !*ready {
+                ready = self
+                    .ready_cv
+                    .wait(ready)
+                    .unwrap_or_else(|err| err.into_inner());
+            }
+        }
+
+        fn release(&self) {
+            *self.ready.lock().unwrap_or_else(|err| err.into_inner()) = true;
+            self.ready_cv.notify_all();
+        }
+
+        fn threads(&self) -> Vec<ThreadId> {
+            self.threads
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .clone()
+        }
+    }
+
+    struct ReleaseOnDrop(&'static HitGate);
+
+    impl Drop for ReleaseOnDrop {
+        fn drop(&mut self) {
+            self.0.release();
+        }
+    }
+
+    #[derive(Debug)]
+    struct HungSnap {
+        gate: &'static HitGate,
+        rect: snap::SnapRect,
+    }
+
+    impl snap::SnapProvider for HungSnap {
+        fn capability(&self) -> snap::SnapCapability {
+            snap::SnapCapability::Full
+        }
+
+        fn hit(&self, _context: snap::SnapContext, _x: i32, _y: i32) -> snap::SnapStack {
+            self.gate.enter(std::thread::current().id());
+            self.gate.wait();
+            snap::SnapStack::new(vec![snap::SnapHit {
+                kind: snap::SnapKind::Control,
+                rect: self.rect,
+                label: Some("ok-button".into()),
+            }])
+        }
+    }
+
+    #[derive(Debug)]
+    struct CursorSnap;
+
+    impl snap::SnapProvider for CursorSnap {
+        fn capability(&self) -> snap::SnapCapability {
+            snap::SnapCapability::Full
+        }
+
+        fn hit(&self, _context: snap::SnapContext, x: i32, y: i32) -> snap::SnapStack {
+            snap::SnapStack::new(vec![snap::SnapHit {
+                kind: snap::SnapKind::Control,
+                rect: snap::SnapRect::new(x, y, 12, 12),
+                label: Some("field".into()),
+            }])
+        }
+    }
+
+    fn control_rect(x: u32, y: u32) -> PhysicalRect {
+        PhysicalRect {
+            x,
+            y,
+            width: 12,
+            height: 12,
+        }
+    }
+
+    fn wait_for_highlight(state: &mut ShellState, hwnd: HWND, expected: PhysicalRect) {
+        let started = Instant::now();
+        while state.canvas.engine.snap_highlight() != Some(expected) {
+            apply_snap_wake(state, hwnd);
+            if started.elapsed() > Duration::from_secs(2) {
+                panic!(
+                    "snap highlight {:?}, want {expected:?}",
+                    state.canvas.engine.snap_highlight()
+                );
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn pointer_move_does_not_wait_and_escape_drag_still_work_while_hit_is_hung() {
+        let gate: &'static HitGate = Box::leak(Box::new(HitGate::new()));
+        let _release = ReleaseOnDrop(gate);
+        let provider: &'static HungSnap = Box::leak(Box::new(HungSnap {
+            gate,
+            rect: snap::SnapRect::new(20, 16, 40, 30),
+        }));
+        let mut state = test_state(320, 200);
+        enable_snap(&mut state, provider);
+        let hwnd = HWND::default();
+        let started = Instant::now();
+        assert!(!feed_event(
+            &mut state,
+            InputEvent::PointerMove { x: 48, y: 36 },
+            hwnd
+        ));
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "pointer move waited on snap: {:?}",
+            started.elapsed()
+        );
+        gate.wait_hits(1);
+        assert_ne!(gate.threads()[0], std::thread::current().id());
+        assert!(state.canvas.engine.snap_highlight().is_none());
+        let started = Instant::now();
+        apply_snap_wake(&mut state, hwnd);
+        assert!(started.elapsed() < Duration::from_millis(200));
+        assert!(state.canvas.engine.snap_highlight().is_none());
+
+        let started = Instant::now();
+        assert!(!feed_event(
+            &mut state,
+            InputEvent::LeftDown { x: 40, y: 30 },
+            hwnd
+        ));
+        assert!(!feed_event(
+            &mut state,
+            InputEvent::PointerMove { x: 120, y: 90 },
+            hwnd
+        ));
+        assert!(!feed_event(
+            &mut state,
+            InputEvent::LeftUp { x: 120, y: 90 },
+            hwnd
+        ));
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "free drag waited on snap: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(
+            state.canvas.engine.selection(),
+            Some(PhysicalRect {
+                x: 40,
+                y: 30,
+                width: 81,
+                height: 61,
+            })
+        );
+        let started = Instant::now();
+        assert!(feed_event(&mut state, key(LogicalKey::Escape), hwnd));
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "escape waited on snap: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(state.outcome, Some(RegionOutcome::Cancelled));
+    }
+
+    #[test]
+    fn snap_wake_applies_highlight_and_click_adopts_it() {
+        let provider: &'static CursorSnap = Box::leak(Box::new(CursorSnap));
+        let mut state = test_state(320, 200);
+        enable_snap(&mut state, provider);
+        let hwnd = HWND::default();
+        assert!(!feed_event(
+            &mut state,
+            InputEvent::PointerMove { x: 50, y: 40 },
+            hwnd
+        ));
+        assert!(state.canvas.engine.snap_highlight().is_none());
+        let expected = control_rect(50, 40);
+        wait_for_highlight(&mut state, hwnd, expected);
+        assert_eq!(
+            state
+                .canvas
+                .last_scene
+                .as_ref()
+                .map(|scene| scene.snap_highlight),
+            Some(Some(expected))
+        );
+        assert!(!feed_event(
+            &mut state,
+            InputEvent::LeftDown { x: 50, y: 40 },
+            hwnd
+        ));
+        assert!(!feed_event(
+            &mut state,
+            InputEvent::LeftUp { x: 50, y: 40 },
+            hwnd
+        ));
+        assert_eq!(state.canvas.engine.selection(), Some(expected));
+        assert!(state.outcome.is_none());
+    }
+
+    #[test]
+    fn later_cursor_replaces_an_older_snap_highlight() {
+        let provider: &'static CursorSnap = Box::leak(Box::new(CursorSnap));
+        let mut state = test_state(320, 200);
+        enable_snap(&mut state, provider);
+        let hwnd = HWND::default();
+        assert!(!feed_event(
+            &mut state,
+            InputEvent::PointerMove { x: 30, y: 24 },
+            hwnd
+        ));
+        assert!(!feed_event(
+            &mut state,
+            InputEvent::PointerMove { x: 80, y: 70 },
+            hwnd
+        ));
+        let expected = control_rect(80, 70);
+        wait_for_highlight(&mut state, hwnd, expected);
+        std::thread::sleep(Duration::from_millis(30));
+        apply_snap_wake(&mut state, hwnd);
+        assert_eq!(state.canvas.engine.snap_highlight(), Some(expected));
+    }
+
+    #[test]
+    fn seed_does_not_submit_a_snap_request() {
+        let gate: &'static HitGate = Box::leak(Box::new(HitGate::new()));
+        let _release = ReleaseOnDrop(gate);
+        let provider: &'static HungSnap = Box::leak(Box::new(HungSnap {
+            gate,
+            rect: snap::SnapRect::new(0, 0, 8, 8),
+        }));
+        let mut state = test_state(320, 200);
+        enable_snap(&mut state, provider);
+        assert!(seed_frame_cursor(
+            &mut state.canvas.engine,
+            Some((40, 30)),
+            (0, 0),
+            (320, 200)
+        ));
+        assert!(state.canvas.engine.cursor_valid());
+        assert!(state.canvas.engine.take_snap_request().is_none());
+        std::thread::sleep(Duration::from_millis(80));
+        assert!(gate.threads().is_empty());
+    }
+
+    struct MessageWindow(HWND);
+
+    impl Drop for MessageWindow {
+        fn drop(&mut self) {
+            STATE.with(|slot| {
+                slot.borrow_mut().take();
+            });
+            unsafe {
+                let _ = DestroyWindow(self.0);
+                drain_thread_quit();
+            }
+        }
+    }
+
+    unsafe fn create_snap_message_window() -> HWND {
+        let instance = GetModuleHandleW(None).unwrap();
+        let serial = CLASS_SERIAL.fetch_add(1, Ordering::Relaxed);
+        let class_name: Vec<u16> = format!("CropmarkSnapWake{serial}\0")
+            .encode_utf16()
+            .collect();
+        let class = WNDCLASSEXW {
+            cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+            lpfnWndProc: Some(wnd_proc),
+            hInstance: instance.into(),
+            lpszClassName: PCWSTR(class_name.as_ptr()),
+            ..Default::default()
+        };
+        assert_ne!(RegisterClassExW(&class), 0, "register snap wake window");
+        CreateWindowExW(
+            Default::default(),
+            PCWSTR(class_name.as_ptr()),
+            PCWSTR::null(),
+            Default::default(),
+            0,
+            0,
+            0,
+            0,
+            Some(HWND_MESSAGE),
+            None,
+            Some(instance.into()),
+            None,
+        )
+        .expect("create snap wake window")
+    }
+
+    #[test]
+    fn posted_snap_result_message_presents_the_highlight() {
+        let gate: &'static HitGate = Box::leak(Box::new(HitGate::new()));
+        let _release = ReleaseOnDrop(gate);
+        let provider: &'static HungSnap = Box::leak(Box::new(HungSnap {
+            gate,
+            rect: snap::SnapRect::new(20, 16, 40, 30),
+        }));
+        let mut state = test_state(320, 200);
+        enable_snap(&mut state, provider);
+        let hwnd = unsafe { create_snap_message_window() };
+        let _window = MessageWindow(hwnd);
+        state.snap.as_ref().unwrap().bind(hwnd);
+        let started = Instant::now();
+        assert!(!feed_event(
+            &mut state,
+            InputEvent::PointerMove { x: 48, y: 36 },
+            HWND::default()
+        ));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        gate.wait_hits(1);
+        assert!(state.canvas.engine.snap_highlight().is_none());
+        STATE.with(|slot| *slot.borrow_mut() = Some(state));
+        let started = Instant::now();
+        unsafe {
+            wnd_proc(hwnd, WM_SNAP_RESULT, WPARAM(0), LPARAM(0));
+        }
+        assert!(started.elapsed() < Duration::from_millis(200));
+        assert!(STATE.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .and_then(|state| state.canvas.engine.snap_highlight())
+                .is_none()
+        }));
+        gate.release();
+        assert!(STATE.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .and_then(|state| state.canvas.engine.snap_highlight())
+                .is_none()
+        }));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let applied = unsafe {
+            loop {
+                let ready = STATE.with(|slot| {
+                    slot.borrow()
+                        .as_ref()
+                        .and_then(|state| state.canvas.engine.snap_highlight())
+                        .is_some()
+                });
+                if ready || Instant::now() >= deadline {
+                    break ready;
+                }
+                let mut msg = MSG::default();
+                if PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                    let _ = TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                } else {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+        };
+        assert!(applied, "WM_SNAP_RESULT did not apply the snap highlight");
+        let state = STATE.with(|slot| slot.borrow_mut().take().unwrap());
+        let expected = PhysicalRect {
+            x: 20,
+            y: 16,
+            width: 40,
+            height: 30,
+        };
+        assert_eq!(state.canvas.engine.snap_highlight(), Some(expected));
+        assert_eq!(
+            state
+                .canvas
+                .last_scene
+                .as_ref()
+                .map(|scene| scene.snap_highlight),
+            Some(Some(expected))
+        );
     }
 }

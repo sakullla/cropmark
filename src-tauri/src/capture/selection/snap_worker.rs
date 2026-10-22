@@ -19,6 +19,8 @@ struct Mailbox {
     slot_cv: Condvar,
     result: Mutex<Option<SnapResult>>,
     result_cv: Condvar,
+    /// 结果已经能被 `poll` 取到之后,在 worker 线程调用。不得阻塞。
+    wake: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 /// 会话级吸附 worker。结果带请求的代际与光标。
@@ -29,6 +31,12 @@ pub struct SnapWorker {
 
 impl SnapWorker {
     pub fn spawn(snap: FrameSnap) -> Self {
+        Self::spawn_with_wake(snap, None)
+    }
+
+    /// `wake` 在结果写入且 `poll` 可见之后于 worker 线程调用。
+    /// 回调不得阻塞,也不得等待 UI 线程处理完这次唤醒。
+    pub fn spawn_with_wake(snap: FrameSnap, wake: Option<Arc<dyn Fn() + Send + Sync>>) -> Self {
         let mailbox = Arc::new(Mailbox {
             slot: Mutex::new(Slot {
                 request: None,
@@ -37,6 +45,7 @@ impl SnapWorker {
             slot_cv: Condvar::new(),
             result: Mutex::new(None),
             result_cv: Condvar::new(),
+            wake,
         });
         let shared = Arc::clone(&mailbox);
         let thread = thread::Builder::new()
@@ -148,7 +157,7 @@ fn wait_request(mailbox: &Mailbox) -> Option<SnapRequest> {
 }
 
 fn publish(mailbox: &Mailbox, result: SnapResult) {
-    {
+    let stored = {
         let mut slot = lock(&mailbox.result);
         let replace = slot
             .as_ref()
@@ -157,8 +166,14 @@ fn publish(mailbox: &Mailbox, result: SnapResult) {
         if replace {
             *slot = Some(result);
         }
-    }
+        replace
+    };
     mailbox.result_cv.notify_one();
+    if stored {
+        if let Some(wake) = &mailbox.wake {
+            wake();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -351,5 +366,39 @@ mod tests {
                 height: 8,
             })
         );
+    }
+
+    #[test]
+    fn wake_is_signaled_only_after_the_result_can_be_polled() {
+        use std::sync::{mpsc, Arc};
+
+        #[derive(Debug)]
+        struct EmptyProvider;
+
+        impl SnapProvider for EmptyProvider {
+            fn capability(&self) -> SnapCapability {
+                SnapCapability::Full
+            }
+
+            fn hit(&self, _context: SnapContext, _x: i32, _y: i32) -> SnapStack {
+                SnapStack::empty()
+            }
+        }
+
+        static EMPTY: EmptyProvider = EmptyProvider;
+        let (tx, rx) = mpsc::channel();
+        let worker = SnapWorker::spawn_with_wake(
+            FrameSnap::new(&EMPTY, SnapContext::new((0, 0), (0, 0), 1.0), (80, 60)),
+            Some(Arc::new(move || {
+                let _ = tx.send(());
+            })),
+        );
+        worker.submit(request(1));
+        rx.recv_timeout(Duration::from_secs(2))
+            .expect("wake after publish");
+        let result = worker.poll().expect("result visible when wake runs");
+        assert_eq!(result.generation, 1);
+        assert_eq!(result.cursor, (1, 0));
+        assert!(result.stack.is_empty());
     }
 }
