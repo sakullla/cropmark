@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -898,8 +898,8 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
             flags.record_fps =
                 crate::record::RecordConfig::from_settings(&handle, recording_format).fps;
         }
-        // R7:元素检测完全不可用时按现有能力说明机制提示降级(自由框选或
-        // 窗口截取模式);LongCapture/Recording 复用本壳但不需要该说明。
+        // 区域选区:完全不可用沿用自由框选提示;仅窗口级时每进程提示一次。
+        // LongCapture/Recording 复用本壳但不需要该说明。
         if mode == CaptureMode::Region {
             if let Some(key) = snap_fallback_notice_key(super::snap::platform_capability()) {
                 ui::show_toast_key(&handle, key);
@@ -1317,14 +1317,34 @@ fn overlay_reduced_capabilities(mode: CaptureMode, native_shell: bool) -> bool {
     mode == CaptureMode::Region && !native_shell
 }
 
-/// R7:元素检测完全不可用时的降级说明词条(自由框选/窗口模式替代路径);
-/// 窗口级仍可用(WindowOnly,如 macOS 未授权)不在此重复说明,授权与降级
-/// 提示由平台任务在自己的流程里给出。
+/// 仅窗口级能力提示的词条。不新增文案或设置项。
+const SNAP_WINDOW_ONLY_NOTICE_KEY: &str = "error.capture.snap_control_unavailable";
+
+/// WindowOnly 提示每进程只展示一次。
+static SNAP_WINDOW_ONLY_NOTICE_SHOWN: AtomicBool = AtomicBool::new(false);
+
+/// 原生区域选区的检测能力说明。
+/// - `Full`:不提示。
+/// - `WindowOnly`:每进程一次,文案固定复用控件级不可用词条。
+/// - `Unavailable`:沿用现有自由框选提示(每次都给)。
 fn snap_fallback_notice_key(capability: super::snap::SnapCapability) -> Option<&'static str> {
-    if capability.window_level() {
-        None
-    } else {
-        capability.reason_key()
+    snap_notice_key(capability, &SNAP_WINDOW_ONLY_NOTICE_SHOWN)
+}
+
+fn snap_notice_key(
+    capability: super::snap::SnapCapability,
+    window_only_shown: &AtomicBool,
+) -> Option<&'static str> {
+    match capability {
+        super::snap::SnapCapability::Full => None,
+        super::snap::SnapCapability::WindowOnly { .. } => {
+            if window_only_shown.swap(true, Ordering::SeqCst) {
+                None
+            } else {
+                Some(SNAP_WINDOW_ONLY_NOTICE_KEY)
+            }
+        }
+        super::snap::SnapCapability::Unavailable { reason_key } => Some(reason_key),
     }
 }
 
@@ -3946,21 +3966,47 @@ mod tests {
     }
 
     #[test]
-    fn snap_fallback_notice_covers_unavailable_but_not_window_only() {
+    fn snap_notice_window_only_once_full_silent_unavailable_kept() {
+        use std::sync::atomic::AtomicBool;
+
         use crate::capture::snap::SnapCapability;
-        // 完整能力与窗口级降级都无提示:后者由平台授权/降级流程说明。
-        assert_eq!(snap_fallback_notice_key(SnapCapability::Full), None);
+
+        let shown = AtomicBool::new(false);
+        let window_only = SnapCapability::WindowOnly {
+            reason_key: "error.capture.other",
+        };
+        // 文案固定复用现有词条,不采用能力上自带的 reason_key。
         assert_eq!(
-            snap_fallback_notice_key(SnapCapability::WindowOnly {
-                reason_key: "error.capture.snap_control_unavailable",
-            }),
-            None
+            snap_notice_key(window_only, &shown),
+            Some("error.capture.snap_control_unavailable")
         );
-        // 完全不可用时沿用现有本地化能力说明机制。
+        assert_eq!(snap_notice_key(window_only, &shown), None);
+
+        // Full 不提示,也不占用「每进程一次」的名额。
+        let fresh = AtomicBool::new(false);
+        assert_eq!(snap_notice_key(SnapCapability::Full, &fresh), None);
         assert_eq!(
-            snap_fallback_notice_key(SnapCapability::Unavailable {
-                reason_key: "error.capture.snap_unavailable",
-            }),
+            snap_notice_key(window_only, &fresh),
+            Some("error.capture.snap_control_unavailable")
+        );
+
+        // 完全不可用仍每次提示,且不消耗窗口级的一次名额。
+        assert_eq!(
+            snap_notice_key(
+                SnapCapability::Unavailable {
+                    reason_key: "error.capture.snap_unavailable",
+                },
+                &shown
+            ),
+            Some("error.capture.snap_unavailable")
+        );
+        assert_eq!(
+            snap_notice_key(
+                SnapCapability::Unavailable {
+                    reason_key: "error.capture.snap_unavailable",
+                },
+                &shown
+            ),
             Some("error.capture.snap_unavailable")
         );
     }
