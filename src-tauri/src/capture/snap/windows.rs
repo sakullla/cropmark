@@ -12,7 +12,7 @@
 //!   物理像素;`SnapContext::to_screen` 把帧像素换算为屏幕像素,返回矩形不再
 //!   加显示器偏移。
 
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::mem::size_of;
 use std::rc::Rc;
 
@@ -25,7 +25,7 @@ use windows::Win32::System::Com::{
 use windows::Win32::UI::Accessibility::{
     CUIAutomation, IUIAutomation, IUIAutomationCacheRequest, IUIAutomationCondition,
     IUIAutomationElement, TreeScope_Children, UIA_BoundingRectanglePropertyId,
-    UIA_IsOffscreenPropertyId,
+    UIA_IsOffscreenPropertyId, UIA_NamePropertyId,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetAncestor, GetDesktopWindow, GetWindowLongW, GetWindowRect, WindowFromPoint,
@@ -45,7 +45,7 @@ const MAX_STACK_HITS: usize = 10;
 /// UIA 自顶层窗口元素向下下探的最大层数。
 const MAX_CONTROL_DEPTH: usize = 8;
 
-/// 平台 provider 单例(无状态;UIA 客户端按线程缓存)。
+/// 平台 provider 单例(无状态;UIA 客户端按线程缓存,能力与桌面探测每线程只算一次)。
 pub fn provider() -> &'static dyn SnapProvider {
     &WindowsSnapProvider
 }
@@ -55,11 +55,11 @@ struct WindowsSnapProvider;
 
 impl SnapProvider for WindowsSnapProvider {
     fn capability(&self) -> SnapCapability {
-        capability_for(uia().is_some(), window_probe_available())
+        session_capability()
     }
 
     fn hit(&self, context: SnapContext, x: i32, y: i32) -> SnapStack {
-        if !self.capability().window_level() {
+        if !session_capability().window_level() {
             return SnapStack::empty();
         }
         let (screen_x, screen_y) = context.to_screen(x, y);
@@ -98,7 +98,8 @@ fn capability_for(uia_available: bool, window_probe_available: bool) -> SnapCapa
 }
 
 /// 线程内复用的 UIA 客户端:COM 套间是线程属性,不能跨线程共享;首次探测
-/// 失败后固定为 None,不在每次悬停重复初始化。
+/// 失败后固定为 None,不在每次悬停重复初始化。能力与桌面探测同样按线程
+/// 只算一次,`capability` 与 `hit` 共用,避免每次命中重复 `GetWindowRect`。
 struct UiaContext {
     automation: IUIAutomation,
     children_cache: IUIAutomationCacheRequest,
@@ -107,6 +108,24 @@ struct UiaContext {
 
 thread_local! {
     static UIA: RefCell<Option<Option<Rc<UiaContext>>>> = const { RefCell::new(None) };
+    static CAPABILITY: OnceCell<SnapCapability> = const { OnceCell::new() };
+}
+
+/// 会话级能力:同一线程内 UIA 是否可用与桌面窗口探测只执行一次。
+fn session_capability() -> SnapCapability {
+    CAPABILITY.with(|cell| {
+        capability_cached(cell, &mut || {
+            capability_for(uia().is_some(), window_probe_available())
+        })
+    })
+}
+
+/// `probe` 只在 cell 尚未写入时执行;之后直接返回已缓存的能力。
+fn capability_cached(
+    cell: &OnceCell<SnapCapability>,
+    probe: &mut dyn FnMut() -> SnapCapability,
+) -> SnapCapability {
+    *cell.get_or_init(probe)
 }
 
 fn uia() -> Option<Rc<UiaContext>> {
@@ -137,6 +156,9 @@ fn init_uia() -> Option<UiaContext> {
             .AddProperty(UIA_BoundingRectanglePropertyId)
             .ok()?;
         children_cache.AddProperty(UIA_IsOffscreenPropertyId).ok()?;
+        // Name 与边界矩形同一次 BuildCache。个别 provider 拒绝该属性时不让
+        // 整个 UIA 初始化失败(否则会退化成 WindowOnly);标签仍回退 CurrentName。
+        let _ = children_cache.AddProperty(UIA_NamePropertyId);
         let true_condition = automation.CreateTrueCondition().ok()?;
         Some(UiaContext {
             automation,
@@ -356,12 +378,22 @@ unsafe fn is_offscreen(element: &IUIAutomationElement) -> bool {
         .unwrap_or(false)
 }
 
+/// 标签优先缓存的 Name;空白或未进缓存时再读 CurrentName(跨进程回退)。
 unsafe fn element_label(element: &IUIAutomationElement) -> Option<String> {
-    element
-        .CurrentName()
-        .ok()
-        .map(|name| name.to_string())
-        .filter(|name| !name.trim().is_empty())
+    let cached = element.CachedName().ok().map(|name| name.to_string());
+    if cached.as_ref().is_some_and(|name| !name.trim().is_empty()) {
+        return label_from(cached, None);
+    }
+    let current = element.CurrentName().ok().map(|name| name.to_string());
+    label_from(cached, current)
+}
+
+/// 非空标签:cached 优先,空白或缺失再取 current;两者都空白则为 None。
+fn label_from(cached: Option<String>, current: Option<String>) -> Option<String> {
+    [cached, current]
+        .into_iter()
+        .flatten()
+        .find(|name| !name.trim().is_empty())
 }
 
 /// 组装命中栈(纯逻辑,便于单测):控件层自最深到外层,裁进窗口层并去重、
@@ -536,6 +568,37 @@ mod tests {
         assert!(!unavailable.window_level());
         assert!(!unavailable.control_level());
         assert_eq!(unavailable.reason_key(), Some(UNAVAILABLE_KEY));
+    }
+
+    #[test]
+    fn label_prefers_cached_name_and_falls_back_when_missing_or_blank() {
+        assert_eq!(
+            label_from(Some("Save".into()), Some("Ignored".into())),
+            Some("Save".into())
+        );
+        assert_eq!(
+            label_from(None, Some("Current".into())),
+            Some("Current".into())
+        );
+        assert_eq!(
+            label_from(Some("   ".into()), Some("Current".into())),
+            Some("Current".into())
+        );
+        assert_eq!(label_from(Some("  ".into()), Some("   ".into())), None);
+        assert_eq!(label_from(None, None), None);
+    }
+
+    #[test]
+    fn capability_cached_probes_once_per_cell() {
+        let cell = OnceCell::new();
+        let mut calls = 0;
+        let mut probe = || {
+            calls += 1;
+            SnapCapability::Full
+        };
+        assert_eq!(capability_cached(&cell, &mut probe), SnapCapability::Full);
+        assert_eq!(capability_cached(&cell, &mut probe), SnapCapability::Full);
+        assert_eq!(calls, 1);
     }
 
     #[test]
