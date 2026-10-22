@@ -39,8 +39,13 @@
 //! 修订定为文档化平台行为,Wayland 区域选择沿用 Web 覆盖层,原生窗列为
 //! 后续独立工作。注意:本模块只能在 Linux 编译;Windows/macOS 主机上的
 //! 离线核对以 windows.rs 逐块对照 + probe crate 交叉 cargo check 为准。
+//!
+//! 吸附:命中在 `SnapWorker` 上执行,worker 使用自己的 X11 连接。本泵用
+//! `poll` 同时等壳连接、XIM 与结果管道,超时很短;结果到达后应用并重绘。
+//! 检测卡住时不 join、不等待,Esc/取消/自由拖选仍由 X 事件驱动。
 
 use std::ffi::{c_char, c_int, c_uint, c_ulong, c_void};
+use std::os::fd::AsRawFd;
 use std::ptr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
@@ -64,9 +69,10 @@ use crate::capture::scroll::CaptureAxis;
 use crate::capture::selection::composer::{self, Composer};
 use crate::capture::selection::{
     AnnotationOptions, AnnotationTool, CursorHint, EngineOutcome, FeatureFlags, InputEvent,
-    LogicalKey, SelectionAction, SelectionEngine, ToolMode,
+    LogicalKey, SelectionAction, SelectionEngine, SnapWorker, ToolMode,
 };
 use crate::capture::session::QuietAction;
+use crate::capture::snap::{FrameSnap, SnapContext};
 
 // keysym 常量(X11/keysymdef.h;与键盘布局无关)。
 const XK_RETURN: u32 = 0xff0d;
@@ -286,6 +292,10 @@ fn cursor_slot(hint: CursorHint) -> usize {
 /// XPutImage 回退路径的每请求上限:分带发送,避开保守的 max-request-length。
 const PUT_IMAGE_BAND_LIMIT: usize = 1 << 20;
 
+/// 吸附结果 poll 上限(毫秒)。管道唤醒通常更早返回;超时只兜底丢唤醒字节。
+/// 远小于一次可感知冻结,`poll` 会睡眠,不是忙等。
+const SNAP_POLL_TIMEOUT_MS: c_int = 16;
+
 /// 当前活动壳窗口与取消原子(0 = 无)。会话层 stale 重置时从任意线程经
 /// `request_shell_close` 发一条 ClientMessage 唤醒 X11 事件泵,泵退出后的
 /// 旧结果按会话代际丢弃(ADR-16)。
@@ -311,6 +321,123 @@ pub fn request_shell_close() {
     let event = ClientMessageEvent::new(32, window, atom, [0u8; 20]);
     let _ = conn.send_event(false, window, EventMask::NO_EVENT, event);
     let _ = conn.flush();
+}
+
+/// worker 命中完成后写入的管道。写端非阻塞;壳在 poll 里读走。
+/// 声明须早于持有 `SnapWorker` 的 `ShellState`,这样丢 worker 后再关管道。
+struct SnapWake {
+    read_fd: i32,
+    write_fd: i32,
+}
+
+impl SnapWake {
+    fn open() -> Option<Self> {
+        let mut fds = [0; 2];
+        if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } != 0 {
+            return None;
+        }
+        let wake = Self {
+            read_fd: fds[0],
+            write_fd: fds[1],
+        };
+        crate::capture::snap::linux::set_result_wakeup(wake.write_fd);
+        Some(wake)
+    }
+
+    fn drain(&self) {
+        let mut buf = [0u8; 256];
+        loop {
+            let n = unsafe { libc::read(self.read_fd, buf.as_mut_ptr().cast(), buf.len()) };
+            if n <= 0 {
+                break;
+            }
+        }
+    }
+}
+
+impl Drop for SnapWake {
+    fn drop(&mut self) {
+        crate::capture::snap::linux::clear_result_wakeup(self.write_fd);
+        unsafe {
+            libc::close(self.read_fd);
+            libc::close(self.write_fd);
+        }
+    }
+}
+
+/// `poll` 同时等 X 连接、结果管道与 XIM。X fd 在首位,便于判断断开。
+fn shell_poll_fds(x_fd: i32, wake_fd: Option<i32>, xim_fds: &[c_int]) -> Vec<libc::pollfd> {
+    let mut pfds = Vec::with_capacity(2 + xim_fds.len());
+    pfds.push(libc::pollfd {
+        fd: x_fd,
+        events: libc::POLLIN,
+        revents: 0,
+    });
+    if let Some(fd) = wake_fd {
+        pfds.push(libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        });
+    }
+    for fd in xim_fds {
+        pfds.push(libc::pollfd {
+            fd: *fd,
+            events: libc::POLLIN,
+            revents: 0,
+        });
+    }
+    pfds
+}
+
+/// 把引擎刚产生的请求交给 worker。没有 worker 时不取走请求。
+fn submit_snap(state: &mut ShellState) {
+    if state.snap.is_none() {
+        return;
+    }
+    let Some(request) = state.canvas.engine.take_snap_request() else {
+        return;
+    };
+    if let Some(worker) = state.snap.as_ref() {
+        worker.submit(request);
+    }
+}
+
+#[cfg(test)]
+fn submit_snap_request(engine: &mut SelectionEngine, worker: &SnapWorker) {
+    if let Some(request) = engine.take_snap_request() {
+        worker.submit(request);
+    }
+}
+
+/// 取走已完成的结果并应用。不等待;栈有变化时返回 true。
+#[cfg(test)]
+fn apply_snap_results(engine: &mut SelectionEngine, worker: &SnapWorker) -> bool {
+    let mut changed = false;
+    while let Some(result) = worker.poll() {
+        changed |= engine.apply_snap_result(result);
+    }
+    changed
+}
+
+fn apply_ready_snap(state: &mut ShellState, surface: &Surface<'_>) {
+    let results = if let Some(worker) = state.snap.as_ref() {
+        let mut results = Vec::new();
+        while let Some(result) = worker.poll() {
+            results.push(result);
+        }
+        results
+    } else {
+        Vec::new()
+    };
+    let mut changed = false;
+    for result in results {
+        changed |= state.canvas.engine.apply_snap_result(result);
+    }
+    if changed {
+        present(state, surface);
+        sync_cursor(state, surface);
+    }
 }
 
 /// 壳的最终结果:会话层据此选择完成路径(与 Windows 壳同构)。
@@ -467,6 +594,8 @@ struct ShellState {
     timing: bool,
     /// R21 文本输入通道(XIM);None = Xlib 不可用,直输走核心键盘映射。
     xim: Option<XimSession>,
+    /// 会话级吸附线程。命中不在 UI 线程;Drop 只分离,不 join。
+    snap: Option<SnapWorker>,
 }
 
 /// 一次会话预建的光标集。Crosshair 为 pixmap 双色十字;其余为字体字形。
@@ -987,6 +1116,10 @@ impl XimSession {
         }
     }
 
+    fn poll_fds(&self) -> &[c_int] {
+        &self.fds
+    }
+
     /// XCreateIC(style=Nothing|Nothing + client/focus window);失败保持 ic=NULL。
     unsafe fn create_ic(&mut self, window: xproto::Window) {
         const XN_INPUT_STYLE: &[u8] = b"inputStyle\0";
@@ -1306,6 +1439,18 @@ pub fn pick_region(
     let mut annotation_options = annotation_options;
     annotation_options.text_input = true;
 
+    // 管道先于 worker/state:函数返回时先丢 worker(不 join),再关唤醒 fd。
+    let snap_context = SnapContext::new(
+        (monitor.physical_x, monitor.physical_y),
+        (monitor.logical_x, monitor.logical_y),
+        frame.scale,
+    );
+    let wake = SnapWake::open();
+    let worker = SnapWorker::spawn(FrameSnap::new(
+        crate::capture::snap::platform_provider(),
+        snap_context,
+        (width as u32, height as u32),
+    ));
     let mut state = ShellState {
         hooks,
         canvas: Canvas {
@@ -1313,16 +1458,9 @@ pub fn pick_region(
             engine: SelectionEngine::new(width as u32, height as u32, flags)
                 .with_scale(frame.scale)
                 .with_annotation_options(annotation_options)
-                // R7:元素级吸附(窗口/控件命中栈);平台检测不可用时
-                // provider 返回空栈,仅自由框选。
-                .with_snap(
-                    crate::capture::snap::platform_provider(),
-                    crate::capture::snap::SnapContext::new(
-                        (monitor.physical_x, monitor.physical_y),
-                        (monitor.logical_x, monitor.logical_y),
-                        frame.scale,
-                    ),
-                ),
+                // R7:只记录能力。命中在 worker 上执行;不可用时请求得到空栈,
+                // Wayland 不进本壳,仍由会话层自由框选。
+                .with_snap(crate::capture::snap::platform_provider(), snap_context),
             composer,
             scratch: vec![0; bytes],
             present: create_present_buffer(&conn, bytes),
@@ -1335,6 +1473,7 @@ pub fn pick_region(
         outcome: None,
         timing: std::env::var_os("CROPMARK_CAPTURE_TIMING").is_some(),
         xim,
+        snap: Some(worker),
     };
 
     // 窗口光标兜底:抓取失败时窗口属性仍能显示十字(与抓取光标一致)。
@@ -1354,6 +1493,15 @@ pub fn pick_region(
         monitor.physical_x,
         monitor.physical_y,
     );
+    // 种子本身不查吸附。有效指针只入队,首帧不等待命中。
+    if state.canvas.engine.cursor_valid() {
+        let (x, y) = state.canvas.engine.cursor();
+        let _ = state
+            .canvas
+            .engine
+            .handle_event(InputEvent::PointerMove { x, y });
+        submit_snap(&mut state);
+    }
 
     // 首帧先合成并写入窗口再映射,避免映射瞬间闪黑(ADR-007:合成只在
     // 引擎 Redraw 时发生,Expose 直接呈现缓存)。
@@ -1378,7 +1526,7 @@ pub fn pick_region(
     }
     let _ = conn.flush();
 
-    pump_until_done(&mut state, &surface, &keyboard);
+    pump_until_done(&mut state, &surface, &keyboard, wake.as_ref());
 
     // 收尾:解除抓取、销毁资源;呈现段的 server 侧 attach 在此释放。
     let _ = conn.ungrab_keyboard(CURRENT_TIME);
@@ -1568,78 +1716,149 @@ fn create_shm_segment(conn: &RustConnection, len: usize) -> Option<ShmSegment> {
 }
 
 /// 手动泵事件直到引擎给出终态;连接错误按取消处理(会话层恢复原状)。
-fn pump_until_done(state: &mut ShellState, surface: &Surface<'_>, keyboard: &KeyboardMap) {
+///
+/// 不调用 `wait_for_event`:那会把 UI 钉在 X 事件上,吸附结果无法及时重绘。
+/// 先排空已缓冲事件,再 `poll` X fd、结果管道与 XIM,超时 `SNAP_POLL_TIMEOUT_MS`。
+/// worker 卡在自己的 X 连接上时,本循环仍处理 Esc/拖选,并且不 join。
+fn pump_until_done(
+    state: &mut ShellState,
+    surface: &Surface<'_>,
+    keyboard: &KeyboardMap,
+    wake: Option<&SnapWake>,
+) {
+    let x_fd = surface.conn.stream().as_raw_fd();
     loop {
-        let event = match surface.conn.wait_for_event() {
-            Ok(event) => event,
-            Err(_) => return,
-        };
-        let done = match event {
-            XEvent::ButtonPress(e) => match e.detail {
-                1 => feed_event(
-                    state,
-                    surface,
-                    InputEvent::LeftDown {
-                        x: e.event_x as i32,
-                        y: e.event_y as i32,
-                    },
-                ),
-                3 => feed_event(
-                    state,
-                    surface,
-                    InputEvent::RightDown {
-                        x: e.event_x as i32,
-                        y: e.event_y as i32,
-                    },
-                ),
-                // R7:滚轮按钮 4/5 在命中栈父子层级间切换高亮(引擎在无高亮
-                // 时忽略)。
-                4 => feed_event(state, surface, InputEvent::Wheel { delta: 1 }),
-                5 => feed_event(state, surface, InputEvent::Wheel { delta: -1 }),
-                _ => false,
-            },
-            XEvent::ButtonRelease(e) if e.detail == 1 => feed_event(
-                state,
-                surface,
-                InputEvent::LeftUp {
-                    x: e.event_x as i32,
-                    y: e.event_y as i32,
-                },
-            ),
-            XEvent::MotionNotify(e) => feed_event(
-                state,
-                surface,
-                InputEvent::PointerMove {
-                    x: e.event_x as i32,
-                    y: e.event_y as i32,
-                },
-            ),
-            XEvent::KeyPress(e) => handle_key_press(state, surface, keyboard, &e),
-            XEvent::KeyRelease(e) => handle_key_release(state, surface, keyboard, &e),
-            // 无效验请求的错误回执会以事件形式送达;选区窗的绘制/抓取
-            // 请求均为尽力而为,忽略错误继续泵。
-            XEvent::Error(_) => false,
-            // stale 重置的关闭请求:取消本壳,结果由会话层代际校验丢弃。
-            XEvent::ClientMessage(e) => {
-                if e.type_ == ACTIVE_SHELL_CANCEL_ATOM.load(Ordering::SeqCst) {
-                    state.outcome = Some(RegionOutcome::Cancelled);
-                    true
-                } else {
-                    false
-                }
-            }
-            // Expose:直接呈现缓存位图,不重合成(ADR-007)。
-            XEvent::Expose(_) => {
-                put_frame(surface, &state.canvas);
-                false
-            }
-            _ => false,
-        };
-        // IM 的异步回放/提交(与当前事件无直接对应)在阻塞等待前收掉。
-        if done || flush_xim(state, surface, keyboard) {
+        match drain_x_events(state, surface, keyboard) {
+            Ok(true) | Err(()) => return,
+            Ok(false) => {}
+        }
+        if flush_xim(state, surface, keyboard) {
+            return;
+        }
+        apply_ready_snap(state, surface);
+        let _ = surface.conn.flush();
+        if !wait_shell_io(x_fd, wake, state) {
             return;
         }
     }
+}
+
+fn drain_x_events(
+    state: &mut ShellState,
+    surface: &Surface<'_>,
+    keyboard: &KeyboardMap,
+) -> Result<bool, ()> {
+    loop {
+        match surface.conn.poll_for_event() {
+            Ok(Some(event)) => {
+                if handle_shell_event(state, surface, keyboard, event) {
+                    return Ok(true);
+                }
+            }
+            Ok(None) => return Ok(false),
+            Err(_) => return Err(()),
+        }
+    }
+}
+
+fn handle_shell_event(
+    state: &mut ShellState,
+    surface: &Surface<'_>,
+    keyboard: &KeyboardMap,
+    event: XEvent,
+) -> bool {
+    match event {
+        XEvent::ButtonPress(e) => match e.detail {
+            1 => feed_event(
+                state,
+                surface,
+                InputEvent::LeftDown {
+                    x: e.event_x as i32,
+                    y: e.event_y as i32,
+                },
+            ),
+            3 => feed_event(
+                state,
+                surface,
+                InputEvent::RightDown {
+                    x: e.event_x as i32,
+                    y: e.event_y as i32,
+                },
+            ),
+            // R7:滚轮按钮 4/5 在命中栈父子层级间切换高亮(引擎在无高亮
+            // 时忽略)。不等待 worker。
+            4 => feed_event(state, surface, InputEvent::Wheel { delta: 1 }),
+            5 => feed_event(state, surface, InputEvent::Wheel { delta: -1 }),
+            _ => false,
+        },
+        XEvent::ButtonRelease(e) if e.detail == 1 => feed_event(
+            state,
+            surface,
+            InputEvent::LeftUp {
+                x: e.event_x as i32,
+                y: e.event_y as i32,
+            },
+        ),
+        XEvent::MotionNotify(e) => feed_event(
+            state,
+            surface,
+            InputEvent::PointerMove {
+                x: e.event_x as i32,
+                y: e.event_y as i32,
+            },
+        ),
+        XEvent::KeyPress(e) => handle_key_press(state, surface, keyboard, &e),
+        XEvent::KeyRelease(e) => handle_key_release(state, surface, keyboard, &e),
+        // 无效验请求的错误回执会以事件形式送达;选区窗的绘制/抓取
+        // 请求均为尽力而为,忽略错误继续泵。
+        XEvent::Error(_) => false,
+        // stale 重置的关闭请求:取消本壳,结果由会话层代际校验丢弃。
+        XEvent::ClientMessage(e) => {
+            if e.type_ == ACTIVE_SHELL_CANCEL_ATOM.load(Ordering::SeqCst) {
+                state.outcome = Some(RegionOutcome::Cancelled);
+                true
+            } else {
+                false
+            }
+        }
+        // Expose:直接呈现缓存位图,不重合成(ADR-007)。
+        XEvent::Expose(_) => {
+            put_frame(surface, &state.canvas);
+            false
+        }
+        _ => false,
+    }
+}
+
+/// 等 X/管道/XIM。返回 false 表示壳连接断开,按取消离开。
+fn wait_shell_io(x_fd: i32, wake: Option<&SnapWake>, state: &ShellState) -> bool {
+    let xim_fds: Vec<c_int> = state
+        .xim
+        .as_ref()
+        .map(|xim| xim.poll_fds().to_vec())
+        .unwrap_or_default();
+    let mut pfds = shell_poll_fds(x_fd, wake.map(|item| item.read_fd), &xim_fds);
+    let ready = unsafe {
+        libc::poll(
+            pfds.as_mut_ptr(),
+            pfds.len() as libc::nfds_t,
+            SNAP_POLL_TIMEOUT_MS,
+        )
+    };
+    if ready < 0 {
+        return std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR);
+    }
+    if let Some(wake) = wake {
+        let signaled = pfds.iter().any(|pfd| {
+            pfd.fd == wake.read_fd && (pfd.revents & (libc::POLLIN | libc::POLLHUP)) != 0
+        });
+        if signaled {
+            wake.drain();
+        }
+    }
+    !pfds
+        .first()
+        .is_some_and(|pfd| pfd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0)
 }
 
 /// 构造 IM 用的按键事件(display 由 XimSession 填入;坐标为物理像素)。
@@ -1905,6 +2124,8 @@ fn feed_event(state: &mut ShellState, surface: &Surface<'_>, event: InputEvent) 
     let outcome = state.canvas.engine.handle_event(event);
     publish_notice(state);
     sync_cursor(state, surface);
+    // 请求交给 worker 后立刻返回;高亮在 poll 到结果时再 present。
+    submit_snap(state);
     match outcome {
         EngineOutcome::Redraw => {
             present(state, surface);
@@ -2204,9 +2425,15 @@ fn put_image_banded(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Condvar, Mutex};
+
     use super::*;
     use crate::capture::buffer::{accept_buffer, RawBuffer};
+    use crate::capture::geometry::PhysicalRect;
     use crate::capture::selection::{CursorHint, EngineState};
+    use crate::capture::snap::{
+        SnapCapability, SnapHit, SnapKind, SnapProvider, SnapRect, SnapStack,
+    };
 
     fn test_frame(width: u32, height: u32, scale: f64) -> Frame {
         let mut frame = accept_buffer(RawBuffer::ready(
@@ -2222,6 +2449,185 @@ mod tests {
     fn engine_from_frame(frame: &Frame) -> SelectionEngine {
         SelectionEngine::new(frame.width, frame.height, FeatureFlags::default())
             .with_scale(frame.scale)
+    }
+
+    #[test]
+    fn snap_wait_includes_x11_wakeup_and_xim_with_short_timeout() {
+        assert!(SNAP_POLL_TIMEOUT_MS > 0 && SNAP_POLL_TIMEOUT_MS <= 32);
+        let fds = shell_poll_fds(3, Some(7), &[9]);
+        assert_eq!(fds.len(), 3);
+        assert_eq!(fds[0].fd, 3);
+        assert_eq!(fds[1].fd, 7);
+        assert_eq!(fds[2].fd, 9);
+        assert!(fds.iter().all(|fd| fd.events == libc::POLLIN));
+        let x_only = shell_poll_fds(4, None, &[]);
+        assert_eq!(x_only.len(), 1);
+        assert_eq!(x_only[0].fd, 4);
+    }
+
+    #[derive(Debug)]
+    struct HitGate {
+        hits: Mutex<Vec<i32>>,
+        hit_cv: Condvar,
+        permits: Mutex<usize>,
+        permit_cv: Condvar,
+        done: Mutex<usize>,
+        done_cv: Condvar,
+    }
+
+    impl HitGate {
+        fn new() -> Self {
+            Self {
+                hits: Mutex::new(Vec::new()),
+                hit_cv: Condvar::new(),
+                permits: Mutex::new(0),
+                permit_cv: Condvar::new(),
+                done: Mutex::new(0),
+                done_cv: Condvar::new(),
+            }
+        }
+
+        fn record(&self, x: i32) {
+            self.hits
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .push(x);
+            self.hit_cv.notify_all();
+        }
+
+        fn wait_hits(&self, count: usize) {
+            let mut hits = self.hits.lock().unwrap_or_else(|err| err.into_inner());
+            let started = Instant::now();
+            while hits.len() < count {
+                let remaining = Duration::from_secs(2)
+                    .checked_sub(started.elapsed())
+                    .expect("timed out waiting for snap hits");
+                let (guard, status) = self
+                    .hit_cv
+                    .wait_timeout(hits, remaining)
+                    .unwrap_or_else(|err| err.into_inner());
+                hits = guard;
+                if status.timed_out() {
+                    panic!("timed out waiting for {count} hits, saw {}", hits.len());
+                }
+            }
+        }
+
+        fn wait_permit(&self) {
+            let mut permits = self.permits.lock().unwrap_or_else(|err| err.into_inner());
+            while *permits == 0 {
+                permits = self
+                    .permit_cv
+                    .wait(permits)
+                    .unwrap_or_else(|err| err.into_inner());
+            }
+            *permits -= 1;
+        }
+
+        fn release(&self) {
+            *self.permits.lock().unwrap_or_else(|err| err.into_inner()) += 1;
+            self.permit_cv.notify_one();
+        }
+
+        fn mark_done(&self) {
+            *self.done.lock().unwrap_or_else(|err| err.into_inner()) += 1;
+            self.done_cv.notify_all();
+        }
+
+        fn wait_done(&self) {
+            let mut done = self.done.lock().unwrap_or_else(|err| err.into_inner());
+            let started = Instant::now();
+            while *done == 0 {
+                let remaining = Duration::from_secs(2)
+                    .checked_sub(started.elapsed())
+                    .expect("timed out waiting for snap hit to finish");
+                let (guard, status) = self
+                    .done_cv
+                    .wait_timeout(done, remaining)
+                    .unwrap_or_else(|err| err.into_inner());
+                done = guard;
+                if status.timed_out() {
+                    panic!("timed out waiting for snap hit to finish");
+                }
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct BlockingWindowProvider {
+        gate: &'static HitGate,
+    }
+
+    impl SnapProvider for BlockingWindowProvider {
+        fn capability(&self) -> SnapCapability {
+            SnapCapability::WindowOnly {
+                reason_key: "error.capture.snap_control_unavailable",
+            }
+        }
+
+        fn hit(&self, _context: SnapContext, x: i32, y: i32) -> SnapStack {
+            self.gate.record(x);
+            self.gate.wait_permit();
+            self.gate.mark_done();
+            SnapStack::new(vec![SnapHit {
+                kind: SnapKind::Window,
+                rect: SnapRect::new(x, y, 40, 20),
+                label: Some("dialog".into()),
+            }])
+        }
+    }
+
+    #[test]
+    fn exchange_snap_submits_without_waiting_for_x11_hit() {
+        let gate: &'static HitGate = Box::leak(Box::new(HitGate::new()));
+        let provider: &'static BlockingWindowProvider =
+            Box::leak(Box::new(BlockingWindowProvider { gate }));
+        let context = SnapContext::new((0, 0), (0, 0), 1.0);
+        let mut engine =
+            SelectionEngine::new(200, 100, FeatureFlags::default()).with_snap(provider, context);
+        let worker = SnapWorker::spawn(FrameSnap::new(provider, context, engine.size()));
+
+        engine.handle_event(InputEvent::PointerMove { x: 12, y: 8 });
+        let started = Instant::now();
+        submit_snap_request(&mut engine, &worker);
+        assert!(!apply_snap_results(&mut engine, &worker));
+        assert!(started.elapsed() < Duration::from_millis(200));
+        assert!(engine.snap_highlight().is_none());
+
+        gate.wait_hits(1);
+        gate.release();
+        let result = worker
+            .poll_timeout(Duration::from_secs(2))
+            .expect("window hit");
+        assert!(engine.apply_snap_result(result));
+        assert_eq!(
+            engine.snap_highlight(),
+            Some(PhysicalRect {
+                x: 12,
+                y: 8,
+                width: 40,
+                height: 20,
+            })
+        );
+    }
+
+    #[test]
+    fn dropping_the_snap_worker_does_not_wait_for_a_stuck_hit() {
+        let gate: &'static HitGate = Box::leak(Box::new(HitGate::new()));
+        let provider: &'static BlockingWindowProvider =
+            Box::leak(Box::new(BlockingWindowProvider { gate }));
+        let context = SnapContext::new((0, 0), (0, 0), 1.0);
+        let worker = SnapWorker::spawn(FrameSnap::new(provider, context, (80, 60)));
+        worker.submit(crate::capture::snap::SnapRequest {
+            generation: 1,
+            cursor: (3, 4),
+        });
+        gate.wait_hits(1);
+        let started = Instant::now();
+        drop(worker);
+        assert!(started.elapsed() < Duration::from_millis(200));
+        gate.release();
+        gate.wait_done();
     }
 
     const XK_D_LOWER: u32 = 0x64;
@@ -2884,7 +3290,10 @@ mod tests {
             .find("present(&mut state, &surface)")
             .expect("first present");
         let map = body.find("conn.map_window(window)").expect("map_window");
-        assert!(seed < present, "cursor must be seeded before the first present");
+        assert!(
+            seed < present,
+            "cursor must be seeded before the first present"
+        );
         assert!(present < map, "first present happens before map_window");
     }
 

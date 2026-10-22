@@ -10,16 +10,23 @@
 //! 坐标契约:查询点经 `SnapContext::to_screen` 换算为屏幕物理像素,X11 全链
 //! 物理像素(缩放恒 1.0),无需逻辑点换算。
 //!
+//! 命中只在调用线程(选区 `SnapWorker`)上执行,复用该线程自己的 X11 连接,
+//! 不借用选区壳的连接,也不在每次移动时重新 `connect`。连接断开则丢弃并
+//! 重连一次。命中返回后向壳登记的管道写一字节(非阻塞);写满或未登记时
+//! 直接返回,壳的短超时 poll 仍能取走结果。UI 线程不调用 `hit`。
+//!
 //! Linux 没有跨工具包可用的控件级检测(ADR-06),能力恒为 `WindowOnly`:
 //! 命中栈只含窗口项,悬停高亮窗口边界,滚轮在重叠窗口间切换层级。Wayland
 //! 会话或拿不到窗口列表(无 X 连接/无 EWMH WM/列表为空)时返回 `Unavailable`
 //! 与空栈,不宣称窗口级可用——与 snap-core 的 Web 能力位语义一致:没有窗口
-//! 可悬停/吸附时按自由框选回退。
+//! 可悬停/吸附时按自由框选回退。原生 Wayland 不走本模块的选区壳。
 
-use std::sync::OnceLock;
+use std::cell::RefCell;
+use std::sync::{Mutex, MutexGuard};
 
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{self, ConnectionExt as XprotoExt};
+use x11rb::rust_connection::RustConnection;
 
 use super::{SnapCapability, SnapContext, SnapHit, SnapKind, SnapProvider, SnapRect, SnapStack};
 
@@ -32,18 +39,51 @@ const STACKING_LIST_ATOM: &[u8] = b"_NET_CLIENT_LIST_STACKING";
 /// 回退属性:WM 不维护 stacking 时使用,但 EWMH 只保证它是初始映射顺序。
 const CLIENT_LIST_ATOM: &[u8] = b"_NET_CLIENT_LIST";
 
+/// 壳登记的结果唤醒写端。`-1` 表示没有壳在等。
+/// 持锁期间写或关闭,避免 worker 写到已关闭的 fd。
+static RESULT_WAKE_FD: Mutex<i32> = Mutex::new(-1);
+
+/// 选区壳登记 worker 命中完成后要唤醒的写端(非阻塞管道)。
+/// 新会话覆盖旧值;传 `-1` 等价于清掉当前登记。
+pub(crate) fn set_result_wakeup(fd: i32) {
+    *lock_wake() = fd;
+}
+
+/// 仅当登记的仍是 `fd` 时清除,避免后一个会话清掉前一个的新登记。
+pub(crate) fn clear_result_wakeup(fd: i32) {
+    let mut slot = lock_wake();
+    if *slot == fd {
+        *slot = -1;
+    }
+}
+
+fn lock_wake() -> MutexGuard<'static, i32> {
+    RESULT_WAKE_FD.lock().unwrap_or_else(|err| err.into_inner())
+}
+
+fn signal_result_wakeup() {
+    let fd = *lock_wake();
+    if fd < 0 {
+        return;
+    }
+    let byte = [1u8];
+    unsafe {
+        let _ = libc::write(fd, byte.as_ptr().cast(), 1);
+    }
+}
+
 /// 平台 provider 单例。窗口级一旦探测可用就缓存(WM 能力在进程生命周期内
 /// 稳定);负向结果(无 X/无窗口列表)不缓存,避免一次空桌面把降级状态粘死。
 pub fn provider() -> &'static dyn SnapProvider {
     static PROVIDER: LinuxSnapProvider = LinuxSnapProvider {
-        capability: OnceLock::new(),
+        capability: std::sync::OnceLock::new(),
     };
     &PROVIDER
 }
 
 #[derive(Debug)]
 struct LinuxSnapProvider {
-    capability: OnceLock<SnapCapability>,
+    capability: std::sync::OnceLock<SnapCapability>,
 }
 
 impl SnapProvider for LinuxSnapProvider {
@@ -64,8 +104,10 @@ impl SnapProvider for LinuxSnapProvider {
         }
         let (screen_x, screen_y) = context.to_screen(x, y);
         // 连接/属性/几何任一读取失败都按"本次无命中"处理:壳保持自由框选,
-        // 不 panic、不阻断交互。
-        x11_hit_stack(screen_x, screen_y).unwrap_or_default()
+        // 不 panic、不阻断交互。唤醒在返回后发出,不在 UI 线程等待。
+        let stack = x11_hit_stack(screen_x, screen_y);
+        signal_result_wakeup();
+        stack
     }
 }
 
@@ -97,28 +139,117 @@ fn wayland_session() -> bool {
         .is_some()
 }
 
-/// 当前受管窗口列表长度;X11 连接或属性读取失败按 0(不可用)处理——
-/// "列表不可读"与"列表为空"都不构成窗口级可用的依据。与命中栈共用
-/// `client_list` 的来源选择,能力位与栈不会出现"来源分裂"。
-fn listed_window_count() -> usize {
-    let Ok((conn, screen_num)) = x11rb::connect(None) else {
-        return 0;
-    };
-    let root = conn.setup().roots[screen_num].root;
-    client_list(&conn, root).map_or(0, |ids| ids.len())
+/// 调用线程独占的 X11 连接。worker 线程与能力探测线程各持一份,
+/// 不与选区壳的 `RustConnection` 混用(x11rb 缓冲不能跨连接共享)。
+struct SnapDisplay {
+    conn: RustConnection,
+    root: xproto::Window,
+    atoms: SnapAtoms,
 }
 
-/// X11 窗口级命中栈:受管窗口按 z 序自底向上枚举(见 `client_list`),
-/// 过滤未映射/零尺寸/本进程窗口,返回屏幕物理像素矩形(由 `FrameSnap`
-/// 平移到帧坐标并裁进帧内)。
-fn x11_hit_stack(screen_x: i32, screen_y: i32) -> Result<SnapStack, ()> {
-    let (conn, screen_num) = x11rb::connect(None).map_err(|_| ())?;
-    let root = conn.setup().roots[screen_num].root;
-    let ids = client_list(&conn, root)?;
+struct SnapAtoms {
+    stacking: xproto::Atom,
+    client_list: xproto::Atom,
+    frame_extents: xproto::Atom,
+    net_wm_name: xproto::Atom,
+    utf8_string: xproto::Atom,
+    wm_pid: xproto::Atom,
+}
+
+impl SnapDisplay {
+    /// 新建本线程使用的连接并缓存原子。失败返回 None,调用方按无命中处理。
+    fn connect() -> Option<Self> {
+        let (conn, screen_num) = x11rb::connect(None).ok()?;
+        let root = conn.setup().roots.get(screen_num)?.root;
+        let atoms = SnapAtoms::intern(&conn).ok()?;
+        Some(Self { conn, root, atoms })
+    }
+}
+
+impl SnapAtoms {
+    fn intern(conn: &RustConnection) -> Result<Self, ()> {
+        Ok(Self {
+            stacking: intern_atom(conn, STACKING_LIST_ATOM)?,
+            client_list: intern_atom(conn, CLIENT_LIST_ATOM)?,
+            frame_extents: intern_atom(conn, b"_NET_FRAME_EXTENTS")?,
+            net_wm_name: intern_atom(conn, b"_NET_WM_NAME")?,
+            utf8_string: intern_atom(conn, b"UTF8_STRING")?,
+            wm_pid: intern_atom(conn, b"_NET_WM_PID")?,
+        })
+    }
+}
+
+fn intern_atom(conn: &RustConnection, name: &[u8]) -> Result<xproto::Atom, ()> {
+    conn.intern_atom(false, name)
+        .map_err(|_| ())?
+        .reply()
+        .map(|reply| reply.atom)
+        .map_err(|_| ())
+}
+
+/// X 连接已不可用。窗口级 BadWindow 不算断开,只跳过该窗口。
+enum HitFailure {
+    Dead,
+}
+
+thread_local! {
+    static SNAP_DISPLAY: RefCell<Option<SnapDisplay>> = const { RefCell::new(None) };
+}
+
+/// 在调用线程的连接上查询。没有连接或两次都断开时返回空栈。
+fn x11_hit_stack(screen_x: i32, screen_y: i32) -> SnapStack {
+    SNAP_DISPLAY.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        reconnect_slot(&mut slot, SnapDisplay::connect, |display| {
+            hit_with_display(display, screen_x, screen_y)
+        })
+        .unwrap_or_default()
+    })
+}
+
+/// 连接策略(纯逻辑,单测覆盖):槽空才连接;查询成功复用同一连接;
+/// 断开则丢弃并重连一次,第二次仍断开则清空槽位。
+fn reconnect_slot<C, T>(
+    slot: &mut Option<C>,
+    mut connect: impl FnMut() -> Option<C>,
+    mut query: impl FnMut(&C) -> Result<T, HitFailure>,
+) -> Result<T, ()> {
+    if slot.is_none() {
+        *slot = connect();
+    }
+    let first = match slot.as_ref() {
+        Some(conn) => query(conn),
+        None => return Err(()),
+    };
+    match first {
+        Ok(value) => Ok(value),
+        Err(HitFailure::Dead) => {
+            *slot = connect();
+            let second = match slot.as_ref() {
+                Some(conn) => query(conn),
+                None => return Err(()),
+            };
+            match second {
+                Ok(value) => Ok(value),
+                Err(HitFailure::Dead) => {
+                    *slot = None;
+                    Err(())
+                }
+            }
+        }
+    }
+}
+
+fn hit_with_display(
+    display: &SnapDisplay,
+    screen_x: i32,
+    screen_y: i32,
+) -> Result<SnapStack, HitFailure> {
+    let ids = client_list(display)?;
     let self_pid = std::process::id();
     let mut windows = Vec::new();
     for id in ids {
-        let Some(rect) = window_rect(&conn, root, id) else {
+        let Some(rect) = window_rect(display, id)? else {
             continue;
         };
         // 先做局部包含判定,避免为无关窗口读取标题/pid。
@@ -126,12 +257,23 @@ fn x11_hit_stack(screen_x: i32, screen_y: i32) -> Result<SnapStack, ()> {
             continue;
         }
         // 本进程窗口(贴图等)不进命中栈:窗口级吸附只面向其它应用。
-        if window_pid(&conn, id) == Some(self_pid) {
+        if window_pid(display, id)? == Some(self_pid) {
             continue;
         }
-        windows.push((rect, window_title(&conn, id)));
+        windows.push((rect, window_title(display, id)?));
     }
     Ok(stack_from_windows_bottom_up(windows))
+}
+
+/// 当前受管窗口列表长度;X11 连接或属性读取失败按 0(不可用)处理——
+/// "列表不可读"与"列表为空"都不构成窗口级可用的依据。与命中栈共用
+/// `client_list` 的来源选择,能力位与栈不会出现"来源分裂"。
+/// 能力在会话开始的调用线程探测一次,用完即丢连接,不放进 worker 的槽。
+fn listed_window_count() -> usize {
+    let Some(display) = SnapDisplay::connect() else {
+        return 0;
+    };
+    client_list(&display).map_or(0, |ids| ids.len())
 }
 
 /// 组装窗口级命中栈(纯逻辑):入参按 stacking z 序自底向上
@@ -152,26 +294,45 @@ fn stack_from_windows_bottom_up(windows: Vec<(SnapRect, Option<String>)>) -> Sna
     )
 }
 
+/// `Some` 是回复;`None` 是 X11 协议错误(窗口已消失);连接错误直接返回。
+macro_rules! x11_reply {
+    ($send:expr) => {{
+        let cookie = match $send {
+            Ok(cookie) => cookie,
+            Err(_) => return Err(HitFailure::Dead),
+        };
+        match cookie.reply() {
+            Ok(reply) => Some(reply),
+            Err(x11rb::errors::ReplyError::X11Error(_)) => None,
+            Err(x11rb::errors::ReplyError::ConnectionError(_)) => return Err(HitFailure::Dead),
+        }
+    }};
+}
+
 /// 受管窗口 → 屏幕矩形:仅接受已映射(VIEWABLE)窗口;装饰边距叠加方式与
 /// `windows_list` 的 X11 枚举一致(左上角减装饰,宽高加装饰)。
-fn window_rect(conn: &impl Connection, root: xproto::Window, id: u32) -> Option<SnapRect> {
-    let attrs = conn.get_window_attributes(id).ok()?.reply().ok()?;
+/// BadWindow 跳过该窗口;连接错误上抛以便线程连接重连。
+fn window_rect(display: &SnapDisplay, id: u32) -> Result<Option<SnapRect>, HitFailure> {
+    let Some(attrs) = x11_reply!(display.conn.get_window_attributes(id)) else {
+        return Ok(None);
+    };
     if attrs.map_state != xproto::MapState::VIEWABLE {
-        return None;
+        return Ok(None);
     }
-    let geom = conn.get_geometry(id).ok()?.reply().ok()?;
-    let translated = conn
-        .translate_coordinates(id, root, 0, 0)
-        .ok()?
-        .reply()
-        .ok()?;
-    decorated_rect(
+    let Some(geom) = x11_reply!(display.conn.get_geometry(id)) else {
+        return Ok(None);
+    };
+    let Some(translated) = x11_reply!(display.conn.translate_coordinates(id, display.root, 0, 0))
+    else {
+        return Ok(None);
+    };
+    Ok(decorated_rect(
         translated.dst_x,
         translated.dst_y,
         geom.width,
         geom.height,
-        frame_extents(conn, id),
-    )
+        frame_extents(display, id)?,
+    ))
 }
 
 /// 客户端矩形 + `_NET_FRAME_EXTENTS`(左/右/上/下,物理像素)→ 屏幕矩形;
@@ -217,17 +378,15 @@ fn rect_contains(rect: SnapRect, x: i32, y: i32) -> bool {
 /// 优先 `_NET_CLIENT_LIST_STACKING`(EWMH 规定的 z 序,自底向上);
 /// 该属性缺失(WM 不维护)时回退 `_NET_CLIENT_LIST`——EWMH 只保证后者是
 /// 初始映射顺序,窗口重新置顶后不更新,回退顺序只是近似。两者都缺失时
-/// 按不可读处理;连接/请求失败由 `Err` 上抛。
-fn client_list(conn: &impl Connection, root: xproto::Window) -> Result<Vec<u32>, ()> {
-    let stacking_atom = intern(conn, STACKING_LIST_ATOM)?;
-    let stacking = window_list_property(conn, root, stacking_atom)?;
+/// 按不可读处理为空列表(不把连接标成断开);连接/请求失败由 `Err` 上抛。
+fn client_list(display: &SnapDisplay) -> Result<Vec<u32>, HitFailure> {
+    let stacking = window_list_property(display, display.atoms.stacking)?;
     let fallback = if stacking.is_none() {
-        let client_atom = intern(conn, CLIENT_LIST_ATOM)?;
-        window_list_property(conn, root, client_atom)?
+        window_list_property(display, display.atoms.client_list)?
     } else {
         None
     };
-    resolve_client_list(stacking, fallback)
+    Ok(resolve_client_list(stacking, fallback).unwrap_or_default())
 }
 
 /// 来源选择(纯逻辑,便于单测):stacking 属性存在(即使为空列表)即采用,
@@ -243,86 +402,93 @@ fn resolve_client_list(
 /// 读取 WINDOW 列表属性:属性缺失(type NONE)返回 `None`,存在时返回其值
 /// (可能为空列表),请求失败返回 `Err`。
 fn window_list_property(
-    conn: &impl Connection,
-    root: xproto::Window,
+    display: &SnapDisplay,
     atom: xproto::Atom,
-) -> Result<Option<Vec<u32>>, ()> {
-    let reply = conn
-        .get_property(false, root, atom, xproto::AtomEnum::WINDOW, 0, 4096)
-        .map_err(|_| ())?
-        .reply()
-        .map_err(|_| ())?;
+) -> Result<Option<Vec<u32>>, HitFailure> {
+    let Some(reply) = x11_reply!(display.conn.get_property(
+        false,
+        display.root,
+        atom,
+        xproto::AtomEnum::WINDOW,
+        0,
+        4096,
+    )) else {
+        return Ok(None);
+    };
     if reply.type_ == xproto::Atom::from(xproto::AtomEnum::NONE) {
         return Ok(None);
     }
     Ok(Some(reply.value32().into_iter().flatten().collect()))
 }
 
-fn frame_extents(conn: &impl Connection, id: u32) -> (i32, i32, i32, i32) {
-    let Ok(atom) = intern(conn, b"_NET_FRAME_EXTENTS") else {
-        return (0, 0, 0, 0);
-    };
-    let Ok(cookie) = conn.get_property(false, id, atom, xproto::AtomEnum::CARDINAL, 0, 4) else {
-        return (0, 0, 0, 0);
-    };
-    let Ok(reply) = cookie.reply() else {
-        return (0, 0, 0, 0);
+fn frame_extents(display: &SnapDisplay, id: u32) -> Result<(i32, i32, i32, i32), HitFailure> {
+    let Some(reply) = x11_reply!(display.conn.get_property(
+        false,
+        id,
+        display.atoms.frame_extents,
+        xproto::AtomEnum::CARDINAL,
+        0,
+        4,
+    )) else {
+        return Ok((0, 0, 0, 0));
     };
     let mut values = reply.value32().into_iter().flatten();
-    (
+    Ok((
         values.next().unwrap_or(0) as i32,
         values.next().unwrap_or(0) as i32,
         values.next().unwrap_or(0) as i32,
         values.next().unwrap_or(0) as i32,
-    )
+    ))
 }
 
-fn window_title(conn: &impl Connection, id: u32) -> Option<String> {
-    let net_name = intern(conn, b"_NET_WM_NAME").ok()?;
-    let utf8 = intern(conn, b"UTF8_STRING").ok()?;
-    if let Ok(cookie) = conn.get_property(false, id, net_name, utf8, 0, 1024) {
-        if let Ok(reply) = cookie.reply() {
-            if !reply.value.is_empty() {
-                return Some(String::from_utf8_lossy(&reply.value).into_owned());
-            }
+fn window_title(display: &SnapDisplay, id: u32) -> Result<Option<String>, HitFailure> {
+    if let Some(reply) = x11_reply!(display.conn.get_property(
+        false,
+        id,
+        display.atoms.net_wm_name,
+        display.atoms.utf8_string,
+        0,
+        1024,
+    )) {
+        if !reply.value.is_empty() {
+            return Ok(Some(String::from_utf8_lossy(&reply.value).into_owned()));
         }
     }
-    let cookie = conn
-        .get_property(
-            false,
-            id,
-            xproto::AtomEnum::WM_NAME,
-            xproto::AtomEnum::STRING,
-            0,
-            1024,
-        )
-        .ok()?;
-    let reply = cookie.reply().ok()?;
-    Some(String::from_utf8_lossy(&reply.value).into_owned())
+    let Some(reply) = x11_reply!(display.conn.get_property(
+        false,
+        id,
+        xproto::AtomEnum::WM_NAME,
+        xproto::AtomEnum::STRING,
+        0,
+        1024,
+    )) else {
+        return Ok(None);
+    };
+    if reply.value.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(String::from_utf8_lossy(&reply.value).into_owned()))
 }
 
-fn window_pid(conn: &impl Connection, id: u32) -> Option<u32> {
-    let atom = intern(conn, b"_NET_WM_PID").ok()?;
-    let reply = conn
-        .get_property(false, id, atom, xproto::AtomEnum::CARDINAL, 0, 1)
-        .ok()?
-        .reply()
-        .ok()?;
-    let mut values = reply.value32()?;
-    values.next()
-}
-
-fn intern(conn: &impl Connection, name: &[u8]) -> Result<xproto::Atom, ()> {
-    Ok(conn
-        .intern_atom(false, name)
-        .map_err(|_| ())?
-        .reply()
-        .map_err(|_| ())?
-        .atom)
+fn window_pid(display: &SnapDisplay, id: u32) -> Result<Option<u32>, HitFailure> {
+    let Some(reply) = x11_reply!(display.conn.get_property(
+        false,
+        id,
+        display.atoms.wm_pid,
+        xproto::AtomEnum::CARDINAL,
+        0,
+        1,
+    )) else {
+        return Ok(None);
+    };
+    let mut values = reply.value32().into_iter().flatten();
+    Ok(values.next())
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
     use crate::capture::snap::SnapStep;
 
     use super::*;
@@ -406,5 +572,98 @@ mod tests {
         // 默认高亮栈首(指针所在的最上层窗口);滚轮 Parent 切到下层窗口。
         assert_eq!(stack.default_index(), Some(0));
         assert_eq!(stack.step(0, SnapStep::Parent), 1);
+    }
+
+    #[test]
+    fn thread_connection_is_reused_until_it_dies() {
+        let mut connects = 0;
+        let mut slot = None;
+        let first = reconnect_slot(
+            &mut slot,
+            || {
+                connects += 1;
+                Some(connects)
+            },
+            |id| {
+                assert_eq!(*id, 1);
+                Ok::<_, HitFailure>(())
+            },
+        );
+        assert!(first.is_ok());
+        let second = reconnect_slot(
+            &mut slot,
+            || unreachable!("reuse"),
+            |id| {
+                assert_eq!(*id, 1);
+                Ok::<_, HitFailure>(())
+            },
+        );
+        assert!(second.is_ok());
+        assert_eq!(connects, 1);
+        assert_eq!(slot, Some(1));
+
+        let mut calls = 0;
+        let recovered = reconnect_slot(
+            &mut slot,
+            || Some(4),
+            |_| {
+                calls += 1;
+                if calls == 1 {
+                    Err(HitFailure::Dead)
+                } else {
+                    Ok(9)
+                }
+            },
+        )
+        .expect("retry");
+        assert_eq!(recovered, 9);
+        assert_eq!(calls, 2);
+        assert_eq!(slot, Some(4));
+
+        let mut failed_connects = 0;
+        let mut dead = Some(1);
+        let err = reconnect_slot(
+            &mut dead,
+            || {
+                failed_connects += 1;
+                None
+            },
+            |_| Err::<(), _>(HitFailure::Dead),
+        );
+        assert!(err.is_err());
+        assert_eq!(failed_connects, 1);
+        assert!(dead.is_none());
+
+        let mut missing: Option<u8> = None;
+        assert!(reconnect_slot(&mut missing, || None, |_| Ok::<_, HitFailure>(())).is_err());
+        assert!(missing.is_none());
+    }
+
+    #[test]
+    fn result_wakeup_write_does_not_block_when_the_pipe_is_full() {
+        let mut fds = [0; 2];
+        assert_eq!(
+            unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) },
+            0
+        );
+        let buf = [0u8; 4096];
+        loop {
+            let n = unsafe { libc::write(fds[1], buf.as_ptr().cast(), buf.len()) };
+            if n < 0 {
+                break;
+            }
+        }
+        set_result_wakeup(fds[1]);
+        let started = Instant::now();
+        signal_result_wakeup();
+        assert!(started.elapsed() < Duration::from_millis(200));
+        clear_result_wakeup(fds[1]);
+        assert_eq!(*lock_wake(), -1);
+        // 未登记时写端已关闭也不能碰到 fd 0。
+        signal_result_wakeup();
+        unsafe {
+            libc::close(fds[0]);
+            libc::close(fds[1]);
+        }
     }
 }
