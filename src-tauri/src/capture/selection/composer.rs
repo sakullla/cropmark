@@ -95,8 +95,8 @@ const MENU_FONT: f32 = 14.0;
 const MENU_HOVER_RADIUS: i32 = 6;
 /// 菜单项图标外接盒。与横条相同,走 24px 原稿,避免缩成细灰线。
 const MENU_ICON: i32 = 24;
-/// 浮层圆角逻辑半径(× scale,钳制 8..=32)。
-const PANEL_RADIUS: f32 = 8.0;
+/// 浮层圆角逻辑半径(× scale,钳制 10..=40)。
+const PANEL_RADIUS: f32 = 10.0;
 
 // 1.0 基准下限:横条 40px、菜单行 34px。实际尺寸只随 DPI 放大,不缩到这以下。
 const _: () = assert!(BAR_BUTTON >= 40 && MENU_ITEM_H >= 34 && MENU_ITEM_W >= 148);
@@ -178,7 +178,7 @@ impl ChromeMetrics {
             badge_pad_x: scaled(BADGE_PAD_X),
             badge_pad_y: scaled(BADGE_PAD_Y),
             badge_margin: scaled(BADGE_MARGIN),
-            panel_radius: ((PANEL_RADIUS * scale).round() as i32).clamp(8, 32),
+            panel_radius: ((PANEL_RADIUS * scale).round() as i32).clamp(10, 40),
         }
     }
 }
@@ -1976,9 +1976,13 @@ impl Composer {
             return;
         };
         draw_panel_chrome(rgba, w, h, strip.panel, self.metrics.panel_radius);
+        let btn_inset = (2.5 * self.metrics.scale).round().clamp(2.0, 5.0) as i32;
+        let btn_radius = (self.metrics.panel_radius - btn_inset).max(5);
+        let swatch_inset = (6.0 * self.metrics.scale).round().max(6.0) as i32;
+        let swatch_radius = (4.0 * self.metrics.scale).round().max(4.0) as i32;
         for (chip, rect) in strip.chips {
             if chip.selected(overlay) {
-                fill_round(rgba, w, h, inset(rect, 2), 4, ACCENT);
+                fill_round(rgba, w, h, inset(rect, btn_inset), btn_radius, ACCENT);
             }
             let label = style_chip_label(chip);
             let color = match chip {
@@ -1988,7 +1992,7 @@ impl Composer {
                 _ => CHROME_TEXT,
             };
             if matches!(chip, StyleChip::Color(_) | StyleChip::Erase(Some(_))) {
-                fill_round(rgba, w, h, inset(rect, 6), 4, color);
+                fill_round(rgba, w, h, inset(rect, swatch_inset), swatch_radius, color);
             }
             text::draw_text(
                 rgba,
@@ -2029,7 +2033,8 @@ impl Composer {
             return;
         };
         draw_panel_chrome(rgba, w, h, toolbar.panel, metrics.panel_radius);
-        let radius = (metrics.bar_button / 5).clamp(4, 8);
+        let btn_inset = (2.5 * metrics.scale).round().clamp(2.0, 5.0) as i32;
+        let radius = (metrics.panel_radius - btn_inset).max(6);
         let mut previous: Option<SelectionAction> = None;
         for (action, rect) in toolbar.buttons.iter() {
             let hover = rect.contains(scene.cursor.0, scene.cursor.1);
@@ -2047,9 +2052,9 @@ impl Composer {
             let primary = *action == SelectionAction::Copy;
             let ink = if primary { ON_ACCENT } else { CHROME_TEXT };
             if primary {
-                fill_round(rgba, w, h, inset(*rect, 2), radius, ACCENT);
+                fill_round(rgba, w, h, inset(*rect, btn_inset), radius, ACCENT);
             } else if selected_tool || hover {
-                fill_round_blend(rgba, w, h, inset(*rect, 2), radius, ACTIVE_BG);
+                fill_round_blend(rgba, w, h, inset(*rect, btn_inset), radius, ACTIVE_BG);
             }
             let icon_cx = rect.x + rect.width / 2;
             let icon_cy = rect.y + rect.height / 2;
@@ -2486,13 +2491,16 @@ impl Composer {
             width: swatch,
             height: swatch,
         };
-        fill_round(rgba, w, h, sw, 3, [center[0], center[1], center[2], 255]);
-        for i in 0..swatch {
-            blend(rgba, w, h, sw.x + i, sw.y, CHROME_BORDER);
-            blend(rgba, w, h, sw.x + i, sw.bottom() - 1, CHROME_BORDER);
-            blend(rgba, w, h, sw.x, sw.y + i, CHROME_BORDER);
-            blend(rgba, w, h, sw.right() - 1, sw.y + i, CHROME_BORDER);
-        }
+        let sw_radius = (3.0 * self.scale).round().max(3.0) as i32;
+        fill_round(
+            rgba,
+            w,
+            h,
+            sw,
+            sw_radius,
+            [center[0], center[1], center[2], 255],
+        );
+        stroke_round_blend(rgba, w, h, sw, sw_radius, CHROME_BORDER);
         let line_h = text::line_height(layout.font);
         text::draw_text(
             rgba,
@@ -2508,7 +2516,7 @@ impl Composer {
 }
 
 /// 长截图字形:方框里两行正文,箭头从底边穿出去。
-/// 窄框加粗箭头会糊成下载按钮,和旁边的保存分不清。
+/// 窄框加粗箭头会糊成下载按钮,和旁边的保存分不清;采用圆头距离场抗锯齿绘制。
 fn draw_long_capture_icon(
     rgba: &mut [u8],
     w: u32,
@@ -2522,48 +2530,66 @@ fn draw_long_capture_icon(
     let origin_x = cx - size / 2;
     let origin_y = cy - size / 2;
     let scale = size as f32 / 24.0;
-    // 24×24 稿。用浮点铺满,避免整除把描边拆成断点。底边留口,箭头滚出窗口。
-    const CELLS: &[(i32, i32, i32, i32)] = &[
-        (4, 2, 20, 4),
-        (4, 4, 6, 15),
-        (18, 4, 20, 15),
-        (4, 13, 8, 15),
-        (16, 13, 20, 15),
-        (7, 6, 17, 8),
-        (7, 9, 17, 11),
-        (11, 11, 13, 18),
-        (8, 16, 16, 18),
-        (9, 18, 15, 20),
-        (10, 20, 14, 22),
+    let half_stroke = (1.9f32).max(1.65 / scale) * 0.5;
+    let aa_24 = 0.5 / scale;
+    let seg = |px: f32, py: f32, ax: f32, ay: f32, bx: f32, by: f32| -> f32 {
+        let dx = bx - ax;
+        let dy = by - ay;
+        let len_sq = dx * dx + dy * dy;
+        let t = if len_sq > 1e-6 {
+            (((px - ax) * dx + (py - ay) * dy) / len_sq).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        (px - (ax + t * dx)).hypot(py - (ay + t * dy))
+    };
+    const SEGMENTS: &[(f32, f32, f32, f32)] = &[
+        (5.0, 14.2, 5.0, 3.6),
+        (5.0, 3.6, 19.0, 3.6),
+        (19.0, 3.6, 19.0, 14.2),
+        (5.0, 14.2, 7.6, 14.2),
+        (16.4, 14.2, 19.0, 14.2),
+        (8.0, 7.0, 16.0, 7.0),
+        (8.0, 10.0, 16.0, 10.0),
+        (12.0, 12.6, 12.0, 20.4),
+        (8.8, 17.4, 12.0, 20.6),
+        (12.0, 20.6, 15.2, 17.4),
     ];
-    for &(x0, y0, x1, y1) in CELLS {
-        let left = origin_x + (x0 as f32 * scale).floor() as i32;
-        let top = origin_y + (y0 as f32 * scale).floor() as i32;
-        let right = origin_x + (x1 as f32 * scale).ceil() as i32;
-        let bottom = origin_y + (y1 as f32 * scale).ceil() as i32;
-        for y in top..bottom.max(top + 1) {
-            for x in left..right.max(left + 1) {
-                blend(rgba, w, h, x, y, ink);
+    for dy in 0..size {
+        let py = (dy as f32 + 0.5) / scale;
+        for dx in 0..size {
+            let px = (dx as f32 + 0.5) / scale;
+            let mut best = f32::INFINITY;
+            for &(ax, ay, bx, by) in SEGMENTS {
+                best = best.min(seg(px, py, ax, ay, bx, by));
+            }
+            let d = best - half_stroke;
+            let cov = ((aa_24 - d) / (2.0 * aa_24)).clamp(0.0, 1.0);
+            if cov > 0.0 {
+                blend_cov(rgba, w, h, origin_x + dx, origin_y + dy, ink, cov);
             }
         }
     }
 }
 
 /// 录屏字形:同心圆环 + 实心圆点(与长截图同为几何笔画,无位图资产)。
-/// 24×24 稿,按请求尺寸缩放;圆环描边与圆心点都走 blend,不透明落笔会打穿底色。
+/// 24×24 稿,按请求尺寸缩放;圆环与圆心点均按距离场抗锯齿混合。
 fn draw_recording_icon(rgba: &mut [u8], w: u32, h: u32, cx: i32, cy: i32, size: i32, ink: [u8; 4]) {
     let size = size.max(16) as f32;
     let scale = size / 24.0;
     let outer = 9.0 * scale;
     let inner = 6.0 * scale;
     let core = 3.25 * scale;
-    let reach = outer.ceil() as i32;
+    let reach = (outer + 1.0).ceil() as i32;
     for oy in -reach..=reach {
         for ox in -reach..=reach {
-            let d2 = (ox * ox + oy * oy) as f32;
-            let ring = d2 <= outer * outer && d2 >= inner * inner;
-            if ring || d2 <= core * core {
-                blend(rgba, w, h, cx + ox, cy + oy, ink);
+            let d = ((ox * ox + oy * oy) as f32).sqrt();
+            let ring_cov =
+                ((outer + 0.5 - d).clamp(0.0, 1.0)) * ((d - (inner - 0.5)).clamp(0.0, 1.0));
+            let core_cov = (core + 0.5 - d).clamp(0.0, 1.0);
+            let cov = ring_cov.max(core_cov);
+            if cov > 0.0 {
+                blend_cov(rgba, w, h, cx + ox, cy + oy, ink, cov);
             }
         }
     }
@@ -2639,13 +2665,41 @@ fn place_tooltip(
 }
 
 fn draw_panel_chrome(rgba: &mut [u8], w: u32, h: u32, rect: IntRect, radius: i32) {
-    let shadow = IntRect {
+    if rect.width <= 0 || rect.height <= 0 {
+        return;
+    }
+    let r = (radius as f32)
+        .min(rect.width as f32 * 0.5)
+        .min(rect.height as f32 * 0.5)
+        .max(0.0);
+    let shadow_far = IntRect {
         y: rect.y + 2,
         ..rect
     };
-    fill_round_blend(rgba, w, h, shadow, radius, CHROME_SHADOW);
-    fill_round_blend(rgba, w, h, rect, radius, CHROME_BORDER);
-    fill_round_blend(rgba, w, h, inset(rect, 1), radius - 1, CHROME_BG);
+    let shadow_near = IntRect {
+        y: rect.y + 1,
+        ..rect
+    };
+    fill_round_blend(rgba, w, h, shadow_far, radius, [15, 23, 42, 42]);
+    fill_round_blend(rgba, w, h, shadow_near, radius, CHROME_SHADOW);
+    for y in rect.y..rect.bottom() {
+        for x in rect.x..rect.right() {
+            let outer_cov = round_rect_coverage(rect, r, x, y);
+            if outer_cov <= 0.0 {
+                continue;
+            }
+            let inner_cov = round_rect_offset_coverage(rect, r, -1.0, x, y);
+            if inner_cov >= 1.0 {
+                put(rgba, w, h, x, y, CHROME_BG);
+                continue;
+            }
+            blend_cov(rgba, w, h, x, y, CHROME_BG, outer_cov);
+            let border_cov = (outer_cov - inner_cov).clamp(0.0, 1.0);
+            if border_cov > 0.0 {
+                blend_cov(rgba, w, h, x, y, CHROME_BORDER, border_cov);
+            }
+        }
+    }
 }
 
 fn inset(rect: IntRect, by: i32) -> IntRect {
@@ -2943,59 +2997,124 @@ pub(super) fn blend(rgba: &mut [u8], w: u32, h: u32, x: i32, y: i32, color: [u8;
     rgba[i + 3] = 255;
 }
 
-/// 圆角矩形内判定:点钳制到内缩 radius 的核心矩形后,到钳制点的距离 ≤ radius。
-fn inside_round(rect: IntRect, radius: i32, x: i32, y: i32) -> bool {
-    if radius <= 0 {
-        return rect.contains(x, y);
-    }
-    let ix = x.clamp(rect.x + radius, rect.right() - 1 - radius);
-    let iy = y.clamp(rect.y + radius, rect.bottom() - 1 - radius);
-    let dx = x - ix;
-    let dy = y - iy;
-    dx * dx + dy * dy <= radius * radius
+/// 点 (px, py) 到圆角矩形外边界的有符号距离(内部为负,外部为正)。
+fn round_rect_sdf_at(rect: IntRect, radius: f32, px: f32, py: f32) -> f32 {
+    let hw = rect.width as f32 * 0.5;
+    let hh = rect.height as f32 * 0.5;
+    let r = radius.clamp(0.0, hw.min(hh));
+    let cx = rect.x as f32 + hw;
+    let cy = rect.y as f32 + hh;
+    let qx = (px - cx).abs() - (hw - r);
+    let qy = (py - cy).abs() - (hh - r);
+    let outside = if qx > 0.0 && qy > 0.0 {
+        qx.hypot(qy)
+    } else {
+        qx.max(0.0) + qy.max(0.0)
+    };
+    let inside = qx.max(qy).min(0.0);
+    outside + inside - r
 }
 
-/// 不透明圆角矩形填充(accent 填充按钮底)。
-fn fill_round(rgba: &mut [u8], w: u32, h: u32, rect: IntRect, radius: i32, color: [u8; 4]) {
+fn round_rect_offset_coverage(rect: IntRect, radius: f32, offset: f32, x: i32, y: i32) -> f32 {
     if rect.width <= 0 || rect.height <= 0 {
-        return;
+        return 0.0;
     }
-    let radius = radius
-        .min((rect.width - 1) / 2)
-        .min((rect.height - 1) / 2)
-        .max(0);
-    for y in rect.y..rect.bottom() {
-        for x in rect.x..rect.right() {
-            if inside_round(rect, radius, x, y) {
-                put(rgba, w, h, x, y, color);
+    let d_center = round_rect_sdf_at(rect, radius, x as f32 + 0.5, y as f32 + 0.5) - offset;
+    if d_center <= -0.75 {
+        return 1.0;
+    }
+    if d_center >= 0.75 {
+        return 0.0;
+    }
+    const SUB: i32 = 4;
+    let inv = 1.0 / (SUB as f32);
+    let mut hits = 0u32;
+    for sy in 0..SUB {
+        let py = y as f32 + (sy as f32 + 0.5) * inv;
+        for sx in 0..SUB {
+            let px = x as f32 + (sx as f32 + 0.5) * inv;
+            if round_rect_sdf_at(rect, radius, px, py) <= offset {
+                hits += 1;
             }
         }
     }
+    hits as f32 / ((SUB * SUB) as f32)
+}
+
+fn round_rect_coverage(rect: IntRect, radius: f32, x: i32, y: i32) -> f32 {
+    round_rect_offset_coverage(rect, radius, 0.0, x, y)
+}
+
+fn blend_cov(rgba: &mut [u8], w: u32, h: u32, x: i32, y: i32, color: [u8; 4], cov: f32) {
+    let cov = cov.clamp(0.0, 1.0);
+    if cov <= 0.0 || color[3] == 0 {
+        return;
+    }
+    if cov >= 1.0 && color[3] == 255 {
+        put(rgba, w, h, x, y, color);
+        return;
+    }
+    let alpha = (f32::from(color[3]) * cov).round() as u8;
+    if alpha > 0 {
+        blend(rgba, w, h, x, y, [color[0], color[1], color[2], alpha]);
+    }
+}
+
+/// 抗锯齿圆角矩形填充(accent 填充按钮底等)。
+fn fill_round(rgba: &mut [u8], w: u32, h: u32, rect: IntRect, radius: i32, color: [u8; 4]) {
+    fill_round_blend(rgba, w, h, rect, radius, color);
 }
 
 fn fill_round_blend(rgba: &mut [u8], w: u32, h: u32, rect: IntRect, radius: i32, color: [u8; 4]) {
     if rect.width <= 0 || rect.height <= 0 {
         return;
     }
-    let radius = radius
-        .min((rect.width - 1) / 2)
-        .min((rect.height - 1) / 2)
-        .max(0);
+    let r = (radius as f32)
+        .min(rect.width as f32 * 0.5)
+        .min(rect.height as f32 * 0.5)
+        .max(0.0);
     for y in rect.y..rect.bottom() {
         for x in rect.x..rect.right() {
-            if inside_round(rect, radius, x, y) {
-                blend(rgba, w, h, x, y, color);
+            let cov = round_rect_coverage(rect, r, x, y);
+            blend_cov(rgba, w, h, x, y, color, cov);
+        }
+    }
+}
+
+fn stroke_round_blend(rgba: &mut [u8], w: u32, h: u32, rect: IntRect, radius: i32, color: [u8; 4]) {
+    if rect.width <= 0 || rect.height <= 0 {
+        return;
+    }
+    let r = (radius as f32)
+        .min(rect.width as f32 * 0.5)
+        .min(rect.height as f32 * 0.5)
+        .max(0.0);
+    for y in rect.y..rect.bottom() {
+        for x in rect.x..rect.right() {
+            let outer_cov = round_rect_coverage(rect, r, x, y);
+            if outer_cov <= 0.0 {
+                continue;
+            }
+            let inner_cov = round_rect_offset_coverage(rect, r, -1.0, x, y);
+            let ring = (outer_cov - inner_cov).clamp(0.0, 1.0);
+            if ring > 0.0 {
+                blend_cov(rgba, w, h, x, y, color, ring);
             }
         }
     }
 }
 
 fn fill_circle(rgba: &mut [u8], w: u32, h: u32, cx: i32, cy: i32, radius: i32, color: [u8; 4]) {
-    for dy in -radius..=radius {
-        for dx in -radius..=radius {
-            if dx * dx + dy * dy <= radius * radius {
-                put(rgba, w, h, cx + dx, cy + dy, color);
-            }
+    if radius < 0 {
+        return;
+    }
+    let r = radius as f32;
+    let reach = radius + 1;
+    for dy in -reach..=reach {
+        for dx in -reach..=reach {
+            let dist = ((dx * dx + dy * dy) as f32).sqrt();
+            let cov = (r + 0.5 - dist).clamp(0.0, 1.0);
+            blend_cov(rgba, w, h, cx + dx, cy + dy, color, cov);
         }
     }
 }
@@ -5420,6 +5539,64 @@ mod tests {
         assert!(
             near_chrome(pixel),
             "scaled menu panel should be the chrome surface, got {pixel:?}"
+        );
+    }
+
+    #[test]
+    fn panel_and_button_rounded_corners_are_antialiased() {
+        let mut frame = solid_frame(960, 440, [248, 248, 248, 255]);
+        frame.scale = 1.5;
+        let composer = Composer::new(&frame).unwrap();
+        let selection = PhysicalRect {
+            x: 90,
+            y: 60,
+            width: 774,
+            height: 220,
+        };
+        let flags = FeatureFlags {
+            magnifier: false,
+            tools: ToolToggles {
+                number: false,
+                spotlight: false,
+                magnifier: false,
+                bubble: false,
+                sticker: false,
+                erase: false,
+                ..ToolToggles::default()
+            },
+            ..FeatureFlags::default()
+        };
+        let scene = Scene {
+            selection: Some(selection),
+            cursor: (880, 390),
+            flags,
+            toolbar_visible: true,
+            menu_open: false,
+            menu_anchor: (0, 0),
+            more_open: false,
+            snap_highlight: None,
+            menu_scroll: 0,
+        };
+        let empty: Vec<Annotation> = Vec::new();
+        let overlay = annotation_overlay(&empty, None, None, 0);
+        let composed = composer.compose_with_overlay(&scene, &overlay);
+        let toolbar =
+            unified_toolbar(composer.metrics, selection, (960, 440), flags, true).unwrap();
+        let r = composer.metrics.panel_radius;
+        // 面板左上圆角象限内应同时存在背景过渡像素与内部亮底像素,而非纯二值阶梯。
+        let mut intermediate = 0usize;
+        for y in toolbar.panel.y..toolbar.panel.y + r {
+            for x in toolbar.panel.x..toolbar.panel.x + r {
+                let i = ((y as u32 * 960 + x as u32) * 4) as usize;
+                let luma = composed[i];
+                if luma > 135 && luma < 240 {
+                    intermediate += 1;
+                }
+            }
+        }
+        assert!(
+            intermediate >= 6,
+            "toolbar corner should have smooth anti-aliased transition pixels, got {intermediate}"
         );
     }
 }
