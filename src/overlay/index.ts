@@ -121,6 +121,8 @@ interface OverlayFrame {
   recordEven?: boolean;
   /** 录屏确认前的边框和控制条让位,与后端 plan_recording_chrome 同一套物理像素。 */
   recordChrome?: RecordChrome;
+  /** 原生区域 WindowOnly：工作区表面显示一次，只接受现有控件级不可用词条。 */
+  snapNoticeKey?: string;
 }
 
 interface RecordChrome {
@@ -158,6 +160,7 @@ const FALLBACK_IDLE_STROKE = "#1c2128";
 const TOOLBAR_NOTICE_KEY: CatalogKey = "overlay.notice.toolbar";
 const COLOR_NOTICE_KEY: CatalogKey = "overlay.notice.color";
 const NUDGE_NOTICE_KEY: CatalogKey = "overlay.notice.nudge";
+const SNAP_WINDOW_ONLY_NOTICE_KEY: CatalogKey = "error.capture.snap_control_unavailable";
 
 function canvasToken(root: HTMLElement, name: string, fallback: string): string {
   return resolveCanvasColor(getComputedStyle(root).getPropertyValue(name), fallback);
@@ -1215,9 +1218,13 @@ export function mountOverlay(root: HTMLElement): () => void {
         setFinishing(false);
         scheduleDraw();
         // 自动识别在图像就绪后启动,避免被加载期间的 finishing 守卫吞掉。
+        // WindowOnly 说明画在工作区上：此时 setFocus 已经发生，单独 toast 会被整屏窗盖住。
         if (next.fixed && next.capabilities?.workspaceActions !== false) {
           if (next.pendingOcr) activateWorkspaceOcr();
           else if (next.pendingQr) activateWorkspaceQr();
+          else if (next.snapNoticeKey === SNAP_WINDOW_ONLY_NOTICE_KEY) {
+            showNotice(t(SNAP_WINDOW_ONLY_NOTICE_KEY));
+          }
         }
       };
       loadedImage.onerror = () => {

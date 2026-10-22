@@ -900,6 +900,8 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
         }
         // 区域选区:Unavailable 仍在壳前走自由框选提示。WindowOnly 只记下,
         // 等壳关掉再提示——原生壳盖住 Tauri toast,提前显示会自隐并吃掉名额。
+        // 确认进全屏工作区时不在壳后弹 toast:覆盖层 load 后的 setFocus 会把
+        // 同级置顶 toast 盖住,那一次改画在工作区表面上。
         // LongCapture/Recording 复用本壳但不需要该说明。
         let snap_notice = if mode == CaptureMode::Region {
             plan_snap_notice(super::snap::platform_capability())
@@ -950,6 +952,7 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
             .is_some_and(|current| current.mode == CaptureMode::Recording)
     });
     let shell_returned = picked.is_ok();
+    let mut quiet_result = false;
     let dispatched = match picked {
         Err(error) => Err(error),
         Ok(outcome) => match outcome {
@@ -993,6 +996,7 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
             }
             // 复制/保存/贴图在选区上直接完成,不打开工作区。
             RegionOutcome::Quiet(rect, action, annotations) => {
+                quiet_result = true;
                 finish_region_with(
                     app,
                     RegionSelection {
@@ -1017,10 +1021,13 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
             }
         },
     };
-    // 壳正常返回后,跟在本次结果界面之后再提示:全屏工作区不会盖住这唯一一次
-    // toast,选区存续期间也不会把前台从壳抢走。建壳失败不占名额。
-    if defer_window_only_notice && shell_returned {
-        if let Some(key) = claim_window_only_notice(&SNAP_WINDOW_ONLY_NOTICE_SHOWN) {
+    // 壳正常返回后的提示。全屏工作区在打开成功时占名额,并把说明画进覆盖层,
+    // 避免随后 setFocus 盖住 toast。复制/保存/贴图先留结果 toast,结束后再提示;
+    // 期间若新壳或覆盖层已经挡住,不占名额。建壳失败或结果失败都不占名额。
+    if defer_window_only_notice && shell_returned && dispatched.is_ok() {
+        if quiet_result {
+            present_window_only_notice_after_result(app.clone());
+        } else if let Some(key) = claim_window_only_notice(&SNAP_WINDOW_ONLY_NOTICE_SHOWN) {
             ui::show_toast_key(app, key);
         }
     }
@@ -1341,7 +1348,8 @@ fn overlay_reduced_capabilities(mode: CaptureMode, native_shell: bool) -> bool {
 /// 仅窗口级能力提示的词条。不新增文案或设置项。
 const SNAP_WINDOW_ONLY_NOTICE_KEY: &str = "error.capture.snap_control_unavailable";
 
-/// WindowOnly 提示每进程只展示一次。只在壳关闭后真正显示时置位。
+/// WindowOnly 提示每进程只展示一次。只在用户能看见的那一次置位:
+/// 全屏工作区打开成功,或壳后 toast 真正显示时。被盖住的显示不占名额。
 static SNAP_WINDOW_ONLY_NOTICE_SHOWN: AtomicBool = AtomicBool::new(false);
 
 /// 原生区域选区的检测能力说明,不含「已经提示过」的状态。
@@ -1384,6 +1392,62 @@ fn claim_window_only_notice(window_only_shown: &AtomicBool) -> Option<&'static s
     } else {
         Some(SNAP_WINDOW_ONLY_NOTICE_KEY)
     }
+}
+
+/// 原生区域选区进入全屏工作区时,是否把 WindowOnly 说明放进覆盖层。
+/// 只查看名额,不占用;打开失败时调用方不得 claim。
+fn window_only_workspace_notice(
+    mode: CaptureMode,
+    native_shell: bool,
+    capability: super::snap::SnapCapability,
+    window_only_shown: &AtomicBool,
+) -> Option<&'static str> {
+    if mode != CaptureMode::Region || !native_shell {
+        return None;
+    }
+    if !matches!(capability, super::snap::SnapCapability::WindowOnly { .. }) {
+        return None;
+    }
+    if window_only_shown.load(Ordering::SeqCst) {
+        return None;
+    }
+    Some(SNAP_WINDOW_ONLY_NOTICE_KEY)
+}
+
+/// 结果 toast 结束之后,壳或全屏覆盖层还在时不该再弹会被盖住的说明。
+fn window_only_toast_visible(shell_active: bool, overlay_visible: bool) -> bool {
+    !shell_active && !overlay_visible
+}
+
+/// 等结果 toast 自己隐掉再显示 WindowOnly 说明,避免两条共用同一个 toast 窗时互相替换。
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+fn present_window_only_notice_after_result(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let _ = tauri::async_runtime::spawn_blocking(|| {
+            std::thread::sleep(ui::TOAST_DURATION);
+        })
+        .await;
+        if !window_only_toast_visible(native_shell_active(), ui::is_visible(&app, ui::OVERLAY)) {
+            return;
+        }
+        if let Some(key) = claim_window_only_notice(&SNAP_WINDOW_ONLY_NOTICE_SHOWN) {
+            ui::show_toast_key(&app, key);
+        }
+    });
+}
+
+fn clear_workspace_snap_notice(app: &AppHandle, expected: Option<u64>) {
+    with_session_mut(app, |session| {
+        let Some(current) = session.as_mut() else {
+            return;
+        };
+        if generation_mismatch(current, expected) {
+            return;
+        }
+        if let Some(overlay) = current.overlay.as_mut() {
+            overlay.snap_notice_key = None;
+        }
+    });
 }
 
 /// R3/R9:选区壳能力集。
@@ -2590,6 +2654,16 @@ fn deliver_fixed_frame(
     overlay.annotations = annotations;
     overlay.pending_ocr = pending_ocr;
     overlay.pending_qr = pending_qr;
+    // 词条先放进载荷,覆盖层 load 才能画出来;名额要等窗口真正打开再占。
+    let snap_notice = window_only_workspace_notice(
+        mode,
+        region_native_shell(),
+        super::snap::platform_capability(),
+        &SNAP_WINDOW_ONLY_NOTICE_SHOWN,
+    );
+    if let Some(key) = snap_notice {
+        overlay.snap_notice_key = Some(key.to_string());
+    }
     with_session_mut(app, |session| {
         let current = session.as_mut().ok_or_else(CaptureError::cancelled)?;
         if current.cancelled || generation_mismatch(current, expected) {
@@ -2604,8 +2678,15 @@ fn deliver_fixed_frame(
         Ok(())
     })?;
     if ui::open_overlay(app, &monitor).is_err() {
+        // 窗口没打开,工作区表面不会显示。清掉词条并不占名额,留给下一次。
+        if snap_notice.is_some() {
+            clear_workspace_snap_notice(app, expected);
+        }
         ui::show_toast_key(app, "overlay.notice.workspace_unavailable");
         return open_workspace_preview(app, frame, annotations_from_overlay(app), expected);
+    }
+    if snap_notice.is_some() {
+        let _ = claim_window_only_notice(&SNAP_WINDOW_ONLY_NOTICE_SHOWN);
     }
     Ok(())
 }
@@ -4060,6 +4141,75 @@ mod tests {
             claim_window_only_notice(&untouched),
             Some("error.capture.snap_control_unavailable")
         );
+    }
+
+    #[test]
+    fn workspace_window_only_notice_uses_surface_and_one_quota() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        use crate::capture::snap::SnapCapability;
+
+        let shown = AtomicBool::new(false);
+        let window_only = SnapCapability::WindowOnly {
+            reason_key: "error.capture.other",
+        };
+        // 装进覆盖层之前不占名额,文案固定,不用能力上自带的 reason_key。
+        assert_eq!(
+            window_only_workspace_notice(CaptureMode::Region, true, window_only, &shown),
+            Some("error.capture.snap_control_unavailable")
+        );
+        assert!(!shown.load(Ordering::SeqCst));
+        assert_eq!(
+            claim_window_only_notice(&shown),
+            Some("error.capture.snap_control_unavailable")
+        );
+        // 工作区已经显示过:不再装进覆盖层,壳后 toast 也不再占一次。
+        assert_eq!(
+            window_only_workspace_notice(CaptureMode::Region, true, window_only, &shown),
+            None
+        );
+        assert_eq!(claim_window_only_notice(&shown), None);
+
+        let fresh = AtomicBool::new(false);
+        assert_eq!(
+            window_only_workspace_notice(CaptureMode::Region, true, SnapCapability::Full, &fresh),
+            None
+        );
+        assert_eq!(
+            window_only_workspace_notice(
+                CaptureMode::Region,
+                true,
+                SnapCapability::Unavailable {
+                    reason_key: "error.capture.snap_unavailable",
+                },
+                &fresh,
+            ),
+            None
+        );
+        // 非原生壳(Wayland 网页路径)继续用能力面板,不走这条一次性说明。
+        assert_eq!(
+            window_only_workspace_notice(CaptureMode::Region, false, window_only, &fresh),
+            None
+        );
+        assert_eq!(
+            window_only_workspace_notice(CaptureMode::Window, true, window_only, &fresh),
+            None
+        );
+        assert_eq!(
+            window_only_workspace_notice(CaptureMode::LongCapture, true, window_only, &fresh),
+            None
+        );
+        assert_eq!(
+            window_only_workspace_notice(CaptureMode::Recording, true, window_only, &fresh),
+            None
+        );
+        assert!(!fresh.load(Ordering::SeqCst));
+        // 结果 toast 之后:壳或全屏覆盖层还在时不占名额。
+        assert!(!window_only_toast_visible(true, false));
+        assert!(!window_only_toast_visible(false, true));
+        assert!(!window_only_toast_visible(true, true));
+        assert!(window_only_toast_visible(false, false));
+        assert!(!fresh.load(Ordering::SeqCst));
     }
 
     #[test]

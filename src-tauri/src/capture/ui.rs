@@ -29,7 +29,7 @@ const TOAST_WIDTH: f64 = 320.0;
 // 三行结果句。两行会把长截图失败提示的后半句操作说明裁掉。
 const TOAST_HEIGHT: f64 = 62.0;
 const TOAST_MARGIN: f64 = 32.0;
-const TOAST_DURATION: Duration = Duration::from_millis(1800);
+pub(crate) const TOAST_DURATION: Duration = Duration::from_millis(1800);
 
 /// 预览窗最小尺寸:保证工具条与画布基本可用(ADR-6)。
 const PREVIEW_MIN_WIDTH: f64 = 480.0;
@@ -154,6 +154,10 @@ pub struct OverlayPayload {
     /// 录屏确认前的边框和控制条让位。缺省表示这次不是录屏选区。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub record_chrome: Option<RecordChromePreview>,
+    /// 原生区域选区仅窗口级时，工作区表面显示一次的说明词条。
+    /// 放在覆盖层内部，避免单独 toast 被随后的 setFocus 盖住。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snap_notice_key: Option<String>,
 }
 
 /// 与 `plan_recording_chrome` 同一套物理像素参数,Web 覆盖层在拖动时就收成成片矩形。
@@ -301,6 +305,7 @@ pub fn overlay_payload(
         pending_qr: false,
         record_even: false,
         record_chrome: None,
+        snap_notice_key: None,
     })
 }
 
@@ -1209,6 +1214,14 @@ mod tests {
         assert_eq!(json["pendingQr"], serde_json::json!(true));
         assert_eq!(json["annotations"][0]["type"], serde_json::json!("rect"));
         assert_eq!(json["annotations"][0]["x"], serde_json::json!(1.0));
+        // 缺省不带 WindowOnly 说明；有词条时用 camelCase，旧前端可忽略。
+        assert!(json.get("snapNoticeKey").is_none());
+        payload.snap_notice_key = Some("error.capture.snap_control_unavailable".into());
+        let json = serde_json::to_value(&payload).expect("payload serializes");
+        assert_eq!(
+            json["snapNoticeKey"],
+            serde_json::json!("error.capture.snap_control_unavailable")
+        );
     }
 
     #[test]
