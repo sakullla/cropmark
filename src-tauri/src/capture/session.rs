@@ -861,7 +861,7 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
     use super::native_overlay::RegionOutcome;
 
     let handle = app.clone();
-    let picked = tauri::async_runtime::spawn_blocking(move || {
+    let (picked, defer_window_only_notice) = tauri::async_runtime::spawn_blocking(move || {
         let (frame, monitor) = grab_pointer_screen(&handle)?;
         store_pixels(&handle, frame.clone(), monitor.clone(), generation)?;
         // R19:旧入口开关(取字/贴图/复制/保存/放大镜/光标提示/即时标注)已按
@@ -898,17 +898,21 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
             flags.record_fps =
                 crate::record::RecordConfig::from_settings(&handle, recording_format).fps;
         }
-        // 区域选区:完全不可用沿用自由框选提示;仅窗口级时每进程提示一次。
+        // 区域选区:Unavailable 仍在壳前走自由框选提示。WindowOnly 只记下,
+        // 等壳关掉再提示——原生壳盖住 Tauri toast,提前显示会自隐并吃掉名额。
         // LongCapture/Recording 复用本壳但不需要该说明。
-        if mode == CaptureMode::Region {
-            if let Some(key) = snap_fallback_notice_key(super::snap::platform_capability()) {
-                ui::show_toast_key(&handle, key);
-            }
+        let snap_notice = if mode == CaptureMode::Region {
+            plan_snap_notice(super::snap::platform_capability())
+        } else {
+            SnapNoticePlan::none()
+        };
+        if let Some(key) = snap_notice.immediate {
+            ui::show_toast_key(&handle, key);
         }
         let annotation_options = annotation_options_from(&handle);
         set_shell_app(Some(handle.clone()));
         let _clear_shell_app = ClearShellApp;
-        super::native_overlay::pick_region(
+        let picked = super::native_overlay::pick_region(
             &frame,
             &monitor,
             flags,
@@ -917,7 +921,8 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
                 copy_color: copy_color_feedback,
                 notify: shell_notice,
             },
-        )
+        );
+        Ok((picked, snap_notice.after_shell))
     })
     .await
     .map_err(|_| CaptureError::api("error.capture.thread_failed"))??;
@@ -928,6 +933,7 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
         if capture_timing_enabled() {
             eprintln!("Cropmark capture: region shell result discarded (stale generation)");
         }
+        // 新会话可能已经在开壳。这次不提示、也不占名额。
         cleanup_cancelled_generation(app, generation);
         return Ok(());
     }
@@ -943,67 +949,82 @@ async fn capture_region_native(app: &AppHandle, generation: u64) -> Result<(), C
             .as_ref()
             .is_some_and(|current| current.mode == CaptureMode::Recording)
     });
-    match picked {
-        RegionOutcome::Recording(rect, annotations) => {
-            start_recording_from_shell(app, rect, annotations, generation)
-        }
-        RegionOutcome::Preview(rect, annotations) | RegionOutcome::Annotate(rect, annotations)
-            if recording_mode =>
-        {
-            start_recording_from_shell(app, rect, annotations, generation)
-        }
-        RegionOutcome::LongCapture(rect, annotations, axis) => {
-            start_scroll_session(app, rect, annotations, axis, generation)
-        }
-        RegionOutcome::Preview(rect, annotations) | RegionOutcome::Annotate(rect, annotations)
-            if long_mode =>
-        {
-            start_scroll_session(
-                app,
-                rect,
-                annotations,
-                super::scroll::CaptureAxis::default(),
-                generation,
-            )
-        }
-        RegionOutcome::Preview(rect, annotations) | RegionOutcome::Annotate(rect, annotations) => {
-            commit_region_to_workspace(app, rect, annotations, false, false, generation).await
-        }
-        // R2:壳上的「取字」不再静默复制;提交区域并置 `pending_ocr`,工作区
-        // 覆盖层打开后自动进入取字。取字前不写剪贴板(含不再先写 PNG)。
-        RegionOutcome::Ocr(rect, annotations) => {
-            commit_region_to_workspace(app, rect, annotations, true, false, generation).await
-        }
-        // R4:壳上的「识别二维码」提交区域并置 `pending_qr`。二维码打开按图片
-        // 大小的预览并自动识别,不进入全屏冻结层;不写剪贴板、不打开链接。
-        RegionOutcome::Qr(rect, annotations) => {
-            commit_region_to_workspace(app, rect, annotations, false, true, generation).await
-        }
-        // 复制/保存/贴图在选区上直接完成,不打开工作区。
-        RegionOutcome::Quiet(rect, action, annotations) => {
-            finish_region_with(
-                app,
-                RegionSelection {
-                    x: rect.x,
-                    y: rect.y,
-                    width: rect.width,
-                    height: rect.height,
-                },
-                annotations,
-                action,
-                Some(generation),
-            )
-            .await
-        }
-        RegionOutcome::Cancelled => {
-            // 壳已经退出,不要再 PostMessage(WM_CLOSE):否则会关掉紧接着
-            // 第二次热键建起来的新选区窗(实测 Esc 后再截覆盖层出不来)。
-            if let Some((generation, restore)) = accept_cancel(app, Some(generation)) {
-                finish_cancel(app, generation, restore, false);
+    let shell_returned = picked.is_ok();
+    let dispatched = match picked {
+        Err(error) => Err(error),
+        Ok(outcome) => match outcome {
+            RegionOutcome::Recording(rect, annotations) => {
+                start_recording_from_shell(app, rect, annotations, generation)
             }
-            Ok(())
+            RegionOutcome::Preview(rect, annotations)
+            | RegionOutcome::Annotate(rect, annotations)
+                if recording_mode =>
+            {
+                start_recording_from_shell(app, rect, annotations, generation)
+            }
+            RegionOutcome::LongCapture(rect, annotations, axis) => {
+                start_scroll_session(app, rect, annotations, axis, generation)
+            }
+            RegionOutcome::Preview(rect, annotations)
+            | RegionOutcome::Annotate(rect, annotations)
+                if long_mode =>
+            {
+                start_scroll_session(
+                    app,
+                    rect,
+                    annotations,
+                    super::scroll::CaptureAxis::default(),
+                    generation,
+                )
+            }
+            RegionOutcome::Preview(rect, annotations)
+            | RegionOutcome::Annotate(rect, annotations) => {
+                commit_region_to_workspace(app, rect, annotations, false, false, generation).await
+            }
+            // R2:壳上的「取字」不再静默复制;提交区域并置 `pending_ocr`,工作区
+            // 覆盖层打开后自动进入取字。取字前不写剪贴板(含不再先写 PNG)。
+            RegionOutcome::Ocr(rect, annotations) => {
+                commit_region_to_workspace(app, rect, annotations, true, false, generation).await
+            }
+            // R4:壳上的「识别二维码」提交区域并置 `pending_qr`。二维码打开按图片
+            // 大小的预览并自动识别,不进入全屏冻结层;不写剪贴板、不打开链接。
+            RegionOutcome::Qr(rect, annotations) => {
+                commit_region_to_workspace(app, rect, annotations, false, true, generation).await
+            }
+            // 复制/保存/贴图在选区上直接完成,不打开工作区。
+            RegionOutcome::Quiet(rect, action, annotations) => {
+                finish_region_with(
+                    app,
+                    RegionSelection {
+                        x: rect.x,
+                        y: rect.y,
+                        width: rect.width,
+                        height: rect.height,
+                    },
+                    annotations,
+                    action,
+                    Some(generation),
+                )
+                .await
+            }
+            RegionOutcome::Cancelled => {
+                // 壳已经退出,不要再 PostMessage(WM_CLOSE):否则会关掉紧接着
+                // 第二次热键建起来的新选区窗(实测 Esc 后再截覆盖层出不来)。
+                if let Some((generation, restore)) = accept_cancel(app, Some(generation)) {
+                    finish_cancel(app, generation, restore, false);
+                }
+                Ok(())
+            }
+        },
+    };
+    // 壳正常返回后,跟在本次结果界面之后再提示:全屏工作区不会盖住这唯一一次
+    // toast,选区存续期间也不会把前台从壳抢走。建壳失败不占名额。
+    if defer_window_only_notice && shell_returned {
+        if let Some(key) = claim_window_only_notice(&SNAP_WINDOW_ONLY_NOTICE_SHOWN) {
+            ui::show_toast_key(app, key);
         }
     }
+    dispatched
 }
 
 /// R2/R4:原生壳把已确认区域交给工作区覆盖层。`pending_ocr` / `pending_qr`
@@ -1320,31 +1341,48 @@ fn overlay_reduced_capabilities(mode: CaptureMode, native_shell: bool) -> bool {
 /// 仅窗口级能力提示的词条。不新增文案或设置项。
 const SNAP_WINDOW_ONLY_NOTICE_KEY: &str = "error.capture.snap_control_unavailable";
 
-/// WindowOnly 提示每进程只展示一次。
+/// WindowOnly 提示每进程只展示一次。只在壳关闭后真正显示时置位。
 static SNAP_WINDOW_ONLY_NOTICE_SHOWN: AtomicBool = AtomicBool::new(false);
 
-/// 原生区域选区的检测能力说明。
+/// 原生区域选区的检测能力说明,不含「已经提示过」的状态。
 /// - `Full`:不提示。
-/// - `WindowOnly`:每进程一次,文案固定复用控件级不可用词条。
-/// - `Unavailable`:沿用现有自由框选提示(每次都给)。
-fn snap_fallback_notice_key(capability: super::snap::SnapCapability) -> Option<&'static str> {
-    snap_notice_key(capability, &SNAP_WINDOW_ONLY_NOTICE_SHOWN)
+/// - `WindowOnly`:`after_shell`,文案在显示时固定复用控件级不可用词条。
+/// - `Unavailable`:`immediate`,沿用现有自由框选提示(每次都给)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SnapNoticePlan {
+    immediate: Option<&'static str>,
+    after_shell: bool,
 }
 
-fn snap_notice_key(
-    capability: super::snap::SnapCapability,
-    window_only_shown: &AtomicBool,
-) -> Option<&'static str> {
-    match capability {
-        super::snap::SnapCapability::Full => None,
-        super::snap::SnapCapability::WindowOnly { .. } => {
-            if window_only_shown.swap(true, Ordering::SeqCst) {
-                None
-            } else {
-                Some(SNAP_WINDOW_ONLY_NOTICE_KEY)
-            }
+impl SnapNoticePlan {
+    fn none() -> Self {
+        Self {
+            immediate: None,
+            after_shell: false,
         }
-        super::snap::SnapCapability::Unavailable { reason_key } => Some(reason_key),
+    }
+}
+
+fn plan_snap_notice(capability: super::snap::SnapCapability) -> SnapNoticePlan {
+    match capability {
+        super::snap::SnapCapability::Full => SnapNoticePlan::none(),
+        super::snap::SnapCapability::WindowOnly { .. } => SnapNoticePlan {
+            immediate: None,
+            after_shell: true,
+        },
+        super::snap::SnapCapability::Unavailable { reason_key } => SnapNoticePlan {
+            immediate: Some(reason_key),
+            after_shell: false,
+        },
+    }
+}
+
+/// 壳已关闭且后续界面已打开后调用。第一次返回词条并占名额,之后返回 None。
+fn claim_window_only_notice(window_only_shown: &AtomicBool) -> Option<&'static str> {
+    if window_only_shown.swap(true, Ordering::SeqCst) {
+        None
+    } else {
+        Some(SNAP_WINDOW_ONLY_NOTICE_KEY)
     }
 }
 
@@ -3967,7 +4005,7 @@ mod tests {
 
     #[test]
     fn snap_notice_window_only_once_full_silent_unavailable_kept() {
-        use std::sync::atomic::AtomicBool;
+        use std::sync::atomic::{AtomicBool, Ordering};
 
         use crate::capture::snap::SnapCapability;
 
@@ -3975,39 +4013,52 @@ mod tests {
         let window_only = SnapCapability::WindowOnly {
             reason_key: "error.capture.other",
         };
-        // 文案固定复用现有词条,不采用能力上自带的 reason_key。
+        // 计划阶段不占名额。文案固定复用现有词条,不采用能力上自带的 reason_key。
+        let planned = plan_snap_notice(window_only);
+        assert_eq!(planned.immediate, None);
+        assert!(planned.after_shell);
+        assert!(!shown.load(Ordering::SeqCst));
         assert_eq!(
-            snap_notice_key(window_only, &shown),
+            claim_window_only_notice(&shown),
             Some("error.capture.snap_control_unavailable")
         );
-        assert_eq!(snap_notice_key(window_only, &shown), None);
+        assert!(shown.load(Ordering::SeqCst));
+        assert_eq!(claim_window_only_notice(&shown), None);
 
         // Full 不提示,也不占用「每进程一次」的名额。
         let fresh = AtomicBool::new(false);
-        assert_eq!(snap_notice_key(SnapCapability::Full, &fresh), None);
+        let full = plan_snap_notice(SnapCapability::Full);
+        assert_eq!(full, SnapNoticePlan::none());
+        assert!(!fresh.load(Ordering::SeqCst));
         assert_eq!(
-            snap_notice_key(window_only, &fresh),
+            claim_window_only_notice(&fresh),
             Some("error.capture.snap_control_unavailable")
         );
 
-        // 完全不可用仍每次提示,且不消耗窗口级的一次名额。
+        // 完全不可用仍每次在壳前提示,且不消耗窗口级的一次名额。
+        let unavailable = SnapCapability::Unavailable {
+            reason_key: "error.capture.snap_unavailable",
+        };
         assert_eq!(
-            snap_notice_key(
-                SnapCapability::Unavailable {
-                    reason_key: "error.capture.snap_unavailable",
-                },
-                &shown
-            ),
-            Some("error.capture.snap_unavailable")
+            plan_snap_notice(unavailable),
+            SnapNoticePlan {
+                immediate: Some("error.capture.snap_unavailable"),
+                after_shell: false,
+            }
         );
         assert_eq!(
-            snap_notice_key(
-                SnapCapability::Unavailable {
-                    reason_key: "error.capture.snap_unavailable",
-                },
-                &shown
-            ),
-            Some("error.capture.snap_unavailable")
+            plan_snap_notice(unavailable),
+            SnapNoticePlan {
+                immediate: Some("error.capture.snap_unavailable"),
+                after_shell: false,
+            }
+        );
+        let untouched = AtomicBool::new(false);
+        let _ = plan_snap_notice(unavailable);
+        assert!(!untouched.load(Ordering::SeqCst));
+        assert_eq!(
+            claim_window_only_notice(&untouched),
+            Some("error.capture.snap_control_unavailable")
         );
     }
 
