@@ -20,9 +20,10 @@
 //! 或读数无效时不 seed,避免把 (0,0) 画成放大镜;映射走 backing→engine,不硬乘
 //! monitor.scale。录屏/长截图走同一个 `start_shell`。
 //! 元素级吸附不在主线程查询:主线程先解析 `NSScreen` 几何并处理 AX 授权提示,
-//! 再把光标请求交给 `SnapWorker`。worker 只使用预计算几何、`CGWindowList` 与
-//! AX 链,不调用 AppKit。结果由主 run loop 定时器轮询,命中变化时重绘;无响应
-//! 目标时 UI 不等待,Esc 与自由框选仍走引擎。
+//! 再把光标请求交给 `SnapWorker`。首帧前的有效种子只写放大镜坐标;worker 创建后
+//! 才把它变成 `PointerMove` 请求并提交,不在主线程 hit,也不等结果。worker 只使用
+//! 预计算几何、`CGWindowList` 与 AX 链,不调用 AppKit。结果由主 run loop 定时器
+//! 轮询,命中变化时重绘;无响应目标时 UI 不等待,Esc 与自由框选仍走引擎。
 //! 光标提示按引擎 `cursor_for` 映射:选区内部→开手(拖移中闭合手)、手柄/边→
 //! resize(SF Symbol 自绘)、chrome→箭头、空白→双色十字(浅芯深描边、热点镂空);
 //! 符号不可用时退回该双色十字,不使用系统 `crosshairCursor`(ADR-1/ADR-5).
@@ -1036,7 +1037,7 @@ fn start_shell(
             let point =
                 read_mouse_seed(&view, state.canvas.width as f64, state.canvas.height as f64);
             // 必须在首帧合成前 seed。帧外/读失败保持 cursor_valid=false,
-            // 合成器不在左上角画放大镜。
+            // 合成器不在左上角画放大镜。种子不产生吸附请求,首帧因此也不等待命中。
             seed_engine_cursor(&mut state.canvas.engine, point);
             present(state, &view);
         }
@@ -1186,7 +1187,8 @@ fn arm_snap_worker(geometry: ShellGeometry, frame: (u32, u32)) {
         let Some(state) = slot.borrow_mut().as_mut() else {
             return false;
         };
-        submit_engine_snap(&mut state.canvas.engine, Some(&worker));
+        // worker 已能收请求。有效种子在这里入队;不 hit,也不把首帧拖住。
+        submit_seeded_snap(&mut state.canvas.engine, Some(&worker));
         state.snap = Some(worker);
         true
     });
@@ -1254,6 +1256,18 @@ fn poll_snap_results() {
             }
         });
     }));
+}
+
+/// 把首帧前的有效指针交给 worker。`seed_cursor` 只写放大镜坐标。
+/// worker 还不存在或光标无效时直接返回,避免把未知的 `(0,0)` 入队。
+/// 主线程不调用 provider,也不等待命中。
+fn submit_seeded_snap(engine: &mut SelectionEngine, worker: Option<&SnapWorker>) {
+    if worker.is_none() || !engine.cursor_valid() {
+        return;
+    }
+    let (x, y) = engine.cursor();
+    let _ = engine.handle_event(InputEvent::PointerMove { x, y });
+    submit_engine_snap(engine, worker);
 }
 
 /// 取走引擎刚记下的请求并交给 worker。没有 worker 时把请求留在引擎里。
@@ -2096,7 +2110,7 @@ const _: () = {
 mod tests {
     use super::*;
     use crate::capture::buffer::{accept_buffer, RawBuffer};
-    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
     use std::thread;
     use std::time::Duration;
 
@@ -2244,10 +2258,104 @@ mod tests {
         let arm = fn_source(src, "fn arm_snap_worker(");
         assert!(arm.contains("prepare_session"));
         assert!(arm.contains("install_snap_timer"));
+        assert!(arm.contains("submit_seeded_snap"));
         let finish = fn_source(src, "fn finish_shell(");
         assert!(finish.contains("stop_snap_timer"));
         assert!(finish.contains("end_session"));
         assert!(src.contains("CFRunLoopTimer::with_handler"));
+    }
+
+    #[test]
+    fn seeded_snap_is_queued_only_after_the_first_present() {
+        let src = include_str!("macos.rs");
+        let start = src.find("fn start_shell(").expect("start_shell");
+        let end = src.find("fn install_input_monitor(").expect("install");
+        let body = &src[start..end];
+        let seed = body.find("seed_engine_cursor(").expect("seed");
+        let present = body.find("present(state, &view)").expect("present");
+        let arm = body.find("arm_snap_worker(").expect("arm");
+        assert!(
+            seed < present && present < arm,
+            "first frame is presented before the seeded snap request is queued"
+        );
+        let arm_fn = fn_source(src, "fn arm_snap_worker(");
+        let spawn = arm_fn.find("SnapWorker::spawn").expect("spawn");
+        let submit = arm_fn.find("submit_seeded_snap(").expect("submit");
+        assert!(
+            spawn < submit,
+            "the worker must exist before the seeded pointer is queued"
+        );
+        assert!(!arm_fn.contains(".hit("));
+        let seeded = fn_source(src, "fn submit_seeded_snap(");
+        let valid = seeded.find("cursor_valid()").expect("valid");
+        let moved = seeded.find("PointerMove").expect("move");
+        let forward = seeded.find("submit_engine_snap").expect("submit");
+        assert!(valid < moved && moved < forward);
+    }
+
+    #[test]
+    fn seeded_cursor_submits_without_a_move_and_click_adopts_highlight() {
+        DELAYED_HIT_COUNT.store(0, Ordering::SeqCst);
+        let context = SnapContext::new((0, 0), (0, 0), 1.0);
+        let mut engine = SelectionEngine::new(400, 300, FeatureFlags::default())
+            .with_snap(&DELAYED_CONTROL_SNAP, context);
+        let worker = SnapWorker::spawn(FrameSnap::new(
+            &DELAYED_CONTROL_SNAP,
+            context,
+            engine.size(),
+        ));
+
+        seed_engine_cursor(&mut engine, None);
+        let started = Instant::now();
+        submit_seeded_snap(&mut engine, Some(&worker));
+        assert!(started.elapsed() < Duration::from_millis(200));
+        assert!(!engine.cursor_valid());
+        assert!(engine.take_snap_request().is_none());
+        assert_eq!(DELAYED_HIT_COUNT.load(Ordering::SeqCst), 0);
+
+        seed_engine_cursor(&mut engine, Some((30, 30)));
+        assert!(engine.cursor_valid());
+        assert_eq!(engine.cursor(), (30, 30));
+        assert!(
+            engine.take_snap_request().is_none(),
+            "seed only places the magnifier"
+        );
+
+        let started = Instant::now();
+        submit_seeded_snap(&mut engine, Some(&worker));
+        assert!(
+            started.elapsed() < Duration::from_millis(200),
+            "submitting the seed waited for hit: {:?}",
+            started.elapsed()
+        );
+        assert!(
+            engine.snap_highlight().is_none(),
+            "the caller must not apply the hit before returning"
+        );
+        assert!(engine.take_snap_request().is_none());
+
+        assert!(
+            wait_for_snap(&mut engine, &worker),
+            "a valid seed must be queried without a later move message"
+        );
+        assert_eq!(DELAYED_HIT_COUNT.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            (
+                DELAYED_HIT_X.load(Ordering::SeqCst),
+                DELAYED_HIT_Y.load(Ordering::SeqCst)
+            ),
+            (30, 30)
+        );
+        let expected = PhysicalRect {
+            x: 20,
+            y: 20,
+            width: 40,
+            height: 30,
+        };
+        assert_eq!(engine.snap_highlight(), Some(expected));
+        engine.handle_event(InputEvent::LeftDown { x: 30, y: 30 });
+        engine.handle_event(InputEvent::LeftUp { x: 30, y: 30 });
+        assert_eq!(engine.selection(), Some(expected));
     }
 
     fn wait_for_snap(engine: &mut SelectionEngine, worker: &SnapWorker) -> bool {
@@ -2269,6 +2377,33 @@ mod tests {
             .map(|index| signature.len() + index)
             .unwrap_or(rest.len());
         &rest[..end]
+    }
+
+    #[derive(Debug)]
+    struct DelayedControlSnap;
+
+    static DELAYED_CONTROL_SNAP: DelayedControlSnap = DelayedControlSnap;
+    static DELAYED_HIT_COUNT: AtomicU32 = AtomicU32::new(0);
+    static DELAYED_HIT_X: AtomicI32 = AtomicI32::new(0);
+    static DELAYED_HIT_Y: AtomicI32 = AtomicI32::new(0);
+
+    impl SnapProvider for DelayedControlSnap {
+        fn capability(&self) -> SnapCapability {
+            SnapCapability::Full
+        }
+
+        fn hit(&self, _context: SnapContext, x: i32, y: i32) -> SnapStack {
+            DELAYED_HIT_COUNT.fetch_add(1, Ordering::SeqCst);
+            DELAYED_HIT_X.store(x, Ordering::SeqCst);
+            DELAYED_HIT_Y.store(y, Ordering::SeqCst);
+            // 停在 worker 上。submit 若同步等待,上面的 200ms 断言会失败。
+            thread::sleep(Duration::from_millis(300));
+            SnapStack::new(vec![SnapHit {
+                kind: SnapKind::Control,
+                rect: SnapRect::new(20, 20, 40, 30),
+                label: None,
+            }])
+        }
     }
 
     #[derive(Debug)]
