@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 // ADR-17:SCK 回调等待上限。超时返回可读错误,不永久挂起。
 #define CROPMARK_SCK_WAIT_SECONDS 10
@@ -693,6 +694,7 @@ int32_t cropmark_snap_ax_trusted(void) {
 
 // 未授权时每进程只发出一次系统授权提示(文案由系统本地化);已授权返回 1,
 // 已提示过或未授权返回 0,调用方据此降级窗口级。
+// 必须在主线程调用:提示可能拉起系统界面。worker 只读 Rust 侧发布的结果。
 static atomic_bool g_snap_ax_prompted = false;
 
 int32_t cropmark_snap_ax_prompt_if_needed(void) {
@@ -716,6 +718,7 @@ int32_t cropmark_snap_ax_prompt_if_needed(void) {
 }
 
 // 按逻辑原点匹配显示器(帧像素换算到 CG 全局点的基准);找不到返回 -1。
+// 必须在主线程调用:NSScreen 属于 AppKit。worker 使用调用前拷走的几何。
 int32_t cropmark_snap_display(int32_t logical_x, int32_t logical_y, CropmarkSnapDisplay *out) {
   if (!out) {
     return -1;
@@ -756,6 +759,7 @@ int32_t cropmark_snap_display(int32_t logical_x, int32_t logical_y, CropmarkSnap
 
 // 指针处自顶向下的在屏窗口列表(CGWindowList 前后序);本进程窗口(选区壳、
 // 贴图等)与桌面元素跳过。0 成功(count 可为 0),非 0 表示 API 不可用。
+// 可在 worker 线程调用:只用 CGWindowList 与 getpid,不触碰 AppKit。
 int32_t cropmark_snap_windows_at(double px, double py, CropmarkSnapWindow *out, int32_t cap,
                                  int32_t *count) {
   if (count) {
@@ -769,7 +773,7 @@ int32_t cropmark_snap_windows_at(double px, double py, CropmarkSnapWindow *out, 
   if (!windows) {
     return 2;
   }
-  int32_t self_pid = (int32_t)[[NSRunningApplication currentApplication] processIdentifier];
+  int32_t self_pid = (int32_t)getpid();
   CGPoint point = CGPointMake((CGFloat)px, (CGFloat)py);
   int32_t n = 0;
   CFIndex total = CFArrayGetCount(windows);
@@ -891,6 +895,7 @@ static void cropmark_snap_ax_label(AXUIElementRef element, char *buffer, size_t 
 // 指定进程在指针处自最深控件到窗口的 AX 链(CG 全局点坐标)。AXWindow 不入栈
 // (顶层窗口由窗口级条目承担),零尺寸元素跳过,深度/数量有界。0 成功(可空链),
 // 1 无命中/进程无辅助功能元素,2 未授权或创建失败。
+// 可在 worker 线程调用:不触碰 AppKit。目标无响应时超时返回,不拖住选区壳。
 int32_t cropmark_snap_ax_chain(int32_t pid, double px, double py, CropmarkSnapAxItem *out,
                                int32_t cap, int32_t *count) {
   if (count) {

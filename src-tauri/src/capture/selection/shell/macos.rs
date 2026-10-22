@@ -19,6 +19,10 @@
 //! 首帧 `present` 前用同一套 frame/view backing 映射 seed 指针。指针在窗框外
 //! 或读数无效时不 seed,避免把 (0,0) 画成放大镜;映射走 backing→engine,不硬乘
 //! monitor.scale。录屏/长截图走同一个 `start_shell`。
+//! 元素级吸附不在主线程查询:主线程先解析 `NSScreen` 几何并处理 AX 授权提示,
+//! 再把光标请求交给 `SnapWorker`。worker 只使用预计算几何、`CGWindowList` 与
+//! AX 链,不调用 AppKit。结果由主 run loop 定时器轮询,命中变化时重绘;无响应
+//! 目标时 UI 不等待,Esc 与自由框选仍走引擎。
 //! 光标提示按引擎 `cursor_for` 映射:选区内部→开手(拖移中闭合手)、手柄/边→
 //! resize(SF Symbol 自绘)、chrome→箭头、空白→双色十字(浅芯深描边、热点镂空);
 //! 符号不可用时退回该双色十字,不使用系统 `crosshairCursor`(ADR-1/ADR-5).
@@ -52,7 +56,8 @@ use objc2_app_kit::{
     NSWindowStyleMask,
 };
 use objc2_core_foundation::{
-    kCFRunLoopCommonModes, CFRetained, CFRunLoop, CFType, CGFloat, CGPoint, CGRect, CGSize,
+    kCFRunLoopCommonModes, CFAbsoluteTimeGetCurrent, CFRetained, CFRunLoop, CFRunLoopTimer, CFType,
+    CGFloat, CGPoint, CGRect, CGSize,
 };
 use objc2_core_graphics::{
     kCGScreenSaverWindowLevel, CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGContext,
@@ -71,9 +76,10 @@ use crate::capture::scroll::CaptureAxis;
 use crate::capture::selection::composer::{self, Composer};
 use crate::capture::selection::{
     AnnotationOptions, AnnotationTool, CursorHint, EngineOutcome, EngineState, FeatureFlags,
-    InputEvent, LogicalKey, SelectionAction, SelectionEngine, ToolMode,
+    InputEvent, LogicalKey, SelectionAction, SelectionEngine, SnapWorker, ToolMode,
 };
 use crate::capture::session::QuietAction;
+use crate::capture::snap::{FrameSnap, SnapContext};
 
 // macOS Carbon 键码(HIToolbox/Events.h,kVK_*;与键盘布局无关的物理键位)。
 const KC_ANSI_C: u16 = 0x08;
@@ -186,6 +192,10 @@ struct ShellState {
     view: Option<Retained<SelectionView>>,
     monitor: Option<Retained<AnyObject>>,
     done: Option<Sender<Result<RegionOutcome, CaptureError>>>,
+    /// 会话吸附线程。平台 hit 卡住时 Drop 只分离,不在主线程 join。
+    snap: Option<SnapWorker>,
+    /// 主 run loop 上的结果轮询定时器;壳结束时 invalidate。
+    snap_timer: Option<CFRetained<CFRunLoopTimer>>,
 }
 
 /// IME 组合串与选中区间;长度单位与 `NSRange` 一致(UTF-16 码元)。
@@ -731,6 +741,8 @@ define_class!(
 /// 主线程进入上限(ADR-17):主 run loop 长时间不执行派发任务时返回明确错误,
 /// 由会话层进入错误窗并可重试,而不是永久挂起。
 const MAIN_THREAD_ENTRY_TIMEOUT: Duration = Duration::from_secs(10);
+/// 吸附结果轮询间隔。检测在 worker 上,主线程只取走已经完成的结果。
+const SNAP_POLL_INTERVAL: f64 = 1.0 / 60.0;
 
 /// GCD 主队列回调里跑嵌套 `nextEventMatchingMask` 会重入
 /// `dispatch_main_queue_drain`,在 macOS 上把主线程打满并卡住选区。
@@ -780,6 +792,9 @@ struct ShellGeometry {
     scale: f64,
     /// 冻结帧 DPI 缩放(frame.scale):十字光标按它重建。
     frame_scale: f64,
+    /// 帧左上角的屏幕物理像素,供吸附上下文使用。
+    physical_x: i32,
+    physical_y: i32,
 }
 
 /// 驱动一次区域选区:在指针所在屏创建无边框置顶窗并泵事件直到终态。
@@ -827,6 +842,8 @@ pub fn pick_region(
             1.0
         },
         frame_scale: frame.scale,
+        physical_x: monitor.physical_x,
+        physical_y: monitor.physical_y,
     };
     // 选区壳必须在主线程建窗,但不能在主线程(或 GCD/runloop 回调里)
     // 嵌套 nextEventMatchingMask:macOS 27 上会把主线程打满并卡住。
@@ -1010,6 +1027,8 @@ fn start_shell(
             view: None,
             monitor: None,
             done: Some(done),
+            snap: None,
+            snap_timer: None,
         });
     });
     STATE.with(|slot| {
@@ -1039,6 +1058,17 @@ fn start_shell(
             state.monitor = monitor;
         }
     });
+    let frame_size = STATE.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .map(|state| state.canvas.engine.size())
+            .unwrap_or((1, 1))
+    });
+    // 授权提示可能嵌套 run loop。若此时壳已被关掉,不要再把活动标志置回去。
+    arm_snap_worker(geometry, frame_size);
+    if STATE.with(|slot| slot.borrow().is_none()) {
+        return Ok(());
+    }
     SHELL_ACTIVE.store(true, Ordering::SeqCst);
     if timing {
         eprintln!("Cropmark macos shell: panel presented (event monitor, no nested pump)");
@@ -1112,6 +1142,12 @@ fn finish_shell() {
         return;
     };
     SHELL_ACTIVE.store(false, Ordering::SeqCst);
+    if let Some(timer) = state.snap_timer.take() {
+        stop_snap_timer(&timer);
+    }
+    // 先分离 worker,再清几何:卡住的 hit 不会在主线程被 join。
+    drop(state.snap.take());
+    crate::capture::snap::macos::end_session();
     if let Some(monitor) = state.monitor.take() {
         unsafe { NSEvent::removeMonitor(&monitor) };
     }
@@ -1126,6 +1162,123 @@ fn finish_shell() {
     if let Some(done) = state.done.take() {
         let _ = done.send(Ok(outcome));
     }
+}
+
+/// 主线程准备几何与 AX 授权,再启动 worker 和结果定时器。
+/// 授权提示若嵌套 run loop 并把壳关掉,这里不再把 worker 挂回去。
+fn arm_snap_worker(geometry: ShellGeometry, frame: (u32, u32)) {
+    let context = SnapContext::new(
+        (geometry.physical_x, geometry.physical_y),
+        (geometry.logical_x, geometry.logical_y),
+        geometry.frame_scale,
+    );
+    crate::capture::snap::macos::prepare_session(context.logical_origin);
+    if STATE.with(|slot| slot.borrow().is_none()) {
+        crate::capture::snap::macos::end_session();
+        return;
+    }
+    let worker = SnapWorker::spawn(FrameSnap::new(
+        crate::capture::snap::platform_provider(),
+        context,
+        frame,
+    ));
+    let stored = STATE.with(|slot| {
+        let Some(state) = slot.borrow_mut().as_mut() else {
+            return false;
+        };
+        submit_engine_snap(&mut state.canvas.engine, Some(&worker));
+        state.snap = Some(worker);
+        true
+    });
+    if !stored {
+        crate::capture::snap::macos::end_session();
+        return;
+    }
+    let Some(timer) = install_snap_timer() else {
+        return;
+    };
+    let orphan = STATE.with(|slot| {
+        let Some(state) = slot.borrow_mut().as_mut() else {
+            return Some(timer);
+        };
+        state.snap_timer = Some(timer);
+        None
+    });
+    if let Some(timer) = orphan {
+        stop_snap_timer(&timer);
+    }
+}
+
+fn install_snap_timer() -> Option<CFRetained<CFRunLoopTimer>> {
+    let run_loop = CFRunLoop::main()?;
+    let block = RcBlock::new(|_timer: *mut CFRunLoopTimer| {
+        poll_snap_results();
+    });
+    let block: &DynBlock<dyn Fn(*mut CFRunLoopTimer)> = &block;
+    let timer = unsafe {
+        CFRunLoopTimer::with_handler(
+            None,
+            CFAbsoluteTimeGetCurrent() + SNAP_POLL_INTERVAL,
+            SNAP_POLL_INTERVAL,
+            0,
+            0,
+            Some(block),
+        )
+    }?;
+    run_loop.add_timer(Some(&timer), unsafe { kCFRunLoopCommonModes });
+    Some(timer)
+}
+
+fn stop_snap_timer(timer: &CFRunLoopTimer) {
+    if let Some(run_loop) = CFRunLoop::main() {
+        run_loop.remove_timer(Some(timer), unsafe { kCFRunLoopCommonModes });
+    }
+    timer.invalidate();
+}
+
+/// 定时器回调:不阻塞。有新命中才重绘。
+fn poll_snap_results() {
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let view = STATE.with(|slot| slot.borrow().as_ref().and_then(|state| state.view.clone()));
+        let Some(view) = view else {
+            return;
+        };
+        STATE.with(|slot| {
+            let mut guard = slot.borrow_mut();
+            let Some(state) = guard.as_mut() else {
+                return;
+            };
+            if apply_engine_snap(&mut state.canvas.engine, state.snap.as_ref()) {
+                present(state, &view);
+                state.dirty = false;
+            }
+        });
+    }));
+}
+
+/// 取走引擎刚记下的请求并交给 worker。没有 worker 时把请求留在引擎里。
+fn submit_engine_snap(engine: &mut SelectionEngine, worker: Option<&SnapWorker>) {
+    let Some(worker) = worker else {
+        return;
+    };
+    if let Some(request) = engine.take_snap_request() {
+        worker.submit(request);
+    }
+}
+
+/// 非阻塞地取走已完成结果。代际或光标不匹配时由引擎丢弃。
+fn apply_engine_snap(engine: &mut SelectionEngine, worker: Option<&SnapWorker>) -> bool {
+    let Some(worker) = worker else {
+        return false;
+    };
+    let mut changed = false;
+    for _ in 0..8 {
+        let Some(result) = worker.poll() else {
+            break;
+        };
+        changed |= engine.apply_snap_result(result);
+    }
+    changed
 }
 
 /// 按捕获时的逻辑几何匹配 NSScreen;不一致时按 monitor 逻辑值直接构造
@@ -1464,6 +1617,7 @@ fn publish_notice(state: &mut ShellState) {
 fn feed_event(state: &mut ShellState, event: InputEvent, view: &SelectionView) {
     let outcome = state.canvas.engine.handle_event(event);
     publish_notice(state);
+    submit_engine_snap(&mut state.canvas.engine, state.snap.as_ref());
     match outcome {
         EngineOutcome::Redraw => {
             present(state, view);
@@ -1942,12 +2096,19 @@ const _: () = {
 mod tests {
     use super::*;
     use crate::capture::buffer::{accept_buffer, RawBuffer};
+    use std::sync::atomic::AtomicBool;
+    use std::thread;
+    use std::time::Duration;
+
     use crate::capture::snap::{
-        SnapCapability, SnapContext, SnapHit, SnapKind, SnapProvider, SnapRect, SnapStack,
+        SnapCapability, SnapContext, SnapHit, SnapKind, SnapProvider, SnapRect, SnapResult,
+        SnapStack,
     };
 
     #[derive(Debug)]
     struct ScrollSnapProvider;
+
+    static SCROLL_SNAP: ScrollSnapProvider = ScrollSnapProvider;
 
     impl SnapProvider for ScrollSnapProvider {
         fn capability(&self) -> SnapCapability {
@@ -1977,9 +2138,16 @@ mod tests {
 
     #[test]
     fn precise_trackpad_scroll_switches_snap_levels() {
+        let context = SnapContext::new((0, 0), (0, 0), 1.0);
         let mut engine = SelectionEngine::new(400, 300, FeatureFlags::default())
-            .with_snap(&ScrollSnapProvider, SnapContext::new((0, 0), (0, 0), 1.0));
+            .with_snap(&SCROLL_SNAP, context);
+        let worker = SnapWorker::spawn(FrameSnap::new(&SCROLL_SNAP, context, engine.size()));
         engine.handle_event(InputEvent::PointerMove { x: 30, y: 30 });
+        submit_engine_snap(&mut engine, Some(&worker));
+        assert!(
+            wait_for_snap(&mut engine, &worker),
+            "timer-equivalent poll should apply the worker stack"
+        );
         let control = engine.snap_highlight().unwrap();
         engine.handle_event(InputEvent::Wheel {
             delta: wheel_delta(0.1),
@@ -2005,6 +2173,121 @@ mod tests {
             delta: wheel_delta(-0.1),
         });
         assert_eq!(engine.snap_highlight(), Some(control));
+    }
+
+    #[test]
+    fn snap_submit_does_not_wait_for_a_stuck_hit_and_escape_still_cancels() {
+        STUCK_HIT_ENTERED.store(false, Ordering::SeqCst);
+        let context = SnapContext::new((0, 0), (0, 0), 1.0);
+        let mut engine =
+            SelectionEngine::new(200, 200, FeatureFlags::default()).with_snap(&STUCK_SNAP, context);
+        let worker = SnapWorker::spawn(FrameSnap::new(&STUCK_SNAP, context, engine.size()));
+        engine.handle_event(InputEvent::PointerMove { x: 12, y: 16 });
+        let started = Instant::now();
+        submit_engine_snap(&mut engine, Some(&worker));
+        assert!(started.elapsed() < Duration::from_millis(200));
+        let entered = Instant::now();
+        while !STUCK_HIT_ENTERED.load(Ordering::SeqCst)
+            && entered.elapsed() < Duration::from_secs(2)
+        {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            STUCK_HIT_ENTERED.load(Ordering::SeqCst),
+            "hit must run on the worker, not the caller"
+        );
+        engine.handle_event(InputEvent::LeftDown { x: 8, y: 8 });
+        engine.handle_event(InputEvent::PointerMove { x: 48, y: 48 });
+        engine.handle_event(InputEvent::LeftUp { x: 48, y: 48 });
+        assert!(
+            engine.selection().is_some(),
+            "free drag must proceed while hit is stuck"
+        );
+        assert_eq!(
+            engine.handle_event(InputEvent::Key {
+                key: LogicalKey::Escape,
+                shift: false,
+            }),
+            EngineOutcome::Cancelled
+        );
+        drop(worker);
+    }
+
+    #[test]
+    fn polled_result_for_a_previous_cursor_does_not_replace_highlight() {
+        let context = SnapContext::new((0, 0), (0, 0), 1.0);
+        let mut engine = SelectionEngine::new(400, 300, FeatureFlags::default())
+            .with_snap(&SCROLL_SNAP, context);
+        let worker = SnapWorker::spawn(FrameSnap::new(&SCROLL_SNAP, context, engine.size()));
+        engine.handle_event(InputEvent::PointerMove { x: 30, y: 30 });
+        submit_engine_snap(&mut engine, Some(&worker));
+        assert!(wait_for_snap(&mut engine, &worker));
+        let highlight = engine.snap_highlight();
+        engine.handle_event(InputEvent::PointerMove { x: 35, y: 32 });
+        assert!(!engine.apply_snap_result(SnapResult {
+            generation: 1,
+            cursor: (30, 30),
+            stack: SnapStack::empty(),
+        }));
+        assert_eq!(engine.snap_highlight(), highlight);
+        assert!(highlight.is_some());
+    }
+
+    #[test]
+    fn shell_polls_snap_on_the_main_run_loop_and_stops_with_the_session() {
+        let src = include_str!("macos.rs");
+        let feed = fn_source(src, "fn feed_event(");
+        assert!(feed.contains("submit_engine_snap"));
+        let poll = fn_source(src, "fn poll_snap_results(");
+        assert!(poll.contains("apply_engine_snap"));
+        assert!(poll.contains("present"));
+        let arm = fn_source(src, "fn arm_snap_worker(");
+        assert!(arm.contains("prepare_session"));
+        assert!(arm.contains("install_snap_timer"));
+        let finish = fn_source(src, "fn finish_shell(");
+        assert!(finish.contains("stop_snap_timer"));
+        assert!(finish.contains("end_session"));
+        assert!(src.contains("CFRunLoopTimer::with_handler"));
+    }
+
+    fn wait_for_snap(engine: &mut SelectionEngine, worker: &SnapWorker) -> bool {
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_secs(2) {
+            if apply_engine_snap(engine, Some(worker)) {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        apply_engine_snap(engine, Some(worker))
+    }
+
+    fn fn_source<'a>(src: &'a str, signature: &str) -> &'a str {
+        let start = src.find(signature).expect(signature);
+        let rest = &src[start..];
+        let end = rest[signature.len()..]
+            .find("\nfn ")
+            .map(|index| signature.len() + index)
+            .unwrap_or(rest.len());
+        &rest[..end]
+    }
+
+    #[derive(Debug)]
+    struct StuckSnap;
+
+    static STUCK_SNAP: StuckSnap = StuckSnap;
+    static STUCK_HIT_ENTERED: AtomicBool = AtomicBool::new(false);
+
+    impl SnapProvider for StuckSnap {
+        fn capability(&self) -> SnapCapability {
+            SnapCapability::Full
+        }
+
+        fn hit(&self, _context: SnapContext, _x: i32, _y: i32) -> SnapStack {
+            STUCK_HIT_ENTERED.store(true, Ordering::SeqCst);
+            // 停在 worker 上一段时间。submit 若同步等待,测试会超过 200ms。
+            thread::sleep(Duration::from_millis(300));
+            SnapStack::empty()
+        }
     }
 
     #[test]

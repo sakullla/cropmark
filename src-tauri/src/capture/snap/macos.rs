@@ -11,18 +11,22 @@
 //!
 //! 控件级需要辅助功能授权:`capability` 用 `AXIsProcessTrusted` 预检,未授权
 //! 返回 `WindowOnly`(说明词条沿用
-//! `error.capture.snap_control_unavailable`);进入选区后首次实际命中时经
+//! `error.capture.snap_control_unavailable`);进入选区后由主线程经
 //! `AXIsProcessTrustedWithOptions` 给出一次系统授权提示(系统本地化文案),
-//! 随后自动降级窗口级。窗口级依赖屏幕录制权限
+//! 未授权则只保留窗口级。窗口级依赖屏幕录制权限
 //! (`CGPreflightScreenCaptureAccess`,截取流程已具备),不具备时返回
 //! `Unavailable`,沿用自由框选说明。
 //!
 //! 命中栈自最深控件到顶层窗口:AX 链取指针处最深元素并逐级向上收集,
 //! 顶层窗口由 CGWindowList 的前后序提供;同坐标重叠的窗口自顶向下依次入栈
-//! 供滚轮切层级。AX 消息超时压到 250ms、无响应应用不拖住选区壳;任何 native
-//! 调用失败都按本次无命中(空栈)降级,不 panic、不阻断选区交互。
+//! 供滚轮切层级。`hit` 在 `SnapWorker` 上执行,只用会话开始时主线程预计算的
+//! 显示器几何和 AX 授权结果,再调用线程安全的 CGWindowList 与 AX 链;不调用
+//! `NSScreen` / AppKit,也不在 worker 上弹授权。AX 消息超时压到 250ms;任何
+//! native 调用失败都按本次无命中(空栈)降级,不 panic、不阻断选区交互。
 
 use std::os::raw::c_char;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, MutexGuard};
 
 use super::{SnapCapability, SnapContext, SnapHit, SnapKind, SnapProvider, SnapRect, SnapStack};
 
@@ -104,7 +108,65 @@ extern "C" {
     ) -> i32;
 }
 
-/// 平台 provider 单例(无状态)。
+/// 主线程预计算的显示器几何。worker 只读,不按逻辑原点回查 `NSScreen`。
+struct SessionGeometry {
+    logical_origin: (i32, i32),
+    display: CropmarkSnapDisplay,
+}
+
+static SESSION: Mutex<Option<SessionGeometry>> = Mutex::new(None);
+/// 主线程发布的控件级授权。worker 只读;未发布时不做 AX 链。
+static AX_CONTROLS: AtomicBool = AtomicBool::new(false);
+
+fn session_lock() -> MutexGuard<'static, Option<SessionGeometry>> {
+    SESSION.lock().unwrap_or_else(|err| err.into_inner())
+}
+
+/// 主线程:解析当前显示器几何,并在需要时给出一次 AX 授权提示。
+/// worker 启动前调用。几何或授权失败不 panic,命中降级为空栈或窗口级。
+pub(crate) fn prepare_session(logical_origin: (i32, i32)) {
+    let display = display_geometry(logical_origin.0, logical_origin.1);
+    *session_lock() = display.map(|display| SessionGeometry {
+        logical_origin,
+        display,
+    });
+    let trusted = unsafe { cropmark_snap_ax_prompt_if_needed() } != 0;
+    AX_CONTROLS.store(trusted, Ordering::Release);
+}
+
+/// 选区结束:丢掉几何,避免下一次会话或已分离的 worker 误用。
+pub(crate) fn end_session() {
+    *session_lock() = None;
+    AX_CONTROLS.store(false, Ordering::Release);
+}
+
+fn session_display(logical_origin: (i32, i32)) -> Option<CropmarkSnapDisplay> {
+    let session = session_lock();
+    cached_display(session.as_ref(), logical_origin)
+}
+
+fn cached_display(
+    session: Option<&SessionGeometry>,
+    logical_origin: (i32, i32),
+) -> Option<CropmarkSnapDisplay> {
+    let session = session?;
+    if session.logical_origin != logical_origin {
+        return None;
+    }
+    Some(session.display)
+}
+
+fn ax_controls_published() -> bool {
+    AX_CONTROLS.load(Ordering::Acquire)
+}
+
+/// 已授权且窗口有属主进程时才走 AX 链。pid 0 没有可查询的应用。
+fn use_ax_chain(ax_published: bool, pid: i32) -> bool {
+    ax_published && pid > 0
+}
+
+/// 平台 provider 单例。几何与授权在会话槽里,不放在 provider 上,
+/// 以便 `FrameSnap` 继续持有 `'static` provider。
 pub fn provider() -> &'static dyn SnapProvider {
     &MacosSnapProvider
 }
@@ -121,19 +183,18 @@ impl SnapProvider for MacosSnapProvider {
     }
 
     fn hit(&self, context: SnapContext, x: i32, y: i32) -> SnapStack {
-        let Some(display) = display_geometry(context) else {
+        // worker 线程:不调用 NSScreen,也不弹 AX 授权提示。
+        let Some(display) = session_display(context.logical_origin) else {
             return SnapStack::empty();
         };
         let (cg_x, cg_y) = cg_point(context, display, x, y);
         let windows = windows_at(cg_x, cg_y);
-        let Some(top) = windows.first() else {
+        let Some(top_pid) = windows.first().map(|window| window.pid) else {
             // 桌面/本进程窗口之下没有可吸附目标:保持自由框选。
             return SnapStack::empty();
         };
-        // 控件级需要辅助功能授权:首次实际命中给出一次系统授权提示,
-        // 未授权时返回空控件链、只保留窗口级。
-        let controls = if top.pid > 0 && unsafe { cropmark_snap_ax_prompt_if_needed() } != 0 {
-            ax_chain(top.pid, cg_x, cg_y)
+        let controls = if use_ax_chain(ax_controls_published(), top_pid) {
+            ax_chain(top_pid, cg_x, cg_y)
         } else {
             Vec::new()
         };
@@ -159,9 +220,9 @@ fn capability_for(window_level_available: bool, ax_trusted: bool) -> SnapCapabil
     }
 }
 
-/// 按 `SnapContext.logical_origin` 取当前显示器几何;显示器几何异常时按
-/// 本次无命中处理(不做错误坐标换算)。
-fn display_geometry(context: SnapContext) -> Option<CropmarkSnapDisplay> {
+/// 主线程按逻辑原点取当前显示器几何;显示器几何异常时按本次无命中处理
+/// (不做错误坐标换算)。调用 `NSScreen`,worker 不得进入这里。
+fn display_geometry(logical_x: i32, logical_y: i32) -> Option<CropmarkSnapDisplay> {
     let mut display = CropmarkSnapDisplay {
         logical_x: 0,
         logical_y: 0,
@@ -169,13 +230,7 @@ fn display_geometry(context: SnapContext) -> Option<CropmarkSnapDisplay> {
         logical_h: 0,
         primary_h: 0,
     };
-    let status = unsafe {
-        cropmark_snap_display(
-            context.logical_origin.0,
-            context.logical_origin.1,
-            &mut display,
-        )
-    };
+    let status = unsafe { cropmark_snap_display(logical_x, logical_y, &mut display) };
     if status != 0 || display.logical_w == 0 || display.logical_h == 0 || display.primary_h <= 0 {
         return None;
     }
@@ -591,5 +646,79 @@ mod tests {
             "full buffer without terminator"
         );
         assert_eq!(role_text(&[0; 4]), "");
+    }
+
+    #[test]
+    fn ax_chain_runs_only_after_main_thread_publish_and_a_real_pid() {
+        assert!(!use_ax_chain(false, 42));
+        assert!(!use_ax_chain(true, 0));
+        assert!(!use_ax_chain(true, -1));
+        assert!(use_ax_chain(true, 42));
+    }
+
+    #[test]
+    fn cached_geometry_matches_only_the_prepared_origin() {
+        let session = SessionGeometry {
+            logical_origin: (1920, 0),
+            display: right_display(),
+        };
+        let matched = cached_display(Some(&session), (1920, 0)).expect("same origin");
+        assert_eq!(matched.logical_x, 1920);
+        assert_eq!(matched.logical_w, 1280);
+        assert!(cached_display(Some(&session), (0, 0)).is_none());
+        assert!(cached_display(None, (1920, 0)).is_none());
+    }
+
+    #[test]
+    fn hit_without_prepared_geometry_returns_empty() {
+        end_session();
+        let stack = MacosSnapProvider.hit(SnapContext::new((0, 0), (9, 9), 2.0), 4, 5);
+        assert!(stack.is_empty());
+        end_session();
+    }
+
+    #[test]
+    fn worker_hit_does_not_call_appkit_display_or_prompt() {
+        let src = include_str!("macos.rs");
+        let hit = fn_source(src, "fn hit(&self");
+        assert!(!hit.contains("cropmark_snap_display"));
+        assert!(!hit.contains("cropmark_snap_ax_prompt_if_needed"));
+        assert!(!hit.contains("NSScreen::"));
+        assert!(!hit.contains("[NSScreen"));
+        assert!(hit.contains("session_display"));
+        assert!(hit.contains("use_ax_chain"));
+        let prepare = fn_source(src, "pub(crate) fn prepare_session");
+        assert!(prepare.contains("display_geometry"));
+        assert!(prepare.contains("cropmark_snap_ax_prompt_if_needed"));
+
+        let native = include_str!("../macos_sck.m");
+        let windows = c_fn_source(native, "int32_t cropmark_snap_windows_at");
+        assert!(windows.contains("getpid"));
+        assert!(!windows.contains("NSRunningApplication"));
+        assert!(!windows.contains("NSScreen"));
+        let display = c_fn_source(native, "int32_t cropmark_snap_display");
+        assert!(display.contains("NSScreen"));
+        let prompt = c_fn_source(native, "int32_t cropmark_snap_ax_prompt_if_needed");
+        assert!(prompt.contains("AXIsProcessTrustedWithOptions"));
+    }
+
+    fn fn_source<'a>(src: &'a str, signature: &str) -> &'a str {
+        let start = src.find(signature).expect(signature);
+        let rest = &src[start..];
+        let end = rest[signature.len()..]
+            .find("\nfn ")
+            .map(|index| signature.len() + index)
+            .unwrap_or(rest.len());
+        &rest[..end]
+    }
+
+    fn c_fn_source<'a>(src: &'a str, signature: &str) -> &'a str {
+        let start = src.find(signature).expect(signature);
+        let rest = &src[start..];
+        let end = rest[signature.len()..]
+            .find("\nint32_t cropmark_snap_")
+            .map(|index| signature.len() + index)
+            .unwrap_or(rest.len());
+        &rest[..end]
     }
 }
