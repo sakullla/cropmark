@@ -16,6 +16,9 @@
 //! kCGBitmapByteOrder32Little|kCGImageAlphaPremultipliedFirst).
 //! 鼠标坐标用 `NSEvent.mouseLocation`(AppKit 左下原点)换到引擎左上原点;事件泵
 //! 像 Windows 壳的窗口过程一样直接转发,不把输入只交给 NSView 响应链.
+//! 首帧 `present` 前用同一套 frame/view backing 映射 seed 指针。指针在窗框外
+//! 或读数无效时不 seed,避免把 (0,0) 画成放大镜;映射走 backing→engine,不硬乘
+//! monitor.scale。录屏/长截图走同一个 `start_shell`。
 //! 光标提示按引擎 `cursor_for` 映射:选区内部→开手(拖移中闭合手)、手柄/边→
 //! resize(SF Symbol 自绘)、chrome→箭头、空白→双色十字(浅芯深描边、热点镂空);
 //! 符号不可用时退回该双色十字,不使用系统 `crosshairCursor`(ADR-1/ADR-5).
@@ -1011,6 +1014,11 @@ fn start_shell(
     });
     STATE.with(|slot| {
         if let Some(state) = slot.borrow_mut().as_mut() {
+            let point =
+                read_mouse_seed(&view, state.canvas.width as f64, state.canvas.height as f64);
+            // 必须在首帧合成前 seed。帧外/读失败保持 cursor_valid=false,
+            // 合成器不在左上角画放大镜。
+            seed_engine_cursor(&mut state.canvas.engine, point);
             present(state, &view);
         }
     });
@@ -1244,6 +1252,81 @@ fn wheel_delta(delta: f64) -> i32 {
         1
     } else {
         -1
+    }
+}
+
+/// 全局 `mouseLocation`(主屏左下、Y 向上)→ 引擎像素(左上、Y 向下)。
+///
+/// 指针先换成相对选区窗 frame 的点,再按视图 backing 尺寸换成 backing 像素,
+/// 最后走 `geometry::backing_to_engine`。backing 与引擎尺寸可以不同
+/// (2x 视图、1x 抓屏),所以不能把局部点硬乘 monitor.scale。
+/// 无边框内容视图铺满窗框时,这与 `event_point` 的 backing 换算一致。
+/// 指针在 frame 外、任一输入非有限、或 frame/backing/引擎尺寸无效时返回 None。
+fn map_mouse_location_to_engine(
+    mouse_x: f64,
+    mouse_y: f64,
+    frame_x: f64,
+    frame_y: f64,
+    frame_w: f64,
+    frame_h: f64,
+    backing_w: f64,
+    backing_h: f64,
+    engine_w: f64,
+    engine_h: f64,
+) -> Option<(i32, i32)> {
+    let values = [
+        mouse_x, mouse_y, frame_x, frame_y, frame_w, frame_h, backing_w, backing_h, engine_w,
+        engine_h,
+    ];
+    if values.iter().any(|value| !value.is_finite()) {
+        return None;
+    }
+    if frame_w <= 0.0
+        || frame_h <= 0.0
+        || backing_w <= 0.0
+        || backing_h <= 0.0
+        || engine_w <= 0.0
+        || engine_h <= 0.0
+    {
+        return None;
+    }
+    let local_x = mouse_x - frame_x;
+    let local_y = mouse_y - frame_y;
+    // 右/上边界仍算本帧(顶边/右缘指针要 seed);再出去才是邻屏或屏外。
+    if local_x < 0.0 || local_y < 0.0 || local_x > frame_w || local_y > frame_h {
+        return None;
+    }
+    let backing_x = local_x / frame_w * backing_w;
+    let backing_y = local_y / frame_h * backing_h;
+    Some(geometry::backing_to_engine(
+        backing_x, backing_y, backing_w, backing_h, engine_w, engine_h,
+    ))
+}
+
+/// 首帧 present 前读指针。视图还没挂上窗口、backing 无效或指针不在本帧时不 seed。
+fn read_mouse_seed(view: &SelectionView, engine_w: f64, engine_h: f64) -> Option<(i32, i32)> {
+    let window = view.window()?;
+    let frame = window.frame();
+    let mouse = NSEvent::mouseLocation();
+    let backing = view.convertSizeToBacking(view.bounds().size);
+    map_mouse_location_to_engine(
+        mouse.x,
+        mouse.y,
+        frame.origin.x,
+        frame.origin.y,
+        frame.size.width,
+        frame.size.height,
+        backing.width,
+        backing.height,
+        engine_w,
+        engine_h,
+    )
+}
+
+/// `None` 保持光标无效(不把未知指针钳进帧内)。
+fn seed_engine_cursor(engine: &mut SelectionEngine, point: Option<(i32, i32)>) {
+    if let Some((x, y)) = point {
+        engine.seed_cursor(x, y);
     }
 }
 
@@ -2124,6 +2207,209 @@ mod tests {
         assert_eq!((x, y), (80, 0));
         let (x, y) = geometry::backing_to_engine(80.0, 0.0, 1200.0, 1200.0, 1200.0, 1200.0);
         assert_eq!((x, y), (80, 1200));
+    }
+
+    #[test]
+    fn first_present_seeds_cursor_from_mouse_location() {
+        let src = include_str!("macos.rs");
+        let start = src.find("fn start_shell(").expect("start_shell");
+        let body = &src[start..];
+        let seed = body
+            .find("seed_engine_cursor(")
+            .expect("seed before present");
+        let present = body.find("present(state, &view)").expect("first present");
+        assert!(
+            seed < present,
+            "cursor must be seeded before the first present"
+        );
+    }
+
+    #[test]
+    fn backing_seed_uses_engine_ratio_not_monitor_scale() {
+        // 800×600 点、视图 backing 1.25(1000×750)、抓屏仍是 1x(800×600)。
+        // 硬乘 1.25 会得到约 (250, 563);应按比例落在 (200, 450)。
+        let point = map_mouse_location_to_engine(
+            200.0, 150.0, 0.0, 0.0, 800.0, 600.0, 1000.0, 750.0, 800.0, 600.0,
+        )
+        .expect("pointer inside frame");
+        assert_eq!(point, (200, 450));
+        assert_eq!(
+            point,
+            geometry::backing_to_engine(250.0, 187.5, 1000.0, 750.0, 800.0, 600.0)
+        );
+        // 2x backing、1x 引擎:局部 (100, 856) 不得变成 (200, 200)。
+        assert_eq!(
+            map_mouse_location_to_engine(
+                100.0, 856.0, 0.0, 0.0, 1470.0, 956.0, 2940.0, 1912.0, 1470.0, 956.0,
+            ),
+            Some((100, 100))
+        );
+        // backing 尺寸会在比例里约掉:1x/1.25/2x 视图落到同一引擎像素。
+        let at_scale = |backing_w: f64, backing_h: f64| {
+            map_mouse_location_to_engine(
+                200.0, 150.0, 0.0, 0.0, 800.0, 600.0, backing_w, backing_h, 800.0, 600.0,
+            )
+        };
+        assert_eq!(at_scale(800.0, 600.0), Some((200, 450)));
+        assert_eq!(at_scale(1000.0, 750.0), Some((200, 450)));
+        assert_eq!(at_scale(1600.0, 1200.0), Some((200, 450)));
+    }
+
+    #[test]
+    fn pointer_outside_frame_or_unreadable_does_not_seed() {
+        assert!(map_mouse_location_to_engine(
+            -0.1, 10.0, 0.0, 0.0, 1920.0, 1080.0, 1920.0, 1080.0, 1920.0, 1080.0,
+        )
+        .is_none());
+        // 贴在右/上边界仍属于本帧;越过边界才不 seed。
+        assert_eq!(
+            map_mouse_location_to_engine(
+                1920.0, 10.0, 0.0, 0.0, 1920.0, 1080.0, 1920.0, 1080.0, 1920.0, 1080.0,
+            ),
+            Some((1920, 1070))
+        );
+        assert_eq!(
+            map_mouse_location_to_engine(
+                10.0, 1080.0, 0.0, 0.0, 1920.0, 1080.0, 1920.0, 1080.0, 1920.0, 1080.0,
+            ),
+            Some((10, 0))
+        );
+        assert!(map_mouse_location_to_engine(
+            1920.5, 10.0, 0.0, 0.0, 1920.0, 1080.0, 1920.0, 1080.0, 1920.0, 1080.0,
+        )
+        .is_none());
+        assert!(map_mouse_location_to_engine(
+            10.0, 1080.5, 0.0, 0.0, 1920.0, 1080.0, 1920.0, 1080.0, 1920.0, 1080.0,
+        )
+        .is_none());
+        assert!(map_mouse_location_to_engine(
+            10.0, -0.1, 0.0, 0.0, 1920.0, 1080.0, 1920.0, 1080.0, 1920.0, 1080.0,
+        )
+        .is_none());
+        assert!(map_mouse_location_to_engine(
+            f64::NAN,
+            10.0,
+            0.0,
+            0.0,
+            1920.0,
+            1080.0,
+            1920.0,
+            1080.0,
+            1920.0,
+            1080.0,
+        )
+        .is_none());
+        assert!(map_mouse_location_to_engine(
+            10.0,
+            f64::INFINITY,
+            0.0,
+            0.0,
+            1920.0,
+            1080.0,
+            1920.0,
+            1080.0,
+            1920.0,
+            1080.0,
+        )
+        .is_none());
+        assert!(map_mouse_location_to_engine(
+            10.0, 10.0, 0.0, 0.0, 0.0, 1080.0, 1920.0, 1080.0, 1920.0, 1080.0,
+        )
+        .is_none());
+        assert!(map_mouse_location_to_engine(
+            10.0, 10.0, 0.0, 0.0, 1920.0, 1080.0, 0.0, 1080.0, 1920.0, 1080.0,
+        )
+        .is_none());
+
+        let mut engine = SelectionEngine::new(1920, 1080, FeatureFlags::default());
+        seed_engine_cursor(
+            &mut engine,
+            map_mouse_location_to_engine(
+                -0.1, 10.0, 0.0, 0.0, 1920.0, 1080.0, 1920.0, 1080.0, 1920.0, 1080.0,
+            ),
+        );
+        assert!(!engine.cursor_valid());
+        assert_eq!(engine.cursor(), (0, 0));
+        assert!(!engine.scene().cursor_valid);
+    }
+
+    #[test]
+    fn secondary_and_negative_frames_seed_only_inside() {
+        // 右侧副屏:距左 100、距底 80 → 引擎 y 靠近顶边,不是 (0,0)。
+        assert_eq!(
+            map_mouse_location_to_engine(
+                1540.0, 80.0, 1440.0, 0.0, 1920.0, 1080.0, 1920.0, 1080.0, 1920.0, 1080.0,
+            ),
+            Some((100, 1000))
+        );
+        // 主屏上的指针不属于这块 frame。
+        assert!(map_mouse_location_to_engine(
+            100.0, 100.0, 1440.0, 0.0, 1920.0, 1080.0, 1920.0, 1080.0, 1920.0, 1080.0,
+        )
+        .is_none());
+        // 左侧负坐标屏。
+        assert_eq!(
+            map_mouse_location_to_engine(
+                -1900.0, 100.0, -2000.0, 0.0, 2000.0, 1000.0, 2000.0, 1000.0, 2000.0, 1000.0,
+            ),
+            Some((100, 900))
+        );
+    }
+
+    #[test]
+    fn bottom_edge_seed_is_not_the_engine_origin() {
+        let point = map_mouse_location_to_engine(
+            40.0, 0.0, 0.0, 0.0, 600.0, 600.0, 600.0, 600.0, 600.0, 600.0,
+        )
+        .expect("bottom edge is inside the frame");
+        assert_eq!(point, (40, 600));
+        let mut engine = SelectionEngine::new(600, 600, FeatureFlags::default());
+        seed_engine_cursor(&mut engine, Some(point));
+        assert!(engine.cursor_valid());
+        assert_eq!(engine.cursor(), (40, 599));
+        assert_ne!(engine.cursor(), (0, 0));
+        assert!(engine.scene().cursor_valid);
+    }
+
+    #[test]
+    fn seeded_click_without_move_keeps_the_point_for_every_shell_mode() {
+        let point = map_mouse_location_to_engine(
+            200.0, 150.0, 0.0, 0.0, 800.0, 600.0, 1000.0, 750.0, 800.0, 600.0,
+        )
+        .expect("interior point");
+        let modes = [
+            FeatureFlags::default(),
+            FeatureFlags {
+                long_capture: true,
+                ..FeatureFlags::default()
+            },
+            FeatureFlags {
+                recording: true,
+                recording_entry: true,
+                record_fps: 30,
+                ..FeatureFlags::default()
+            },
+        ];
+        for flags in modes {
+            let mut engine = SelectionEngine::new(800, 600, flags);
+            seed_engine_cursor(&mut engine, Some(point));
+            assert_eq!(engine.cursor(), point);
+            assert!(engine.scene().cursor_valid);
+            engine.handle_event(InputEvent::LeftDown {
+                x: point.0,
+                y: point.1,
+            });
+            engine.handle_event(InputEvent::LeftUp {
+                x: point.0,
+                y: point.1,
+            });
+            assert_eq!(engine.cursor(), point);
+            assert!(engine.cursor_valid());
+            assert!(
+                engine.selection().is_none(),
+                "no snap highlight, a click without movement does not invent a selection"
+            );
+        }
     }
 
     #[test]
