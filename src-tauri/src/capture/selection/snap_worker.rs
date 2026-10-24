@@ -5,6 +5,9 @@
 
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
+// poll_timeout 的签名只在测试构建编译;非测试构建保留导入会是 unused 警告。
+#[cfg(test)]
+use std::time::Duration;
 
 use crate::capture::snap::{FrameSnap, SnapRequest, SnapResult};
 
