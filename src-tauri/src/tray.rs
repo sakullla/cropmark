@@ -44,6 +44,13 @@ static WATCHER_STARTED: AtomicBool = AtomicBool::new(false);
 /// 是穿透状态必达的全局退出路径。
 pub const EXIT_CLICK_THROUGH_ID: &str = "pin-exit-click-through";
 
+/// 托盘「检查更新」的菜单 id:常驻,后台查询并以原生对话框反馈。
+pub const CHECK_UPDATES_ID: &str = "check-updates";
+
+/// 托盘「下载新版本 {version}」的菜单 id:已知有新版本时才出现,
+/// 点击打开发布页。
+pub const DOWNLOAD_UPDATE_ID: &str = "download-update";
+
 /// 一次性延时档位(秒):托盘「延时」子菜单,点击即按该秒数做区域截取。
 /// 窗口/全屏延时走设置里的延时秒数,避免 delay×mode 的嵌套菜单。
 pub const FIXED_DELAY_SECONDS: [u64; 3] = [3, 5, 10];
@@ -90,6 +97,16 @@ pub fn recording_item_label(active: bool) -> String {
     } else {
         "tray.record"
     })
+}
+
+/// 检查更新:入口常驻;下载项只在已记录新版本时出现(启动静默检查或
+/// 手动检查发现后)。打开的始终是 GitHub 发布页。
+fn download_update_visible(known_update: bool) -> bool {
+    known_update
+}
+
+fn download_update_label(version: &str) -> String {
+    i18n::tp("updates.tray_download", &[("version", version)])
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -351,6 +368,12 @@ fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
         LAST_REGION_ID => crate::dispatch_last_region(app),
         EXIT_CLICK_THROUGH_ID => crate::pin::exit_pin_click_through(app.clone()),
         CLIPBOARD_PIN_ID => crate::pin::pin_from_clipboard(app),
+        CHECK_UPDATES_ID => crate::updates::run_manual_check(app),
+        DOWNLOAD_UPDATE_ID => {
+            if let Err(error) = crate::updates::open_release_page(app.clone()) {
+                log::warn!("open release page failed: {error}");
+            }
+        }
         // R3:录屏入口经设置开关门控;活动录制时该项变为停止并保存。
         RECORDING_ID => crate::capture::dispatch_recording(app),
         RECORDING_STOP_ID => crate::capture::stop_recording(app),
@@ -471,6 +494,30 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         true,
         None::<&str>,
     )?;
+    // 检查更新常驻;已记录新版本时附加快捷下载项。
+    let check_updates = MenuItem::with_id(
+        app,
+        CHECK_UPDATES_ID,
+        i18n::t("updates.tray_check"),
+        true,
+        None::<&str>,
+    )?;
+    let known_update = crate::updates::known_update(app);
+    let download_update = if download_update_visible(known_update.is_some()) {
+        let version = known_update
+            .as_ref()
+            .map(|known| known.version.as_str())
+            .unwrap_or_default();
+        Some(MenuItem::with_id(
+            app,
+            DOWNLOAD_UPDATE_ID,
+            download_update_label(version),
+            true,
+            None::<&str>,
+        )?)
+    } else {
+        None
+    };
     // R2:穿透中的贴图无法接收鼠标事件,托盘项是唯一退出路径。
     let exit_click_through = MenuItem::with_id(
         app,
@@ -490,6 +537,10 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     items.push(&settings_item);
     items.push(&history_item);
     items.push(&clipboard_pin);
+    items.push(&check_updates);
+    if let Some(item) = &download_update {
+        items.push(item);
+    }
     let click_through_visible = exit_click_through_visible(crate::pin::has_click_through());
     if click_through_visible {
         items.push(&exit_click_through);
@@ -754,6 +805,26 @@ mod tests {
     #[test]
     fn exit_click_through_id_is_not_parsed_as_a_capture_mode() {
         assert_eq!(menu_action(EXIT_CLICK_THROUGH_ID), None);
+    }
+
+    #[test]
+    fn update_items_only_appear_when_expected() {
+        // 检查项常驻(构建处无条件加入);下载项只跟已知新版本走。
+        assert!(download_update_visible(true));
+        assert!(!download_update_visible(false));
+    }
+
+    #[test]
+    fn update_item_ids_are_not_parsed_as_capture_modes() {
+        assert_eq!(menu_action(CHECK_UPDATES_ID), None);
+        assert_eq!(menu_action(DOWNLOAD_UPDATE_ID), None);
+    }
+
+    #[test]
+    fn download_update_label_carries_the_version() {
+        let label = download_update_label("0.3.37");
+        assert!(label.contains("0.3.37"), "{label}");
+        assert_ne!(label, download_update_label("0.3.38"));
     }
 
     #[test]

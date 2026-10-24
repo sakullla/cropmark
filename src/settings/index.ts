@@ -73,6 +73,16 @@ export interface PinSettings {
   restore: boolean;
 }
 
+/// 更新检查普通选项;「启动时检查更新」默认开启,由后端给出默认值。
+export interface UpdateSettings {
+  checkOnStartup: boolean;
+}
+
+/// `check_for_updates` 的返回:与 Rust `UpdateStatus` 的 serde 形态一致。
+export type UpdateStatusPayload =
+  | { status: "upToDate"; current: string }
+  | { status: "available"; current: string; latest: string; url: string };
+
 /// 录屏开关、格式与帧率。开关默认关闭;新安装格式默认 MP4。
 export type RecordingFormat = "gif" | "webp" | "mp4";
 export type RecordingFps = 10 | 15 | 30;
@@ -101,6 +111,7 @@ export interface UiSettings {
   history: HistorySettings;
   export: ExportSettings;
   pin: PinSettings;
+  update: UpdateSettings;
   recording: RecordingSettings;
   regionTools: RegionTools;
   tray: TrayState;
@@ -461,6 +472,16 @@ export function mountSettings(root: HTMLElement): () => void {
                     </button>
                   </div>
                 </section>
+                <section class="block" aria-labelledby="update-startup-title">
+                  <h2 id="update-startup-title" data-i18n="settings.update.title">更新</h2>
+                  <div class="setting-row">
+                    <div>
+                      <div class="label" id="update-startup-label" data-i18n="settings.update.startup_label">启动时检查更新</div>
+                      <p class="hint" data-i18n="settings.update.startup_hint">启动后静默连接 GitHub 检查新版本；发现新版本时托盘出现下载入口，检查失败只记日志。</p>
+                    </div>
+                    ${switchMarkup("update-option", "checkOnStartup", "update-startup-label", true)}
+                  </div>
+                </section>
                 <section class="block" aria-labelledby="pin-title">
                   <h2 id="pin-title" data-i18n="settings.pin.title">贴图</h2>
                   <div class="setting-row">
@@ -520,6 +541,17 @@ export function mountSettings(root: HTMLElement): () => void {
                 </div>
                 <div class="setting-row">
                   <div>
+                    <div class="label" id="about-update-label" data-i18n="settings.update.check_label">检查更新</div>
+                    <p class="hint" data-i18n="settings.update.check_hint">连接 GitHub 比对最新发布版本；仅读取版本号，不上传任何数据。</p>
+                    <p class="hint" data-update-status hidden></p>
+                  </div>
+                  <div class="choices" role="group" aria-labelledby="about-update-label">
+                    <button type="button" class="choice" data-action="check-updates" data-i18n="settings.update.button">检查更新</button>
+                    <button type="button" class="choice" data-action="open-release" hidden data-i18n="settings.update.open_button">前往下载</button>
+                  </div>
+                </div>
+                <div class="setting-row">
+                  <div>
                     <div class="label" id="quit-label" data-i18n="settings.about.quit_label">退出 Cropmark</div>
                     <p class="hint" data-i18n="settings.about.quit_hint">结束应用并停止热键；有托盘时也可从托盘菜单退出。</p>
                   </div>
@@ -563,6 +595,7 @@ export function mountSettings(root: HTMLElement): () => void {
   const exportErrorEl = root.querySelector("[data-export-error]");
   const shadowEl = root.querySelector("[data-beautify-shadow=shadow]");
   const pinRestoreEl = root.querySelector("[data-pin-option=restore]");
+  const updateStartupEl = root.querySelector("[data-update-option=checkOnStartup]");
   const recordingEnabledEl = root.querySelector("[data-recording-option=enabled]");
   const recordingFormatsEl = root.querySelector("[data-recording-formats]");
   const recordingFpsEl = root.querySelector("[data-recording-fps]");
@@ -572,6 +605,9 @@ export function mountSettings(root: HTMLElement): () => void {
   const logPathEl = root.querySelector("[data-log-path]");
   const openLogsEl = root.querySelector("[data-action=open-logs]");
   const quitEl = root.querySelector("[data-action=quit]");
+  const updateCheckEl = root.querySelector("[data-action=check-updates]");
+  const updateOpenEl = root.querySelector("[data-action=open-release]");
+  const updateStatusEl = root.querySelector("[data-update-status]");
   const languageRoot = root.querySelector("[data-language]");
   const themeRoot = root.querySelector("[data-theme-choice]");
   const versionEl = root.querySelector("[data-version]");
@@ -614,6 +650,10 @@ export function mountSettings(root: HTMLElement): () => void {
     !(logPathEl instanceof HTMLElement) ||
     !(openLogsEl instanceof HTMLButtonElement) ||
     !(quitEl instanceof HTMLButtonElement) ||
+    !(updateStartupEl instanceof HTMLButtonElement) ||
+    !(updateCheckEl instanceof HTMLButtonElement) ||
+    !(updateOpenEl instanceof HTMLButtonElement) ||
+    !(updateStatusEl instanceof HTMLElement) ||
     !(languageRoot instanceof HTMLElement) ||
     !(themeRoot instanceof HTMLElement)
   ) {
@@ -737,6 +777,13 @@ export function mountSettings(root: HTMLElement): () => void {
     useFilenameTemplate: false,
   };
   let pinSettings: PinSettings = { restore: false };
+  let updateSettings: UpdateSettings = { checkOnStartup: true };
+  // 手动检查的结果缓存:语言切换后 refresh() 重渲染时按当前语言重写状态行。
+  type UpdateCheckResult =
+    | { kind: "available"; version: string }
+    | { kind: "uptodate"; version: string }
+    | { kind: "failed"; detail: string };
+  let updateCheckResult: UpdateCheckResult | null = null;
   let recordingSettings: RecordingSettings = { ...DEFAULT_RECORDING };
   let regionTools: RegionTools = {
     arrow: true,
@@ -894,6 +941,34 @@ export function mountSettings(root: HTMLElement): () => void {
   const renderPin = (pin: PinSettings): void => {
     pinSettings = pin;
     syncSwitch(pinRestoreEl, pin.restore);
+  };
+
+  const renderUpdate = (update: UpdateSettings): void => {
+    updateSettings = update ?? { checkOnStartup: true };
+    syncSwitch(updateStartupEl, updateSettings.checkOnStartup);
+    renderUpdateStatus();
+  };
+
+  // 手动检查结果内联展示:检查中显示过渡文案,完成后按结果切换;
+  // 「前往下载」只在发现新版本时出现(打开发布页命令由后端读已知版本)。
+  const renderUpdateStatus = (): void => {
+    if (!updateCheckResult) {
+      updateStatusEl.hidden = true;
+      updateStatusEl.textContent = "";
+      updateOpenEl.hidden = true;
+      return;
+    }
+    updateStatusEl.hidden = false;
+    if (updateCheckResult.kind === "available") {
+      updateStatusEl.textContent = t("updates.available", { version: updateCheckResult.version });
+      updateOpenEl.hidden = false;
+    } else if (updateCheckResult.kind === "uptodate") {
+      updateStatusEl.textContent = t("updates.uptodate", { version: updateCheckResult.version });
+      updateOpenEl.hidden = true;
+    } else {
+      updateStatusEl.textContent = t("updates.check_failed", { error: updateCheckResult.detail });
+      updateOpenEl.hidden = true;
+    }
   };
 
   // R3:录制格式按钮每次重建(与美化预设一致),方向键漫游后还原焦点。
@@ -1125,6 +1200,7 @@ export function mountSettings(root: HTMLElement): () => void {
     renderHistory(settings.history);
     renderExport(settings);
     renderPin(settings.pin);
+    renderUpdate(settings.update);
     renderRecording(settings.recording ?? { ...DEFAULT_RECORDING });
     reserveQuitWidth();
   };
@@ -1432,6 +1508,22 @@ export function mountSettings(root: HTMLElement): () => void {
     }
   };
 
+  const applyUpdateSettings = async (
+    next: UpdateSettings,
+    source?: HTMLButtonElement | null,
+  ): Promise<void> => {
+    setApplying(true, source);
+    try {
+      const settings = await invoke<UiSettings>("set_update_settings", { settings: next });
+      render(settings);
+      notifySaved();
+    } catch (error) {
+      showInvokeError(error);
+    } finally {
+      setApplying(false, source);
+    }
+  };
+
   // R3:录屏开关与录制格式;托盘入口按新值立即重建,选区入口打开时读取。
   const applyRecording = async (
     next: RecordingSettings,
@@ -1598,6 +1690,46 @@ export function mountSettings(root: HTMLElement): () => void {
     }
     const next = pinRestoreEl.getAttribute("aria-checked") !== "true";
     void applyPin({ ...pinSettings, restore: next }, pinRestoreEl);
+  });
+
+  updateStartupEl.addEventListener("click", () => {
+    if (applying) {
+      replayClick(updateStartupEl);
+      return;
+    }
+    const next = updateStartupEl.getAttribute("aria-checked") !== "true";
+    void applyUpdateSettings({ ...updateSettings, checkOnStartup: next }, updateStartupEl);
+  });
+
+  // 手动检查是只读操作,不进 applying 写回互斥;用 aria-busy 防重入即可。
+  updateCheckEl.addEventListener("click", () => {
+    if (updateCheckEl.getAttribute("aria-busy") === "true") {
+      return;
+    }
+    updateCheckEl.setAttribute("aria-busy", "true");
+    updateCheckResult = null;
+    updateStatusEl.hidden = false;
+    updateStatusEl.textContent = t("settings.update.checking");
+    updateOpenEl.hidden = true;
+    void invoke<UpdateStatusPayload>("check_for_updates")
+      .then((status) => {
+        updateCheckResult =
+          status.status === "available"
+            ? { kind: "available", version: status.latest }
+            : { kind: "uptodate", version: status.current };
+      })
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        updateCheckResult = { kind: "failed", detail };
+      })
+      .finally(() => {
+        updateCheckEl.removeAttribute("aria-busy");
+        renderUpdateStatus();
+      });
+  });
+
+  updateOpenEl.addEventListener("click", () => {
+    void invoke("open_release_page").catch(showInvokeError);
   });
 
   recordingEnabledEl.addEventListener("click", () => {

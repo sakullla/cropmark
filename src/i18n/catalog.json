@@ -1179,6 +1179,10 @@
     "zh-CN": "录屏开关已更新。",
     "en": "Recording preference updated."
   },
+  "notice.update_applied": {
+    "zh-CN": "更新设置已更新。",
+    "en": "Update preference updated."
+  },
   "notice.export_remembered": {
     "zh-CN": "导出设置已记住",
     "en": "Export settings remembered"
@@ -1202,6 +1206,30 @@
   "notice.persist_failed": {
     "zh-CN": "{applied}，但未能写入本机设置：{error}",
     "en": "{applied}, but the local settings could not be written: {error}"
+  },
+  "updates.tray_check": {
+    "zh-CN": "检查更新",
+    "en": "Check for updates"
+  },
+  "updates.tray_download": {
+    "zh-CN": "下载新版本 {version}",
+    "en": "Get {version}"
+  },
+  "updates.open_prompt": {
+    "zh-CN": "发现新版本 {version}，前往下载页？",
+    "en": "Version {version} is available. Open the download page?"
+  },
+  "updates.available": {
+    "zh-CN": "发现新版本 {version}。",
+    "en": "Version {version} is available."
+  },
+  "updates.uptodate": {
+    "zh-CN": "已是最新版本（{version}）。",
+    "en": "You are up to date ({version})."
+  },
+  "updates.check_failed": {
+    "zh-CN": "检查更新失败：{error}",
+    "en": "Update check failed: {error}"
   },
   "language.system": {
     "zh-CN": "跟随系统",
@@ -1662,6 +1690,38 @@
   "settings.about.quit_confirm": {
     "zh-CN": "确认退出？",
     "en": "Confirm quit?"
+  },
+  "settings.update.title": {
+    "zh-CN": "更新",
+    "en": "Updates"
+  },
+  "settings.update.check_label": {
+    "zh-CN": "检查更新",
+    "en": "Check for updates"
+  },
+  "settings.update.check_hint": {
+    "zh-CN": "连接 GitHub 比对最新发布版本；仅读取版本号，不上传任何数据。",
+    "en": "Compares with the latest GitHub release; reads the version only and uploads nothing."
+  },
+  "settings.update.button": {
+    "zh-CN": "检查更新",
+    "en": "Check for updates"
+  },
+  "settings.update.checking": {
+    "zh-CN": "正在检查…",
+    "en": "Checking…"
+  },
+  "settings.update.open_button": {
+    "zh-CN": "前往下载",
+    "en": "Get the update"
+  },
+  "settings.update.startup_label": {
+    "zh-CN": "启动时检查更新",
+    "en": "Check on startup"
+  },
+  "settings.update.startup_hint": {
+    "zh-CN": "启动后静默连接 GitHub 检查新版本；发现新版本时托盘出现下载入口，检查失败只记日志。",
+    "en": "Silently checks GitHub for updates after startup; a download entry appears in the tray when a new version is found. Failures are only logged."
   },
   "settings.language.title": {
     "zh-CN": "语言",

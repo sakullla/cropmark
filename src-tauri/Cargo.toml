@@ -44,6 +44,11 @@ rqrr = { version = "0.11.0", default-features = false }
 gif = "0.14.2"
 mp4 = "0.14.0"
 openh264 = "0.9.8"
+# 检查更新:复用 ort-sys 已锁定的 ureq 3 + native-tls(Windows SChannel、
+# macOS Security、Linux 系统 OpenSSL),不引入锁外 crate 与 rustls/ring。
+ureq = { version = "3.4", default-features = false, features = ["native-tls"] }
+# 最新发布 tag 与当前版本的语义化比对;已随 tauri 在锁文件内。
+semver = "1"
 
 [target.'cfg(windows)'.dependencies]
 clipboard-win = "5.4"

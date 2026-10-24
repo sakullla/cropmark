@@ -268,6 +268,22 @@ pub struct PinSettings {
     pub restore: bool,
 }
 
+/// 更新检查普通选项:启动时是否静默比对 GitHub 最新发布。默认开启;
+/// 关闭后仍可从托盘与设置页手动检查。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct UpdateSettings {
+    pub check_on_startup: bool,
+}
+
+impl Default for UpdateSettings {
+    fn default() -> Self {
+        Self {
+            check_on_startup: true,
+        }
+    }
+}
+
 /// 录屏开关:默认关闭。关闭时托盘与选区不出现录屏入口。
 /// 新安装格式默认 MP4。`fps` 只接受 10/15/30;没选过时为 None,
 /// 由录制侧按格式取默认档。旧文件缺格式字段时仍按 GIF 读入,再由修订号迁移。
@@ -389,6 +405,8 @@ pub struct StoredSettings {
     #[serde(default)]
     pub pin: PinSettings,
     #[serde(default)]
+    pub update: UpdateSettings,
+    #[serde(default)]
     pub recording: RecordingSettings,
     /// 选区工具开关。缺字段时按升级前的「全部打开」读入,由修订号决定是否改成新默认。
     #[serde(default = "legacy_region_tools")]
@@ -459,6 +477,7 @@ pub struct UiSettings {
     pub history: HistorySettings,
     pub export: ExportSettings,
     pub pin: PinSettings,
+    pub update: UpdateSettings,
     pub recording: RecordingSettings,
     pub region_tools: RegionTools,
     pub tray: TrayState,
@@ -476,6 +495,7 @@ pub struct SessionState {
     pub history: Mutex<HistorySettings>,
     pub export: Mutex<ExportSettings>,
     pub pin: Mutex<PinSettings>,
+    pub update: Mutex<UpdateSettings>,
     pub recording: Mutex<RecordingSettings>,
     pub region_tools: Mutex<RegionTools>,
     pub last_region: Mutex<Option<LastRegion>>,
@@ -499,6 +519,7 @@ impl SessionState {
             history: Mutex::new(stored.history.sanitized()),
             export: Mutex::new(stored.export.sanitized()),
             pin: Mutex::new(stored.pin),
+            update: Mutex::new(stored.update),
             recording: Mutex::new(recording),
             region_tools: Mutex::new(stored.region_tools),
             last_region: Mutex::new(stored.last_region.and_then(LastRegion::sanitized)),
@@ -534,6 +555,11 @@ pub fn current_export(app: &AppHandle) -> ExportSettings {
 /// 供贴图恢复读取「重启后恢复」普通选项(R9);只在启动恢复路径消费。
 pub fn current_pin(app: &AppHandle) -> PinSettings {
     *lock(&app.state::<SessionState>().pin)
+}
+
+/// 供启动静默检查读取「启动时检查更新」开关;只读克隆,不做平台查询。
+pub fn current_update(app: &AppHandle) -> UpdateSettings {
+    *lock(&app.state::<SessionState>().update)
 }
 
 /// 供录屏入口读取录屏开关与录制格式(R3):默认关闭,关闭时不出现入口;
@@ -918,6 +944,7 @@ pub fn snapshot(app: &AppHandle) -> UiSettings {
     let history = *lock(&state.history);
     let export = lock(&state.export).clone();
     let pin = *lock(&state.pin);
+    let update = *lock(&state.update);
     let recording = *lock(&state.recording);
     let region_tools = *lock(&state.region_tools);
     let tray = lock(&state.tray).clone();
@@ -933,6 +960,7 @@ pub fn snapshot(app: &AppHandle) -> UiSettings {
         history,
         export,
         pin,
+        update,
         recording,
         region_tools,
         tray,
@@ -1030,6 +1058,16 @@ pub fn set_pin_settings(app: AppHandle, settings: PinSettings) -> UiSettings {
     snapshot(&app)
 }
 
+/// 设置「启动时检查更新」开关;只影响下次启动的静默检查,
+/// 托盘与设置页的手动检查不受该开关门控。
+#[tauri::command]
+pub fn set_update_settings(app: AppHandle, settings: UpdateSettings) -> UiSettings {
+    *lock(&app.state::<SessionState>().update) = settings;
+    let applied = i18n::t("notice.update_applied");
+    persist_settings(&app, &applied);
+    snapshot(&app)
+}
+
 /// 选区工具开关。下一次截图和已经打开的预览按新值显示,工具实现不删除。
 #[tauri::command]
 pub fn set_region_tools(app: AppHandle, tools: RegionTools) -> UiSettings {
@@ -1082,6 +1120,7 @@ fn stored_from_state(state: &SessionState) -> StoredSettings {
         history: *lock(&state.history),
         export: lock(&state.export).clone(),
         pin: *lock(&state.pin),
+        update: *lock(&state.update),
         recording: *lock(&state.recording),
         region_tools: *lock(&state.region_tools),
         last_region: *lock(&state.last_region),
@@ -1179,6 +1218,9 @@ mod tests {
                 use_filename_template: true,
             },
             pin: PinSettings { restore: true },
+            update: UpdateSettings {
+                check_on_startup: false,
+            },
             recording: RecordingSettings {
                 enabled: true,
                 format: crate::record::RecordFormat::Mp4,
@@ -1232,6 +1274,8 @@ mod tests {
         assert!(loaded.export.apply_beautify);
         assert!(loaded.export.use_filename_template);
         assert!(loaded.pin.restore);
+        assert!(!loaded.update.check_on_startup);
+        assert!(text.contains("\"checkOnStartup\""));
         assert!(loaded.recording.enabled);
         assert_eq!(loaded.recording.format, crate::record::RecordFormat::Mp4);
         assert!(text.contains("\"recording\""));
@@ -1344,7 +1388,21 @@ mod tests {
         assert_eq!(loaded.capture, CaptureSettings::default());
         assert_eq!(loaded.export, ExportSettings::default());
         assert_eq!(loaded.pin, PinSettings::default());
+        // 启动检查默认开启;旧配置缺字段时按默认读入。
+        assert_eq!(loaded.update, UpdateSettings::default());
+        assert!(UpdateSettings::default().check_on_startup);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn update_settings_roundtrip_in_camel_case() {
+        let parsed: StoredSettings =
+            serde_json::from_str(r#"{"update":{"checkOnStartup":false}}"#).unwrap();
+        assert!(!parsed.update.check_on_startup);
+        let serialized = serde_json::to_value(parsed.update).unwrap();
+        assert_eq!(serialized["checkOnStartup"], false);
+        let rewritten = stored_from_state(&SessionState::from_stored(parsed));
+        assert!(!rewritten.update.check_on_startup);
     }
 
     #[test]
@@ -1460,6 +1518,7 @@ mod tests {
             history: HistorySettings::default(),
             export: ExportSettings::default(),
             pin: PinSettings::default(),
+            update: UpdateSettings::default(),
             recording: RecordingSettings::default(),
             region_tools: RegionTools::default(),
             tray: TrayState::available(),

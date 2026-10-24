@@ -19,6 +19,7 @@ pub mod record;
 mod settings;
 mod single_instance;
 mod tray;
+mod updates;
 
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -272,6 +273,8 @@ pub fn run() {
             app.manage(capture::session::CaptureRuntime::default());
             app.manage(ocr::OcrRuntime::default());
             app.manage(qr::QrRuntime::default());
+            // 托盘菜单构建会读取已记录的新版本,状态必须先于托盘安装托管。
+            app.manage(updates::UpdateState::default());
             // R16:托盘构建失败(典型为缺少 AppIndicator 的 Linux 桌面)不再
             // 中止启动:`install_guarded` 把构建 Err 与构建期 panic(锁定依赖
             // 在 AppIndicator dlopen 失败时直接 panic)统一记为不可用,继续注册
@@ -297,6 +300,9 @@ pub fn run() {
             history::sweep_on_startup(app.handle());
             // R3:回收上次运行遗留的录制临时文件(保留窗口内的不动)。
             record::sweep_stale_temp_files_on_startup();
+            // 检查更新:后台线程延迟数秒后静默比对 GitHub 最新发布,
+            // 失败只记日志;发现新版本时托盘出现下载入口。
+            updates::spawn_startup_check(app.handle().clone());
             // R15:托盘(或降级)、热键与预建窗口就绪,启动路径到此结束;
             // 门控日志只读时钟,不引入启动期同步 IO。
             log::info!(
@@ -335,6 +341,9 @@ pub fn run() {
             settings::set_pin_settings,
             settings::set_region_tools,
             settings::set_recording_settings,
+            settings::set_update_settings,
+            updates::check_for_updates,
+            updates::open_release_page,
             capture::get_overlay_frame,
             capture::get_preview_frame,
             capture::confirm_region,
