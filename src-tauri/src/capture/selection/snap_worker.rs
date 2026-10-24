@@ -5,7 +5,6 @@
 
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
 
 use crate::capture::snap::{FrameSnap, SnapRequest, SnapResult};
 

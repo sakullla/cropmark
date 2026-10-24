@@ -1184,7 +1184,10 @@ fn arm_snap_worker(geometry: ShellGeometry, frame: (u32, u32)) {
         frame,
     ));
     let stored = STATE.with(|slot| {
-        let Some(state) = slot.borrow_mut().as_mut() else {
+        // RefCell 的 RefMut 必须活过整段借用:let-else 的临时值会在语句
+        // 结束时释放,留给后文的是悬垂借用(macOS CI 的 E0716)。
+        let mut guard = slot.borrow_mut();
+        let Some(state) = guard.as_mut() else {
             return false;
         };
         // worker 已能收请求。有效种子在这里入队;不 hit,也不把首帧拖住。
@@ -1200,7 +1203,8 @@ fn arm_snap_worker(geometry: ShellGeometry, frame: (u32, u32)) {
         return;
     };
     let orphan = STATE.with(|slot| {
-        let Some(state) = slot.borrow_mut().as_mut() else {
+        let mut guard = slot.borrow_mut();
+        let Some(state) = guard.as_mut() else {
             return Some(timer);
         };
         state.snap_timer = Some(timer);
