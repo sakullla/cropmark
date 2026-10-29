@@ -83,6 +83,8 @@ libc = "0.2"
 objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", features = [
   "NSApplication",
+  "NSBezierPath",
+  "NSColor",
   "NSCursor",
   "NSEvent",
   "NSGraphics",
@@ -90,11 +92,17 @@ objc2-app-kit = { version = "0.3.2", features = [
   "NSImage",
   "NSPanel",
   "NSResponder",
+  "NSRunningApplication",
   "NSScreen",
+  "NSStringDrawing",
   "NSTextInputClient",
   "NSView",
   "NSWindow",
+  "NSWorkspace",
   "block2",
+  "libc",
+  # NSStringDrawing::drawAtPoint 只有打开这个 feature 才生成。
+  "objc2-core-foundation",
 ] }
 block2 = "0.6"
 objc2-core-foundation = { version = "0.3.2", features = ["CFCGTypes", "CFDate", "CFRunLoop", "block2"] }

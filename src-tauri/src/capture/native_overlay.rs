@@ -24,3 +24,8 @@ pub use imp::{pick_region, request_shell_close, shell_is_active, RegionOutcome, 
 
 #[cfg(windows)]
 pub use imp::show_scroll_control_unfocused;
+
+#[cfg(all(target_os = "macos", not(test)))]
+pub use imp::restore_scroll_focus;
+#[cfg(target_os = "macos")]
+pub use imp::{disarm_scroll_focus_restore, raise_scroll_control, show_scroll_control_unfocused};

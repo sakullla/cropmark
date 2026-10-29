@@ -4,7 +4,9 @@
 //! 区域,用整段模板的亮度差找唯一垂直位移再拼接。对不上或有两个差不多
 //! 的候选时不追加,避免相似文本行被拼错行。
 //! Web 控制窗(`index.html?view=scroll`,置顶非模态、位于选区旁)承载状态
-//! 提示、方向选择与「完成/取消」。默认纵向(R5 前行为);横向在控制窗选择,
+//! 提示、方向选择与「完成/取消」。选区壳关闭后 Windows 与 macOS 都留一层
+//! 点击穿透、不进抓取的范围框;macOS 还把焦点还给截图前的应用,滚轮才能
+//! 滚动框内内容。默认纵向(R5 前行为);横向在控制窗选择,
 //! 首个内容变化后锁定。Windows 自动滚动的首个 nudge 推迟到控制窗就绪且
 //! 方向选择落定(用户点选或就绪后过了宽限期)之后,避免在用户能选横向之前
 //! 就把轴向锁死为纵向。内容未变化连续若干次、匹配失败、滚动过快都给出可
@@ -38,6 +40,9 @@ use crate::annotate::Annotation;
 
 #[cfg(windows)]
 #[path = "scroll_highlight.rs"]
+mod highlight;
+#[cfg(target_os = "macos")]
+#[path = "scroll_highlight_macos.rs"]
 mod highlight;
 
 /// 控制窗标签:滚动会话期间唯一,结束后隐藏复用(toast/error 同模式)。
@@ -1047,6 +1052,23 @@ fn reveal_scroll_control(window: &WebviewWindow) {
     if let Ok(hwnd) = window.hwnd() {
         crate::capture::native_overlay::show_scroll_control_unfocused(hwnd);
     }
+    #[cfg(target_os = "macos")]
+    {
+        let window = window.clone();
+        let _ = window.clone().run_on_main_thread(move || {
+            if let Ok(ptr) = window.ns_window() {
+                crate::capture::native_overlay::show_scroll_control_unfocused(ptr);
+            }
+        });
+    }
+}
+
+/// 点击控制窗会把本进程变成前台。macOS 上滚轮跟着前台走,所以把焦点还回去。
+fn hand_scroll_focus_back() {
+    // 库单测会把 SCROLL_STATE 直接写成 RUNNING 再调这些命令。正式进程没有
+    // cfg(test);测试里不能初始化 NSApp,否则进程会被降到后台。
+    #[cfg(all(target_os = "macos", not(test)))]
+    crate::capture::native_overlay::restore_scroll_focus();
 }
 
 /// 收起控制窗:仅隐藏,保留预创建 webview 供下一次会话复用。
@@ -1057,6 +1079,11 @@ fn dismiss_control_window_now(app: &AppHandle) {
         let _ = window.hide();
     }
     clear_status();
+    #[cfg(target_os = "macos")]
+    {
+        crate::capture::native_overlay::disarm_scroll_focus_restore();
+        crate::front::demote_if_idle(app);
+    }
 }
 
 /// 释放状态:仅当全局代际仍属于本会话时才回到 IDLE,避免收尾线程把已经
@@ -1112,9 +1139,11 @@ fn run_session(
     let cap = stitch_cap(axis, &initial);
     let mut stitcher = Stitcher::new(initial, axis, cap);
     // 选区壳已经关掉。留一层点击穿透的范围框，让人看见正在截哪一块。
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     let highlight = highlight::Guard::open(&monitor, &region, axis);
-    #[cfg(windows)]
+    #[cfg(target_os = "macos")]
+    crate::capture::native_overlay::raise_scroll_control();
+    #[cfg(any(windows, target_os = "macos"))]
     let mut painted_length = stitcher.axis_length();
     // Windows 自动滚动的开闸状态:控制窗就绪且方向选择落定后,本循环才允许
     // 范围框定时器发送首个滚轮消息(见 `auto_scroll_start_allowed`)。
@@ -1170,7 +1199,7 @@ fn run_session(
         let requested = CaptureAxis::from_u8(SCROLL_AXIS_REQUEST.load(Ordering::SeqCst));
         if requested != stitcher.axis() {
             if stitcher.set_axis(requested) {
-                #[cfg(windows)]
+                #[cfg(any(windows, target_os = "macos"))]
                 if let Some(frame) = highlight.as_ref() {
                     frame.set_axis(requested);
                 }
@@ -1255,7 +1284,7 @@ fn run_session(
                 break;
             }
         }
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         if let Some(frame) = highlight.as_ref() {
             let stitched = stitcher.axis_length();
             if stitched != painted_length {
@@ -1264,6 +1293,8 @@ fn run_session(
             }
         }
     }
+    #[cfg(any(windows, target_os = "macos"))]
+    drop(highlight);
     SCROLL_STATE.store(STATE_FINISHING, Ordering::SeqCst);
     emit_status(&app, status_from(&stitcher, "finishing"));
     finish_session(&app, stitcher, &annotations, &region, generation);
@@ -1339,6 +1370,7 @@ pub fn start_scroll_capture(app: AppHandle) -> Result<(), CaptureError> {
     }
     let axis = CaptureAxis::from_u8(SCROLL_AXIS_REQUEST.load(Ordering::SeqCst));
     mark_session_started(&app, axis);
+    hand_scroll_focus_back();
     Ok(())
 }
 
@@ -1384,17 +1416,24 @@ pub fn undo_scroll_segment() -> Result<(), CaptureError> {
 /// 变化兜底任一触发)拒绝,控制窗同时按状态事件里的 `axis` 锁定选择。
 #[tauri::command]
 pub fn set_scroll_axis(axis: CaptureAxis) -> Result<(), CaptureError> {
-    if !axis_switch_allowed(
+    let running = SCROLL_STATE.load(Ordering::SeqCst) == STATE_RUNNING;
+    let result = if !axis_switch_allowed(
         SCROLL_STATE.load(Ordering::SeqCst),
         SCROLL_SESSION_STARTED.load(Ordering::SeqCst),
     ) {
-        return Err(CaptureError::api("error.capture.scroll_axis_locked"));
+        Err(CaptureError::api("error.capture.scroll_axis_locked"))
+    } else {
+        SCROLL_AXIS_REQUEST.store(axis.as_u8(), Ordering::SeqCst);
+        // 用户点选方向即视为窗口可交互:自动滚动不必再等宽限期(见
+        // `auto_scroll_start_allowed`)。
+        SCROLL_AXIS_CHOSEN.store(true, Ordering::SeqCst);
+        Ok(())
+    };
+    // 点方向按钮会把本进程变成前台;会话还在时把焦点还给被截的窗口。
+    if running {
+        hand_scroll_focus_back();
     }
-    SCROLL_AXIS_REQUEST.store(axis.as_u8(), Ordering::SeqCst);
-    // 用户点选方向即视为窗口可交互:自动滚动不必再等宽限期(见
-    // `auto_scroll_start_allowed`)。
-    SCROLL_AXIS_CHOSEN.store(true, Ordering::SeqCst);
-    Ok(())
+    result
 }
 
 /// 方向切换窗口:会话运行中且还没显式开始(锁定锚点从首个 append
@@ -1408,6 +1447,7 @@ fn axis_switch_allowed(state: u8, started: bool) -> bool {
 #[tauri::command]
 pub fn scroll_control_ready() {
     SCROLL_CONTROL_READY.store(true, Ordering::SeqCst);
+    hand_scroll_focus_back();
 }
 
 /// 控制窗前端消息:取消滚动会话,不写剪贴板、历史或磁盘。

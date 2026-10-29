@@ -41,7 +41,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -51,10 +51,11 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
 use objc2::{define_class, msg_send, sel, AnyThread, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSCursor, NSEvent,
-    NSEventMask, NSEventModifierFlags, NSEventType, NSGraphicsContext, NSImage, NSPanel,
-    NSResponder, NSScreen, NSTextInputClient, NSView, NSWindowCollectionBehavior,
-    NSWindowStyleMask,
+    NSApplication, NSApplicationActivationOptions, NSApplicationActivationPolicy,
+    NSBackingStoreType, NSCursor, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType,
+    NSGraphicsContext, NSImage, NSPanel, NSResponder, NSRunningApplication, NSScreen,
+    NSTextInputClient, NSView, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSWorkspace,
 };
 use objc2_core_foundation::{
     kCFRunLoopCommonModes, CFAbsoluteTimeGetCurrent, CFRetained, CFRunLoop, CFRunLoopTimer, CFType,
@@ -763,6 +764,124 @@ fn schedule_on_main_run_loop(work: extern "C" fn(*mut c_void), context: *mut c_v
     rl.wake_up();
 }
 
+fn schedule_boxed(work: Box<dyn FnOnce() + Send>) {
+    let context = Box::into_raw(Box::new(work));
+    schedule_on_main_run_loop(run_boxed, context as *mut c_void);
+}
+
+extern "C" fn run_boxed(context: *mut c_void) {
+    if context.is_null() {
+        return;
+    }
+    let work = unsafe { Box::from_raw(context as *mut Box<dyn FnOnce() + Send>) };
+    work();
+}
+
+/// 选区壳抢走前台之前的应用。长截图要把焦点还回去,否则滚轮打在本进程上,页面不动。
+static PRE_CAPTURE_PID: AtomicI32 = AtomicI32::new(0);
+static RESTORE_GEN: AtomicU64 = AtomicU64::new(0);
+/// 长截图控制窗。范围框盖住全屏后,靠它再排到范围框前面。
+static SCROLL_CONTROL: AtomicUsize = AtomicUsize::new(0);
+
+pub fn remember_front_application() {
+    let Some(front) = NSWorkspace::sharedWorkspace().frontmostApplication() else {
+        return;
+    };
+    let pid = front.processIdentifier();
+    let self_pid = NSRunningApplication::currentApplication().processIdentifier();
+    if pid <= 0 || pid == self_pid {
+        return;
+    }
+    PRE_CAPTURE_PID.store(pid, Ordering::SeqCst);
+}
+
+/// 会话结束:作废尚未执行的还焦,避免预览打开后把焦点抢走。
+pub fn disarm_scroll_focus_restore() {
+    RESTORE_GEN.fetch_add(1, Ordering::SeqCst);
+    SCROLL_CONTROL.store(0, Ordering::SeqCst);
+}
+
+pub fn restore_scroll_focus() {
+    let gen = RESTORE_GEN.load(Ordering::SeqCst);
+    if MainThreadMarker::new().is_some() {
+        restore_scroll_focus_now(gen);
+    } else {
+        schedule_boxed(Box::new(move || restore_scroll_focus_now(gen)));
+    }
+    // 控制窗 show / 网页加载可能晚一拍才把本进程变成前台。再还一次。
+    let _ = std::thread::Builder::new()
+        .name("cropmark-scroll-focus".into())
+        .spawn(move || {
+            std::thread::sleep(Duration::from_millis(350));
+            schedule_boxed(Box::new(move || restore_scroll_focus_now(gen)));
+        });
+}
+
+pub fn raise_scroll_control() {
+    if MainThreadMarker::new().is_some() {
+        raise_scroll_control_now();
+        return;
+    }
+    schedule_boxed(Box::new(raise_scroll_control_now));
+}
+
+fn raise_scroll_control_now() {
+    let raw = SCROLL_CONTROL.load(Ordering::SeqCst);
+    if raw == 0 {
+        return;
+    }
+    let ns = unsafe { &*(raw as *const NSWindow) };
+    ns.setHidesOnDeactivate(false);
+    ns.setLevel((kCGScreenSaverWindowLevel as isize).saturating_add(2));
+    ns.setCollectionBehavior(
+        NSWindowCollectionBehavior::CanJoinAllSpaces
+            .union(NSWindowCollectionBehavior::FullScreenAuxiliary),
+    );
+    ns.orderFrontRegardless();
+}
+
+fn restore_scroll_focus_now(gen: u64) {
+    if RESTORE_GEN.load(Ordering::SeqCst) != gen {
+        return;
+    }
+    raise_scroll_control_now();
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let app = NSApplication::sharedApplication(mtm);
+    // 壳把策略改成 Regular 才能盖住其它应用。还焦时保持 Regular,只把激活让出去,
+    // 范围框和控制窗才不会跟着缩回托盘后面。
+    let _ = app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+    let pid = PRE_CAPTURE_PID.load(Ordering::SeqCst);
+    let current = NSRunningApplication::currentApplication();
+    if pid > 0 && pid != current.processIdentifier() {
+        if let Some(target) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
+            let _ = target.unhide();
+            app.yieldActivationToApplication(&target);
+            let activated =
+                target.activateFromApplication_options(&current, NSApplicationActivationOptions(0));
+            if !activated && !activate_ignoring_others(&target) {
+                app.deactivate();
+            }
+            return;
+        }
+    }
+    app.deactivate();
+}
+
+#[allow(deprecated)]
+fn activate_ignoring_others(target: &NSRunningApplication) -> bool {
+    target.activateWithOptions(NSApplicationActivationOptions::ActivateIgnoringOtherApps)
+}
+
+/// 控制窗置顶但不抢走键盘焦点,并把焦点还给截图前的应用。
+pub fn show_scroll_control_unfocused(window: *mut c_void) {
+    if !window.is_null() {
+        SCROLL_CONTROL.store(window as usize, Ordering::SeqCst);
+    }
+    restore_scroll_focus();
+}
+
 /// 当前壳的关闭代际(stale 重置/超时兜底):从任意线程递增,泵在下一轮迭代取消。
 /// 用代际而不是布尔标志:旧壳的收尾不会清除新壳的待关闭状态(评审 P3)。
 static SHELL_CLOSE_EPOCH: AtomicU64 = AtomicU64::new(0);
@@ -980,6 +1099,8 @@ fn start_shell(
     }
     let frame = screen_frame_for(mtm, &geometry);
     let app = NSApplication::sharedApplication(mtm);
+    // 必须在激活本进程之前记下前台应用,长截图结束选区后才能把滚轮还回去。
+    remember_front_application();
     let _ = app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
     app.activate();
     #[allow(deprecated)]
