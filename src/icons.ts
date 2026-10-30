@@ -57,7 +57,7 @@ export const icons = {
     `<path d="M12 4.6v10.2"/><path d="M8.2 11.2 12 15.2 15.8 11.2"/><path d="M5.4 18.6h13.2"/>`,
   ),
   pin: svg(
-    `<path d="M12 19.6v-5.4"/><path d="M8.2 10.2a3.8 3.8 0 1 1 7.6 0c0 2.1-1.65 3.9-3.8 6-2.15-2.1-3.8-3.9-3.8-6Z"/><circle cx="12" cy="10" r="1.2" fill="currentColor" stroke="none"/>`,
+    `<path d="M9.2 4h5.6l-.7 6.2 2.9 3.2v1.4H7v-1.4l2.9-3.2z"/><path d="M12 14.8V20"/>`,
   ),
   annotate: svg(
     `<path d="M13.1 5.6 18.4 10.9"/><path d="M4.4 19.6 6 14.6 16.6 4a2.05 2.05 0 0 1 2.9 2.9L8.9 17.5z"/>`,
@@ -81,6 +81,17 @@ export const icons = {
   more: svg(`<circle cx="5.2" cy="12" r="1.45" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.45" fill="currentColor" stroke="none"/><circle cx="18.8" cy="12" r="1.45" fill="currentColor" stroke="none"/>`),
   chevronDown: svg(`<path d="M6.4 9.2 12 14.6 17.6 9.2"/>`),
   close: svg(`<path d="M6.6 6.6 17.4 17.4M17.4 6.6 6.6 17.4"/>`),
+  search: svg(`<circle cx="10.8" cy="10.8" r="6.2"/><path d="M15.4 15.4 20 20"/>`),
+  record: svg(`<circle cx="12" cy="12" r="8.2"/><circle cx="12" cy="12" r="3.6" fill="currentColor" stroke="none"/>`),
+  star: svg(`<path d="M12 3.6 14.7 9.1 20.7 9.9 16.3 14.1 17.4 20.1 12 17.2 6.6 20.1 7.7 14.1 3.3 9.9 9.3 9.1Z"/>`),
+  grid: svg(`<rect x="4" y="4" width="6.6" height="6.6" rx="1.4"/><rect x="13.4" y="4" width="6.6" height="6.6" rx="1.4"/><rect x="4" y="13.4" width="6.6" height="6.6" rx="1.4"/><rect x="13.4" y="13.4" width="6.6" height="6.6" rx="1.4"/>`),
+  calendar: svg(`<rect x="4" y="5.6" width="16" height="14.4" rx="2.2"/><path d="M4 10h16M8.4 3.6v3.6M15.6 3.6v3.6"/>`),
+  window: svg(`<rect x="3.8" y="5" width="16.4" height="14" rx="2.2"/><path d="M3.8 9.4h16.4"/>`),
+  fullscreen: svg(`<path d="M4 8.8V6.2A2.2 2.2 0 0 1 6.2 4h2.6M15.2 4h2.6A2.2 2.2 0 0 1 20 6.2v2.6M20 15.2v2.6a2.2 2.2 0 0 1-2.2 2.2h-2.6M8.8 20H6.2A2.2 2.2 0 0 1 4 17.8v-2.6"/>`),
+  long: svg(`<rect x="7" y="3.6" width="10" height="16.8" rx="2"/><path d="M10 8h4M10 12h4M10 16h4"/>`),
+  region: svg(`<path d="M8.6 4H6.2A2.2 2.2 0 0 0 4 6.2v2.4M4 15.4v2.4A2.2 2.2 0 0 0 6.2 20h2.4M15.4 20h2.4a2.2 2.2 0 0 0 2.2-2.2v-2.4M20 8.6V6.2A2.2 2.2 0 0 0 17.8 4h-2.4"/><path d="M12 9v6M9 12h6"/>`),
+  plus: svg(`<path d="M12 5.4v13.2M5.4 12h13.2"/>`),
+  minus: svg(`<path d="M5.4 12h13.2"/>`),
   capture: svg(
     `<path d="M4 8.4V6.2A2.2 2.2 0 0 1 6.2 4h2.2M15.6 4h2.2A2.2 2.2 0 0 1 20 6.2v2.2M20 15.6v2.2a2.2 2.2 0 0 1-2.2 2.2h-2.2M8.4 20H6.2A2.2 2.2 0 0 1 4 17.8v-2.2"/><rect x="8.2" y="9.2" width="7.6" height="5.6" rx="1.2"/>`,
   ),

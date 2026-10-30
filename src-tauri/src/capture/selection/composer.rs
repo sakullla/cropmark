@@ -1,9 +1,9 @@
 //! 选区像素合成器。
 //!
 //! 在冻结帧(`capture::buffer::Frame`)的 RGBA 位图上合成:暗幕+选区开洞、
-//! 跟随系统明暗的强调色描边、白芯蓝环手柄、尺寸徽标、放大镜(原始帧全分辨率采样 +
+//! 跟随系统明暗的强调色描边、白芯强调环手柄、尺寸徽标、放大镜(原始帧全分辨率采样 +
 //! 十字准星 + 单行色值读数)、统一横条(主行工具/动作,超出屏幕宽度时换行 +
-//! 「更多」展开面板)与右键菜单。浮层用冷灰表面和与选区描边同一的蓝,只有复制是实心强调。
+//! 「更多」展开面板)与右键菜单。浮层用中性表面和与选区描边同一的青绿,只有复制是实心强调。
 //! 尺寸徽标优先落在不压光标、不与横条重叠、且仍在画面内的最远角上。布局/hitbox 函数是纯几何,状态机与绘制共用
 //! 同一份,保证命中判定与合成输出一致。不含窗口代码;系统明暗只决定选区描边。
 
@@ -21,33 +21,33 @@ use crate::capture::error::CaptureError;
 use crate::capture::geometry::PhysicalRect;
 use crate::i18n;
 
-// ---- 配色:冷灰浮层 + 与选区描边相同的蓝。只有一个实心主动作。----
+// ---- 配色:中性浮层 + 与选区描边相同的品牌青绿,和网页窗口同一套令牌。只有一个实心主动作。----
 
-/// 复制按钮、手柄环、放大镜准星。与浅色选区描边同一蓝,避免青绿和蓝两套强调色。
-pub const ACCENT: [u8; 4] = [0x24, 0x57, 0xDB, 255];
-/// 选区描边浅色,与网页 `--accent` 相同(#2457db)。系统配色不可用时用此值。
-const ACCENT_LIGHT: [u8; 4] = [0x24, 0x57, 0xDB, 255];
-/// 选区描边深色,与网页暗色 `--accent` 相同(#93c5fd)。
-const ACCENT_DARK: [u8; 4] = [0x93, 0xC5, 0xFD, 255];
+/// 复制按钮、手柄环、放大镜准星。与浅色选区描边同色,全产品只有一套强调色。
+pub const ACCENT: [u8; 4] = [0x0A, 0x7A, 0x6D, 255];
+/// 选区描边浅色,与网页 `--accent` 相同(#0a7a6d)。系统配色不可用时用此值。
+const ACCENT_LIGHT: [u8; 4] = [0x0A, 0x7A, 0x6D, 255];
+/// 选区描边深色,与网页暗色 `--accent` 相同(#4ee3c8)。
+const ACCENT_DARK: [u8; 4] = [0x4E, 0xE3, 0xC8, 255];
 /// 选区晕边浅色,与网页 `--focus-gap` 相同(#ffffff)。
 const HALO_LIGHT: [u8; 4] = [255, 255, 255, 255];
-/// 选区晕边深色,与网页暗色 `--focus-gap` 相同(#12161c)。
-const HALO_DARK: [u8; 4] = [0x12, 0x16, 0x1C, 255];
-/// 悬停文字与图标 #1e40af,比填充蓝更深,压在浅蓝底上仍清楚。
-const ACCENT_DEEP: [u8; 4] = [0x1E, 0x40, 0xAF, 255];
-/// 实心强调按钮上的字形,与网页浅色 `--on-accent` 相同(#f8fafc)。
+/// 选区晕边深色,与网页暗色 `--focus-gap` 相同(#15181a)。
+const HALO_DARK: [u8; 4] = [0x15, 0x18, 0x1A, 255];
+/// 悬停文字与图标,与网页 `--accent-strong` 相同(#08665b),压在淡底上仍清楚。
+const ACCENT_DEEP: [u8; 4] = [0x08, 0x66, 0x5B, 255];
+/// 实心强调按钮上的字形,与网页浅色 `--on-accent` 相同(#ffffff)。
 /// 横条始终铺浅色强调填充,不改用深色 `--on-accent`。
-const ON_ACCENT: [u8; 4] = [0xF8, 0xFA, 0xFC, 255];
-/// 浮层底 #f8fafc,与网页工作区的中性浅色表面一致。
-const CHROME_BG: [u8; 4] = [0xF8, 0xFA, 0xFC, 255];
-/// 正文 #192335。
-const CHROME_TEXT: [u8; 4] = [0x19, 0x23, 0x35, 255];
-/// 1px 边 rgba(28,33,40,0.16),让面板在杂乱画面上仍有边。
-const CHROME_BORDER: [u8; 4] = [28, 33, 40, 41];
+const ON_ACCENT: [u8; 4] = [0xFF, 0xFF, 0xFF, 255];
+/// 浮层底 #fafafa,与网页 `--panel` 相同。
+const CHROME_BG: [u8; 4] = [0xFA, 0xFA, 0xFA, 255];
+/// 正文 #15191c,与网页 `--ink` 相同。
+const CHROME_TEXT: [u8; 4] = [0x15, 0x19, 0x1C, 255];
+/// 1px 边 rgba(21,25,28,0.16),让面板在杂乱画面上仍有边。
+const CHROME_BORDER: [u8; 4] = [21, 25, 28, 41];
 /// 底部 2px 偏移,模拟浮层阴影。
-const CHROME_SHADOW: [u8; 4] = [15, 23, 42, 72];
-/// 悬停软底,约 14% 的蓝。
-const ACTIVE_BG: [u8; 4] = [0x1D, 0x4E, 0xD8, 36];
+const CHROME_SHADOW: [u8; 4] = [21, 25, 28, 72];
+/// 悬停软底,约 14% 的强调色。
+const ACTIVE_BG: [u8; 4] = [0x0A, 0x7A, 0x6D, 36];
 /// 手柄白芯(亮暗背景均可见的双圆结构内芯)。
 const HANDLE_CORE: [u8; 4] = [255, 255, 255, 255];
 /// 暗幕保留 52% 亮度,对齐现 Windows 原生路径。
@@ -2036,7 +2036,7 @@ impl Composer {
         }
     }
 
-    /// 统一横条:浅蓝灰面板 + 图标。仅复制为实心强调填充;
+    /// 统一横条:中性面板 + 图标。仅复制为实心强调填充;
     /// 当前工具保留浅底选中态,墨色与普通按钮相同;hover 软底;工具组与动作组之间画
     /// 1px 分隔线。「更多」展开时在其按钮上方弹出动作列表面板(图标+名称,
     /// 与右键菜单同构)。
@@ -2152,7 +2152,7 @@ impl Composer {
         }
     }
 
-    /// 白芯 + 蓝环双圆手柄,亮暗背景均可见;外环半径随 scale 派生。
+    /// 白芯 + 强调环双圆手柄,亮暗背景均可见;外环半径随 scale 派生。
     fn draw_handles(&self, rgba: &mut [u8], w: u32, h: u32, rect: PhysicalRect) {
         let outer = self.metrics.handle_radius;
         let core = (outer - 2).max(2);
@@ -2417,7 +2417,7 @@ impl Composer {
         );
     }
 
-    /// 右键菜单:左图标 + 右文字;悬停项用蓝色软底和更深的蓝字。
+    /// 右键菜单:左图标 + 右文字;悬停项用强调色软底和更深的强调字。
     /// 「取消」与其余动作之间画分隔线(14% 墨)。全部几何经 metrics 派生。
     fn draw_menu(&self, rgba: &mut [u8], w: u32, h: u32, scene: &Scene, text_input: bool) {
         let metrics = self.metrics;
@@ -2464,7 +2464,7 @@ impl Composer {
         }
     }
 
-    /// 放大镜:最近邻放大,蓝框只标光标那一格,不再铺网格。
+    /// 放大镜:最近邻放大,强调框只标光标那一格,不再铺网格。
     /// 底部是色块加 HEX,不再重复 RGB 和坐标。
     fn draw_magnifier(&self, rgba: &mut [u8], w: u32, h: u32, cursor: (i32, i32)) {
         let layout = mag_layout(self.scale);
@@ -4412,8 +4412,8 @@ mod tests {
         assert_eq!(accent_for_scheme(None), ACCENT_LIGHT);
         assert_eq!(accent_for_scheme(Some(false)), ACCENT_LIGHT);
         assert_eq!(accent_for_scheme(Some(true)), ACCENT_DARK);
-        assert_eq!(ACCENT_LIGHT, [0x24, 0x57, 0xDB, 255]);
-        assert_eq!(ACCENT_DARK, [0x93, 0xC5, 0xFD, 255]);
+        assert_eq!(ACCENT_LIGHT, [0x0A, 0x7A, 0x6D, 255]);
+        assert_eq!(ACCENT_DARK, [0x4E, 0xE3, 0xC8, 255]);
         assert_eq!(ACCENT_LIGHT, ACCENT);
         assert_ne!(ACCENT_DARK, ACCENT);
         let live = selection_accent();
@@ -4422,7 +4422,7 @@ mod tests {
         assert_eq!(halo_for_scheme(Some(false)), HALO_LIGHT);
         assert_eq!(halo_for_scheme(Some(true)), HALO_DARK);
         assert_eq!(HALO_LIGHT, [255, 255, 255, 255]);
-        assert_eq!(HALO_DARK, [0x12, 0x16, 0x1C, 255]);
+        assert_eq!(HALO_DARK, [0x15, 0x18, 0x1A, 255]);
     }
 
     #[test]
@@ -4481,13 +4481,13 @@ mod tests {
     }
 
     #[test]
-    fn chrome_palette_uses_cool_surface_and_shared_accent() {
-        assert_eq!(CHROME_BG, [0xF8, 0xFA, 0xFC, 255]);
-        assert_eq!(CHROME_TEXT, [0x19, 0x23, 0x35, 255]);
-        assert_eq!(CHROME_BORDER, [28, 33, 40, 41]);
-        assert_eq!(ACTIVE_BG, [0x1D, 0x4E, 0xD8, 36]);
+    fn chrome_palette_uses_neutral_surface_and_shared_accent() {
+        assert_eq!(CHROME_BG, [0xFA, 0xFA, 0xFA, 255]);
+        assert_eq!(CHROME_TEXT, [0x15, 0x19, 0x1C, 255]);
+        assert_eq!(CHROME_BORDER, [21, 25, 28, 41]);
+        assert_eq!(ACTIVE_BG, [0x0A, 0x7A, 0x6D, 36]);
         assert_eq!(ACCENT, ACCENT_LIGHT);
-        assert_eq!(ON_ACCENT, [0xF8, 0xFA, 0xFC, 255]);
+        assert_eq!(ON_ACCENT, [0xFF, 0xFF, 0xFF, 255]);
         // 压暗系数保持 52%。
         assert_eq!(DIM_KEEP, 52);
     }
@@ -5047,7 +5047,7 @@ mod tests {
             let i = ((y as u32 * 320 + x as u32) * 4) as usize;
             [composed[i], composed[i + 1], composed[i + 2]]
         };
-        // SE 手柄 (200,120):白芯 + 蓝环(scale 1.0 外环半径 5)。
+        // SE 手柄 (200,120):白芯 + 强调环(scale 1.0 外环半径 5)。
         let (hx, hy) = handle_anchor(selection, HandleKind::SouthEast);
         assert_eq!(read(hx, hy), [255, 255, 255]);
         assert_eq!(read(hx + 4, hy), [ACCENT[0], ACCENT[1], ACCENT[2]]);

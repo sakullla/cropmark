@@ -13,11 +13,11 @@ button.annotation-chrome {
   border-radius: var(--radius-control);
   -webkit-app-region: no-drag;
   app-region: no-drag;
-  /* 短边锁定 36px：窄工具条换行，不把点击区压到更小。 */
-  width: 36px;
-  min-width: 36px;
-  height: 36px;
-  min-height: 36px;
+  /* 短边锁定 32px：窄工具条换行，不把点击区压到更小。 */
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
@@ -30,8 +30,8 @@ button.annotation-chrome {
    移出工具条容器,祖先选择器会失效导致 SVG 按原始尺寸撑破菜单。 */
 .annotation-tools button svg,
 button.annotation-chrome svg {
-  width: 18px;
-  height: 18px;
+  width: 17px;
+  height: 17px;
   display: block;
   flex: 0 0 auto;
 }
@@ -112,12 +112,12 @@ button.annotation-chrome svg {
   max-width: calc(100vw - 16px);
   /* 1px 时相邻悬停底会粘成一块。和工具条的行距一样留 4px，换行后上下也分开。 */
   gap: 4px;
-  padding: 5px;
+  padding: 4px;
   border: 1px solid var(--line);
   border-radius: var(--radius-menu);
   background: var(--card);
   box-shadow: var(--shadow-pop);
-  animation: annotation-pop 160ms var(--ease-out);
+  animation: annotation-pop 120ms var(--ease-out);
 }
 
 @keyframes annotation-pop {
@@ -144,7 +144,6 @@ button.annotation-chrome svg {
 .annotation-tools button:hover:not(:disabled):not([aria-disabled="true"]):not(.active),
 .annotation-tools button:focus-visible:not(:disabled):not([aria-disabled="true"]):not(.active) {
   background: var(--control-hover-bg);
-  border-color: var(--control-hover-border);
 }
 
 .annotation-tools > button:hover:not(:disabled):not(.active),
@@ -165,7 +164,6 @@ button.annotation-chrome svg {
 /* 当前工具:强调色淡底 + 强调色图标。描边只留一圈淡色,不再像被框住的按钮。 */
 .annotation-tools button.active {
   background: var(--accent-soft);
-  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
   color: var(--accent);
 }
 
@@ -191,7 +189,6 @@ button.annotation-chrome[data-action="delete"]:hover:not(:disabled):not([aria-di
 button.annotation-chrome[data-action="delete"]:focus-visible:not(:disabled):not([aria-disabled="true"]) {
   color: var(--danger);
   background: var(--control-danger-hover-bg);
-  border-color: var(--control-danger-hover-border);
 }
 
 .annotation-style {
@@ -210,24 +207,115 @@ button.annotation-chrome[data-action="delete"]:focus-visible:not(:disabled):not(
   grid-template-columns: minmax(36px, max-content) minmax(0, max-content);
   align-items: center;
   column-gap: 10px;
-  row-gap: 10px;
+  row-gap: 8px;
   width: max-content;
   /* 固定 292px 会压过 max-width。窄录制区域里面板比窗口宽，右侧色块被裁掉。 */
   min-width: min(292px, calc(100vw - 16px));
   max-width: calc(100vw - 16px);
   scrollbar-width: thin;
-  padding: 14px 16px;
+  padding: 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius-panel);
   /* 实底。半透明会把截图像素透进来，选项和色块都发虚。 */
   background-color: var(--card);
   color: var(--ink);
   box-shadow: var(--shadow-pop);
-  animation: annotation-pop 160ms var(--ease-out);
+  animation: annotation-pop 120ms var(--ease-out);
 }
 
 .annotation-style-panel[hidden] {
   display: none;
+}
+
+/* 常驻在工作区顶部:选项排成一行,切工具时只换内容。 */
+.annotation-style-panel.is-docked {
+  position: static;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: auto;
+  min-width: 0;
+  max-width: none;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  animation: none;
+}
+
+.annotation-style-panel.is-docked .style-group {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 0 0 auto;
+}
+
+.annotation-style-panel.is-docked .style-options {
+  flex-wrap: nowrap;
+  gap: 2px;
+}
+
+.annotation-style-panel.is-docked .style-options button {
+  height: 24px;
+  min-height: 24px;
+  min-width: 0;
+  padding: 0 7px;
+  border-color: transparent;
+  border-radius: var(--radius-control-sm);
+  background-color: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.annotation-style-panel.is-docked .style-options button:hover:not(.active),
+.annotation-style-panel.is-docked .style-options button:focus-visible:not(.active) {
+  background-color: var(--control-hover-bg);
+  color: var(--ink);
+}
+
+.annotation-style-panel.is-docked .style-options button.active {
+  background-color: var(--accent-soft);
+  color: var(--accent);
+  box-shadow: none;
+  font-weight: 600;
+}
+
+.annotation-style-panel.is-docked .style-options button[data-style-color],
+.annotation-style-panel.is-docked .style-options button[data-erase-fill]:not([data-erase-fill="auto"]) {
+  width: 24px;
+  min-width: 24px;
+  padding: 0;
+  border-radius: 50%;
+}
+
+.annotation-style-panel.is-docked .style-options button[data-style-color].active,
+.annotation-style-panel.is-docked .style-options button[data-erase-fill]:not([data-erase-fill="auto"]).active {
+  background-color: transparent;
+}
+
+.annotation-style-panel.is-docked .style-options button[data-sticker-id] {
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  min-height: 26px;
+  padding: 2px;
+}
+
+.annotation-style-panel.is-docked .style-options input[data-style-number-start] {
+  width: 56px;
+  min-width: 56px;
+  height: 24px;
+  min-height: 24px;
+  line-height: 22px;
+  border-radius: var(--radius-control-sm);
+  font-size: 12px;
+}
+
+.annotation-style-panel.is-docked .style-number-error {
+  max-width: 14rem;
+  font-size: 11.5px;
+  line-height: 1.25;
 }
 
 /* 预览和录制的面板向下展开，贴着窗口下沿。提示再向下会被裁掉，改到选项上方。
@@ -253,8 +341,8 @@ button.annotation-chrome[data-action="delete"]:focus-visible:not(:disabled):not(
 
 .style-label {
   color: var(--muted);
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 11.5px;
+  font-weight: 500;
   line-height: 1.2;
   /* 宽面板仍按整词排成一行。窄面板里列被压窄时折行，不再盖住色块。 */
   overflow-wrap: anywhere;
@@ -264,7 +352,7 @@ button.annotation-chrome[data-action="delete"]:focus-visible:not(:disabled):not(
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 4px;
   min-width: 0;
 }
 
@@ -273,13 +361,13 @@ button.annotation-chrome[data-action="delete"]:focus-visible:not(:disabled):not(
   background-color: var(--control-fill);
   color: var(--ink);
   font: inherit;
-  font-size: 13px;
+  font-size: 12.5px;
   line-height: 1;
-  height: 32px;
-  min-width: 56px;
-  min-height: 32px;
-  padding: 0 12px;
-  border-radius: var(--radius-pill);
+  height: 28px;
+  min-width: 44px;
+  min-height: 28px;
+  padding: 0 9px;
+  border-radius: var(--radius-control);
   cursor: pointer;
   display: inline-flex;
   align-items: center;
@@ -302,9 +390,8 @@ button.annotation-chrome[data-action="delete"]:focus-visible:not(:disabled):not(
 
 .style-options button.active {
   border-color: var(--accent);
-  background-color: var(--accent);
-  color: var(--on-accent);
-  box-shadow: var(--primary-shadow);
+  background-color: var(--accent-soft);
+  color: var(--ink);
 }
 
 .style-options button.active:hover:not(:disabled):not(:active),
@@ -318,10 +405,10 @@ button.annotation-chrome[data-action="delete"]:focus-visible:not(:disabled):not(
 
 .style-options button[data-style-color] {
   position: relative;
-  width: 32px;
-  min-width: 32px;
-  height: 32px;
-  min-height: 32px;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
   padding: 0;
   border: 1px solid transparent;
   border-radius: 50%;
@@ -338,14 +425,14 @@ button.annotation-chrome[data-action="delete"]:focus-visible:not(:disabled):not(
 }
 
 .style-options input[data-style-number-start] {
-  width: 72px;
-  min-width: 72px;
-  height: 32px;
-  min-height: 32px;
+  width: 64px;
+  min-width: 64px;
+  height: 28px;
+  min-height: 28px;
   padding: 0 8px;
-  line-height: 30px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-pill);
+  line-height: 26px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
   background-color: var(--control-fill);
   color: var(--ink);
   font: inherit;
@@ -389,8 +476,8 @@ button.annotation-chrome[data-action="delete"]:focus-visible:not(:disabled):not(
   margin: 0;
   max-width: 16rem;
   color: var(--danger);
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
@@ -427,17 +514,17 @@ button.annotation-chrome[data-action="delete"]:focus-visible:not(:disabled):not(
 .style-options button[data-style-color].active::before {
   inset: 5px;
   box-shadow:
-    0 0 0 2px var(--card),
-    0 0 0 4px var(--accent),
+    0 0 0 2px var(--panel),
+    0 0 0 3.5px var(--accent),
     inset 0 0 0 1px color-mix(in srgb, var(--ink) 20%, transparent);
 }
 
 /* R5:贴纸素材缩略图(同一套色块按钮的选中态)。 */
 .style-options button[data-sticker-id] {
-  width: 32px;
-  min-width: 32px;
-  height: 32px;
-  min-height: 32px;
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  min-height: 30px;
   padding: 2px;
   border-radius: var(--radius-control-sm);
 }
@@ -467,10 +554,10 @@ button.annotation-chrome[data-action="delete"]:focus-visible:not(:disabled):not(
 /* 擦除填充的色块按钮与标注颜色共用外观,但属性独立。 */
 .style-options button[data-erase-fill]:not([data-erase-fill="auto"]) {
   position: relative;
-  width: 32px;
-  min-width: 32px;
-  height: 32px;
-  min-height: 32px;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
   padding: 0;
   border: 1px solid transparent;
   border-radius: 50%;
@@ -551,12 +638,12 @@ button.annotation-chrome[data-action="delete"]:focus-visible:not(:disabled):not(
   width: max-content;
   min-width: 132px;
   max-width: calc(100vw - 16px);
-  padding: 5px;
+  padding: 4px;
   border: 1px solid var(--line);
   border-radius: var(--radius-menu);
   background: var(--card);
   box-shadow: var(--shadow-pop);
-  animation: annotation-pop 140ms var(--ease-out);
+  animation: annotation-pop 120ms var(--ease-out);
 }
 
 .annotation-context[hidden] {
@@ -573,8 +660,8 @@ button.annotation-chrome[data-action="delete"]:focus-visible:not(:disabled):not(
   min-width: 100%;
   white-space: nowrap;
   height: auto;
-  min-height: 32px;
-  padding: 8px 10px;
+  min-height: 28px;
+  padding: 5px 8px;
   text-align: left;
   border: 0;
   border-radius: var(--radius-control-sm);
@@ -589,8 +676,7 @@ button.annotation-chrome[data-action="delete"]:focus-visible:not(:disabled):not(
 .annotation-context kbd {
   color: var(--muted);
   font: inherit;
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 12px;
 }
 
 .annotation-context button:hover,
@@ -609,61 +695,8 @@ button.annotation-chrome[data-action="delete"]:focus-visible:not(:disabled):not(
 .annotation-context button[data-action="delete-annotation"]:hover,
 .annotation-context button[data-action="delete-annotation"]:focus-visible {
   background: var(--control-danger-hover-bg);
-  box-shadow: inset 0 0 0 1px var(--control-danger-hover-border);
 }
 
 .annotation-context button:active {
   filter: var(--control-pressed-filter);
-}
-
-/* 2026 refresh: 标注浮层与工具坞保持同一套圆角、玻璃与主操作。 */
-.annotation-more-panel {
-  border-radius: 14px;
-  border-color: color-mix(in srgb, var(--ink) 10%, var(--line));
-  background: var(--glass);
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
-}
-
-.annotation-style-panel {
-  padding: 16px 17px;
-  border-radius: 16px;
-  border-color: color-mix(in srgb, var(--ink) 10%, var(--line));
-  background: var(--glass);
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
-}
-
-.style-options button {
-  height: 33px;
-  min-height: 33px;
-  border-radius: 10px;
-  font-weight: 550;
-}
-
-.style-options button.active {
-  background: linear-gradient(135deg, var(--accent), var(--accent-strong));
-  border-color: transparent;
-  color: var(--on-accent);
-}
-
-.annotation-text {
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--panel) 94%, transparent);
-  box-shadow:
-    0 0 0 2px var(--panel),
-    0 0 0 5px var(--editor-ink, var(--accent)),
-    0 16px 38px -18px rgba(0, 0, 0, 0.48);
-}
-
-.annotation-context {
-  border-radius: 12px;
-  border-color: color-mix(in srgb, var(--ink) 10%, var(--line));
-  background: var(--glass);
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
-}
-
-.annotation-context button {
-  border-radius: 8px;
 }

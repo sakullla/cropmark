@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { NOTICE_AUTO_HIDE_MS } from "../feedback";
-import { currentLanguage, localeTag, t, type CatalogKey } from "../i18n";
+import { localeTag, t, type CatalogKey } from "../i18n";
 import { icons } from "../icons";
 import "./history.css";
 
@@ -36,8 +36,6 @@ type TimeRange = "all" | "today" | "7d" | "30d";
 type ModeFilter = "all" | "region" | "window" | "fullscreen" | "long";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-
-const STAR_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.6 14.7 9.1 20.7 9.9 16.3 14.1 17.4 20.1 12 17.2 6.6 20.1 7.7 14.1 3.3 9.9 9.3 9.1Z"/></svg>`;
 
 // 时间格式化器按 locale + 选项缓存为模块级单例:整表重绘每行都要格式化
 // 时间,不缓存则每次 render 每行新建 2-3 个 Intl.DateTimeFormat;语言切换
@@ -107,6 +105,7 @@ function visibleEntries(
   timeRange: TimeRange,
   modeFilter: ModeFilter,
   noteQuery: string,
+  favoritesOnly: boolean,
   now = Date.now(),
 ): HistoryEntryView[] {
   if (!toolsEnabled) {
@@ -116,7 +115,8 @@ function visibleEntries(
     (entry) =>
       matchesTime(entry.createdAt, timeRange, now) &&
       matchesMode(entry.mode, modeFilter) &&
-      matchesNote(entry.note, noteQuery),
+      matchesNote(entry.note, noteQuery) &&
+      (!favoritesOnly || entry.favorite),
   );
   matched.sort((left, right) => {
     if (left.favorite !== right.favorite) {
@@ -142,18 +142,39 @@ function modeLabelKey(mode: string): CatalogKey | null {
   }
 }
 
-function asTimeRange(value: string): TimeRange {
-  if (value === "today" || value === "7d" || value === "30d") {
-    return value;
-  }
-  return "all";
-}
+const TIME_FILTERS: Array<{ value: Exclude<TimeRange, "all">; labelKey: CatalogKey }> = [
+  { value: "today", labelKey: "history.filter.time_today" },
+  { value: "7d", labelKey: "history.filter.time_7d" },
+  { value: "30d", labelKey: "history.filter.time_30d" },
+];
 
-function asModeFilter(value: string): ModeFilter {
-  if (value === "region" || value === "window" || value === "fullscreen" || value === "long") {
-    return value;
+const MODE_FILTERS: Array<{
+  value: Exclude<ModeFilter, "all">;
+  labelKey: CatalogKey;
+  icon: string;
+}> = [
+  { value: "region", labelKey: "history.filter.mode_region", icon: icons.region },
+  { value: "window", labelKey: "history.filter.mode_window", icon: icons.window },
+  { value: "fullscreen", labelKey: "history.filter.mode_fullscreen", icon: icons.fullscreen },
+  { value: "long", labelKey: "history.filter.mode_long", icon: icons.long },
+];
+
+/** 按本地日历把列表分段;收藏置顶时单独成段。 */
+function groupKey(entry: HistoryEntryView, toolsEnabled: boolean, now: number): CatalogKey {
+  if (toolsEnabled && entry.favorite) {
+    return "history.group.favorites";
   }
-  return "all";
+  const age = startOfLocalDay(now) - startOfLocalDay(entry.createdAt);
+  if (!Number.isFinite(age) || age > 30 * DAY_MS) {
+    return "history.group.earlier";
+  }
+  if (age <= 0) {
+    return "history.group.today";
+  }
+  if (age <= DAY_MS) {
+    return "history.group.yesterday";
+  }
+  return age < 7 * DAY_MS ? "history.group.week" : "history.group.month";
 }
 
 // 历史视图:按时间展示本机保存的截图缩略图,每条可再编辑、复制、贴图或
@@ -163,52 +184,66 @@ export function mountHistory(root: HTMLElement): () => void {
   root.className = "history-root";
   root.innerHTML = `
     <div class="shell">
-      <header class="titlebar" data-tauri-drag-region>
-        <div class="brand" data-tauri-drag-region>
-          <span class="mark" aria-hidden="true"></span>
-          <span class="name" data-i18n="history.title">历史记录</span>
-          <span class="history-count" data-count hidden></span>
+      <aside class="history-sidebar">
+        <div class="history-sidebar-head" data-tauri-drag-region>
+          <span class="mark" aria-hidden="true" data-tauri-drag-region></span>
+          <span class="name" data-tauri-drag-region data-i18n="history.title">历史记录</span>
         </div>
-        <div class="history-toolbar">
-          <button type="button" class="history-clear" data-action="clear" data-i18n="history.clear">清空全部</button>
+        <nav class="history-filters" data-filters data-i18n-aria-label="history.filter.group" aria-label="筛选历史" hidden>
+          <div class="history-filter-group">
+            <button type="button" class="history-filter" data-filter-all aria-pressed="true">${icons.grid}<span data-i18n="history.filter.all">全部截图</span><span class="history-filter-count" data-filter-count="all"></span></button>
+            <button type="button" class="history-filter" data-filter-favorites aria-pressed="false">${icons.star}<span data-i18n="history.filter.favorites">收藏</span><span class="history-filter-count" data-filter-count="favorites"></span></button>
+          </div>
+          <div class="history-filter-group" role="group" data-i18n-aria-label="history.filter.time_label" aria-label="时间范围">
+            <h2 data-i18n="history.filter.time_label">时间范围</h2>
+            ${TIME_FILTERS.map(
+              ({ value, labelKey }) =>
+                `<button type="button" class="history-filter" data-filter-time="${value}" aria-pressed="false">${icons.calendar}<span data-i18n="${labelKey}">${t(labelKey)}</span><span class="history-filter-count" data-filter-count="time-${value}"></span></button>`,
+            ).join("")}
+          </div>
+          <div class="history-filter-group" role="group" data-i18n-aria-label="history.filter.mode_label" aria-label="采集模式">
+            <h2 data-i18n="history.filter.mode_label">采集模式</h2>
+            ${MODE_FILTERS.map(
+              ({ value, labelKey, icon }) =>
+                `<button type="button" class="history-filter" data-filter-mode="${value}" aria-pressed="false">${icon}<span data-i18n="${labelKey}">${t(labelKey)}</span><span class="history-filter-count" data-filter-count="mode-${value}"></span></button>`,
+            ).join("")}
+          </div>
+        </nav>
+        <button type="button" class="history-clear" data-action="clear">${icons.trash}<span data-i18n="history.clear">清空全部</span></button>
+      </aside>
+      <main class="history-main">
+        <header class="history-topbar" data-tauri-drag-region>
+          <label class="history-search-wrap" data-search-wrap>
+            ${icons.search}
+            <input class="history-search" data-filter="note" type="search" autocomplete="off" data-i18n-aria-label="history.filter.note_label" data-i18n-placeholder="history.filter.note_placeholder" aria-label="搜索备注" placeholder="搜索备注" />
+          </label>
+          <button type="button" class="history-filter-clear" data-action="clear-filters" data-i18n="history.filter.clear" hidden>清除筛选</button>
+          <span class="history-count" data-count data-tauri-drag-region hidden></span>
+          <span class="history-topbar-spacer" data-tauri-drag-region></span>
           <button type="button" class="icon-btn" data-action="close" data-i18n-aria-label="history.close" aria-label="关闭">${icons.close}</button>
-        </div>
-      </header>
-      <main class="content history-content">
-        <div class="history-filters" data-filters role="group" data-i18n-aria-label="history.filter.group" aria-label="筛选历史" hidden>
-          <select class="history-select" data-filter="time" data-i18n-aria-label="history.filter.time_label" aria-label="时间范围">
-            <option value="all" data-i18n="history.filter.time_all">全部时间</option>
-            <option value="today" data-i18n="history.filter.time_today">今天</option>
-            <option value="7d" data-i18n="history.filter.time_7d">最近 7 天</option>
-            <option value="30d" data-i18n="history.filter.time_30d">最近 30 天</option>
-          </select>
-          <select class="history-select" data-filter="mode" data-i18n-aria-label="history.filter.mode_label" aria-label="采集模式">
-            <option value="all" data-i18n="history.filter.mode_all">全部模式</option>
-            <option value="region" data-i18n="history.filter.mode_region">区域</option>
-            <option value="window" data-i18n="history.filter.mode_window">窗口</option>
-            <option value="fullscreen" data-i18n="history.filter.mode_fullscreen">全屏</option>
-            <option value="long" data-i18n="history.filter.mode_long">长截图</option>
-          </select>
-          <input class="history-search" data-filter="note" type="search" autocomplete="off" data-i18n-aria-label="history.filter.note_label" data-i18n-placeholder="history.filter.note_placeholder" aria-label="搜索备注" placeholder="搜索备注" />
-          <button type="button" class="history-filter-clear is-reserved" data-action="clear-filters" data-i18n="history.filter.clear" disabled aria-hidden="true">清除筛选</button>
-        </div>
-        <p class="notice" data-notice role="alert" hidden></p>
-        <div class="history-list" data-list></div>
-        <p class="history-loading" data-loading role="status"><span class="progress" aria-hidden="true"></span><span data-i18n="history.loading">正在加载历史记录…</span></p>
-        <div class="history-empty" data-empty hidden>
-          <p data-empty-text data-i18n="history.empty">暂无历史记录。截图完成后会自动出现在这里。</p>
-          <button type="button" class="history-filter-clear" data-empty-clear data-i18n="history.filter.clear" hidden>清除筛选</button>
-        </div>
-        <p class="history-status" data-status role="status" hidden></p>
-        <p class="history-undo" data-undo role="status" hidden>
-          <span class="history-undo-text" data-undo-text></span>
-          <button type="button" class="history-btn history-undo-btn" data-undo-action data-i18n="history.undo.action">撤销</button>
-        </p>
-        <div class="history-confirm" data-confirm role="alertdialog" data-i18n-aria-label="history.confirm_group" aria-label="确认操作" hidden>
-          <p class="history-confirm-text" data-confirm-text></p>
-          <div class="history-confirm-actions">
-            <button type="button" class="history-btn history-btn-danger history-confirm-accept" data-confirm-accept data-i18n="history.accept">确认</button>
-            <button type="button" class="history-btn history-btn-quiet" data-confirm-cancel data-i18n="history.cancel">取消</button>
+        </header>
+        <div class="history-body">
+          <p class="notice" data-notice role="alert" hidden></p>
+          <div class="history-list" data-list></div>
+          <p class="history-loading" data-loading role="status"><span class="progress" aria-hidden="true"></span><span data-i18n="history.loading">正在加载历史记录…</span></p>
+          <div class="history-empty" data-empty hidden>
+            <span class="history-empty-mark crop-marks" aria-hidden="true">${icons.capture}</span>
+            <p data-empty-text data-i18n="history.empty">暂无历史记录。截图完成后会自动出现在这里。</p>
+            <button type="button" class="history-filter-clear" data-empty-clear data-i18n="history.filter.clear" hidden>清除筛选</button>
+          </div>
+          <div class="history-floats">
+            <p class="history-status" data-status role="status" hidden></p>
+            <p class="history-undo" data-undo role="status" hidden>
+              <span class="history-undo-text" data-undo-text></span>
+              <button type="button" class="history-undo-btn" data-undo-action data-i18n="history.undo.action">撤销</button>
+            </p>
+            <div class="history-confirm" data-confirm role="alertdialog" data-i18n-aria-label="history.confirm_group" aria-label="确认操作" hidden>
+              <p class="history-confirm-text" data-confirm-text></p>
+              <div class="history-confirm-actions">
+                <button type="button" class="history-btn history-btn-quiet" data-confirm-cancel data-i18n="history.cancel">取消</button>
+                <button type="button" class="history-btn history-btn-danger history-confirm-accept" data-confirm-accept data-i18n="history.accept">确认</button>
+              </div>
+            </div>
           </div>
         </div>
       </main>
@@ -216,8 +251,7 @@ export function mountHistory(root: HTMLElement): () => void {
   `;
 
   const filtersEl = root.querySelector("[data-filters]");
-  const timeEl = root.querySelector("[data-filter=time]");
-  const modeEl = root.querySelector("[data-filter=mode]");
+  const searchWrapEl = root.querySelector("[data-search-wrap]");
   const searchEl = root.querySelector("[data-filter=note]");
   const clearFiltersEl = root.querySelector("[data-action=clear-filters]");
   const noticeEl = root.querySelector("[data-notice]");
@@ -239,8 +273,7 @@ export function mountHistory(root: HTMLElement): () => void {
   const closeEl = root.querySelector("[data-action=close]");
   if (
     !(filtersEl instanceof HTMLElement) ||
-    !(timeEl instanceof HTMLSelectElement) ||
-    !(modeEl instanceof HTMLSelectElement) ||
+    !(searchWrapEl instanceof HTMLElement) ||
     !(searchEl instanceof HTMLInputElement) ||
     !(clearFiltersEl instanceof HTMLButtonElement) ||
     !(noticeEl instanceof HTMLElement) ||
@@ -270,6 +303,7 @@ export function mountHistory(root: HTMLElement): () => void {
   let timeRange: TimeRange = "all";
   let modeFilter: ModeFilter = "all";
   let noteQuery = "";
+  let favoritesOnly = false;
   const noteDrafts = new Map<string, string>();
   let statusState: { key: CatalogKey | null; text: string; isError: boolean } = {
     key: null,
@@ -320,7 +354,7 @@ export function mountHistory(root: HTMLElement): () => void {
     pending.kind === "delete" ? t("history.confirm_delete_accept") : t("history.confirm_clear_accept");
 
   const filtersActive = (): boolean =>
-    timeRange !== "all" || modeFilter !== "all" || noteQuery.trim().length > 0;
+    timeRange !== "all" || modeFilter !== "all" || favoritesOnly || noteQuery.trim().length > 0;
 
   // busy 期间操作按钮给禁用可视态;因图像缺失而常驻禁用的按钮保持禁用;
   // 空列表时清空按钮同样禁用,不再弹「清空全部历史记录?」空确认。
@@ -581,9 +615,50 @@ export function mountHistory(root: HTMLElement): () => void {
     }
   };
 
+  const setActionFace = (button: HTMLButtonElement, icon: string, label: string): void => {
+    button.innerHTML = icon;
+    const name = document.createElement("span");
+    name.className = "sr-only";
+    name.textContent = label;
+    button.append(name);
+  };
+
+  // 侧栏计数只看条目本身,不随其它筛选变动,读起来是这类一共有多少。
+  const syncFilterNav = (entries: HistoryEntryView[]): void => {
+    const now = Date.now();
+    const setCount = (key: string, count: number): void => {
+      const element = root.querySelector(`[data-filter-count="${key}"]`);
+      if (element) {
+        element.textContent = count > 0 ? String(count) : "";
+      }
+    };
+    setCount("all", entries.length);
+    setCount("favorites", entries.filter((entry) => entry.favorite).length);
+    for (const { value } of TIME_FILTERS) {
+      setCount(`time-${value}`, entries.filter((entry) => matchesTime(entry.createdAt, value, now)).length);
+    }
+    for (const { value } of MODE_FILTERS) {
+      setCount(`mode-${value}`, entries.filter((entry) => entry.mode === value).length);
+    }
+    const press = (selector: string, pressed: boolean): void => {
+      root.querySelector(selector)?.setAttribute("aria-pressed", String(pressed));
+    };
+    press("[data-filter-all]", timeRange === "all" && modeFilter === "all" && !favoritesOnly);
+    press("[data-filter-favorites]", favoritesOnly);
+    for (const { value } of TIME_FILTERS) {
+      press(`[data-filter-time="${value}"]`, timeRange === value);
+    }
+    for (const { value } of MODE_FILTERS) {
+      press(`[data-filter-mode="${value}"]`, modeFilter === value);
+    }
+  };
+
   const entryRow = (entry: HistoryEntryView, toolsEnabled: boolean): HTMLElement => {
     const row = document.createElement("article");
     row.className = "history-item";
+    if (entry.imageMissing) {
+      row.classList.add("is-missing");
+    }
     if (entry.favorite && toolsEnabled) {
       row.classList.add("is-favorite");
     }
@@ -603,6 +678,8 @@ export function mountHistory(root: HTMLElement): () => void {
       loadThumbnail(entry.id, holder);
     }
 
+    const body = document.createElement("div");
+    body.className = "history-body-text";
     const meta = document.createElement("div");
     meta.className = "history-meta";
     const time = document.createElement("div");
@@ -635,6 +712,7 @@ export function mountHistory(root: HTMLElement): () => void {
       missing.textContent = t("history.image_missing");
       meta.append(missing);
     }
+    body.append(meta);
     if (toolsEnabled) {
       const note = document.createElement("label");
       note.className = "history-note";
@@ -708,9 +786,12 @@ export function mountHistory(root: HTMLElement): () => void {
         void persistNote(entry.id, draft);
       });
       note.append(input, limitEl);
-      row.append(note);
+      body.append(note);
     }
 
+    const media = document.createElement("div");
+    media.className = "history-media";
+    media.append(holder);
     const actions = document.createElement("div");
     actions.className = "history-actions";
     if (toolsEnabled) {
@@ -725,21 +806,21 @@ export function mountHistory(root: HTMLElement): () => void {
       const favoriteLabel = t(entry.favorite ? "history.unfavorite" : "history.favorite");
       favorite.setAttribute("aria-label", favoriteLabel);
       favorite.title = favoriteLabel;
-      favorite.innerHTML = STAR_ICON;
-      actions.append(favorite);
+      favorite.innerHTML = icons.star;
+      media.append(favorite);
     }
     const actionLabels: Array<[string, CatalogKey, string]> = [
-      ["reedit", "history.reedit", "history-btn history-btn-edit"],
-      ["copy", "history.copy", "history-btn history-btn-quiet"],
-      ["pin", "history.pin", "history-btn history-btn-quiet"],
-      ["delete", "history.delete", "history-btn history-btn-danger"],
+      ["reedit", "history.reedit", icons.annotate],
+      ["copy", "history.copy", icons.copy],
+      ["pin", "history.pin", icons.pin],
+      ["delete", "history.delete", icons.trash],
     ];
-    for (const [action, labelKey, className] of actionLabels) {
+    for (const [action, labelKey, icon] of actionLabels) {
       const button = document.createElement("button");
       button.type = "button";
-      button.className = className;
+      button.className = "history-btn";
       button.dataset.entryAction = action;
-      button.textContent = t(labelKey);
+      setActionFace(button, icon, t(labelKey));
       // 卡片上的操作是图标钮,名称同时挂成系统提示;列表会裁掉自绘气泡。
       button.title = t(labelKey);
       if (entry.imageMissing && action !== "delete") {
@@ -754,60 +835,12 @@ export function mountHistory(root: HTMLElement): () => void {
       } else if (busy) {
         button.disabled = true;
       }
-      if (action === "delete") {
-        const separator = document.createElement("span");
-        separator.className = "history-action-sep";
-        separator.setAttribute("aria-hidden", "true");
-        actions.append(separator);
-      }
       actions.append(button);
     }
 
-    const main = document.createElement("div");
-    main.className = "history-main";
-    main.append(meta, actions);
-    row.append(holder, main);
+    media.append(actions);
+    row.append(media, body);
     return row;
-  };
-
-  // 原生下拉宽度跟着当前选项走。「今天」换成「最近 30 天」、或「All modes」换成
-  // 「Scrolling capture」时，搜索框会被挤窄。按该下拉最长的一项留住宽度。
-  const selectWidthCache = new Map<string, string>();
-  const reserveSelectWidths = (): void => {
-    const selects = root.querySelectorAll<HTMLSelectElement>(".history-select");
-    for (const select of selects) {
-      const key = `${currentLanguage()}|${select.dataset.filter ?? ""}`;
-      let next = selectWidthCache.get(key);
-      if (!next) {
-        const probe = document.createElement("select");
-        probe.className = "history-select";
-        probe.style.position = "absolute";
-        probe.style.visibility = "hidden";
-        probe.style.pointerEvents = "none";
-        probe.style.width = "auto";
-        probe.style.minWidth = "0";
-        probe.style.maxWidth = "none";
-        probe.style.left = "0";
-        probe.style.top = "0";
-        const option = document.createElement("option");
-        probe.append(option);
-        root.append(probe);
-        let widest = 0;
-        for (const item of select.options) {
-          option.textContent = item.text;
-          widest = Math.max(widest, probe.getBoundingClientRect().width);
-        }
-        probe.remove();
-        if (widest <= 0) {
-          continue;
-        }
-        next = `min(${Math.ceil(widest)}px, 100%)`;
-        selectWidthCache.set(key, next);
-      }
-      if (select.style.minWidth !== next) {
-        select.style.minWidth = next;
-      }
-    }
   };
 
   let copyFlashId: string | null = null;
@@ -826,7 +859,7 @@ export function mountHistory(root: HTMLElement): () => void {
       const button = copyButtonFor(copyFlashId);
       if (button) {
         button.classList.remove("is-copied");
-        button.textContent = t("history.copy");
+        setActionFace(button, icons.copy, t("history.copy"));
       }
     }
     copyFlashId = null;
@@ -840,7 +873,7 @@ export function mountHistory(root: HTMLElement): () => void {
       return;
     }
     button.classList.add("is-copied");
-    button.textContent = t("history.copy_done");
+    setActionFace(button, icons.check, t("history.copy_done"));
   };
   const flashCopied = (id: string): void => {
     clearCopyFlash();
@@ -852,7 +885,7 @@ export function mountHistory(root: HTMLElement): () => void {
       copyFlashId = null;
       if (button) {
         button.classList.remove("is-copied");
-        button.textContent = t("history.copy");
+        setActionFace(button, icons.copy, t("history.copy"));
       }
     }, NOTICE_AUTO_HIDE_MS);
   };
@@ -861,20 +894,13 @@ export function mountHistory(root: HTMLElement): () => void {
     lastPayload = payload;
     const toolsEnabled = payload.toolsEnabled;
     filtersEl.hidden = !toolsEnabled;
+    searchWrapEl.hidden = !toolsEnabled;
     const filtersOn = filtersActive();
     if (!filtersOn && document.activeElement === clearFiltersEl) {
       searchEl.focus();
     }
-    clearFiltersEl.disabled = !filtersOn;
-    clearFiltersEl.classList.toggle("is-reserved", !filtersOn);
-    if (filtersOn) {
-      clearFiltersEl.removeAttribute("aria-hidden");
-    } else {
-      clearFiltersEl.setAttribute("aria-hidden", "true");
-    }
-    timeEl.classList.toggle("is-active", timeRange !== "all");
-    modeEl.classList.toggle("is-active", modeFilter !== "all");
-    searchEl.classList.toggle("is-active", noteQuery.trim().length > 0);
+    clearFiltersEl.hidden = !filtersOn;
+    syncFilterNav(payload.entries);
     noticeEl.hidden = !payload.notice;
     noticeEl.textContent = payload.notice ?? "";
     const visible = visibleEntries(
@@ -883,6 +909,7 @@ export function mountHistory(root: HTMLElement): () => void {
       timeRange,
       modeFilter,
       noteQuery,
+      favoritesOnly,
     );
     const active = document.activeElement;
     const activeNote =
@@ -912,7 +939,17 @@ export function mountHistory(root: HTMLElement): () => void {
     applyingDom = true;
     try {
       listEl.replaceChildren();
+      const now = Date.now();
+      let currentGroup: CatalogKey | null = null;
       for (const entry of visible) {
+        const group = groupKey(entry, toolsEnabled, now);
+        if (group !== currentGroup) {
+          currentGroup = group;
+          const heading = document.createElement("h2");
+          heading.className = "history-group";
+          heading.textContent = t(group);
+          listEl.append(heading);
+        }
         listEl.append(entryRow(entry, toolsEnabled));
       }
       for (const input of listEl.querySelectorAll<HTMLInputElement>(".history-note-input")) {
@@ -1130,37 +1167,45 @@ export function mountHistory(root: HTMLElement): () => void {
     }
   });
 
-  const resetFilters = (): void => {
-    timeRange = "all";
-    modeFilter = "all";
-    noteQuery = "";
-    timeEl.value = "all";
-    modeEl.value = "all";
-    searchEl.value = "";
+  const rerender = (): void => {
     if (lastPayload) {
       render(lastPayload);
     }
   };
 
-  timeEl.addEventListener("change", () => {
-    timeRange = asTimeRange(timeEl.value);
-    if (lastPayload) {
-      render(lastPayload);
-    }
-  });
+  const resetFilters = (): void => {
+    timeRange = "all";
+    modeFilter = "all";
+    favoritesOnly = false;
+    noteQuery = "";
+    searchEl.value = "";
+    rerender();
+  };
 
-  modeEl.addEventListener("change", () => {
-    modeFilter = asModeFilter(modeEl.value);
-    if (lastPayload) {
-      render(lastPayload);
+  // 侧栏筛选:时间与模式可叠加,再点一次取消;「全部截图」一键回到起点。
+  filtersEl.addEventListener("click", (event) => {
+    const button = event.target instanceof Element ? event.target.closest("button") : null;
+    if (!(button instanceof HTMLButtonElement)) {
+      return;
     }
+    const { filterTime, filterMode } = button.dataset;
+    if (button.hasAttribute("data-filter-all")) {
+      timeRange = "all";
+      modeFilter = "all";
+      favoritesOnly = false;
+    } else if (button.hasAttribute("data-filter-favorites")) {
+      favoritesOnly = !favoritesOnly;
+    } else if (filterTime) {
+      timeRange = timeRange === filterTime ? "all" : (filterTime as TimeRange);
+    } else if (filterMode) {
+      modeFilter = modeFilter === filterMode ? "all" : (filterMode as ModeFilter);
+    }
+    rerender();
   });
 
   searchEl.addEventListener("input", () => {
     noteQuery = searchEl.value;
-    if (lastPayload) {
-      render(lastPayload);
-    }
+    rerender();
   });
 
   clearFiltersEl.addEventListener("click", () => {
@@ -1283,19 +1328,9 @@ export function mountHistory(root: HTMLElement): () => void {
   });
 
   void refresh();
-  reserveSelectWidths();
-  void document.fonts.ready.then(() => {
-    if (!root.isConnected) {
-      return;
-    }
-    selectWidthCache.clear();
-    reserveSelectWidths();
-  });
 
   // 语言切换:重建动态文案(状态、确认条、列表时间/动作),静态标签由 main 应用。
   return () => {
-    selectWidthCache.clear();
-    reserveSelectWidths();
     renderStatus();
     if (lastPayload) {
       render(lastPayload);

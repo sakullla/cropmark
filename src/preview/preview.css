@@ -1,3 +1,5 @@
+/* 预览窗是一块工作台:标题栏放产出动作,左侧工具轨,上方当前工具的选项,
+   中间是画面,底部状态栏放尺寸与缩放。画面是这一层里唯一被抬起的对象。 */
 .preview-root {
   position: relative;
   height: 100%;
@@ -7,36 +9,43 @@
   user-select: none;
   display: flex;
   flex-direction: column;
-  background: var(--panel);
+  background: var(--bg);
   color: var(--ink);
-  border: 1px solid var(--line);
+  border: 1px solid color-mix(in srgb, var(--ink) 12%, transparent);
   border-radius: var(--radius-window);
-  box-shadow: var(--shadow);
   overflow: hidden;
   /* 画布绘制裁剪遮罩/美化阴影只认颜色字符串,经 resolveCanvasColor 读这两个令牌。 */
   --crop-dim: rgba(2, 6, 23, 0.55);
   --beautify-shadow: rgba(15, 23, 42, 0.38);
+  --stage: #e6e8e9;
 }
 
 @media (prefers-color-scheme: dark) {
-  .preview-root {
+  :root:not([data-theme="light"]) .preview-root {
     --crop-dim: rgba(0, 0, 0, 0.62);
     --beautify-shadow: rgba(0, 0, 0, 0.55);
+    --stage: #0b0d0e;
   }
+}
+
+:root[data-theme="dark"] .preview-root {
+  --crop-dim: rgba(0, 0, 0, 0.62);
+  --beautify-shadow: rgba(0, 0, 0, 0.55);
+  --stage: #0b0d0e;
 }
 
 .preview-titlebar {
   position: relative;
-  /* 高于工具条。错误全文提示向下展开，否则会被 z-index:10 的工具条盖住。 */
+  /* 高于工作区。保存质量面板和错误全文都向下展开。 */
   z-index: 12;
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
-  min-height: 46px;
-  padding: 8px 10px 2px 14px;
+  min-height: 44px;
+  padding: 6px 8px 6px 14px;
   background: var(--panel);
+  border-bottom: 1px solid var(--line);
   -webkit-app-region: no-drag;
   app-region: no-drag;
 }
@@ -49,7 +58,10 @@
   app-region: drag;
 }
 
-.preview-close,
+.preview-titlebar .brand {
+  flex: 0 0 auto;
+}
+
 .preview-titlebar button {
   position: relative;
   z-index: 2;
@@ -59,40 +71,22 @@
 
 .preview-close {
   flex: 0 0 auto;
-  width: 32px;
+  width: 28px;
   min-width: 24px;
-  height: 32px;
+  height: 28px;
   min-height: 24px;
-  padding: 0;
-  border: 1px solid transparent;
-  border-radius: var(--radius-control-sm);
-  background: transparent;
-  color: var(--ink);
-  cursor: pointer;
+  margin-left: 2px;
 }
 
-/* 关闭是危险动作:软危险语义 + 共享 press 反馈(过渡/按下滤镜由 .icon-btn 提供)。 */
-.preview-close:hover,
-.preview-close:focus-visible,
-.preview-close:active {
-  background: var(--control-danger-hover-bg);
-  box-shadow: inset 0 0 0 1px var(--control-danger-hover-border);
-  color: var(--control-danger-hover-border);
-}
-
-/* 进行中停在原文上，直到结果或错误替换；脉冲只提亮，不把提示淡掉。 */
-/* 状态胶囊按文字收宽,右侧空白由拖动垫片占住:成功/失败是一枚小标签,
-   不再是横贯标题栏的色带。 */
+/* 状态提示按文字收宽,右侧空白由拖动垫片占住:成功/失败是一枚小标签。
+   进行中停在原文上，直到结果或错误替换；脉冲只提亮，不把提示淡掉。 */
 .preview-note {
   flex: 0 1 auto;
   min-width: 0;
-  margin: 0 0 0 4px;
-  padding: 3px 10px;
-  border: 1px solid transparent;
-  border-radius: var(--radius-pill);
+  padding: 2px 8px;
+  border-radius: var(--radius-control-sm);
   color: var(--muted);
-  font-size: 12.5px;
-  font-weight: 500;
+  font-size: 12px;
   line-height: 1.4;
   /* 省略放在内层文字上。本体若 overflow:hidden，截断后的悬停全文会被裁掉。 */
   overflow: visible;
@@ -108,21 +102,21 @@
 .preview-note.is-success {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding-left: 5px;
+  gap: 5px;
+  padding-left: 4px;
   background: var(--ok-soft);
-  border-color: color-mix(in srgb, var(--ok) 30%, transparent);
   color: var(--ok);
+  font-weight: 500;
 }
 
-/* 成功胶囊前一枚小勾:不用读字也知道已经复制好了。 */
 .preview-note.is-success::before {
   content: "";
   flex: 0 0 auto;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: var(--ok) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4.6 8.3l2.1 2.1 4.7-4.8' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 12px 12px no-repeat;
+  width: 14px;
+  height: 14px;
+  background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.6 8.4l3 3 5.8-6.2' fill='none' stroke='black' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.6 8.4l3 3 5.8-6.2' fill='none' stroke='black' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
 }
 
 .preview-note.is-pulse {
@@ -147,36 +141,13 @@
 /* 普通操作说明只是旁注:不加底色,弱于成功与失败两种结果。 */
 .preview-note.is-feedback {
   background: transparent;
-  border-color: transparent;
   color: var(--muted);
-}
-
-.preview-note.is-success,
-.preview-note.is-error {
-  font-weight: 600;
-}
-
-.preview-titlebar-spacer {
-  flex: 1 1 0;
-  align-self: stretch;
-  min-width: 16px;
-  margin: -8px 0 -2px;
-}
-
-.preview-titlebar .mark {
-  width: 22px;
-  height: 22px;
-  border-radius: 6px;
-}
-
-.preview-titlebar .name {
-  font-size: 14px;
 }
 
 .preview-note.is-error {
   background: var(--danger-soft);
-  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
   color: var(--danger);
+  font-weight: 500;
   /* 本体放行 overflow:钳制交给内层 .preview-note-text,共享
      [data-tooltip]::after 挂在本体下方,overflow:hidden 会把整个气泡裁掉。 */
   overflow: visible;
@@ -198,8 +169,7 @@
   overflow-wrap: anywhere;
 }
 
-/* 错误全文提示:共享 [data-tooltip]::after 是 nowrap,长错误串需换行
-   且不超出窗口宽度;依赖上方本体错误态的 overflow:visible 才不被裁掉。 */
+/* 错误全文提示:长错误串需换行且不超出窗口宽度。 */
 .preview-note[data-tooltip]::after {
   white-space: normal;
   overflow-wrap: anywhere;
@@ -207,40 +177,129 @@
   max-width: min(360px, calc(100vw - 48px));
 }
 
-.preview-toolbar {
-  /* 抬升整个工具条为独立堆叠上下文:悬停按钮的 filter 会把 tooltip 锁进
-     按钮级上下文,导致自绘提示被 stage 画布内容盖住。 */
-  position: relative;
-  z-index: 10;
+.preview-note.is-progress {
   display: flex;
   align-items: center;
-  flex-wrap: nowrap;
-  gap: 6px;
-  min-width: 0;
-  padding: 6px 10px 10px;
-  background: var(--panel);
-  border-bottom: 1px solid var(--line);
+  gap: 7px;
+}
+
+.preview-note.is-progress::before {
+  content: "";
+  display: block;
   flex: 0 0 auto;
-  overflow: visible;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: app-progress-spin 800ms linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .preview-note.is-progress::before {
+    animation: none;
+  }
+}
+
+.preview-titlebar-spacer {
+  flex: 1 1 0;
+  align-self: stretch;
+  min-width: 12px;
+  margin-block: -6px;
+}
+
+/* 产出动作:贴图、保存、复制从弱到强排开,复制是全窗唯一的实心按钮。 */
+.preview-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.preview-named,
+.preview-crop-bar button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: var(--control-transition);
   -webkit-app-region: no-drag;
   app-region: no-drag;
 }
 
-/* 按钮按实际边界收纳;允许样式/保存面板和提示伸出主行。 */
-.preview-toolbar-row {
-  display: flex;
-  align-items: center;
-  flex: 1 1 auto;
-  flex-wrap: nowrap;
-  gap: 6px;
-  min-width: 0;
-  overflow: visible;
+.preview-named[hidden],
+.preview-save[hidden] {
+  display: none;
 }
 
-/* 保存、裁剪的说明是一整句。不换行时会从按钮中线画出窗口。 */
-.preview-toolbar [data-tooltip]::after {
-  left: 0;
-  right: auto;
+.preview-named:hover:not(.primary):not(.active):not(:disabled):not([aria-disabled="true"]),
+.preview-named:focus-visible:not(.primary):not(.active):not(:disabled):not([aria-disabled="true"]),
+.preview-crop-bar button:hover:not(.primary):not(:disabled),
+.preview-crop-bar button:focus-visible:not(.primary):not(:disabled) {
+  background: var(--control-hover-bg);
+}
+
+.preview-named:active:not(:disabled):not([aria-disabled="true"]),
+.preview-crop-bar button:active:not(:disabled) {
+  filter: var(--control-pressed-filter);
+}
+
+.preview-named.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.preview-named:disabled,
+.preview-named[aria-disabled="true"],
+.preview-crop-bar button:disabled {
+  opacity: var(--control-disabled-opacity);
+  cursor: default;
+}
+
+.preview-named svg,
+.preview-crop-bar button svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+  flex: 0 0 auto;
+}
+
+.preview-named.primary,
+.preview-crop-bar .primary {
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+  padding: 0 12px;
+  box-shadow: var(--primary-shadow);
+}
+
+.preview-named.primary:hover:not(:disabled):not([aria-disabled="true"]):not(:active),
+.preview-named.primary:focus-visible:not(:disabled):not([aria-disabled="true"]):not(:active),
+.preview-crop-bar .primary:hover:not(:disabled):not(:active),
+.preview-crop-bar .primary:focus-visible:not(:disabled):not(:active) {
+  filter: var(--control-hover-filter);
+}
+
+.preview-named.primary.is-copied {
+  background: var(--ok);
+  color: var(--on-accent);
+}
+
+.preview-actions [data-tooltip]::after {
+  left: auto;
+  right: 0;
   transform: none;
   white-space: normal;
   overflow-wrap: anywhere;
@@ -249,169 +308,281 @@
   text-align: start;
 }
 
-.preview-toolbar > [data-action="copy"][data-tooltip]::after,
-.preview-overflow > [data-tooltip]::after,
-.preview-action-group[data-preview-group="output"] [data-tooltip]::after,
-.preview-action-group[data-preview-group="picture"] [data-action="crop"][data-tooltip]::after,
-.preview-action-group[data-preview-group="picture"] [data-action="capture-again"][data-tooltip]::after,
-.preview-action-group[data-preview-group="picture"] [data-action="rotate-left"][data-tooltip]::after,
-.preview-action-group[data-preview-group="picture"] [data-action="rotate-right"][data-tooltip]::after {
+.preview-save {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.preview-save-split {
+  display: inline-flex;
+  align-items: stretch;
+  height: 28px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  /* 裁切会把「保存」的自绘提示锁在胶囊里。两端圆角改由按钮自己收。 */
+  overflow: visible;
+}
+
+.preview-save-split > button {
+  border: 0;
+  border-radius: 0;
+  height: 100%;
+  min-height: 0;
+}
+
+.preview-save-split > [data-action="save"] {
+  padding: 0 8px 0 7px;
+  border-radius: calc(var(--radius-control) - 1px) 0 0 calc(var(--radius-control) - 1px);
+}
+
+.preview-save-split > .preview-save-caret {
+  width: 24px;
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
+  border-left: 1px solid var(--line-strong);
+  border-radius: 0 calc(var(--radius-control) - 1px) calc(var(--radius-control) - 1px) 0;
+}
+
+.preview-save-caret svg {
+  width: 13px;
+  height: 13px;
+}
+
+.preview-save-split:hover,
+.preview-save-split:focus-within {
+  border-color: var(--ink);
+}
+
+.preview-quality-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: max-content;
+  max-width: calc(100vw - 16px);
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-menu);
+  background: var(--card);
+  box-shadow: var(--shadow-pop);
+}
+
+.preview-quality-panel .style-options {
+  flex-wrap: nowrap;
+}
+
+/* 面板贴在保存按钮右侧。居中且不换行时，「高质量（文件较大）」会画出窗口。 */
+.preview-quality-panel [data-tooltip]::after {
   left: auto;
   right: 0;
+  transform: none;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  width: max-content;
+  max-width: min(16rem, calc(100vw - 16px));
+  text-align: start;
+}
+
+.preview-body {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* 工具轨:工具从不收进菜单,窗口矮时在轨内滚动。 */
+.preview-rail {
+  flex: 0 0 auto;
+  width: 44px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: none;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.preview-rail::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+/* 矮窗口里还有工具藏在轨外时,边缘淡出提示可以继续滚。 */
+.preview-rail.can-scroll-down {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);
+}
+
+.preview-rail.can-scroll-up {
+  -webkit-mask-image: linear-gradient(to top, #000 calc(100% - 28px), transparent);
+  mask-image: linear-gradient(to top, #000 calc(100% - 28px), transparent);
+}
+
+.preview-rail.can-scroll-up.can-scroll-down {
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 28px, #000 calc(100% - 28px), transparent);
+  mask-image: linear-gradient(to bottom, transparent, #000 28px, #000 calc(100% - 28px), transparent);
 }
 
 .preview-tools,
 .preview-action-group {
   display: flex;
+  flex-direction: column;
   align-items: center;
+  gap: 2px;
+}
+
+.preview-rail-sep {
   flex: 0 0 auto;
-  flex-wrap: nowrap;
-  gap: 4px;
-  min-width: 0;
+  width: 20px;
+  height: 1px;
+  margin: 4px 0;
+  background: var(--line);
 }
 
-.preview-action-group[data-preview-group="output"] {
-  margin-left: auto;
-}
-
-.preview-group-sep {
-  width: 1px;
-  height: 20px;
-  margin: 0 4px;
-  background: var(--line-strong);
-  flex: 0 0 auto;
-}
-
-.preview-named[hidden],
-.preview-save[hidden],
-.preview-overflow[hidden],
-.preview-overflow-menu[hidden],
-.preview-group-sep[hidden],
-.preview-root .preview-toolbar .annotation-chrome[hidden],
-.preview-root .preview-overflow-menu .annotation-chrome[hidden] {
+.preview-rail .toolbar-sep,
+.preview-rail .annotation-more {
   display: none;
 }
 
-/* 工具条主行只显示图标;文字收进「更多」菜单后左图标右文字呈现。
-   保存/复制主操作的文字不在 .tool-label 内,不受此规则影响。 */
-.preview-toolbar-row .tool-label {
-  display: none;
+.preview-rail button.annotation-chrome,
+.preview-rail .preview-named {
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  color: var(--muted);
 }
 
-.preview-root .preview-overflow-menu .tool-label {
-  display: block;
-  /* 按文字撑开菜单。碰到菜单最大宽度时再省略，避免短菜单被长名撑破窗口。 */
-  flex: 0 1 auto;
-  width: max-content;
-  max-width: 100%;
-  min-width: 0;
-  overflow: hidden;
-  font-size: 13px;
-  line-height: 1;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.preview-more-glyph {
-  display: contents;
-}
-
-.preview-root .preview-toolbar .annotation-chrome,
-.preview-root .preview-overflow-menu .annotation-chrome {
-  width: auto;
-  min-width: 36px;
-  height: 36px;
-  min-height: 36px;
-  padding: 0 9px;
-  gap: 6px;
+.preview-rail button.annotation-chrome:hover:not(:disabled):not(.active),
+.preview-rail .preview-named:hover:not(:disabled):not(.active) {
   color: var(--ink);
 }
 
-/* 取字还没出结果时，「复制全部」先占住图标位。结果到来后按钮出现，旁边的工具不再被挤开。 */
-.preview-named.is-reserved {
-  visibility: hidden;
+.preview-rail button.annotation-chrome.active,
+.preview-rail .preview-named.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* 工具轨和选项条有滚动,伪元素气泡会被裁,改由脚本定位的单枚气泡承接。 */
+.preview-rail [data-tooltip]::after,
+.preview-context [data-tooltip]::after {
+  display: none;
+}
+
+.preview-tip {
+  position: fixed;
+  z-index: 60;
+  max-width: min(18rem, calc(100vw - 12px));
+  padding: 4px 8px;
+  border-radius: var(--radius-control-sm);
+  background: var(--tooltip-bg);
+  color: var(--tooltip-ink);
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1.35;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 6px 16px -4px rgba(0, 0, 0, 0.34);
   pointer-events: none;
 }
 
-.preview-toolbar-row .preview-named:not([data-action="save"]):not(.preview-save-caret) {
-  width: 36px;
-  padding: 0;
-  justify-content: center;
-  border-color: transparent;
-  border-radius: var(--radius-control);
-}
-
-.preview-toolbar > .preview-named,
-.preview-overflow {
-  position: relative;
-  flex: 0 0 auto;
-}
-
-.preview-overflow-menu {
-  position: fixed;
-  z-index: 40;
-  /* 短操作名仍保持原宽度。Rotate right 90° 一类长名按文字变宽，不再被省略号截断。 */
-  width: max-content;
+.preview-workspace {
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
-  align-items: stretch;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* 当前工具的选项常驻。高度固定,切工具时画面不跟着重排。 */
+.preview-context {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 40px;
+  padding: 0 8px 0 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.preview-context::-webkit-scrollbar {
+  height: 0;
+}
+
+.preview-context-style {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.preview-root[data-tool="ocr"] .preview-context-style,
+.preview-root[data-tool="qr"] .preview-context-style,
+.preview-root[data-tool="crop"] .preview-context-style {
+  visibility: hidden;
+}
+
+/* 窄窗里选项从它底下滑过,撤销始终够得到。 */
+.preview-context-history {
+  position: sticky;
+  right: -8px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
   gap: 2px;
-  min-width: 176px;
-  max-width: min(280px, calc(100vw - 16px));
-  max-height: min(420px, calc(100vh - 16px));
-  overflow-y: auto;
-  overflow-x: hidden;
-  scrollbar-width: thin;
-  padding: 5px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-menu);
-  background: var(--glass);
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
-  box-shadow: var(--shadow-pop);
-  animation: menu-in 160ms var(--ease-out);
+  margin-left: auto;
+  padding: 0 8px 0 10px;
+  margin-right: -8px;
+  background: var(--panel);
 }
 
-@keyframes menu-in {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
+.preview-context-history button.annotation-chrome {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
+  border: 0;
+  color: var(--muted);
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .preview-overflow-menu {
-    animation: none;
-  }
+.preview-context-history button.annotation-chrome svg {
+  width: 16px;
+  height: 16px;
 }
 
-.preview-root .preview-overflow-menu .preview-named,
-.preview-root .preview-overflow-menu .annotation-chrome {
-  width: 100%;
-  justify-content: flex-start;
-  /* 图标和名称紧挨着，长名字看起来贴在图标上。 */
-  gap: 8px;
-  border-radius: var(--radius-control-sm);
-  flex: 0 0 36px;
-  height: 36px;
-  min-height: 36px;
-  padding: 0 8px;
-  border-color: transparent;
-  background: transparent;
-}
-
-.preview-overflow-menu button:hover:not(:disabled):not([aria-disabled="true"]):not(.active),
-.preview-overflow-menu button:focus-visible:not([aria-disabled="true"]):not(.active) {
+.preview-context-history button.annotation-chrome:hover:not(:disabled) {
   background: var(--control-hover-bg);
+  color: var(--ink);
 }
 
-.preview-overflow-menu button:active:not(:disabled):not([aria-disabled="true"]) {
+.preview-context-history button.annotation-chrome:active:not(:disabled) {
   filter: var(--control-pressed-filter);
 }
 
-.preview-overflow-menu [data-tooltip]::after {
+.preview-context-history button.annotation-chrome:disabled,
+.preview-context-history button.annotation-chrome[aria-disabled="true"] {
+  opacity: var(--control-disabled-opacity);
+  cursor: default;
+}
+
+.preview-context-history .tool-label {
   display: none;
 }
 
@@ -424,35 +595,30 @@
   z-index: 6;
   display: flex;
   align-items: center;
+  /* 定宽:left:50% 时可用宽度只剩一半,且拖选中尺寸变长时条不跟着变宽。 */
+  width: min(660px, calc(100% - 24px));
   /* 取字面板挤窄画面时，确认和取消换到下一行靠右，不再被画面裁掉。 */
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
   row-gap: 6px;
   max-width: calc(100% - 24px);
-  padding: 6px 6px 6px 14px;
+  padding: 5px 5px 5px 12px;
   border: 1px solid var(--line);
-  /* 换行后整条会变高。胶囊圆角会收成大半圆，改和录制完成条一样的窗口圆角。 */
-  border-radius: var(--radius-window);
+  border-radius: var(--radius-panel);
   background: var(--glass);
   -webkit-backdrop-filter: var(--glass-blur);
   backdrop-filter: var(--glass-blur);
   box-shadow: var(--shadow-pop);
 }
 
-.preview-crop-bar[hidden] {
-  display: none;
-}
-
 .preview-crop-hint {
   flex: 1 1 10rem;
-  /* 宽画面里说明仍贴在按钮左侧。窄于 10rem 时说明独占一行，把按钮让到下一行。
-     上限避免整句把确认条拉成画面那么宽。 */
+  /* 宽画面里说明仍贴在按钮左侧。窄于 10rem 时说明独占一行，把按钮让到下一行。 */
   min-width: min(100%, 10rem);
   max-width: min(100%, 28rem);
-  /* 和截图顶栏说明同一字号。颜色仍弱于旁边的像素尺寸，尺寸继续用正文色。 */
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12.5px;
   line-height: 1.45;
   /* 单行省略会先裁掉 Enter / Esc。窄窗口改在按钮旁折行，整句操作说明都留着。 */
   white-space: normal;
@@ -462,18 +628,13 @@
 /* 选区小于最小边长时，说明改成原因，和红色尺寸同一颜色。确认仍禁用。 */
 .preview-crop-hint.is-too-small {
   color: var(--danger);
-  font-weight: 600;
+  font-weight: 500;
 }
 
-/* 拖选时的像素尺寸要能盯着看:提示保持灰色,数字用正文色和等宽数字。 */
 .preview-crop-size,
 .preview-crop-bar > button,
 .preview-crop-confirm-wrap {
   flex: 0 0 auto;
-}
-
-.preview-crop-bar button {
-  white-space: nowrap;
 }
 
 .preview-crop-size {
@@ -481,8 +642,8 @@
   min-width: 0;
   max-width: 100%;
   color: var(--ink);
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 12.5px;
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   overflow: hidden;
@@ -516,219 +677,16 @@
   text-align: start;
 }
 
-/* 动作按钮只保留这一套基础规则:形状与尺寸,状态语义消费共享 token。 */
-.preview-named,
-.preview-crop-bar button {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 36px;
-  min-width: 36px;
-  min-height: 36px;
-  padding: 0 12px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-control);
-  background: transparent;
-  color: var(--ink);
-  font: inherit;
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: var(--control-transition);
-  -webkit-app-region: no-drag;
-  app-region: no-drag;
-}
-
-.preview-named:hover:not(.primary):not(.active):not(:disabled):not([aria-disabled="true"]),
-.preview-named:focus-visible:not(.primary):not(.active):not(:disabled):not([aria-disabled="true"]),
-.preview-named:active:not(.primary):not(.active):not(:disabled):not([aria-disabled="true"]),
-.preview-crop-bar button:hover:not(.primary):not(:disabled),
-.preview-crop-bar button:focus-visible:not(.primary):not(:disabled),
-.preview-crop-bar button:active:not(.primary):not(:disabled) {
-  border-color: var(--control-hover-border);
-  background: var(--control-hover-bg);
-}
-
-.preview-named:active:not(.primary):not(:disabled):not([aria-disabled="true"]),
-.preview-crop-bar button:active:not(.primary):not(:disabled) {
-  filter: var(--control-pressed-filter);
-}
-
-/* 确认条浮在画面上:按钮收成 32px,少挡住正在裁的区域。 */
-.preview-crop-bar button {
-  height: 32px;
-  min-height: 32px;
-  padding: 0 12px;
-}
-
-.preview-named.active,
-.preview-root .preview-overflow-menu .annotation-chrome.active,
-.preview-root .preview-toolbar .annotation-chrome.active {
-  background: var(--accent-soft);
-  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
-  color: var(--accent);
-}
-
-.preview-named:disabled,
-.preview-named[aria-disabled="true"],
-.preview-overflow-menu .annotation-chrome:disabled,
-.preview-overflow-menu .annotation-chrome[aria-disabled="true"],
-.preview-crop-bar button:disabled {
-  opacity: var(--control-disabled-opacity);
-  cursor: default;
-}
-
-.preview-named svg,
-.preview-crop-bar button svg {
-  /* 与同一条工具栏上的标注图标同为 18px，保存、裁剪、贴图不再偏小。 */
-  width: 18px;
-  height: 18px;
-  display: block;
-  flex: 0 0 auto;
-}
-
-.preview-named.primary,
-.preview-crop-bar .primary {
-  background: var(--accent);
-  border-color: transparent;
-  color: var(--on-accent);
-  font-weight: 600;
-  padding: 0 18px;
-  box-shadow: var(--primary-shadow);
-}
-
-.preview-named.primary:hover:not(:disabled):not([aria-disabled="true"]):not(:active),
-.preview-named.primary:focus-visible:not(:disabled):not([aria-disabled="true"]):not(:active),
-.preview-crop-bar .primary:hover:not(:disabled):not(:active),
-.preview-crop-bar .primary:focus-visible:not(:disabled):not(:active) {
-  filter: var(--control-hover-filter);
-}
-
-.preview-named.primary:active:not(:disabled):not([aria-disabled="true"]),
-.preview-crop-bar .primary:active:not(:disabled) {
-  filter: var(--control-pressed-filter);
-}
-
-.preview-named.primary.is-copied {
-  background: var(--ok);
-  border-color: var(--ok);
-}
-
-.preview-save {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-}
-
-.preview-save-split {
-  display: inline-flex;
-  align-items: stretch;
-  height: 36px;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-control);
-  background: var(--card);
-  box-shadow: var(--shadow-soft);
-  /* 裁切会把「保存」的自绘提示锁在胶囊里。两端圆角改由按钮自己收。 */
-  overflow: visible;
-}
-
-.preview-save-split > button {
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  height: 100%;
-  min-height: 0;
-}
-
-.preview-save-split > [data-action="save"] {
-  padding: 0 10px 0 12px;
-  border-radius: var(--radius-control) 0 0 var(--radius-control);
-}
-
-.preview-save-split:hover,
-.preview-save-split:focus-within {
-  border-color: var(--control-hover-border);
-}
-
-.preview-save-split:hover > .preview-save-caret,
-.preview-save-split:focus-within > .preview-save-caret {
-  border-left-color: var(--control-hover-border);
-}
-
-.preview-save-split:focus-within {
-  border-color: var(--accent);
-}
-
-.preview-save-split > .preview-save-caret {
-  width: 32px;
-  min-width: 32px;
-  min-height: 24px;
-  padding: 0;
-  border-left: 1px solid var(--line-strong);
-  border-radius: 0 var(--radius-control) var(--radius-control) 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.preview-save-caret svg {
-  width: 16px;
-  height: 16px;
-  display: block;
-}
-
-.preview-quality-panel {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  z-index: 20;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 168px;
-  width: max-content;
-  max-width: calc(100vw - 16px);
-  padding: var(--panel-padding);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-panel);
-  background: var(--glass);
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
-  box-shadow: var(--shadow-pop);
-}
-
-.preview-quality-panel .style-options {
-  flex-wrap: nowrap;
-}
-
-.preview-quality-panel[hidden] {
-  display: none;
-}
-
-/* 面板贴在保存按钮右侧。居中且不换行时，「高质量（文件较大）」会画出窗口。 */
-.preview-quality-panel [data-tooltip]::after {
-  left: auto;
-  right: 0;
-  transform: none;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  width: max-content;
-  max-width: min(16rem, calc(100vw - 16px));
-  text-align: start;
-}
-
 .preview-stage {
   position: relative;
   flex: 1;
   min-height: 0;
+  min-width: 0;
   display: flex;
   align-items: stretch;
   justify-content: flex-start;
-  /* 衬底用页面底色加一层细点阵，和上方平坦工具区分开，主图才是这一层里被抬起的对象。 */
-  background:
-    radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--ink) 12%, transparent) 1px, transparent 1.5px) 0 0 / 18px 18px,
-    var(--bg);
-  padding: 16px;
+  background: var(--stage);
+  padding: 14px;
   gap: 10px;
 }
 
@@ -738,7 +696,6 @@
   flex: 1 1 0;
   min-width: 0;
   min-height: 0;
-  gap: 8px;
 }
 
 .preview-frame {
@@ -754,6 +711,13 @@
   overflow: hidden;
 }
 
+/* 适应窗口时不创建滚动条,避免滚动条改变尺寸后反复触发缩放。 */
+.preview-root[data-preview-zoom="actual"] .preview-frame {
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--ink) 30%, transparent) transparent;
+}
+
 .preview-load-state {
   position: absolute;
   inset: 0;
@@ -761,7 +725,7 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 14px;
+  gap: 12px;
   color: var(--muted);
   font-size: 13px;
 }
@@ -769,100 +733,226 @@
 /* 失败和加载共用这一块，但失败不是进行中：用危险色，避免看起来还在转圈。 */
 .preview-load-state.is-error {
   color: var(--danger);
-  font-weight: 600;
+  font-weight: 500;
 }
 
-.preview-load-state .progress { width: 24px; height: 24px; }
+.preview-load-state .progress {
+  width: 20px;
+  height: 20px;
+}
+
 .preview-load-state button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 32px;
-  border: 1px solid var(--accent);
-  border-radius: var(--radius-control-sm);
-  padding: 0 20px;
-  /* 失败时这是唯一恢复动作。实心主按钮，和录制待保存里的重试一致。 */
+  min-height: 28px;
+  border: 0;
+  border-radius: var(--radius-control);
+  padding: 0 14px;
   background: var(--accent);
   color: var(--on-accent);
   cursor: pointer;
-  font: inherit;
   font-weight: 600;
   transition: var(--control-transition);
 }
 
 .preview-load-state button:hover:not(:active),
 .preview-load-state button:focus-visible:not(:active) {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--on-accent);
   filter: var(--control-hover-filter);
 }
 
 .preview-load-state button:active {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--on-accent);
   filter: var(--control-pressed-filter);
 }
 
-/* 适应窗口时不创建滚动条,避免滚动条改变尺寸后反复触发缩放。 */
-.preview-root[data-preview-zoom="actual"] .preview-frame {
-  overflow: auto;
+.preview-output {
+  display: contents;
 }
 
-.preview-zoom {
+.preview-root[data-beautify="on"] .preview-output {
+  display: block;
   flex: 0 0 auto;
-  align-self: stretch;
+  margin: auto;
+  line-height: 0;
+}
+
+.preview-frame canvas {
+  flex: 0 0 auto;
+  margin: auto;
+  width: auto;
+  height: auto;
+  display: block;
+  /* 预览不再另切圆角。小截图的四角会被吃掉,和复制、保存出去的像素对不上。 */
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--ink) 14%, transparent),
+    0 10px 28px -14px rgba(0, 0, 0, 0.4);
+  cursor: crosshair;
+}
+
+.preview-root[data-beautify="on"] .preview-frame canvas {
+  max-width: none;
+  max-height: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.preview-root[data-tool="text"] .preview-frame canvas,
+.preview-root[data-tool="ocr"] .preview-frame canvas {
+  cursor: text;
+}
+
+.preview-root[data-tool="number"] .preview-frame canvas,
+.preview-root[data-tool="sticker"] .preview-frame canvas {
+  cursor: copy;
+}
+
+/* 状态栏:左边是这张图的事实,右边是怎么看它。 */
+.preview-statusbar {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
-  /* 取字面板挤窄画面后，缩放按钮换到下一行并靠右，不再被窗口裁掉。 */
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 4px;
-  row-gap: 6px;
-  padding: 6px 0 0;
-  border: 0;
-  border-radius: var(--radius-control);
-  background: transparent;
+  gap: 12px;
+  min-height: 28px;
+  padding: 2px 8px 2px 12px;
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11.5px;
 }
 
 .preview-dimensions {
-  display: block;
   flex: 0 1 auto;
   min-width: 0;
-  max-width: 100%;
-  height: 30px;
-  margin-right: auto;
-  padding: 0 12px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-pill);
-  background: var(--card);
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 28px;
-  box-shadow: var(--shadow-soft);
-  font-variant-numeric: tabular-nums;
   overflow: hidden;
+  font-variant-numeric: tabular-nums;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* 画面还没到时不画出空胶囊，右侧缩放按钮仍靠这一侧的 auto 边距留在原位。 */
-.preview-dimensions:empty {
-  height: auto;
-  padding: 0;
-  border-color: transparent;
-  background: transparent;
-}
-
-.preview-zoom button {
-  flex: 0 0 auto;
+.preview-shortcuts {
+  flex: 0 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  margin-left: auto;
+  overflow: hidden;
   white-space: nowrap;
 }
 
+.preview-shortcut {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.preview-shortcut kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 3px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  color: var(--muted);
+  font: 500 10.5px/1 var(--font-ui);
+}
+
+.preview-shortcut span {
+  margin-left: 2px;
+}
+
+.preview-zoom {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.preview-shortcuts + .preview-zoom {
+  margin-left: 8px;
+}
+
+@media (max-width: 760px) {
+  .preview-shortcuts {
+    display: none;
+  }
+
+  .preview-zoom {
+    margin-left: auto;
+  }
+}
+
+.preview-zoom-value {
+  min-width: 38px;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.preview-zoom-sep {
+  width: 1px;
+  height: 12px;
+  margin: 0 4px;
+  background: var(--line);
+}
+
+.preview-zoom button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  min-height: 24px;
+  height: 24px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--radius-control-sm);
+  background: transparent;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: var(--control-transition);
+}
+
+.preview-zoom button svg {
+  width: 13px;
+  height: 13px;
+}
+
+.preview-zoom button:hover:not([aria-pressed="true"]),
+.preview-zoom button:focus-visible:not([aria-pressed="true"]) {
+  background: var(--control-hover-bg);
+  color: var(--ink);
+}
+
+.preview-zoom button:active:not(:disabled) {
+  filter: var(--control-pressed-filter);
+}
+
+.preview-zoom button[aria-pressed="true"] {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.preview-zoom [data-tooltip]::after {
+  top: auto;
+  bottom: calc(100% + 6px);
+  left: auto;
+  right: 0;
+  transform: none;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  width: max-content;
+  max-width: min(16rem, calc(100vw - 16px));
+  text-align: start;
+}
+
 .preview-root.is-working .preview-toolbar,
-.preview-root.is-loading .preview-toolbar {
+.preview-root.is-loading .preview-toolbar,
+.preview-root.is-unavailable .preview-toolbar {
   opacity: 0.55;
 }
 
@@ -892,10 +982,6 @@
   cursor: not-allowed;
 }
 
-.preview-root.is-unavailable .preview-toolbar {
-  opacity: 0.55;
-}
-
 .preview-root.is-unavailable .preview-frame canvas {
   pointer-events: none;
 }
@@ -904,42 +990,14 @@
   visibility: hidden;
 }
 
-.preview-note.is-progress {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.preview-stage.has-ocr {
+  gap: 0;
 }
 
-.preview-note.is-progress .preview-note-text {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.preview-stage > .ocr-panel {
+  width: var(--ocr-pane-width, 44%);
 }
 
-.preview-note.is-progress::before {
-  content: "";
-  display: block;
-  flex: 0 0 auto;
-  width: 10px;
-  height: 10px;
-  border: 2px solid var(--line);
-  border-top-color: var(--accent);
-  border-radius: 50%;
-  animation: app-progress-spin 800ms linear infinite;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .preview-note.is-progress::before { animation: none; }
-}
-
-@media (max-width: 600px) {
-  .preview-stage { padding: 10px; }
-  .preview-titlebar { padding: 10px 12px; }
-}
-
-.preview-stage.has-ocr { gap: 0; }
-.preview-stage > .ocr-panel { width: var(--ocr-pane-width, 44%); }
 .preview-ocr-divider {
   /* 握把只有 4px，命中区加宽到 16px，才比较容易拖到分界。 */
   flex: 0 0 16px;
@@ -947,430 +1005,50 @@
   touch-action: none;
   position: relative;
 }
+
 .preview-ocr-divider::after {
   content: "";
   position: absolute;
   top: 50%;
-  left: 6px;
-  width: 4px;
-  height: min(64px, 46%);
-  border-radius: 3px;
-  /* 舞台底色上发丝线几乎看不见。短握把用正文色的淡混合，悬停再换成强调色。 */
-  background: color-mix(in srgb, var(--ink) 32%, transparent);
+  left: 7px;
+  width: 3px;
+  height: min(56px, 46%);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--ink) 30%, transparent);
   transform: translateY(-50%);
 }
+
 .preview-ocr-divider:hover::after,
 .preview-ocr-divider:focus-visible::after,
-.is-resizing-ocr .preview-ocr-divider::after { background: var(--accent); }
-.is-resizing-ocr { user-select: none; cursor: col-resize; }
-
-.preview-zoom button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 32px;
-  min-height: 30px;
-  height: 30px;
-  padding: 0 12px;
-  /* 和左侧尺寸胶囊同一套描边。透明边框只有悬停才出现，未选中时像说明文字。 */
-  border: 1px solid var(--line);
-  border-radius: var(--radius-pill);
-  background: var(--card);
-  color: var(--ink);
-  font: inherit;
-  font-size: 12px;
-  font-weight: 600;
-  box-shadow: var(--shadow-soft);
-  cursor: pointer;
-  transition: var(--control-transition);
+.is-resizing-ocr .preview-ocr-divider::after {
+  background: var(--accent);
 }
 
-/* 与工具条按钮同一套 token:hover 只换边框/底色,不覆盖选中态的 accent 文字色。 */
-.preview-zoom button:hover:not([aria-pressed="true"]),
-.preview-zoom button:focus-visible:not([aria-pressed="true"]) {
-  border-color: var(--control-hover-border);
-  background: var(--control-hover-bg);
-}
-
-.preview-zoom button:active:not(:disabled) {
-  filter: var(--control-pressed-filter);
-}
-
-.preview-zoom button[aria-pressed="true"] {
-  background: var(--accent-soft);
-  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
-  color: var(--accent);
-}
-
-.preview-zoom button[aria-pressed="true"]:hover:not(:active),
-.preview-zoom button[aria-pressed="true"]:focus-visible:not(:active) {
-  filter: var(--control-hover-filter);
-}
-
-.preview-zoom [data-tooltip]::after {
-  top: auto;
-  bottom: calc(100% + 6px);
-  left: auto;
-  right: 0;
-  transform: none;
-  /* 「原始像素（100%），滚动查看细节」不换行时，取字面板挤窄画面后会画出窗口。 */
-  white-space: normal;
-  overflow-wrap: anywhere;
-  width: max-content;
-  max-width: min(16rem, calc(100vw - 16px));
-  text-align: start;
-}
-
-/* R2:取字面板样式在共享模块 src/ocr/ocr.css;这里只保留预览专属的画布光标。 */
-
-.preview-output {
-  display: contents;
-}
-
-.preview-root[data-beautify="on"] .preview-output {
-  display: block;
-  flex: 0 0 auto;
-  margin: auto;
-  line-height: 0;
-}
-
-.preview-frame canvas {
-  flex: 0 0 auto;
-  margin: auto;
-  width: auto;
-  height: auto;
-  display: block;
-  /* 预览不再另切圆角。小截图的四角会被吃掉,和复制、保存出去的像素对不上。
-     美化圆角仍由脚本按设置写进行内样式。 */
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--ink) 12%, transparent),
-    0 2px 6px -1px color-mix(in srgb, #000 14%, transparent),
-    0 22px 48px -16px color-mix(in srgb, #000 40%, transparent);
-  cursor: crosshair;
-}
-
-.preview-root[data-beautify="on"] .preview-frame canvas {
-  max-width: none;
-  max-height: none;
-  border-radius: 0;
-  box-shadow: none;
-}
-
-.preview-root[data-tool="text"] .preview-frame canvas,
-.preview-root[data-tool="ocr"] .preview-frame canvas {
-  cursor: text;
-}
-
-.preview-root[data-tool="number"] .preview-frame canvas,
-.preview-root[data-tool="sticker"] .preview-frame canvas {
-  cursor: copy;
-}
-
-/* ==========================================================================
-   2026 studio refresh
-   预览窗是「工作台」而不是设置页：工具条做成悬浮玻璃坞，画布成为视觉中心，
-   尺寸与缩放留在底部状态区，常用快捷键在宽窗口内常驻提示。
-   ========================================================================== */
-
-.preview-root {
-  background:
-    radial-gradient(110% 80% at 100% 0%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 52%),
-    var(--bg);
-  border-color: color-mix(in srgb, var(--ink) 8%, transparent);
-  border-radius: 20px;
-}
-
-.preview-titlebar {
-  min-height: 56px;
-  padding: 10px 12px 8px 18px;
-  gap: 10px;
-  background: color-mix(in srgb, var(--panel) 82%, transparent);
-  backdrop-filter: saturate(1.4) blur(18px);
-  -webkit-backdrop-filter: saturate(1.4) blur(18px);
-}
-
-.preview-titlebar .mark {
-  width: 26px;
-  height: 26px;
-  border-radius: 8px;
-}
-
-.preview-titlebar .name {
-  font-family: var(--font-display);
-  font-size: 14px;
-  font-weight: 700;
-  letter-spacing: -0.015em;
-}
-
-.preview-note {
-  margin-left: 6px;
-  padding: 4px 11px;
-  font-size: 12px;
-  font-weight: 550;
-  background: color-mix(in srgb, var(--ink) 4%, transparent);
-}
-
-.preview-note.is-feedback {
-  background: transparent;
-}
-
-.preview-note.is-success {
-  padding-left: 7px;
-}
-
-.preview-close {
-  width: 34px;
-  height: 34px;
-  border-radius: 10px;
-}
-
-.preview-toolbar {
-  margin: 0 12px 10px;
-  padding: 8px 10px;
-  border: 1px solid color-mix(in srgb, var(--ink) 9%, var(--line));
-  border-radius: 16px;
-  background: var(--glass);
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.18) inset,
-    var(--shadow-soft);
-  gap: 8px;
-}
-
-.preview-toolbar-row {
-  gap: 4px;
-}
-
-.preview-tools,
-.preview-action-group {
-  gap: 3px;
-}
-
-.preview-group-sep {
-  width: 1px;
-  height: 22px;
-  margin: 0 7px;
-  background: linear-gradient(to bottom, transparent, var(--line-strong), transparent);
-}
-
-.preview-toolbar-row .preview-named:not([data-action="save"]):not(.preview-save-caret) {
-  width: 38px;
-  height: 38px;
-  border-radius: 10px;
-}
-
-.preview-root .preview-toolbar .annotation-chrome,
-.preview-root .preview-overflow-menu .annotation-chrome {
-  width: 38px;
-  min-width: 38px;
-  height: 38px;
-  min-height: 38px;
-  padding: 0;
-  border-radius: 10px;
-}
-
-.preview-named,
-.preview-crop-bar button {
-  height: 38px;
-  min-height: 38px;
-  border-radius: 10px;
-  border-color: transparent;
-  font-size: 13px;
-  font-weight: 550;
-}
-
-.preview-named:hover:not(.primary):not(.active):not(:disabled):not([aria-disabled="true"]),
-.preview-named:focus-visible:not(.primary):not(.active):not(:disabled):not([aria-disabled="true"]),
-.preview-named:active:not(.primary):not(.active):not(:disabled):not([aria-disabled="true"]) {
-  border-color: color-mix(in srgb, var(--ink) 14%, transparent);
-  background: color-mix(in srgb, var(--ink) 5.5%, transparent);
-}
-
-.preview-named.active,
-.preview-root .preview-overflow-menu .annotation-chrome.active,
-.preview-root .preview-toolbar .annotation-chrome.active {
-  background: var(--accent-soft);
-  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
-  color: var(--accent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 12%, transparent);
-}
-
-.preview-named.primary {
-  height: 38px;
-  padding: 0 19px;
-  border-radius: 11px;
-  border-color: transparent;
-  background: linear-gradient(135deg, var(--accent-strong), color-mix(in srgb, var(--accent-strong) 74%, #053d37));
-  color: var(--on-accent);
-  font-weight: 680;
-  letter-spacing: -0.005em;
-  box-shadow: var(--primary-shadow);
-}
-
-.preview-save-split {
-  height: 38px;
-  border-radius: 11px;
-  border-color: color-mix(in srgb, var(--ink) 13%, var(--line));
-  background: color-mix(in srgb, var(--card) 92%, transparent);
-  box-shadow: none;
-}
-
-.preview-save-split > [data-action="save"] {
-  padding: 0 11px 0 13px;
-  border-radius: 11px 0 0 11px;
-}
-
-.preview-save-split > .preview-save-caret {
-  border-left-color: color-mix(in srgb, var(--ink) 10%, transparent);
-  border-radius: 0 11px 11px 0;
-}
-
-.preview-overflow-menu {
-  border-radius: 14px;
-  border-color: color-mix(in srgb, var(--ink) 10%, var(--line));
-  background: var(--glass);
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
-}
-
-.preview-root .preview-overflow-menu .preview-named,
-.preview-root .preview-overflow-menu .annotation-chrome {
-  border-radius: 9px;
-}
-
-.preview-stage {
-  padding: 18px 24px 8px;
-  gap: 12px;
-  background:
-    radial-gradient(70% 55% at 50% 0%, color-mix(in srgb, var(--accent) 8%, transparent), transparent 70%),
-    radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--ink) 11%, transparent) 1px, transparent 1.5px) 0 0 / 20px 20px,
-    var(--bg);
-}
-
-.preview-image-pane {
-  gap: 6px;
-}
-
-.preview-root .preview-frame canvas {
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--ink) 10%, transparent),
-    0 2px 8px -2px color-mix(in srgb, #000 16%, transparent),
-    0 30px 70px -24px color-mix(in srgb, #000 50%, transparent);
-}
-
-.preview-zoom {
-  padding: 10px 0 2px;
-  gap: 8px;
-}
-
-.preview-dimensions {
-  height: 32px;
-  padding: 0 13px;
-  border-color: color-mix(in srgb, var(--ink) 10%, var(--line));
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--card) 88%, transparent);
-  color: var(--ink);
-  line-height: 30px;
-  box-shadow: var(--shadow-soft);
-}
-
-.preview-zoom button {
-  height: 32px;
-  min-height: 32px;
-  padding: 0 14px;
-  border-radius: 999px;
-  border-color: color-mix(in srgb, var(--ink) 10%, var(--line));
-  background: color-mix(in srgb, var(--card) 88%, transparent);
-  box-shadow: var(--shadow-soft);
-}
-
-.preview-zoom button[aria-pressed="true"] {
-  background: var(--accent-soft);
-  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
-  color: var(--accent);
-}
-
-.preview-shortcuts {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  align-items: center;
-  gap: 6px 16px;
-  padding: 2px 4px 14px;
-  color: var(--muted);
-  font-size: 11.5px;
-  font-weight: 500;
+.is-resizing-ocr {
   user-select: none;
+  cursor: col-resize;
 }
 
-.preview-shortcuts-label {
-  margin-right: auto;
-  color: color-mix(in srgb, var(--muted) 78%, transparent);
-  font-size: 10.5px;
-  font-weight: 650;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.preview-shortcut {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.preview-shortcut kbd {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 20px;
-  height: 20px;
-  padding: 0 5px;
-  border: 1px solid color-mix(in srgb, var(--ink) 12%, var(--line));
-  border-radius: 5px;
-  background: color-mix(in srgb, var(--card) 80%, transparent);
-  color: var(--ink);
-  font: 600 10.5px/1 var(--font-ui);
-  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--ink) 6%, transparent);
-}
-
-.preview-crop-bar {
-  border-radius: 14px;
-  border-color: color-mix(in srgb, var(--ink) 10%, var(--line));
-  background: var(--glass);
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
-}
-
-.preview-quality-panel {
-  border-radius: 14px;
-  border-color: color-mix(in srgb, var(--ink) 10%, var(--line));
-  background: var(--glass);
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
-}
-
-@media (max-width: 720px) {
-  .preview-toolbar {
-    margin-inline: 8px;
-    padding: 7px 8px;
+/* 窄窗优先保住复制:次要动作只留图标。 */
+@media (max-width: 620px) {
+  .preview-actions [data-action="pin"] span,
+  .preview-actions [data-action="update-pin"] span,
+  .preview-actions [data-action="save"] span,
+  .preview-actions [data-action="capture-again"] span,
+  .preview-actions [data-action="copy-ocr-all"] span {
+    display: none;
   }
 
   .preview-stage {
-    padding: 14px 14px 6px;
+    padding: 8px;
   }
 
-  .preview-shortcuts {
+  .preview-context .style-label {
     display: none;
   }
 
-  .preview-toolbar-row .tool-label {
-    display: none;
-  }
-}
-
-@media (max-height: 620px) {
-  .preview-shortcuts {
+  .preview-zoom-sep,
+  .preview-zoom [data-preview-zoom="actual"] {
     display: none;
   }
 }

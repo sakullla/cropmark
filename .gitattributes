@@ -3,3 +3,4 @@ package-lock.json linguist-generated=true sakullla-review=generated
 src-tauri/Cargo.lock linguist-generated=true sakullla-review=generated
 src-tauri/icons/** linguist-generated=true sakullla-review=generated
 src-tauri/models/*.onnx linguist-generated=true sakullla-review=generated binary
+src/assets/fonts/*.woff2 binary

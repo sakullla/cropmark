@@ -166,6 +166,13 @@ export interface AnnotationEditorOptions {
    * 预览在一行放不下时自行把多出来的按钮收进带名称的菜单。
    */
   inlineTools?: boolean;
+  /**
+   * 工具选项常驻的容器。给出后样式面板不再是弹层,直接铺在这里,切工具时内容跟着变;
+   * 宿主负责容器位置。缺省时仍由工具条上的样式按钮开合。
+   */
+  styleDock?: HTMLElement;
+  /** 撤销/重做/删除的容器。给出后这三个按钮移到这里,点击仍由本模块处理。 */
+  actionsDock?: HTMLElement;
   /** 工具显隐变化后通知宿主重新排布。 */
   onToolsChanged?: () => void;
   /** 撤销/重做/删除可用性变化时通知宿主。录制控制条不在这条工具栏上，要靠这个同步禁用。 */
@@ -1614,6 +1621,17 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     next.scrollIntoView({ block: "nearest" });
   };
   morePanel.addEventListener("keydown", (event) => movePanelButtonFocus(morePanel, event));
+  const styleDock = options.styleDock ?? null;
+  if (styleDock) {
+    stylePanel.classList.add("is-docked");
+    styleDock.append(stylePanel);
+    stylePanel.hidden = false;
+    styleRoot.hidden = true;
+  }
+  const actionsDock = options.actionsDock ?? null;
+  actionsDock?.append(undoBtn, redoBtn, deleteBtn);
+  /** 常驻面板不算弹层:不随点击外部、Esc 或切工具收起。 */
+  const stylePopoverOpen = (): boolean => styleDock === null && !stylePanel.hidden;
   stylePanel.addEventListener("keydown", (event) => movePanelButtonFocus(stylePanel, event));
 
   // 序号起始输入框的悬停提示挂在外层 wrap(input 是 replaced 元素,::after 不渲染)。
@@ -1764,13 +1782,7 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     if (tip) {
       button.dataset.tooltip = tip;
     }
-    if (button.closest("[data-preview-overflow-menu]")) {
-      if (tip) {
-        button.title = tip;
-      }
-    } else {
-      button.removeAttribute("title");
-    }
+    button.removeAttribute("title");
   };
 
   const syncUndo = (): void => {
@@ -2295,11 +2307,11 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     // 清掉悬停命中残留的内联 move 光标:热键切工具后鼠标未必再动,
     // 不清会持续盖住 data-tool 为 text/number 定义的光标。
     canvas.style.cursor = "";
-    const popoverWasOpen = !contextMenu.hidden || !stylePanel.hidden || !morePanel.hidden;
+    const popoverWasOpen = !contextMenu.hidden || stylePopoverOpen() || !morePanel.hidden;
     if (!contextMenu.hidden) {
       hideContextMenu();
     }
-    if (!stylePanel.hidden) {
+    if (stylePopoverOpen()) {
       toggleStylePanel(false);
     }
     if (!morePanel.hidden) {
@@ -2505,7 +2517,7 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
         }
       }
     });
-    if (changed) {
+    if (changed && stylePopoverOpen()) {
       clampFloatingPanel(stylePanel);
     }
   };
@@ -2532,6 +2544,9 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
   };
 
   const toggleStylePanel = (open?: boolean, restoreFocus = false): void => {
+    if (styleDock) {
+      return;
+    }
     const next = open ?? stylePanel.hidden;
     const panelHadFocus = stylePanel.contains(document.activeElement);
     if (next) {
@@ -2669,7 +2684,7 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
       }
       // 错误行会改变面板高度。矮窗口里不重新收边，红字会画出屏幕，红框仍像没有原因。
       // 收进窗口后面板内部滚动，滚位仍停在顶部，红字会留在底边外面。
-      if (wasHidden !== numberErrorEl.hidden && !stylePanel.hidden) {
+      if (wasHidden !== numberErrorEl.hidden && stylePopoverOpen()) {
         clampFloatingPanel(stylePanel);
         if (invalid && document.activeElement === numberStartInput) {
           numberErrorEl.scrollIntoView({ block: "nearest", inline: "nearest" });
@@ -2723,7 +2738,7 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
         contextMenu.contains(document.activeElement) &&
         !(target instanceof Node && contextMenu.contains(target));
       stylePanelHadFocusOnPointerDown =
-        !stylePanel.hidden &&
+        stylePopoverOpen() &&
         stylePanel.contains(document.activeElement) &&
         !(target instanceof Node && styleRoot.contains(target));
       morePanelHadFocusOnPointerDown =
@@ -2738,7 +2753,7 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     if (!contextMenu.hidden && !(event.target instanceof Node && contextMenu.contains(event.target))) {
       hideContextMenu(contextMenuHadFocusOnPointerDown);
     }
-    if (!stylePanel.hidden && !(event.target instanceof Node && styleRoot.contains(event.target))) {
+    if (stylePopoverOpen() && !(event.target instanceof Node && styleRoot.contains(event.target))) {
       toggleStylePanel(false, stylePanelHadFocusOnPointerDown);
     }
     if (!morePanel.hidden && !(event.target instanceof Node && moreRoot.contains(event.target))) {
@@ -2873,7 +2888,7 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     }
     event.preventDefault();
     hideContextMenu();
-    if (!stylePanel.hidden) {
+    if (stylePopoverOpen()) {
       toggleStylePanel(false);
     }
     if (!morePanel.hidden) {
@@ -3038,15 +3053,14 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     }, 200);
   });
 
-  // 预览会把放不下的按钮移出工具条；监听挂在宿主根上，移走后仍能点到。
+  // 撤销等按钮可能被宿主放进 actionsDock；监听挂在宿主根上，移走后仍能点到。
   // 右键菜单不在工具条里，留给它自己的监听，避免删除被处理两次。
   root.addEventListener("click", (event) => {
     const button = event.target instanceof Element ? event.target.closest("button") : null;
     if (!(button instanceof HTMLButtonElement)) {
       return;
     }
-    const inChrome =
-      toolbar.contains(button) || button.closest("[data-preview-overflow-menu]") !== null;
+    const inChrome = toolbar.contains(button) || (actionsDock?.contains(button) ?? false);
     if (!inChrome) {
       return;
     }
@@ -3100,7 +3114,7 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
       // 取字、二维码、裁剪期间快捷键交给宿主。浮层在这里收起，但不吞掉 Esc，宿主才能退出当前模式。
       if (!editable()) {
         hideContextMenu();
-        if (!stylePanel.hidden) {
+        if (stylePopoverOpen()) {
           toggleStylePanel(false);
         }
         if (!morePanel.hidden) {
@@ -3113,7 +3127,7 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
         hideContextMenu(true);
         return;
       }
-      if (!stylePanel.hidden) {
+      if (stylePopoverOpen()) {
         event.preventDefault();
         toggleStylePanel(false, true);
         return;
@@ -3392,7 +3406,7 @@ export function mountAnnotationEditor(options: AnnotationEditorOptions): Annotat
     },
     dismissChrome: (): void => {
       hideContextMenu();
-      if (!stylePanel.hidden) {
+      if (stylePopoverOpen()) {
         toggleStylePanel(false);
       }
       if (!morePanel.hidden) {

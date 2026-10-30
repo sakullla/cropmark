@@ -26,51 +26,21 @@ export function mountOnboarding(root: HTMLElement): () => void {
       <header class="guide-topbar" data-tauri-drag-region>
         <div class="guide-brand" data-tauri-drag-region>
           <span class="mark" aria-hidden="true"></span>
-          <span class="guide-brand-text">
-            <span class="guide-brand-name">Cropmark</span>
-            <span class="guide-brand-sub" data-i18n="guide.title">使用帮助</span>
-          </span>
+          <span class="name" data-i18n="guide.title">使用帮助</span>
         </div>
         <button type="button" class="icon-btn" data-action="close" data-i18n-aria-label="guide.close" aria-label="关闭引导">${icons.close}</button>
       </header>
       <main class="guide-content">
         <section class="guide-hero">
-          <div class="guide-hero-copy">
-            <span class="guide-eyebrow" data-i18n="guide.eyebrow">GET STARTED</span>
-            <h1 data-i18n="guide.headline">截图，本该如此顺手。</h1>
-            <p class="guide-lead" data-i18n="guide.lead">Cropmark 常驻托盘，按一下热键，截取、标注、取字、贴图一步到位。关闭本页不会退出应用。</p>
-            <div class="guide-hero-actions">
-              <button type="button" class="guide-cta" data-action="close" data-i18n="guide.start">开始使用</button>
-              <span class="guide-offline"><span class="guide-offline-dot" aria-hidden="true"></span><span data-i18n="guide.offline_badge">100% 本地 · 无账号 · 不上传</span></span>
-            </div>
-          </div>
-          <div class="guide-hero-art" aria-hidden="true">
-            <div class="guide-art-window">
-              <div class="guide-art-bar"><span></span><span></span><span></span></div>
-              <div class="guide-art-shot">
-                <span class="guide-art-line is-title"></span>
-                <span class="guide-art-line"></span>
-                <span class="guide-art-line is-short"></span>
-                <span class="guide-art-block"></span>
-                <span class="guide-art-chip"></span>
-              </div>
-              <div class="guide-art-tools">
-                <span></span><span></span><span></span><span></span><span></span>
-              </div>
-            </div>
-          </div>
+          <h1 data-i18n="guide.headline">截图，本该如此顺手。</h1>
+          <p class="guide-lead" data-i18n="guide.lead">Cropmark 常驻托盘，按一下热键，截取、标注、取字、贴图一步到位。关闭本页不会退出应用。</p>
+          <span class="guide-offline"><span class="guide-offline-dot" aria-hidden="true"></span><span data-i18n="guide.offline_badge">100% 本地 · 无账号 · 不上传</span></span>
         </section>
         <section class="guide-quickstart" aria-labelledby="guide-quickstart-title">
-          <div class="guide-section-head">
-            <div>
-              <h2 id="guide-quickstart-title" data-i18n="guide.quickstart.title">三步开始</h2>
-              <p class="hint" data-i18n="guide.hotkeys.body">下面是当前生效的组合，可在设置里修改。</p>
-            </div>
-            <span class="guide-section-badge" data-i18n="guide.hotkeys.title">三种采集热键</span>
-          </div>
-          <div class="guide-steps">
-            <article class="guide-step">
-              <span class="guide-step-no">01</span>
+          <h2 id="guide-quickstart-title" data-i18n="guide.quickstart.title">三步开始</h2>
+          <ol class="guide-steps">
+            <li class="guide-step">
+              <span class="guide-step-no" aria-hidden="true">1</span>
               <div class="guide-step-copy">
                 <h3 data-i18n="guide.quickstart.step1.title">按下热键</h3>
                 <p data-i18n="guide.quickstart.step1.body">区域、窗口或全屏，随取随截。</p>
@@ -80,31 +50,25 @@ export function mountOnboarding(root: HTMLElement): () => void {
                 <div class="guide-step-key"><span data-i18n="settings.mode.window">窗口</span><span class="guide-keys" data-hotkey="window">Alt+Shift+W</span></div>
                 <div class="guide-step-key"><span data-i18n="settings.mode.fullscreen">全屏</span><span class="guide-keys" data-hotkey="fullscreen">Alt+Shift+S</span></div>
               </div>
-            </article>
-            <article class="guide-step">
-              <span class="guide-step-no">02</span>
+            </li>
+            <li class="guide-step">
+              <span class="guide-step-no" aria-hidden="true">2</span>
               <div class="guide-step-copy">
                 <h3 data-i18n="guide.quickstart.step2.title">标注与取字</h3>
                 <p data-i18n="guide.quickstart.step2.body">箭头、高亮、马赛克，或直接识别文字。</p>
               </div>
-              <div class="guide-step-visual is-annotate" aria-hidden="true"><span></span><span></span><span></span></div>
-            </article>
-            <article class="guide-step">
-              <span class="guide-step-no">03</span>
+            </li>
+            <li class="guide-step">
+              <span class="guide-step-no" aria-hidden="true">3</span>
               <div class="guide-step-copy">
                 <h3 data-i18n="guide.quickstart.step3.title">复制或贴图</h3>
                 <p data-i18n="guide.quickstart.step3.body">一键复制，或把截图钉在屏幕上对照。</p>
               </div>
-              <div class="guide-step-visual is-pin" aria-hidden="true"><span></span><span></span></div>
-            </article>
-          </div>
+            </li>
+          </ol>
         </section>
         <section class="guide-features" aria-labelledby="guide-features-title">
-          <div class="guide-section-head">
-            <div>
-              <h2 id="guide-features-title" data-i18n="guide.feature.title">更多能力</h2>
-            </div>
-          </div>
+          <h2 id="guide-features-title" data-i18n="guide.feature.title">更多能力</h2>
           <div class="guide-feature-grid">
             <article class="guide-feature">
               <span class="guide-icon" aria-hidden="true">${icons.tray}</span>
@@ -127,7 +91,6 @@ export function mountOnboarding(root: HTMLElement): () => void {
       </main>
       <footer class="guide-footer">
         <div class="guide-log-meta">
-          <span class="guide-log-label" data-i18n="guide.logs.title">日志位置</span>
           <span class="guide-log-path" data-log-path>—</span>
           <span class="guide-log-error" data-log-error role="alert" hidden></span>
         </div>
@@ -172,15 +135,12 @@ export function mountOnboarding(root: HTMLElement): () => void {
   const logErrorEl = root.querySelector("[data-log-error]");
   let logDirectory = "";
   let logOpenFailed = false;
-  if (logPathEl instanceof HTMLElement) {
-    logPathEl.style.overflowWrap = "anywhere";
-    logPathEl.style.userSelect = "text";
-  }
   const renderLogPath = (): void => {
     if (!(logPathEl instanceof HTMLElement)) {
       return;
     }
     logPathEl.textContent = logDirectory.trim() ? logDirectory : t("guide.logs.unavailable");
+    logPathEl.title = t("guide.logs.title");
     if (logErrorEl instanceof HTMLElement) {
       logErrorEl.hidden = !logOpenFailed;
       logErrorEl.textContent = logOpenFailed ? t("settings.logs.open_failed") : "";

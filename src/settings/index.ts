@@ -9,6 +9,7 @@ import { NOTICE_AUTO_HIDE_MS } from "../feedback";
 import { currentLanguage, t, type CatalogKey } from "../i18n";
 import { icons } from "../icons";
 import { getTheme, setTheme, type ThemeSetting } from "../theme";
+import "./settings.css";
 
 export type CaptureMode = "region" | "window" | "fullscreen";
 
@@ -119,21 +120,45 @@ export interface UiSettings {
   resolvedLanguage: string;
 }
 
-/// R8:左侧导航的四分类;每个分类对应右侧一个独立面板。
-type SettingsSection = "capture" | "output" | "general" | "about";
+/// 左侧导航:每个分类对应右侧一个独立面板,一屏内能看完一件事。
+type SettingsSection =
+  | "capture"
+  | "shortcuts"
+  | "recording"
+  | "history"
+  | "export"
+  | "general"
+  | "about";
 
-const SECTIONS: SettingsSection[] = ["capture", "output", "general", "about"];
+const SECTIONS: SettingsSection[] = [
+  "capture",
+  "shortcuts",
+  "recording",
+  "history",
+  "export",
+  "general",
+  "about",
+];
+
+/** 这些分类前画一条分隔:采集 / 产出 / 应用 三段。 */
+const SECTION_BREAKS = new Set<SettingsSection>(["history", "general"]);
 
 const SECTION_LABEL_KEY: Record<SettingsSection, CatalogKey> = {
-  capture: "settings.group.capture",
-  output: "settings.group.output",
+  capture: "settings.capture.title",
+  shortcuts: "settings.hotkeys.title",
+  recording: "settings.recording.title",
+  history: "settings.history.title",
+  export: "settings.group.export",
   general: "settings.group.general",
   about: "settings.about.title",
 };
 
 const SECTION_ICON: Record<SettingsSection, string> = {
   capture: icons.capture,
-  output: icons.folder,
+  shortcuts: icons.keyboard,
+  recording: icons.record,
+  history: icons.history,
+  export: icons.save,
   general: icons.sliders,
   about: icons.info,
 };
@@ -150,6 +175,9 @@ const LANGUAGE_OPTIONS: Array<{ value: LanguageSetting; labelKey: CatalogKey }> 
   { value: "zh-CN", labelKey: "language.zh_cn" },
   { value: "en", labelKey: "language.en" },
 ];
+
+/** 搜索的最小单位:一行设置或一个工具组。 */
+const SEARCH_ITEMS = ".setting-row, .hotkey-row, .setting-stack";
 
 const HOTKEY_SLOTS: HotkeySlot[] = ["region", "window", "fullscreen", "clipboardpin"];
 
@@ -219,15 +247,17 @@ export function mountSettings(root: HTMLElement): () => void {
         <aside class="settings-sidebar">
         <div class="settings-sidebar-head" data-tauri-drag-region>
           <span class="mark" aria-hidden="true" data-tauri-drag-region></span>
-          <span class="settings-sidebar-title" data-tauri-drag-region>
-            <span class="settings-sidebar-brand" data-tauri-drag-region>Cropmark</span>
-            <span class="name" data-tauri-drag-region data-i18n="settings.window_title">${t("settings.window_title")}</span>
-          </span>
+          <span class="settings-sidebar-brand" data-tauri-drag-region>Cropmark</span>
         </div>
+        <label class="settings-search">
+          ${icons.search}
+          <input type="search" data-settings-search autocomplete="off" spellcheck="false" data-i18n-placeholder="settings.search.placeholder" data-i18n-aria-label="settings.search.placeholder" placeholder="${t("settings.search.placeholder")}" aria-label="${t("settings.search.placeholder")}" />
+        </label>
         <nav class="settings-nav" role="tablist" aria-orientation="vertical" data-settings-nav data-i18n-aria-label="settings.nav.aria_label" aria-label="设置分类">
           ${SECTIONS.map(
             (section, index) => `
-            <button type="button" class="settings-nav-item" role="tab" id="settings-tab-${section}" aria-controls="settings-panel-${section}" aria-selected="${index === 0 ? "true" : "false"}" tabindex="${index === 0 ? 0 : -1}" data-section="${section}"><span class="settings-nav-icon" aria-hidden="true">${SECTION_ICON[section]}</span><span class="settings-nav-text"><span class="settings-nav-label" data-i18n="${SECTION_LABEL_KEY[section]}">${t(SECTION_LABEL_KEY[section])}</span><span class="settings-nav-reserve" data-i18n="${SECTION_LABEL_KEY[section]}" aria-hidden="true">${t(SECTION_LABEL_KEY[section])}</span></span></button>`,
+            ${SECTION_BREAKS.has(section) ? `<span class="settings-nav-sep" role="presentation"></span>` : ""}
+            <button type="button" class="settings-nav-item" role="tab" id="settings-tab-${section}" aria-controls="settings-panel-${section}" aria-selected="${index === 0 ? "true" : "false"}" tabindex="${index === 0 ? 0 : -1}" data-section="${section}"><span class="settings-nav-icon" aria-hidden="true">${SECTION_ICON[section]}</span><span class="settings-nav-label" data-i18n="${SECTION_LABEL_KEY[section]}">${t(SECTION_LABEL_KEY[section])}</span></button>`,
           ).join("")}
         </nav>
         <div class="settings-nav-footer" aria-hidden="true">
@@ -247,21 +277,11 @@ export function mountSettings(root: HTMLElement): () => void {
           <div class="settings-panels" data-settings-panels>
             <section class="settings-panel" role="tabpanel" id="settings-panel-capture" aria-labelledby="settings-tab-capture" data-panel="capture">
               <header class="settings-panel-head">
-                <span class="settings-panel-icon" aria-hidden="true">${SECTION_ICON.capture}</span>
-                <div class="settings-panel-heading">
-                  <span class="settings-panel-eyebrow" data-i18n="settings.capture.eyebrow">CAPTURE</span>
-                  <h1 id="group-capture-title" data-i18n="settings.group.capture">采集</h1>
-                  <p class="settings-panel-lead" data-i18n="settings.capture.lead">热键、截图行为与录制方式，一次调顺手。</p>
-                </div>
+                <h1 id="group-capture-title" data-i18n="settings.capture.title">截图</h1>
+                <p class="settings-panel-lead" data-i18n="settings.capture.lead">截图时的行为，以及选区工具条里出现哪些工具。</p>
               </header>
-              <section class="card" aria-labelledby="group-capture-title">
-                <section class="block" aria-labelledby="hotkeys-title">
-                  <h2 id="hotkeys-title" data-i18n="settings.hotkeys.title">热键</h2>
-                  <p class="hint" data-i18n="settings.hotkeys.hint">点击热键按钮后按下新组合，Esc 取消；改动立即生效。</p>
-                  <div class="rows" data-hotkeys></div>
-                </section>
-                <section class="block" aria-labelledby="capture-title">
-                  <h2 id="capture-title" data-i18n="settings.capture.title">截图</h2>
+              <section class="block" aria-labelledby="group-capture-title">
+                <div class="group">
                   <div class="setting-row">
                     <div>
                       <div class="label" id="delay-label" data-i18n="settings.capture.delay_label">延时秒数</div>
@@ -291,16 +311,36 @@ export function mountSettings(root: HTMLElement): () => void {
                     </div>
                     ${switchMarkup("capture-option", "longCapture", "long-capture-label", false)}
                   </div>
-                  <div class="setting-row">
-                    <div>
-                      <div class="label" id="region-tools-title" data-i18n="settings.region_tools.title">选区工具</div>
-                      <p class="hint" data-i18n="settings.region_tools.hint">决定绘制工具、取字和二维码是否出现。贴图、复制、保存和取消始终保留。直线跟着箭头，模糊跟着马赛克。</p>
-                    </div>
+                </div>
+              </section>
+              <section class="block" aria-labelledby="region-tools-title">
+                <h2 id="region-tools-title" data-i18n="settings.region_tools.title">选区工具</h2>
+                <p class="hint" data-i18n="settings.region_tools.hint">决定绘制工具、取字和二维码是否出现。贴图、复制、保存和取消始终保留。直线跟着箭头，模糊跟着马赛克。</p>
+                <div class="group">
+                  <div class="setting-stack">
+                    <div class="choices tool-grid" data-region-tools role="group" aria-labelledby="region-tools-title"></div>
                   </div>
-                  <div class="choices" data-region-tools role="group" aria-labelledby="region-tools-title"></div>
-                </section>
-                <section class="block" aria-labelledby="recording-title">
-                  <h2 id="recording-title" data-i18n="settings.recording.title">录屏</h2>
+                </div>
+              </section>
+            </section>
+            <section class="settings-panel" role="tabpanel" id="settings-panel-shortcuts" aria-labelledby="settings-tab-shortcuts" data-panel="shortcuts" hidden>
+              <header class="settings-panel-head">
+                <h1 id="hotkeys-title" data-i18n="settings.hotkeys.title">热键</h1>
+                <p class="settings-panel-lead" data-i18n="settings.hotkeys.hint">点击热键按钮后按下新组合，Esc 取消；改动立即生效。</p>
+              </header>
+              <section class="block" aria-labelledby="hotkeys-title">
+                <div class="group">
+                  <div class="rows" data-hotkeys></div>
+                </div>
+              </section>
+            </section>
+            <section class="settings-panel" role="tabpanel" id="settings-panel-recording" aria-labelledby="settings-tab-recording" data-panel="recording" hidden>
+              <header class="settings-panel-head">
+                <h1 id="recording-title" data-i18n="settings.recording.title">录屏</h1>
+                <p class="settings-panel-lead" data-i18n="settings.recording.lead">录制的入口、文件格式和帧率。</p>
+              </header>
+              <section class="block" aria-labelledby="recording-title">
+                <div class="group">
                   <div class="setting-row">
                     <div>
                       <div class="label" id="recording-enabled-label" data-i18n="settings.recording.enabled_label">启用录屏</div>
@@ -313,32 +353,26 @@ export function mountSettings(root: HTMLElement): () => void {
                       <div class="label" id="recording-format-label" data-i18n="settings.recording.format_label">录制格式</div>
                       <p class="hint" data-i18n="settings.recording.format_hint">录制文件的保存格式；GIF 通用、WebP 体积更小、MP4 适合较长内容。</p>
                     </div>
+                    <div class="choices segmented" data-recording-formats role="radiogroup" aria-labelledby="recording-format-label"></div>
                   </div>
-                  <div class="choices" data-recording-formats role="radiogroup" aria-labelledby="recording-format-label"></div>
                   <div class="setting-row">
                     <div>
                       <div class="label" id="recording-fps-label" data-i18n="settings.recording.fps_label">捕获帧率</div>
                       <p class="hint" data-i18n="settings.recording.fps_hint">只能选 10、15 或 30。没单独选过时，MP4 用 30，GIF 和 WebP 用 15；选定后三种格式都用这一档。</p>
                     </div>
+                    <div class="choices segmented" data-recording-fps role="radiogroup" aria-labelledby="recording-fps-label"></div>
                   </div>
-                  <div class="choices" data-recording-fps role="radiogroup" aria-labelledby="recording-fps-label"></div>
-                  <p class="hint" data-recording-unavailable hidden data-i18n="settings.recording.unavailable">录屏关闭时没有录屏入口，格式和帧率不可用。</p>
-                </section>
+                </div>
+                <p class="hint settings-group-note" data-recording-unavailable hidden data-i18n="settings.recording.unavailable">录屏关闭时没有录屏入口，格式和帧率不可用。</p>
               </section>
             </section>
-            <section class="settings-panel" role="tabpanel" id="settings-panel-output" aria-labelledby="settings-tab-output" data-panel="output" hidden>
+            <section class="settings-panel" role="tabpanel" id="settings-panel-history" aria-labelledby="settings-tab-history" data-panel="history" hidden>
               <header class="settings-panel-head">
-                <span class="settings-panel-icon" aria-hidden="true">${SECTION_ICON.output}</span>
-                <div class="settings-panel-heading">
-                  <span class="settings-panel-eyebrow" data-i18n="settings.output.eyebrow">OUTPUT</span>
-                  <h1 id="group-output-title" data-i18n="settings.group.output">记录与输出</h1>
-                  <p class="settings-panel-lead" data-i18n="settings.output.lead">历史、命名与导出美化，都在这里管理。</p>
-                </div>
+                <h1 id="history-title" data-i18n="settings.history.title">历史记录</h1>
+                <p class="settings-panel-lead" data-i18n="settings.history.hint">截图完成后在本机保留最近记录，可重新复制、贴图或删除；数据只保存在本机。</p>
               </header>
-              <section class="card" aria-labelledby="group-output-title">
-                <section class="block" aria-labelledby="history-title">
-                  <h2 id="history-title" data-i18n="settings.history.title">历史记录</h2>
-                  <p class="hint" data-i18n="settings.history.hint">截图完成后在本机保留最近记录，可重新复制、贴图或删除；数据只保存在本机。</p>
+              <section class="block" aria-labelledby="history-title">
+                <div class="group">
                   <div class="setting-row">
                     <div>
                       <div class="label" id="history-enabled-label" data-i18n="settings.history.enabled_label">保留截图历史</div>
@@ -361,41 +395,31 @@ export function mountSettings(root: HTMLElement): () => void {
                     </div>
                     <button type="button" class="choice" data-action="open-history" aria-labelledby="history-open-label" data-i18n="settings.history.open_button">打开历史记录</button>
                   </div>
-                </section>
-                <section class="block" aria-labelledby="naming-title">
-                  <h2 id="naming-title" data-i18n="settings.section.naming">保存与命名</h2>
-                  <div class="setting-row">
-                    <div>
-                      <div class="label" id="apply-template-label" data-i18n="settings.export.apply_template_label">套用文件名模板</div>
-                      <p class="hint" data-i18n="settings.export.apply_template_hint">开启后保存对话框默认文件名按模板生成，非法字符自动替换，空模板回退 Cropmark 时间戳；关闭后使用现有默认命名。同名文件会另存为不覆盖的新路径。</p>
-                    </div>
-                    ${switchMarkup("export-option", "useFilenameTemplate", "apply-template-label", false)}
-                  </div>
-                  <div class="setting-row">
-                    <div>
-                      <div class="label" id="template-label" data-i18n="settings.export.template_label">文件名模板</div>
-                      <p class="hint" data-i18n="settings.export.template_hint">占位符：{date}、{time}、{datetime}、{mode}、{seq}。只影响本地保存的默认文件名。</p>
-                    </div>
-                  </div>
-                  <span class="input-wrap template-wrap" data-tooltip-wrap><input type="text" class="number-input" data-filename-template maxlength="180" spellcheck="false" aria-labelledby="template-label" data-i18n-placeholder="settings.export.template_placeholder" placeholder="例如 shot_{date}_{mode}_{seq}" /></span>
-                  <p class="error template-notice" id="template-notice" data-template-notice role="status" hidden></p>
-                </section>
-                <section class="block" aria-labelledby="beautify-title">
-                  <h2 id="beautify-title" data-i18n="settings.export.beautify_title">导出美化</h2>
-                  <p class="hint" data-i18n="settings.export.beautify_hint">开启「套用美化」后，预览、复制和保存使用下面的背景、留白、圆角与阴影；标注仍画在原始画面上。</p>
+                </div>
+              </section>
+            </section>
+            <section class="settings-panel" role="tabpanel" id="settings-panel-export" aria-labelledby="settings-tab-export" data-panel="export" hidden>
+              <header class="settings-panel-head">
+                <h1 id="group-export-title" data-i18n="settings.group.export">导出</h1>
+                <p class="settings-panel-lead" data-i18n="settings.export.lead">文件命名，以及复制和保存时套用的美化效果。</p>
+              </header>
+              <section class="block" aria-labelledby="beautify-title">
+                <h2 id="beautify-title" data-i18n="settings.export.beautify_title">导出美化</h2>
+                <p class="hint" data-i18n="settings.export.beautify_hint">开启「套用美化」后，预览、复制和保存使用下面的背景、留白、圆角与阴影；标注仍画在原始画面上。</p>
+                <div class="group">
                   <div class="setting-row">
                     <div>
                       <div class="label" id="apply-beautify-label" data-i18n="settings.export.apply_label">套用美化</div>
                     </div>
                     ${switchMarkup("export-option", "applyBeautify", "apply-beautify-label", false)}
                   </div>
-                  <div class="setting-row">
-                    <div>
+                  <div class="beautify-body setting-stack">
+                    <div class="beautify-sample" data-beautify-sample aria-hidden="true"><div class="beautify-sample-frame"><div class="beautify-sample-shot"></div></div></div>
+                    <div class="beautify-presets-field">
                       <div class="label" id="preset-label" data-i18n="settings.export.preset_label">背景</div>
+                      <div class="choices" data-beautify-presets role="radiogroup" aria-labelledby="preset-label"></div>
                     </div>
                   </div>
-                  <div class="choices" data-beautify-presets role="radiogroup" aria-labelledby="preset-label"></div>
-                  <div class="beautify-sample" data-beautify-sample aria-hidden="true"><div class="beautify-sample-frame"><div class="beautify-sample-shot"></div></div></div>
                   <div class="setting-row">
                     <div>
                       <div class="label" id="padding-label" data-i18n="settings.export.padding_label">留白</div>
@@ -418,25 +442,39 @@ export function mountSettings(root: HTMLElement): () => void {
                     </div>
                     ${switchMarkup("beautify-shadow", "shadow", "shadow-label", true)}
                   </div>
-                </section>
+                </div>
+              </section>
+              <section class="block" aria-labelledby="naming-title">
+                <h2 id="naming-title" data-i18n="settings.section.naming">保存与命名</h2>
+                <div class="group">
+                  <div class="setting-row">
+                    <div>
+                      <div class="label" id="apply-template-label" data-i18n="settings.export.apply_template_label">套用文件名模板</div>
+                      <p class="hint" data-i18n="settings.export.apply_template_hint">开启后保存对话框默认文件名按模板生成，非法字符自动替换，空模板回退 Cropmark 时间戳；关闭后使用现有默认命名。同名文件会另存为不覆盖的新路径。</p>
+                    </div>
+                    ${switchMarkup("export-option", "useFilenameTemplate", "apply-template-label", false)}
+                  </div>
+                  <div class="setting-stack">
+                    <div class="label" id="template-label" data-i18n="settings.export.template_label">文件名模板</div>
+                    <p class="hint" data-i18n="settings.export.template_hint">占位符：{date}、{time}、{datetime}、{mode}、{seq}。只影响本地保存的默认文件名。</p>
+                    <span class="input-wrap template-wrap" data-tooltip-wrap><input type="text" class="number-input" data-filename-template maxlength="180" spellcheck="false" aria-labelledby="template-label" data-i18n-placeholder="settings.export.template_placeholder" placeholder="例如 shot_{date}_{mode}_{seq}" /></span>
+                    <p class="error template-notice" id="template-notice" data-template-notice role="status" hidden></p>
+                  </div>
+                </div>
               </section>
             </section>
             <section class="settings-panel" role="tabpanel" id="settings-panel-general" aria-labelledby="settings-tab-general" data-panel="general" hidden>
               <header class="settings-panel-head">
-                <span class="settings-panel-icon" aria-hidden="true">${SECTION_ICON.general}</span>
-                <div class="settings-panel-heading">
-                  <span class="settings-panel-eyebrow" data-i18n="settings.general.eyebrow">PREFERENCES</span>
-                  <h1 id="group-general-title" data-i18n="settings.group.general">通用</h1>
-                  <p class="settings-panel-lead" data-i18n="settings.general.lead">主题、语言与启动方式，按你的习惯来。</p>
-                </div>
+                <h1 id="group-general-title" data-i18n="settings.group.general">通用</h1>
+                <p class="settings-panel-lead" data-i18n="settings.general.lead">主题、语言与启动方式，按你的习惯来。</p>
               </header>
-              <section class="card" aria-labelledby="group-general-title">
-                <section class="block" aria-labelledby="appearance-title">
-                  <h2 id="appearance-title" data-i18n="settings.appearance.title">外观</h2>
-                  <p class="hint" data-i18n="settings.appearance.hint">切换界面明暗主题。跟随系统会随系统设置自动变化。</p>
+              <section class="block" aria-labelledby="appearance-title">
+                <h2 id="appearance-title" data-i18n="settings.appearance.title">外观</h2>
+                <div class="group">
                   <div class="setting-row">
                     <div>
                       <div class="label" id="theme-label" data-i18n="settings.appearance.label">主题</div>
+                      <p class="hint" data-i18n="settings.appearance.hint">切换界面明暗主题。跟随系统会随系统设置自动变化。</p>
                     </div>
                     <div class="choices theme-choices" data-theme-choice role="radiogroup" aria-labelledby="theme-label">
                       <button type="button" class="choice" role="radio" data-theme-value="system" aria-checked="false" data-i18n="settings.appearance.system">跟随系统</button>
@@ -444,25 +482,24 @@ export function mountSettings(root: HTMLElement): () => void {
                       <button type="button" class="choice" role="radio" data-theme-value="dark" aria-checked="false" data-i18n="settings.appearance.dark">深色</button>
                     </div>
                   </div>
-                </section>
-                <section class="block" aria-labelledby="language-title">
-                  <h2 id="language-title" data-i18n="settings.language.title">语言</h2>
-                  <p class="hint" data-i18n="settings.language.hint">切换后界面立即更新，无需重启；选择会跨会话保留。</p>
                   <div class="setting-row">
                     <div>
                       <div class="label" id="language-label" data-i18n="settings.language.label">界面语言</div>
+                      <p class="hint" data-i18n="settings.language.hint">切换后界面立即更新，无需重启；选择会跨会话保留。</p>
                     </div>
-                    <div class="choices" data-language role="radiogroup" aria-labelledby="language-label">
+                    <div class="choices segmented" data-language role="radiogroup" aria-labelledby="language-label">
                       ${LANGUAGE_OPTIONS.map(
                         ({ value, labelKey }) =>
                           `<button type="button" class="choice" role="radio" data-language-value="${value}" aria-checked="false" data-i18n="${labelKey}">${t(labelKey)}</button>`,
                       ).join("")}
                     </div>
                   </div>
-                </section>
-                <section class="block" aria-labelledby="autostart-title">
-                  <h2 id="autostart-title" data-i18n="settings.autostart.title">开机启动</h2>
-                  <div class="autostart-row">
+                </div>
+              </section>
+              <section class="block" aria-labelledby="autostart-title">
+                <h2 id="autostart-title" data-i18n="settings.autostart.title">开机启动</h2>
+                <div class="group">
+                  <div class="autostart-row setting-row">
                     <div>
                       <div class="label" id="autostart-label" data-i18n="settings.autostart.label">登录时运行</div>
                       <p class="hint autostart-help"></p>
@@ -471,9 +508,6 @@ export function mountSettings(root: HTMLElement): () => void {
                       <span class="knob"></span>
                     </button>
                   </div>
-                </section>
-                <section class="block" aria-labelledby="update-startup-title">
-                  <h2 id="update-startup-title" data-i18n="settings.update.title">更新</h2>
                   <div class="setting-row">
                     <div>
                       <div class="label" id="update-startup-label" data-i18n="settings.update.startup_label">启动时检查更新</div>
@@ -481,9 +515,6 @@ export function mountSettings(root: HTMLElement): () => void {
                     </div>
                     ${switchMarkup("update-option", "checkOnStartup", "update-startup-label", true)}
                   </div>
-                </section>
-                <section class="block" aria-labelledby="pin-title">
-                  <h2 id="pin-title" data-i18n="settings.pin.title">贴图</h2>
                   <div class="setting-row">
                     <div>
                       <div class="label" id="pin-restore-label" data-i18n="settings.pin.restore_label">重启后恢复贴图</div>
@@ -491,9 +522,11 @@ export function mountSettings(root: HTMLElement): () => void {
                     </div>
                     ${switchMarkup("pin-option", "restore", "pin-restore-label", false)}
                   </div>
-                </section>
-                <section class="block" aria-labelledby="help-title">
-                  <h2 id="help-title" data-i18n="settings.help.title">使用帮助</h2>
+                </div>
+              </section>
+              <section class="block" aria-labelledby="help-title">
+                <h2 id="help-title" data-i18n="settings.help.title">使用帮助</h2>
+                <div class="group">
                   <div class="setting-row">
                     <div>
                       <div class="label" id="help-label" data-i18n="settings.help.label">快捷键与功能</div>
@@ -501,9 +534,6 @@ export function mountSettings(root: HTMLElement): () => void {
                     </div>
                     <button type="button" class="choice" data-action="open-guide" aria-labelledby="help-label" data-i18n="settings.help.button">打开</button>
                   </div>
-                </section>
-                <section class="block" aria-labelledby="logs-title">
-                  <h2 id="logs-title" data-i18n="settings.logs.title">日志位置</h2>
                   <div class="setting-row">
                     <div>
                       <div class="label" id="logs-label" data-i18n="settings.logs.label">日志文件</div>
@@ -512,54 +542,55 @@ export function mountSettings(root: HTMLElement): () => void {
                     </div>
                     <button type="button" class="choice" data-action="open-logs" aria-labelledby="logs-label" data-i18n="settings.logs.button">打开</button>
                   </div>
-                </section>
+                </div>
               </section>
             </section>
             <section class="settings-panel" role="tabpanel" id="settings-panel-about" aria-labelledby="settings-tab-about" data-panel="about" hidden>
               <header class="settings-panel-head">
-                <span class="settings-panel-icon" aria-hidden="true">${SECTION_ICON.about}</span>
-                <div class="settings-panel-heading">
-                  <span class="settings-panel-eyebrow" data-i18n="settings.about.eyebrow">ABOUT</span>
-                  <h1 id="about-title" data-i18n="settings.about.title">关于</h1>
-                  <p class="settings-panel-lead" data-i18n="settings.about.lead">关于 Cropmark 与本地运行状态。</p>
-                </div>
+                <h1 id="about-title" data-i18n="settings.about.title">关于</h1>
+                <p class="settings-panel-lead" data-i18n="settings.about.lead">关于 Cropmark 与本地运行状态。</p>
               </header>
-              <section class="card about" aria-labelledby="about-title">
-                <section class="block about-hero">
-                  <span class="mark" aria-hidden="true"></span>
-                  <div class="about-hero-text">
-                    <p class="about-name">Cropmark</p>
-                    <p class="hint" data-i18n="settings.about.hint">独立系统截图工具，界面与托盘只使用 Cropmark 名称与图标。</p>
-                  </div>
-                </section>
-                <section class="block">
-                <div class="setting-row">
-                  <div>
-                    <div class="label" id="about-version-label" data-i18n="settings.about.version_label">版本</div>
-                  </div>
-                  <span class="about-version" data-version>—</span>
-                </div>
-                <div class="setting-row">
-                  <div>
-                    <div class="label" id="about-update-label" data-i18n="settings.update.check_label">检查更新</div>
-                    <p class="hint" data-i18n="settings.update.check_hint">连接 GitHub 比对最新发布版本；仅读取版本号，不上传任何数据。</p>
-                    <p class="hint" data-update-status hidden></p>
-                  </div>
-                  <div class="choices" role="group" aria-labelledby="about-update-label">
-                    <button type="button" class="choice" data-action="check-updates" data-i18n="settings.update.button">检查更新</button>
-                    <button type="button" class="choice" data-action="open-release" hidden data-i18n="settings.update.open_button">前往下载</button>
+              <section class="block about" aria-labelledby="about-title">
+                <div class="group">
+                  <div class="about-hero">
+                    <span class="mark" aria-hidden="true"></span>
+                    <div class="about-hero-text">
+                      <p class="about-name">Cropmark</p>
+                      <p class="hint" data-i18n="settings.about.hint">独立系统截图工具，界面与托盘只使用 Cropmark 名称与图标。</p>
+                    </div>
                   </div>
                 </div>
-                <div class="setting-row">
-                  <div>
-                    <div class="label" id="quit-label" data-i18n="settings.about.quit_label">退出 Cropmark</div>
-                    <p class="hint" data-i18n="settings.about.quit_hint">结束应用并停止热键；有托盘时也可从托盘菜单退出。</p>
+              </section>
+              <section class="block">
+                <div class="group">
+                  <div class="setting-row">
+                    <div>
+                      <div class="label" id="about-version-label" data-i18n="settings.about.version_label">版本</div>
+                    </div>
+                    <span class="about-version" data-version>—</span>
                   </div>
-                  <button type="button" class="choice danger" data-action="quit" aria-labelledby="quit-label" aria-live="polite" data-i18n="settings.about.quit_button">退出</button>
+                  <div class="setting-row">
+                    <div>
+                      <div class="label" id="about-update-label" data-i18n="settings.update.check_label">检查更新</div>
+                      <p class="hint" data-i18n="settings.update.check_hint">连接 GitHub 比对最新发布版本；仅读取版本号，不上传任何数据。</p>
+                      <p class="hint" data-update-status hidden></p>
+                    </div>
+                    <div class="choices" role="group" aria-labelledby="about-update-label">
+                      <button type="button" class="choice" data-action="check-updates" data-i18n="settings.update.button">检查更新</button>
+                      <button type="button" class="choice" data-action="open-release" hidden data-i18n="settings.update.open_button">前往下载</button>
+                    </div>
+                  </div>
+                  <div class="setting-row">
+                    <div>
+                      <div class="label" id="quit-label" data-i18n="settings.about.quit_label">退出 Cropmark</div>
+                      <p class="hint" data-i18n="settings.about.quit_hint">结束应用并停止热键；有托盘时也可从托盘菜单退出。</p>
+                    </div>
+                    <button type="button" class="choice danger" data-action="quit" aria-labelledby="quit-label" aria-live="polite" data-i18n="settings.about.quit_button">退出</button>
+                  </div>
                 </div>
-                </section>
               </section>
             </section>
+            <p class="settings-search-empty" data-search-empty hidden data-i18n="settings.search.empty">没有匹配的设置</p>
           </div>
         </div>
       </main>
@@ -567,6 +598,8 @@ export function mountSettings(root: HTMLElement): () => void {
   `;
 
   const noticeEl = root.querySelector(".notice");
+  const searchEl = root.querySelector("[data-settings-search]");
+  const searchEmptyEl = root.querySelector("[data-search-empty]");
   const invokeNoticeEl = root.querySelector("[data-invoke-notice]");
   const trayNoticeEl = root.querySelector("[data-tray-notice]");
   const savedNoticeEl = root.querySelector("[data-saved-notice]");
@@ -613,6 +646,8 @@ export function mountSettings(root: HTMLElement): () => void {
   const versionEl = root.querySelector("[data-version]");
   if (
     !(noticeEl instanceof HTMLElement) ||
+    !(searchEl instanceof HTMLInputElement) ||
+    !(searchEmptyEl instanceof HTMLElement) ||
     !(invokeNoticeEl instanceof HTMLElement) ||
     !(trayNoticeEl instanceof HTMLElement) ||
     !(savedNoticeEl instanceof HTMLElement) ||
@@ -821,11 +856,52 @@ export function mountSettings(root: HTMLElement): () => void {
         button.focus();
       }
     });
-    panelsRoot.querySelectorAll<HTMLElement>("[data-panel]").forEach((panel) => {
-      panel.hidden = panel.dataset.panel !== next;
-    });
+    searchEl.value = "";
+    applySearch();
     panelsRoot.scrollTop = 0;
   };
+
+  // 搜索跨分类:命中的行留下,其余收起;分类标题保留作路标。小节标题命中时整节都算。
+  const applySearch = (): void => {
+    const query = searchEl.value.trim().toLocaleLowerCase();
+    const searching = query.length > 0;
+    root.dataset.searching = searching ? "true" : "false";
+    let total = 0;
+    panelsRoot.querySelectorAll<HTMLElement>("[data-panel]").forEach((panel) => {
+      let panelHits = 0;
+      panel.querySelectorAll<HTMLElement>(".block").forEach((block) => {
+        const heading = block.querySelector("h2")?.textContent?.toLocaleLowerCase() ?? "";
+        const headingHit = searching && heading.includes(query);
+        let blockHits = 0;
+        block.querySelectorAll<HTMLElement>(SEARCH_ITEMS).forEach((item) => {
+          const hit =
+            !searching ||
+            headingHit ||
+            (item.textContent ?? "").toLocaleLowerCase().includes(query);
+          item.classList.toggle("is-search-miss", !hit);
+          blockHits += hit ? 1 : 0;
+        });
+        block.classList.toggle("is-search-miss", searching && blockHits === 0);
+        panelHits += blockHits;
+      });
+      panel.hidden = searching ? panelHits === 0 : panel.dataset.panel !== section;
+      total += panelHits;
+    });
+    searchEmptyEl.hidden = !searching || total > 0;
+  };
+
+  searchEl.addEventListener("input", () => {
+    applySearch();
+    panelsRoot.scrollTop = 0;
+  });
+  searchEl.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && searchEl.value.length > 0) {
+      event.preventDefault();
+      event.stopPropagation();
+      searchEl.value = "";
+      applySearch();
+    }
+  });
 
   navRoot.addEventListener("click", (event) => {
     const target = event.target;
@@ -837,7 +913,7 @@ export function mountSettings(root: HTMLElement): () => void {
       return;
     }
     const next = button.dataset.section as SettingsSection | undefined;
-    if (next && SECTIONS.includes(next) && next !== section) {
+    if (next && SECTIONS.includes(next) && (next !== section || searchEl.value.length > 0)) {
       selectSection(next);
     }
   });
@@ -904,7 +980,10 @@ export function mountSettings(root: HTMLElement): () => void {
       button.type = "button";
       button.className = "choice";
       button.dataset.regionTool = field.id;
-      button.textContent = t(field.labelKey);
+      const name = document.createElement("span");
+      name.textContent = t(field.labelKey);
+      button.innerHTML = icons[field.id];
+      button.append(name);
       const on = tools[field.id];
       button.setAttribute("aria-pressed", on ? "true" : "false");
       button.classList.toggle("selected", on);
@@ -1186,6 +1265,7 @@ export function mountSettings(root: HTMLElement): () => void {
     if (activeHotkey) {
       hotkeyRoot.querySelector<HTMLButtonElement>(`[data-mode="${activeHotkey}"]`)?.focus();
     }
+    applySearch();
 
     switchEl.setAttribute("aria-checked", settings.autostart.enabled ? "true" : "false");
     switchEl.classList.toggle("on", settings.autostart.enabled);
@@ -2265,6 +2345,18 @@ export function mountSettings(root: HTMLElement): () => void {
   // 取消录制;待确认的退出只还原按钮;其余常态——输入框内先失焦,
   // 剩下情况关闭设置窗。
   window.addEventListener("keydown", (event) => {
+    if (
+      (event.ctrlKey || event.metaKey) &&
+      !event.altKey &&
+      !event.shiftKey &&
+      event.key.toLowerCase() === "f" &&
+      !recording
+    ) {
+      event.preventDefault();
+      searchEl.focus();
+      searchEl.select();
+      return;
+    }
     if (event.key !== "Escape" || event.defaultPrevented || recording || event.isComposing || event.keyCode === 229) {
       return;
     }

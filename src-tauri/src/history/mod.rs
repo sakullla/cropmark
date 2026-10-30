@@ -842,8 +842,9 @@ pub fn open_window(app: &AppHandle) -> Result<(), String> {
         WebviewUrl::App("index.html?view=history".into()),
     )
     .title("Cropmark")
-    .inner_size(640.0, 760.0)
-    .resizable(false)
+    .inner_size(1000.0, 700.0)
+    .min_inner_size(560.0, 420.0)
+    .resizable(true)
     .maximizable(false)
     .minimizable(false)
     .decorations(false)

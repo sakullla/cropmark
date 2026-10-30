@@ -1247,10 +1247,6 @@
     "zh-CN": "关闭",
     "en": "Close"
   },
-  "settings.window_title": {
-    "zh-CN": "设置",
-    "en": "Settings"
-  },
   "settings.nav.aria_label": {
     "zh-CN": "设置分类",
     "en": "Settings sections"
@@ -1487,10 +1483,6 @@
     "zh-CN": "打开",
     "en": "Open"
   },
-  "settings.logs.title": {
-    "zh-CN": "日志位置",
-    "en": "Log location"
-  },
   "settings.logs.label": {
     "zh-CN": "日志文件",
     "en": "Log file"
@@ -1511,14 +1503,6 @@
     "zh-CN": "无法打开日志文件夹",
     "en": "Could not open the log folder"
   },
-  "settings.group.capture": {
-    "zh-CN": "采集",
-    "en": "Capture"
-  },
-  "settings.group.output": {
-    "zh-CN": "记录与输出",
-    "en": "Records & output"
-  },
   "settings.group.general": {
     "zh-CN": "通用",
     "en": "General"
@@ -1538,10 +1522,6 @@
   "settings.section.naming": {
     "zh-CN": "保存与命名",
     "en": "Saving & naming"
-  },
-  "settings.pin.title": {
-    "zh-CN": "贴图",
-    "en": "Pins"
   },
   "settings.pin.restore_label": {
     "zh-CN": "重启后恢复贴图",
@@ -1691,10 +1671,6 @@
     "zh-CN": "确认退出？",
     "en": "Confirm quit?"
   },
-  "settings.update.title": {
-    "zh-CN": "更新",
-    "en": "Updates"
-  },
   "settings.update.check_label": {
     "zh-CN": "检查更新",
     "en": "Check for updates"
@@ -1722,10 +1698,6 @@
   "settings.update.startup_hint": {
     "zh-CN": "启动后静默连接 GitHub 检查新版本；发现新版本时托盘出现下载入口，检查失败只记日志。",
     "en": "Silently checks GitHub for updates after startup; a download entry appears in the tray when a new version is found. Failures are only logged."
-  },
-  "settings.language.title": {
-    "zh-CN": "语言",
-    "en": "Language"
   },
   "settings.language.label": {
     "zh-CN": "界面语言",
@@ -3319,10 +3291,6 @@
     "zh-CN": "时间范围",
     "en": "Time range"
   },
-  "history.filter.time_all": {
-    "zh-CN": "全部时间",
-    "en": "Any time"
-  },
   "history.filter.time_today": {
     "zh-CN": "今天",
     "en": "Today"
@@ -3338,10 +3306,6 @@
   "history.filter.mode_label": {
     "zh-CN": "采集模式",
     "en": "Capture mode"
-  },
-  "history.filter.mode_all": {
-    "zh-CN": "全部模式",
-    "en": "All modes"
   },
   "history.filter.mode_region": {
     "zh-CN": "区域",
@@ -3447,14 +3411,6 @@
     "zh-CN": "从托盘图标打开区域、窗口或全屏截图，也可以进入历史和设置。退出请使用托盘菜单或设置中的退出。",
     "en": "Use the tray icon for region, window, or fullscreen capture, and to open history or settings. Quit from the tray menu or from Settings."
   },
-  "guide.hotkeys.title": {
-    "zh-CN": "三种采集热键",
-    "en": "Three capture shortcuts"
-  },
-  "guide.hotkeys.body": {
-    "zh-CN": "下面是当前生效的组合，可在设置里修改。",
-    "en": "These are the shortcuts in effect now. Change them in Settings."
-  },
   "guide.pin.title": {
     "zh-CN": "贴图",
     "en": "Pin"
@@ -3523,33 +3479,13 @@
     "zh-CN": "正在后台运行",
     "en": "Running in background"
   },
-  "settings.capture.eyebrow": {
-    "zh-CN": "CAPTURE",
-    "en": "CAPTURE"
-  },
   "settings.capture.lead": {
-    "zh-CN": "热键、截图行为与录制方式，一次调顺手。",
-    "en": "Tune hotkeys, capture behavior, and recording to fit your flow."
-  },
-  "settings.output.eyebrow": {
-    "zh-CN": "OUTPUT",
-    "en": "OUTPUT"
-  },
-  "settings.output.lead": {
-    "zh-CN": "历史、命名与导出美化，都在这里管理。",
-    "en": "Manage history, file naming, and export styling."
-  },
-  "settings.general.eyebrow": {
-    "zh-CN": "PREFERENCES",
-    "en": "PREFERENCES"
+    "zh-CN": "截图时的行为，以及选区工具条里出现哪些工具。",
+    "en": "How captures behave, and which tools appear on the selection toolbar."
   },
   "settings.general.lead": {
     "zh-CN": "主题、语言与启动方式，按你的习惯来。",
     "en": "Theme, language, and startup—set up the way you work."
-  },
-  "settings.about.eyebrow": {
-    "zh-CN": "ABOUT",
-    "en": "ABOUT"
   },
   "settings.about.lead": {
     "zh-CN": "关于 Cropmark 与本地运行状态。",
@@ -3579,10 +3515,6 @@
     "zh-CN": "深色",
     "en": "Dark"
   },
-  "preview.shortcuts.label": {
-    "zh-CN": "快捷操作",
-    "en": "Shortcuts"
-  },
   "preview.shortcuts.copy": {
     "zh-CN": "复制",
     "en": "Copy"
@@ -3598,10 +3530,6 @@
   "preview.shortcuts.crop": {
     "zh-CN": "裁剪",
     "en": "Crop"
-  },
-  "guide.eyebrow": {
-    "zh-CN": "GET STARTED",
-    "en": "GET STARTED"
   },
   "guide.headline": {
     "zh-CN": "截图，本该如此顺手。",
@@ -3643,10 +3571,6 @@
     "zh-CN": "100% 本地 · 无账号 · 不上传",
     "en": "100% local · No account · Nothing uploaded"
   },
-  "guide.start": {
-    "zh-CN": "开始使用",
-    "en": "Get started"
-  },
   "guide.open_logs": {
     "zh-CN": "打开",
     "en": "Open"
@@ -3658,5 +3582,65 @@
   "guide.logs.unavailable": {
     "zh-CN": "暂不可用",
     "en": "Unavailable"
+  },
+  "settings.recording.lead": {
+    "zh-CN": "录制的入口、文件格式和帧率。",
+    "en": "The recording entry point, file format, and frame rate."
+  },
+  "settings.export.lead": {
+    "zh-CN": "文件命名，以及复制和保存时套用的美化效果。",
+    "en": "File naming, and the styling applied when you copy or save."
+  },
+  "settings.group.export": {
+    "zh-CN": "导出",
+    "en": "Export"
+  },
+  "settings.search.placeholder": {
+    "zh-CN": "搜索设置",
+    "en": "Search settings"
+  },
+  "settings.search.empty": {
+    "zh-CN": "没有匹配的设置",
+    "en": "No matching settings"
+  },
+  "preview.zoom.in": {
+    "zh-CN": "放大（Ctrl/⌘ +）",
+    "en": "Zoom in (Ctrl/⌘ +)"
+  },
+  "preview.zoom.out": {
+    "zh-CN": "缩小（Ctrl/⌘ −）",
+    "en": "Zoom out (Ctrl/⌘ −)"
+  },
+  "history.filter.all": {
+    "zh-CN": "全部截图",
+    "en": "All captures"
+  },
+  "history.filter.favorites": {
+    "zh-CN": "收藏",
+    "en": "Favorites"
+  },
+  "history.group.favorites": {
+    "zh-CN": "收藏",
+    "en": "Favorites"
+  },
+  "history.group.today": {
+    "zh-CN": "今天",
+    "en": "Today"
+  },
+  "history.group.yesterday": {
+    "zh-CN": "昨天",
+    "en": "Yesterday"
+  },
+  "history.group.week": {
+    "zh-CN": "本周",
+    "en": "This week"
+  },
+  "history.group.month": {
+    "zh-CN": "本月",
+    "en": "This month"
+  },
+  "history.group.earlier": {
+    "zh-CN": "更早",
+    "en": "Earlier"
   }
 }
