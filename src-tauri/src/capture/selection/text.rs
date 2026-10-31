@@ -6,6 +6,9 @@
 
 use ab_glyph::{Font, FontVec, PxScale, ScaleFont};
 
+#[cfg(windows)]
+mod gdi;
+
 const LINE_HEIGHT: f32 = 1.25;
 
 pub(crate) fn ui_font() -> Option<&'static FontVec> {
@@ -166,7 +169,115 @@ pub fn draw_text_bold(
     size: f32,
     color: [u8; 4],
 ) -> bool {
-    draw_text(rgba, width, height, x.round(), y, text, size, color)
+    draw_ui_text(rgba, width, height, x.round(), y, text, size, color)
+}
+
+// ---- chrome 文字(工具条名称、菜单、徽标、提示、放大镜读数) ----
+// Windows 走 GDI hinting 光栅化，笔画对齐像素网格；其它平台和 GDI 失败时回退
+// ab_glyph。测量与绘制必须走同一后端，版面宽度才和画出来的字一致。
+// 标注文字不走这里：它要和导出时的 ab_glyph 栅格化保持一致。
+
+/// chrome 文字宽度(物理像素)。
+pub fn measure_ui_width(text: &str, size: f32) -> Option<f32> {
+    #[cfg(windows)]
+    if let Some(width) = gdi::measure_width(text, size) {
+        return Some(width);
+    }
+    measure_width(text, size)
+}
+
+/// chrome 文字的稳定宽度：数字和十六进制字母按最宽的一格计宽。
+pub fn measure_ui_stable_width(text: &str, size: f32) -> Option<f32> {
+    #[cfg(windows)]
+    if let (Some(chars), Some(slots)) = (
+        gdi::char_widths(text, size),
+        gdi::char_widths("0123456789ABCDEF", size),
+    ) {
+        let slot = slots.iter().fold(0.0f32, |acc, (_, w)| acc.max(*w));
+        if slot > 0.0 {
+            return Some(
+                chars
+                    .iter()
+                    .map(|(ch, w)| {
+                        if ch.is_ascii_digit() || matches!(ch, 'A'..='F' | 'a'..='f') {
+                            slot
+                        } else {
+                            *w
+                        }
+                    })
+                    .sum(),
+            );
+        }
+    }
+    measure_stable_width(text, size)
+}
+
+/// 在 (x, y)(字符单元左上角)绘制一行 chrome 文字;无可用后端时返回 false。
+#[allow(clippy::too_many_arguments)]
+pub fn draw_ui_text(
+    rgba: &mut [u8],
+    width: u32,
+    height: u32,
+    x: f32,
+    y: f32,
+    text: &str,
+    size: f32,
+    color: [u8; 4],
+) -> bool {
+    #[cfg(windows)]
+    if let Some((run, pad)) = gdi::render(text, size) {
+        let left = x.round() as i32 - pad;
+        let top = y.round() as i32 - pad;
+        for row in 0..run.height {
+            for col in 0..run.width {
+                let cover = run.coverage[(row * run.width + col) as usize];
+                if cover == 0 {
+                    continue;
+                }
+                blend_linear(
+                    rgba,
+                    width,
+                    height,
+                    left + col,
+                    top + row,
+                    color,
+                    f32::from(cover) / 255.0,
+                );
+            }
+        }
+        return true;
+    }
+    draw_text(rgba, width, height, x, y, text, size, color)
+}
+
+/// hinting 后的覆盖度已经是像素对齐的实际笔画，按原值混合，不再加深中间调。
+#[cfg(windows)]
+fn blend_linear(
+    rgba: &mut [u8],
+    width: u32,
+    height: u32,
+    x: i32,
+    y: i32,
+    color: [u8; 4],
+    cover: f32,
+) {
+    if x < 0 || y < 0 || x >= width as i32 || y >= height as i32 {
+        return;
+    }
+    let i = ((y as u32 * width + x as u32) * 4) as usize;
+    if i + 3 >= rgba.len() {
+        return;
+    }
+    let a = (f32::from(color[3]) / 255.0) * cover.clamp(0.0, 1.0);
+    if a <= 0.0 {
+        return;
+    }
+    for c in 0..3 {
+        let src = f32::from(color[c]);
+        let dst = f32::from(rgba[i + c]);
+        rgba[i + c] = (dst * (1.0 - a) + src * a).round() as u8;
+    }
+    rgba[i + 3] = 255;
 }
 
 /// 无 hinting 的 16px 汉字会把 1px 横画铺成两行浅灰。
@@ -248,6 +359,58 @@ mod tests {
         assert_eq!(ink_coverage(0.02), 0.0);
         let mid = ink_coverage(0.35);
         assert!(mid > 0.35 && mid < 1.0, "mid coverage {mid}");
+    }
+
+    /// chrome 文字画在测量框里：横向不越出测得的宽度，纵向不越出字符单元。
+    /// 版面按 `measure_ui_width` 留位，画出来的字必须和它一致才不会被裁或压边。
+    #[test]
+    fn ui_text_ink_stays_inside_measured_box() {
+        let size = 18.0;
+        let label = "长截图 1300 × 300";
+        let Some(measured) = measure_ui_width(label, size) else {
+            return; // 无可用字体后端(部分 CI 容器)。
+        };
+        let (w, h) = (360u32, 60u32);
+        let mut rgba = vec![250u8; (w * h * 4) as usize];
+        let (x0, y0) = (12.0f32, 14.0f32);
+        assert!(draw_ui_text(
+            &mut rgba,
+            w,
+            h,
+            x0,
+            y0,
+            label,
+            size,
+            [20, 20, 20, 255]
+        ));
+        let (mut min_x, mut max_x, mut min_y, mut max_y) = (i32::MAX, i32::MIN, i32::MAX, i32::MIN);
+        for y in 0..h as i32 {
+            for x in 0..w as i32 {
+                if rgba[((y as u32 * w + x as u32) * 4) as usize] < 200 {
+                    min_x = min_x.min(x);
+                    max_x = max_x.max(x);
+                    min_y = min_y.min(y);
+                    max_y = max_y.max(y);
+                }
+            }
+        }
+        assert!(min_x <= max_x, "no ink drawn");
+        assert!(
+            min_x >= x0 as i32 - 1,
+            "ink starts left of the box: {min_x}"
+        );
+        assert!(
+            max_x <= (x0 + measured).ceil() as i32 + 1,
+            "ink {max_x} overruns measured width {measured}"
+        );
+        assert!(min_y >= y0 as i32 - 1, "ink above the cell: {min_y}");
+        assert!(
+            max_y <= (y0 + size).ceil() as i32 + 1,
+            "ink below the cell: {max_y}"
+        );
+        let stable = measure_ui_stable_width("111 × 11", size).unwrap();
+        let wide = measure_ui_stable_width("888 × 88", size).unwrap();
+        assert_eq!(stable, wide, "digit slots must keep the badge width stable");
     }
 
     #[test]

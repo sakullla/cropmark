@@ -711,7 +711,7 @@ pub fn menu_row_width(metrics: ChromeMetrics, items: &[SelectionAction]) -> i32 
     let mut text_w = 0i32;
     for action in items {
         let label = action_label(*action);
-        let measured = text::measure_width(&label, metrics.menu_font)
+        let measured = text::measure_ui_width(&label, metrics.menu_font)
             .unwrap_or(metrics.menu_font * label.chars().count() as f32);
         text_w = text_w.max(measured.ceil() as i32);
     }
@@ -864,7 +864,7 @@ fn mag_layout(scale: f32) -> MagLayout {
     let inner = (MAG_PANEL_MAX - pad * 2 - pill_pad_x * 2).max(16) as f32;
     let mut font = (MAG_FONT * scale).round().max(7.0);
     let measure = |f: f32| {
-        text::measure_width(MAG_READOUT_SAMPLE, f)
+        text::measure_ui_width(MAG_READOUT_SAMPLE, f)
             .unwrap_or(f * 0.62 * MAG_READOUT_SAMPLE.chars().count() as f32)
     };
     let sample_w = measure(font);
@@ -1323,7 +1323,7 @@ pub fn style_strip(
         .iter()
         .map(|chip| {
             let label = style_chip_label(*chip);
-            let measured = text::measure_width(&label, metrics.bar_font)
+            let measured = text::measure_ui_width(&label, metrics.bar_font)
                 .unwrap_or(metrics.bar_font * label.chars().count() as f32);
             (measured.ceil() as i32 + metrics.bar_pad_x * 2).max(height)
         })
@@ -2017,7 +2017,7 @@ impl Composer {
             if matches!(chip, StyleChip::Color(_) | StyleChip::Erase(Some(_))) {
                 fill_round(rgba, w, h, inset(rect, swatch_inset), swatch_radius, color);
             }
-            text::draw_text(
+            text::draw_ui_text(
                 rgba,
                 w,
                 h,
@@ -2210,7 +2210,7 @@ impl Composer {
                 crate::i18n::tp("record.bar.fps", &[("fps", &fps.to_string())])
             );
         }
-        let text_width = text::measure_stable_width(&label, font)?;
+        let text_width = text::measure_ui_stable_width(&label, font)?;
         // faux bold 二次描画会向右多占约 5% 字号宽度,预留。
         let bold_slack = (font * 0.05).ceil() as i32;
         let width = text_width.ceil() as i32 + bold_slack + metrics.badge_pad_x * 2;
@@ -2393,7 +2393,7 @@ impl Composer {
         let metrics = self.metrics;
         let label = action_label(action);
         let font = metrics.menu_font;
-        let Some(text_width) = text::measure_width(&label, font) else {
+        let Some(text_width) = text::measure_ui_width(&label, font) else {
             return;
         };
         let pad_x = metrics.badge_pad_x.max(8);
@@ -2405,7 +2405,7 @@ impl Composer {
             return;
         };
         draw_panel_chrome(rgba, w, h, panel, height / 2);
-        text::draw_text(
+        text::draw_ui_text(
             rgba,
             w,
             h,
@@ -2493,8 +2493,9 @@ impl Composer {
         }
         let center = self.sample(cursor.0, cursor.1);
         let line = magnifier_readout_line(cursor, center);
-        let text_w = text::measure_stable_width(&line, layout.font)
-            .unwrap_or_else(|| text::measure_width(MAG_READOUT_SAMPLE, layout.font).unwrap_or(0.0));
+        let text_w = text::measure_ui_stable_width(&line, layout.font).unwrap_or_else(|| {
+            text::measure_ui_width(MAG_READOUT_SAMPLE, layout.font).unwrap_or(0.0)
+        });
         let swatch = (layout.pill_h - 8).max(10);
         let footer_w = (swatch + 8 + text_w.ceil() as i32 + layout.pill_pad_x)
             .min(panel.width - layout.pad * 2);
@@ -2517,7 +2518,7 @@ impl Composer {
         );
         stroke_round_blend(rgba, w, h, sw, sw_radius, CHROME_BORDER);
         let line_h = text::line_height(layout.font);
-        text::draw_text(
+        text::draw_ui_text(
             rgba,
             w,
             h,
@@ -5441,7 +5442,7 @@ mod tests {
         let metrics = composer.metrics;
         let label = action_label(action);
         let font = metrics.menu_font;
-        let text_w = text::measure_width(&label, font).unwrap_or(0.0);
+        let text_w = text::measure_ui_width(&label, font).unwrap_or(0.0);
         let pad_x = metrics.badge_pad_x.max(8);
         let pad_y = metrics.badge_pad_y.max(4);
         let tip_w = (text_w.ceil() as i32 + pad_x * 2).max(24);
@@ -5509,7 +5510,7 @@ mod tests {
             // 文字与图标不裁切:菜单项容得下放大后的字高/文字,按钮容得下图标。
             if text::ui_font().is_some() {
                 let label = action_label(SelectionAction::Cancel);
-                let width = text::measure_width(&label, metrics.menu_font).unwrap();
+                let width = text::measure_ui_width(&label, metrics.menu_font).unwrap();
                 let row = menu_row_width(metrics, &[SelectionAction::Cancel]);
                 assert!(
                     metrics.menu_text_x + width.ceil() as i32 + metrics.menu_pad <= row,

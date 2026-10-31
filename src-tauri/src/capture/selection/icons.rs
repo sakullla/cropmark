@@ -631,9 +631,10 @@ fn render_sdf_coverage(name: IconName, size: u32) -> Vec<u8> {
     // 24px 基准线宽 1.9px;小尺寸(<24)保证物理像素线宽 ≥ 1.65px,核心不断裂发虚。
     let stroke_24 = (1.9f32).max(1.65 / scale);
     let half_stroke = stroke_24 * 0.5;
-    // 子像素过渡半宽(换算回 24 网格单位)。
-    let aa_24 = 0.45 / scale;
     const SUB: u32 = 4;
+    // 过渡半宽只取半个子样本(换算回 24 网格单位)。4×4 超采样本身就是一像素盒式
+    // 过滤；再叠 0.45px 的线性斜坡会把边缘摊到两三个像素，125%/150% 下图标发虚。
+    let aa_24 = 0.5 / (SUB as f32) / scale;
     let inv_sub = 1.0 / (SUB as f32);
     let norm = 1.0 / ((SUB * SUB) as f32);
     let mut out = vec![0u8; (size * size) as usize];
@@ -830,6 +831,28 @@ mod tests {
         let glyph = IconName::Rect.tinted(14, INK);
         let painted = glyph.chunks_exact(4).filter(|px| px[3] > 0).count();
         assert!(painted >= 20, "rect@14 lost strokes: {painted}");
+    }
+
+    /// 125%/150%/175% 下竖笔画穿过中线时，核心像素是满墨，两侧各至多一个过渡像素。
+    /// 超采样之外再叠线性斜坡时，核心发灰、边缘摊成两三个灰像素，图标看起来发虚。
+    #[test]
+    fn fractional_dpi_strokes_keep_solid_cores_and_tight_edges() {
+        for size in [30u32, 36, 42] {
+            let glyph = IconName::Rect.tinted(size, INK);
+            let y = size / 2;
+            let row: Vec<u8> = (0..size)
+                .map(|x| glyph[((y * size + x) * 4 + 3) as usize])
+                .collect();
+            let left: Vec<u8> = row[..size as usize / 2]
+                .iter()
+                .copied()
+                .filter(|a| *a > 0)
+                .collect();
+            let solid = left.iter().filter(|a| **a == 255).count();
+            let partial = left.iter().filter(|a| **a < 255).count();
+            assert!(solid >= 2, "rect@{size} stroke core not solid: {row:?}");
+            assert!(partial <= 2, "rect@{size} stroke edge too soft: {row:?}");
+        }
     }
 
     /// 每个会出现在操作条/菜单/标注工具条上的动作都有资产;键盘动作
