@@ -14,6 +14,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_opener::OpenerExt;
+use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
 
 use crate::i18n;
 use crate::settings;
@@ -58,14 +59,24 @@ pub fn is_release_url(url: &str) -> bool {
     url.starts_with(RELEASE_URL_PREFIX)
 }
 
+/// ureq 的 TLS provider 默认是 Rustls,与启用的 cargo feature 无关,未选用时
+/// 首个 https 请求会直接 panic,必须显式选 NativeTls;根证书走系统信任库。
+fn http_agent() -> ureq::Agent {
+    let tls = TlsConfig::builder()
+        .provider(TlsProvider::NativeTls)
+        .root_certs(RootCerts::PlatformVerifier)
+        .build();
+    ureq::Agent::config_builder()
+        .timeout_global(Some(REQUEST_TIMEOUT))
+        .tls_config(tls)
+        .build()
+        .new_agent()
+}
+
 /// 查询 GitHub 最新发布。GitHub API 要求 User-Agent;无 token,走
 /// 匿名限额(按 IP 60 次/小时),启动 + 手动检查的量级远够。
 pub fn fetch_latest_release() -> Result<ReleaseInfo, String> {
-    let agent = ureq::Agent::config_builder()
-        .timeout_global(Some(REQUEST_TIMEOUT))
-        .build()
-        .new_agent();
-    let mut response = agent
+    let mut response = http_agent()
         .get(API_URL)
         .header(
             "User-Agent",
@@ -257,6 +268,18 @@ mod tests {
     }
 
     const PAGE: &str = "https://github.com/sakullla/cropmark/releases/tag/v9.9.9";
+
+    /// 回归:本地端口接受后立即断开,https 请求应走到 TLS 握手并返回错误;
+    /// TLS provider 未配置时这里会 panic。
+    #[test]
+    fn https_requests_use_an_enabled_tls_provider() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || drop(listener.accept()));
+        let result = http_agent().get(format!("https://127.0.0.1:{port}/")).call();
+        server.join().unwrap();
+        assert!(result.is_err());
+    }
 
     #[test]
     fn release_tags_parse_with_optional_v_prefix() {
