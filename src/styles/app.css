@@ -861,6 +861,9 @@ h1 {
 .switch {
   width: 32px;
   height: 20px;
+  /* 共享的 24px 最小高度会把轨道撑成 32×24，滑块按 top: 2px 贴在上半截，
+     上下不居中。轨道保持 20px，点击区由下面的伪元素补回 24px。 */
+  min-height: 20px;
   border: 0;
   border-radius: var(--radius-pill);
   background: var(--track);
@@ -869,6 +872,13 @@ h1 {
   flex: 0 0 auto;
   padding: 0;
   transition: var(--control-transition);
+}
+
+/* 透明命中区：上下各外扩 2px，触达高度仍是 24px，不改变轨道外观和行内布局。 */
+.switch::before {
+  content: "";
+  position: absolute;
+  inset: -2px 0;
 }
 
 .switch:hover:not(:disabled),
