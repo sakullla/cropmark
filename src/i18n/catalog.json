@@ -2980,12 +2980,12 @@
     "en": "Re-annotate"
   },
   "pin.toolbar.close_title": {
-    "zh-CN": "关闭贴图 (Esc)",
-    "en": "Close pin (Esc)"
+    "zh-CN": "关闭贴图（Esc 或双击贴图）",
+    "en": "Close pin (Esc or double-click)"
   },
   "pin.toolbar.close_group_title": {
-    "zh-CN": "关闭整组贴图",
-    "en": "Close pin group"
+    "zh-CN": "关闭整组贴图（Esc 或双击）",
+    "en": "Close pin group (Esc or double-click)"
   },
   "pin.toolbar.close": {
     "zh-CN": "关闭贴图",

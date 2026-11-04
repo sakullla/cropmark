@@ -63,7 +63,7 @@ interface PinOptions {
 export function mountPin(root: HTMLElement): () => void {
   root.className = "pin-root";
   root.innerHTML = `
-    <div class="pin-stage" data-tauri-drag-region tabindex="0" data-i18n-aria-label="pin.stage_label" aria-label="贴图">
+    <div class="pin-stage" tabindex="0" data-i18n-aria-label="pin.stage_label" aria-label="贴图">
       <canvas class="pin-canvas"></canvas>
     </div>
     <div class="pin-toolbar">
@@ -732,6 +732,22 @@ export function mountPin(root: HTMLElement): () => void {
     menu.style.top = `${y}px`;
     focusMenu();
   };
+
+  // 拖动与双击销毁都在前端处理:贴图不挂 data-tauri-drag-region,否则注入的
+  // drag.js 会把第二次按下交给 internal_toggle_maximize(贴图不可缩放,等于双击
+  // 没反应)。这里按系统点击计数:第一次按下开始拖动窗口,第二次按下(detail ≥ 2)
+  // 直接销毁,与关闭按钮/菜单走同一条 close_pin 路径,编组时整组关闭。
+  stage.addEventListener("mousedown", (event) => {
+    if (event.button !== 0 || event.detail < 1) {
+      return;
+    }
+    event.preventDefault();
+    if (event.detail >= 2) {
+      close();
+      return;
+    }
+    void win.startDragging();
+  });
 
   stage.addEventListener("contextmenu", (event) => {
     event.preventDefault();
