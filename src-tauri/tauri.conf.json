@@ -37,5 +37,11 @@
       "icons/v2/icon.icns",
       "icons/v2/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdBMjcyN0I1MkVFODE0QTIKUldTaUZPZ3V0U2NuZW5iWTAwK2xkYUkrNmd2SUE5TTlqSnlpSTZWcWVwRGtWUDZ2M3kzbnlNVTUK",
+      "endpoints": ["https://github.com/sakullla/cropmark/releases/latest/download/latest.json"]
+    }
   }
 }
