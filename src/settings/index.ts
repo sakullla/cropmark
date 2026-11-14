@@ -2,6 +2,7 @@ import { REGION_TOOL_FIELDS, type RegionTools } from "./region-tools";
 export { REGION_TOOL_FIELDS, type RegionTools } from "./region-tools";
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { handleRadioGroupKeydown } from "../a11y";
 import { autostartHelp, hotkeyErrorText } from "../errors";
@@ -2408,6 +2409,27 @@ export function mountSettings(root: HTMLElement): () => void {
     panelsRoot.inert = false;
     root.setAttribute("aria-busy", "false");
   });
+
+  // 启动检查只把版本记在后端。打开关于页时读出来,并在之后的检查改写时跟着变。
+  const applyKnownUpdate = (version: string | null, fromLoad: boolean): void => {
+    if (fromLoad && updateCheckResult) {
+      return;
+    }
+    if (version) {
+      updateCheckResult = { kind: "available", version };
+    } else if (updateCheckResult?.kind === "available") {
+      updateCheckResult = null;
+    }
+    renderUpdateStatus();
+  };
+  void listen<{ version: string | null }>("update-known", (event) => {
+    applyKnownUpdate(event.payload.version, false);
+  });
+  void invoke<{ version: string | null } | null>("known_available_update")
+    .then((known) => {
+      applyKnownUpdate(known?.version ?? null, true);
+    })
+    .catch(() => undefined);
 
   // 语言切换:静态标签由 main 的 applyTranslations 更新;这里先按当前状态
   // 重渲染动态行(热键/开关/历史/语言选项/美化预设),再从后端重取一次

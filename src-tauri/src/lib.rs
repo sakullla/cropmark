@@ -83,6 +83,43 @@ fn quit_app(app: tauri::AppHandle) {
     app.exit(0);
 }
 
+#[cfg(not(windows))]
+static SINGLE_INSTANCE: Mutex<Option<single_instance::Primary>> = Mutex::new(None);
+
+#[cfg(not(windows))]
+fn single_instance_slot() -> std::sync::MutexGuard<'static, Option<single_instance::Primary>> {
+    SINGLE_INSTANCE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// 放开 flock/互斥量,让已经安装好的新进程能成为首实例。返回时本进程不再持锁。
+#[cfg(not(windows))]
+pub fn release_single_instance_for_relaunch() -> bool {
+    drop(single_instance_slot().take());
+    true
+}
+
+/// 新进程没有留下来时重新占住单实例,避免当前进程变成无锁的第二实例。
+#[cfg(not(windows))]
+pub fn reacquire_single_instance(app: &tauri::AppHandle) {
+    let mut slot = single_instance_slot();
+    if slot.is_some() {
+        return;
+    }
+    let app = app.clone();
+    let handler: single_instance::LaunchHandler = Arc::new(move |_| {
+        open_settings_on_main(&app);
+    });
+    match single_instance::acquire(single_instance::INSTANCE_ID, handler) {
+        Ok(single_instance::Acquire::Primary(primary)) => *slot = Some(primary),
+        Ok(single_instance::Acquire::Forwarded) => {
+            log::warn!("reacquire single instance found another process");
+        }
+        Err(error) => log::warn!("reacquire single instance failed: {error}"),
+    }
+}
+
 /// 在任何线程请求唤出设置窗:非主线程转发到主线程,主线程直接执行。
 fn open_settings_on_main(app: &tauri::AppHandle) {
     let app = app.clone();
@@ -227,7 +264,7 @@ pub fn run() {
             };
             open_settings_on_main(&app);
         });
-    let _primary = match single_instance::acquire(single_instance::INSTANCE_ID, handler) {
+    let primary = match single_instance::acquire(single_instance::INSTANCE_ID, handler) {
         Ok(single_instance::Acquire::Primary(primary)) => Some(primary),
         Ok(single_instance::Acquire::Forwarded) => std::process::exit(0),
         Err(error) => {
@@ -235,6 +272,14 @@ pub fn run() {
             None
         }
     };
+    // Windows 安装器自己结束进程,守卫跟 run 一起活到退出。
+    // macOS/Linux 重开前要从这里取走守卫,否则新进程会被单实例锁立刻关掉。
+    #[cfg(windows)]
+    let _primary = primary;
+    #[cfg(not(windows))]
+    {
+        *single_instance_slot() = primary;
+    }
 
     let context = tauri::generate_context!();
     #[cfg(dev)]
@@ -346,6 +391,7 @@ pub fn run() {
             updates::check_for_updates,
             updates::open_release_page,
             updates::confirm_available_update,
+            updates::known_available_update,
             capture::get_overlay_frame,
             capture::get_preview_frame,
             capture::confirm_region,

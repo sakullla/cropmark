@@ -16,7 +16,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::UpdaterExt;
 use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
@@ -263,11 +263,49 @@ pub fn known_update(app: &AppHandle) -> Option<KnownUpdate> {
     lock(&app.state::<UpdateState>().0).clone()
 }
 
-/// 记录新版本并重建托盘菜单(下载入口出现)。菜单构建走平台主线程。
-pub fn remember_update(app: &AppHandle, update: KnownUpdate) {
-    *lock(&app.state::<UpdateState>().0) = Some(update);
+/// 检查结果写回会话内的已知更新。已是最新时清掉,关于页和托盘不再提供安装。
+fn known_after_check(status: &UpdateStatus) -> Option<KnownUpdate> {
+    match status {
+        UpdateStatus::Available { latest, url, .. } => Some(KnownUpdate {
+            version: latest.clone(),
+            url: url.clone(),
+        }),
+        UpdateStatus::UpToDate { .. } => None,
+    }
+}
+
+/// 关于页展示的可安装版本;没有已知更新时不出现安装入口。
+fn about_install_version(known: Option<&KnownUpdate>) -> Option<&str> {
+    known.map(|known| known.version.as_str())
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct KnownUpdateNotice {
+    version: Option<String>,
+}
+
+fn set_known_update(app: &AppHandle, update: Option<KnownUpdate>) {
+    let state = app.state::<UpdateState>();
+    let mut slot = lock(&state.0);
+    if *slot == update {
+        return;
+    }
+    *slot = update;
+    drop(slot);
+    let version = about_install_version(known_update(app).as_ref()).map(str::to_string);
+    let _ = app.emit("update-known", KnownUpdateNotice { version });
     let task = app.clone();
     let _ = app.run_on_main_thread(move || crate::tray::refresh_menu(&task));
+}
+
+/// 设置页打开时读取启动检查已经记下的版本,确认前不下载。
+#[tauri::command]
+pub fn known_available_update(app: AppHandle) -> Option<KnownUpdateNotice> {
+    let known = known_update(&app);
+    let version = about_install_version(known.as_ref())?.to_string();
+    Some(KnownUpdateNotice {
+        version: Some(version),
+    })
 }
 
 /// 设置页与托盘共用的检查 command:阻塞 HTTP 放到阻塞线程池,
@@ -279,15 +317,7 @@ pub async fn check_for_updates(app: AppHandle) -> Result<UpdateStatus, String> {
         .await
         .map_err(|error| error.to_string())??;
     let status = evaluate_release(release)?;
-    if let UpdateStatus::Available { latest, url, .. } = &status {
-        remember_update(
-            &app,
-            KnownUpdate {
-                version: latest.clone(),
-                url: url.clone(),
-            },
-        );
-    }
+    set_known_update(&app, known_after_check(&status));
     Ok(status)
 }
 
@@ -311,17 +341,15 @@ pub fn spawn_startup_check(app: AppHandle) {
             return;
         }
         match fetch_latest_release().and_then(evaluate_release) {
-            Ok(UpdateStatus::Available { latest, url, .. }) => {
-                log::info!("update available latest={latest}");
-                remember_update(
-                    &app,
-                    KnownUpdate {
-                        version: latest,
-                        url,
-                    },
-                );
+            Ok(status) => {
+                match &status {
+                    UpdateStatus::Available { latest, .. } => {
+                        log::info!("update available latest={latest}")
+                    }
+                    UpdateStatus::UpToDate { .. } => log::info!("update check up to date"),
+                }
+                set_known_update(&app, known_after_check(&status));
             }
-            Ok(UpdateStatus::UpToDate { .. }) => log::info!("update check up to date"),
             Err(error) => log::warn!("update check failed: {error}"),
         }
     });
@@ -335,19 +363,15 @@ pub fn run_manual_check(app: &AppHandle) {
         let outcome = fetch_latest_release().and_then(evaluate_release);
         let task = app.clone();
         let _ = app.run_on_main_thread(move || match outcome {
-            Ok(UpdateStatus::Available { latest, url, .. }) => {
-                remember_update(
-                    &task,
-                    KnownUpdate {
-                        version: latest,
-                        url,
-                    },
-                );
-                begin_update_action(task);
-            }
-            Ok(UpdateStatus::UpToDate { current }) => {
-                let text = i18n::tp("updates.uptodate", &[("version", &current)]);
-                dialog(&text, rfd::MessageLevel::Info, rfd::MessageButtons::Ok);
+            Ok(status) => {
+                set_known_update(&task, known_after_check(&status));
+                match status {
+                    UpdateStatus::Available { .. } => begin_update_action(task),
+                    UpdateStatus::UpToDate { current } => {
+                        let text = i18n::tp("updates.uptodate", &[("version", &current)]);
+                        dialog(&text, rfd::MessageLevel::Info, rfd::MessageButtons::Ok);
+                    }
+                }
             }
             Err(error) => {
                 let text = i18n::tp("updates.check_failed", &[("error", &error)]);
@@ -508,39 +532,79 @@ async fn install_signed_update(app: &AppHandle) -> Result<(), InstallNotice> {
     Ok(())
 }
 
+/// 新进程必须在本进程放开单实例锁之后再启动,并观察它有没有留下来。
+/// `open` 自己会马上退出,不能用来判断应用是否还在。
+#[cfg(not(windows))]
+const SUCCESSOR_SETTLE: Duration = Duration::from_millis(750);
+
+#[cfg(any(test, not(windows)))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SuccessorWatch {
+    ExitThisProcess,
+    RelaunchFailed,
+}
+
+#[cfg(any(test, not(windows)))]
+fn successor_may_start(lock_released: bool) -> bool {
+    lock_released
+}
+
+#[cfg(any(test, not(windows)))]
+fn successor_watch(spawned: bool, still_running: bool) -> SuccessorWatch {
+    if spawned && still_running {
+        SuccessorWatch::ExitThisProcess
+    } else {
+        SuccessorWatch::RelaunchFailed
+    }
+}
+
 #[cfg(not(windows))]
 fn relaunch_after_install(app: &AppHandle) -> Result<(), String> {
     let env = app.env();
     let path = tauri::process::current_binary(&env).map_err(|error| error.to_string())?;
     let args: Vec<_> = env.args_os.iter().skip(1).cloned().collect();
-    #[cfg(target_os = "macos")]
-    if let Some(bundle) = app_bundle_root(&path) {
-        match std::process::Command::new("/usr/bin/open")
-            .arg("-n")
-            .arg(bundle)
-            .arg("--args")
-            .args(&args)
-            .stdin(std::process::Stdio::null())
-            .output()
-        {
-            Ok(output) if output.status.success() => {
-                app.exit(0);
-                return Ok(());
-            }
-            Ok(output) => log::warn!(
-                "relaunch via open failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            ),
-            Err(error) => log::warn!("relaunch via open failed: {error}"),
+    let lock_released = crate::release_single_instance_for_relaunch();
+    if !successor_may_start(lock_released) {
+        return Err("single-instance lock still held".into());
+    }
+    let spawned = spawn_successor(&path, &args);
+    let (spawned_ok, mut child) = match spawned {
+        Ok(child) => (true, Some(child)),
+        Err(error) => {
+            log::warn!("successor spawn failed: {error}");
+            (false, None)
+        }
+    };
+    if spawned_ok {
+        std::thread::sleep(SUCCESSOR_SETTLE);
+    }
+    let still_running = match child.as_mut() {
+        Some(child) => matches!(child.try_wait(), Ok(None)),
+        None => false,
+    };
+    match successor_watch(spawned_ok, still_running) {
+        SuccessorWatch::ExitThisProcess => {
+            app.exit(0);
+            Ok(())
+        }
+        SuccessorWatch::RelaunchFailed => {
+            crate::reacquire_single_instance(app);
+            Err("successor did not stay running".into())
         }
     }
-    std::process::Command::new(&path)
-        .args(&args)
+}
+
+#[cfg(not(windows))]
+fn spawn_successor(path: &Path, args: &[std::ffi::OsString]) -> Result<std::process::Child, String> {
+    use std::os::unix::process::CommandExt;
+    let mut command = std::process::Command::new(path);
+    command
+        .args(args)
         .stdin(std::process::Stdio::null())
-        .spawn()
-        .map_err(|error| error.to_string())?;
-    app.exit(0);
-    Ok(())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .process_group(0);
+    command.spawn().map_err(|error| error.to_string())
 }
 
 fn dialog(
@@ -838,5 +902,39 @@ mod tests {
             scroll_started: true,
             ..clear
         }));
+    }
+
+    #[test]
+    fn known_update_stays_visible_until_a_later_check_is_current() {
+        let available = UpdateStatus::Available {
+            current: "0.3.42".into(),
+            latest: "0.3.43".into(),
+            url: PAGE.into(),
+        };
+        let known = known_after_check(&available);
+        assert_eq!(about_install_version(known.as_ref()), Some("0.3.43"));
+        let current = UpdateStatus::UpToDate {
+            current: "0.3.43".into(),
+        };
+        let known = known_after_check(&current);
+        assert_eq!(about_install_version(known.as_ref()), None);
+    }
+
+    #[test]
+    fn successor_starts_only_after_the_lock_is_released_and_must_stay_up() {
+        assert!(!successor_may_start(false));
+        assert!(successor_may_start(true));
+        assert_eq!(
+            successor_watch(true, false),
+            SuccessorWatch::RelaunchFailed
+        );
+        assert_eq!(
+            successor_watch(false, false),
+            SuccessorWatch::RelaunchFailed
+        );
+        assert_eq!(
+            successor_watch(true, true),
+            SuccessorWatch::ExitThisProcess
+        );
     }
 }
