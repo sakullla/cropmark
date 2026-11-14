@@ -9,10 +9,13 @@ import { checkProject, checkTauriVersions, formatNotes, generateNotes, readVersi
 
 const version = "0.1.0";
 const versions = Object.fromEntries(Object.keys(readVersions()).map((key) => [key, version]));
+const installerNames = ["Cropmark_0.1.0_x64-setup.exe", "Cropmark_0.1.0_aarch64.dmg",
+  "Cropmark_0.1.0_amd64.deb", "Cropmark_0.1.0_amd64.AppImage"];
+const updaterNames = ["Cropmark_0.1.0_x64-setup.exe.sig", "Cropmark_0.1.0_amd64.AppImage.sig",
+  "Cropmark_0.1.0_aarch64.app.tar.gz", "Cropmark_0.1.0_aarch64.app.tar.gz.sig"];
 const draft = () => ({
   tag_name: "v0.1.0", draft: true,
-  assets: ["Cropmark_0.1.0_x64-setup.exe", "Cropmark_0.1.0_aarch64.dmg",
-    "Cropmark_0.1.0_amd64.deb", "Cropmark_0.1.0_amd64.AppImage"]
+  assets: [...installerNames, ...updaterNames]
     .map((name) => ({ name, state: "uploaded", size: 1024 })),
 });
 
@@ -123,8 +126,10 @@ test("prerelease versions are accepted; malformed versions are rejected", () => 
 });
 
 test("all four uploaded nonempty installers are required before publication", () => {
-  assert.equal(verifyRelease(draft(), "v0.1.0").length, 4);
-  for (let index = 0; index < 4; index++) {
+  const names = verifyRelease(draft(), "v0.1.0");
+  assert.equal(names.length, installerNames.length + updaterNames.length);
+  for (const name of installerNames) assert.ok(names.includes(name));
+  for (let index = 0; index < installerNames.length; index++) {
     const missing = draft(); missing.assets.splice(index, 1);
     assert.throws(() => verifyRelease(missing, "v0.1.0"));
     const empty = draft(); empty.assets[index].size = 0;
@@ -132,6 +137,65 @@ test("all four uploaded nonempty installers are required before publication", ()
     const pending = draft(); pending.assets[index].state = "starter";
     assert.throws(() => verifyRelease(pending, "v0.1.0"));
   }
+});
+
+test("updater artifacts must be uploaded and nonempty, and deb is not required", () => {
+  const names = verifyRelease(draft(), "v0.1.0");
+  for (const name of updaterNames) assert.ok(names.includes(name));
+  for (let index = installerNames.length; index < installerNames.length + updaterNames.length; index++) {
+    const missing = draft(); missing.assets.splice(index, 1);
+    assert.throws(() => verifyRelease(missing, "v0.1.0"));
+    const empty = draft(); empty.assets[index].size = 0;
+    assert.throws(() => verifyRelease(empty, "v0.1.0"));
+    const pending = draft(); pending.assets[index].state = "starter";
+    assert.throws(() => verifyRelease(pending, "v0.1.0"));
+  }
+  const signatureOnly = draft();
+  signatureOnly.assets.splice(installerNames.length + 2, 1);
+  assert.throws(() => verifyRelease(signatureOnly, "v0.1.0"));
+  const compressedAppImage = draft();
+  compressedAppImage.assets[installerNames.length + 1].name = "Cropmark_0.1.0_amd64.AppImage.tar.gz.sig";
+  assert.throws(() => verifyRelease(compressedAppImage, "v0.1.0"));
+  const withDebSignature = draft();
+  withDebSignature.assets.push({ name: "Cropmark_0.1.0_amd64.deb.sig", state: "uploaded", size: 64 });
+  assert.equal(verifyRelease(withDebSignature, "v0.1.0").length, installerNames.length + updaterNames.length + 1);
+});
+
+test("release signs updater artifacts and publishes latest.json without deb", () => {
+  const workflow = readFileSync(new URL("../workflows/release.yml", import.meta.url), "utf8");
+  const build = workflow.split("  build:")[1].split("  verify-release:")[0];
+  const publish = workflow.split("  verify-release:")[1];
+  const windowsLinux = build.split("- name: Build and upload to draft release")[1]
+    .split("- name: Build and sign macOS disk image")[0];
+  const macosSign = build.split("- name: Build and sign macOS disk image")[1]
+    .split("- name: Verify macOS self-signed signature")[0];
+  const manifest = publish.split("- name: Generate and upload updater manifest")[1]
+    .split("- name: Publish verified release")[0];
+  assert.equal(workflow.match(/TAURI_SIGNING_PRIVATE_KEY: \$\{\{ secrets\.TAURI_SIGNING_PRIVATE_KEY \}\}/g)?.length, 2);
+  assert.match(windowsLinux, /TAURI_SIGNING_PRIVATE_KEY: \$\{\{ secrets\.TAURI_SIGNING_PRIVATE_KEY \}\}/);
+  assert.match(macosSign, /TAURI_SIGNING_PRIVATE_KEY: \$\{\{ secrets\.TAURI_SIGNING_PRIVATE_KEY \}\}/);
+  assert.doesNotMatch(workflow, /TAURI_SIGNING_PRIVATE_KEY_PASSWORD/);
+  assert.match(windowsLinux, /uploadUpdaterJson: false/);
+  assert.match(windowsLinux, /uploadUpdaterSignatures: true/);
+  assert.equal(workflow.match(/signer sign/g)?.length, 1);
+  assert.ok(macosSign.indexOf('tar -czf "$updater_tgz"') >
+    macosSign.indexOf('codesign --verify --deep --strict --verbose=2 "$signing_app"'));
+  assert.match(macosSign, /tar -czf "\$updater_tgz" -C "\$RUNNER_TEMP" Cropmark\.app/);
+  assert.match(macosSign, /npm run tauri -- signer sign "\$updater_tgz" --app-version "\$version"/);
+  assert.match(build, /gh release upload "\$RELEASE_TAG" "\$dmg" "\$updater_tgz" "\$updater_tgz\.sig" --clobber/);
+  assert.ok(publish.indexOf("node .github/scripts/release.mjs verify") <
+    publish.indexOf("- name: Generate and upload updater manifest"));
+  assert.ok(publish.indexOf("- name: Generate and upload updater manifest") <
+    publish.indexOf("- name: Publish verified release"));
+  for (const platform of ["windows-x86_64", "windows-x86_64-nsis", "linux-x86_64",
+    "linux-x86_64-appimage", "darwin-aarch64", "darwin-aarch64-app"]) {
+    assert.match(manifest, new RegExp(`"${platform}"`));
+  }
+  assert.doesNotMatch(manifest, /deb/);
+  assert.match(manifest, /Cropmark_\$\{version\}_x64-setup\.exe"/);
+  assert.match(manifest, /Cropmark_\$\{version\}_amd64\.AppImage"/);
+  assert.match(manifest, /Cropmark_\$\{version\}_aarch64\.app\.tar\.gz"/);
+  assert.doesNotMatch(workflow, /notarytool|xcrun altool/);
 });
 
 test("published, wrong-tag, wrong-product and duplicate assets cannot pass", () => {

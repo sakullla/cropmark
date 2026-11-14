@@ -136,12 +136,16 @@ jobs:
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         with:
           releaseId: ${{ needs.prepare.outputs.release-id }}
           tagName: ${{ github.ref_name }}
           releaseDraft: true
           prerelease: ${{ contains(github.ref_name, '-') }}
           retryAttempts: 2
+          # latest.json is written after the NSIS, AppImage, and macOS signatures all exist.
+          uploadUpdaterJson: false
+          uploadUpdaterSignatures: true
           args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --verbose -- --locked
       - name: Build and sign macOS disk image
         if: runner.os == 'macOS'
@@ -149,6 +153,7 @@ jobs:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
@@ -204,6 +209,15 @@ jobs:
           rm -f "$dmg"
           hdiutil convert "$rw" -format UDZO -o "$dmg"
           security delete-keychain "$keychain"
+          # Updater archive is the re-signed .app, not the ad-hoc build inside the image.
+          test -n "${TAURI_SIGNING_PRIVATE_KEY}"
+          updater_dir="src-tauri/target/$TARGET/release/bundle/macos"
+          mkdir -p "$updater_dir"
+          updater_tgz="$updater_dir/Cropmark_${version}_${arch}.app.tar.gz"
+          tar -czf "$updater_tgz" -C "$RUNNER_TEMP" Cropmark.app
+          npm run tauri -- signer sign "$updater_tgz" --app-version "$version"
+          test -s "$updater_tgz"
+          test -s "$updater_tgz.sig"
       - name: Verify macOS self-signed signature
         if: runner.os == 'macOS'
         env:
@@ -242,7 +256,10 @@ jobs:
           version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
           arch="${TARGET%%-*}"
           dmg="src-tauri/target/$TARGET/release/bundle/dmg/Cropmark_${version}_${arch}.dmg"
-          gh release upload "$RELEASE_TAG" "$dmg" --clobber
+          updater_tgz="src-tauri/target/$TARGET/release/bundle/macos/Cropmark_${version}_${arch}.app.tar.gz"
+          test -s "$updater_tgz"
+          test -s "$updater_tgz.sig"
+          gh release upload "$RELEASE_TAG" "$dmg" "$updater_tgz" "$updater_tgz.sig" --clobber
 
   verify-release:
     name: Verify release assets and publish
@@ -265,6 +282,48 @@ jobs:
           set -euo pipefail
           gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > release.json
           node .github/scripts/release.mjs verify release.json "$RELEASE_TAG"
+      - name: Generate and upload updater manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          work="$RUNNER_TEMP/updater-manifest"
+          mkdir -p "$work"
+          gh release download "$RELEASE_TAG" --pattern "*.sig" --dir "$work" --clobber
+          win_sig="$work/Cropmark_${version}_x64-setup.exe.sig"
+          linux_sig="$work/Cropmark_${version}_amd64.AppImage.sig"
+          mac_sig="$work/Cropmark_${version}_aarch64.app.tar.gz.sig"
+          for file in "$win_sig" "$linux_sig" "$mac_sig"; do
+            test -s "$file"
+          done
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
+          notes="$(gh release view "$RELEASE_TAG" --json body --jq '.body')"
+          jq -n \
+            --arg version "$version" \
+            --arg notes "$notes" \
+            --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg win_sig "$(cat "$win_sig")" \
+            --arg win_url "$base/Cropmark_${version}_x64-setup.exe" \
+            --arg linux_sig "$(cat "$linux_sig")" \
+            --arg linux_url "$base/Cropmark_${version}_amd64.AppImage" \
+            --arg mac_sig "$(cat "$mac_sig")" \
+            --arg mac_url "$base/Cropmark_${version}_aarch64.app.tar.gz" \
+            '{
+              version: $version,
+              notes: $notes,
+              pub_date: $pub_date,
+              platforms: {
+                "windows-x86_64": { signature: $win_sig, url: $win_url },
+                "windows-x86_64-nsis": { signature: $win_sig, url: $win_url },
+                "linux-x86_64": { signature: $linux_sig, url: $linux_url },
+                "linux-x86_64-appimage": { signature: $linux_sig, url: $linux_url },
+                "darwin-aarch64": { signature: $mac_sig, url: $mac_url },
+                "darwin-aarch64-app": { signature: $mac_sig, url: $mac_url }
+              }
+            }' > "$work/latest.json"
+          gh release upload "$RELEASE_TAG" "$work/latest.json" --clobber
       - name: Publish verified release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

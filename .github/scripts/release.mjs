@@ -6,6 +6,12 @@ import { execFileSync, spawnSync } from "node:child_process";
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?$/;
 const INSTALLERS = [".exe", ".dmg", ".deb", ".AppImage"];
+const UPDATER_ARTIFACTS = [
+  "_x64-setup.exe.sig",
+  "_amd64.AppImage.sig",
+  "_aarch64.app.tar.gz",
+  "_aarch64.app.tar.gz.sig",
+];
 const MODELS = [
   "ch_PP-OCRv3_det_infer.onnx",
   "ch_PP-OCRv3_rec_infer.onnx",
@@ -112,15 +118,26 @@ export function generateNotes(tag, root = ROOT) {
   return formatNotes(subjects, previous);
 }
 
+function cropmarkAssets(assets, suffix) {
+  return assets.filter((asset) => /^cropmark[_-]/i.test(asset.name) && asset.name.endsWith(suffix));
+}
+
 export function verifyRelease(release, tag) {
   if (!tag || release.tag_name !== tag) throw new Error("Release tag does not match this run.");
   if (release.draft !== true) throw new Error("Release must remain a draft until verification succeeds.");
   const assets = release.assets ?? [];
   for (const suffix of INSTALLERS) {
-    const matches = assets.filter((asset) => /^cropmark[_-]/i.test(asset.name) && asset.name.endsWith(suffix));
+    const matches = cropmarkAssets(assets, suffix);
     if (matches.length !== 1) throw new Error(`Expected exactly one Cropmark ${suffix} installer, found ${matches.length}.`);
     if (matches[0].state !== "uploaded" || !(matches[0].size > 0)) {
       throw new Error(`Installer is empty or upload is incomplete: ${matches[0].name}`);
+    }
+  }
+  for (const suffix of UPDATER_ARTIFACTS) {
+    const matches = cropmarkAssets(assets, suffix);
+    if (matches.length !== 1) throw new Error(`Expected exactly one Cropmark ${suffix} updater artifact, found ${matches.length}.`);
+    if (matches[0].state !== "uploaded" || !(matches[0].size > 0)) {
+      throw new Error(`Updater artifact is empty or upload is incomplete: ${matches[0].name}`);
     }
   }
   return assets.map((asset) => asset.name);
