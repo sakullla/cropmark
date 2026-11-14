@@ -1219,6 +1219,38 @@
     "zh-CN": "发现新版本 {version}，前往下载页？",
     "en": "Version {version} is available. Open the download page?"
   },
+  "updates.confirm_windows": {
+    "zh-CN": "发现新版本 {version}。安装时应用会退出，是否继续？",
+    "en": "Version {version} is available. The app will exit to install it. Continue?"
+  },
+  "updates.confirm_install": {
+    "zh-CN": "发现新版本 {version}。下载并安装？完成后会重新打开应用。",
+    "en": "Version {version} is available. Download and install it? The app will reopen when it finishes."
+  },
+  "updates.open_linux": {
+    "zh-CN": "发现新版本 {version}。此安装不能在应用内替换，请到发布页或用系统软件包管理自行安装。是否打开发布页？",
+    "en": "Version {version} is available. This install cannot be replaced in the app. Use the release page or your package manager. Open the release page?"
+  },
+  "updates.busy": {
+    "zh-CN": "请先完成或取消当前的截图、长截图或录屏，再安装更新。",
+    "en": "Finish or cancel the current capture, scrolling capture, or recording before installing the update."
+  },
+  "updates.install_failed": {
+    "zh-CN": "安装更新失败：{error}。当前版本继续运行。",
+    "en": "The update could not be installed: {error}. The current version is still running."
+  },
+  "updates.install_unavailable": {
+    "zh-CN": "没有可用的已签名更新包。当前版本继续运行。",
+    "en": "No signed update package is available. The current version is still running."
+  },
+  "updates.relaunch_failed": {
+    "zh-CN": "新版本已安装，但未能重新打开。请手动重新打开。",
+    "en": "The new version is installed, but the app could not reopen. You can open it again yourself."
+  },
+  "updates.macos_allow_open": {
+    "zh-CN": "若系统拦截，请到「系统设置 › 隐私与安全性」中允许打开。",
+    "en": "If the system blocks the app, allow it in System Settings › Privacy & Security."
+  },
   "updates.available": {
     "zh-CN": "发现新版本 {version}。",
     "en": "Version {version} is available."
@@ -1688,8 +1720,8 @@
     "en": "Checking…"
   },
   "settings.update.open_button": {
-    "zh-CN": "前往下载",
-    "en": "Get the update"
+    "zh-CN": "下载并安装",
+    "en": "Download and install"
   },
   "settings.update.startup_label": {
     "zh-CN": "启动时检查更新",

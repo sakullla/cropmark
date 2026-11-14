@@ -47,8 +47,8 @@ pub const EXIT_CLICK_THROUGH_ID: &str = "pin-exit-click-through";
 /// 托盘「检查更新」的菜单 id:常驻,后台查询并以原生对话框反馈。
 pub const CHECK_UPDATES_ID: &str = "check-updates";
 
-/// 托盘「下载新版本 {version}」的菜单 id:已知有新版本时才出现,
-/// 点击打开发布页。
+/// 托盘「下载新版本 {version}」的菜单 id:已知有新版本时才出现。
+/// 点击与关于页走同一次确认:可安装形态确认后验签安装,其余只打开发布页。
 pub const DOWNLOAD_UPDATE_ID: &str = "download-update";
 
 /// 一次性延时档位(秒):托盘「延时」子菜单,点击即按该秒数做区域截取。
@@ -100,7 +100,7 @@ pub fn recording_item_label(active: bool) -> String {
 }
 
 /// 检查更新:入口常驻;下载项只在已记录新版本时出现(启动静默检查或
-/// 手动检查发现后)。打开的始终是 GitHub 发布页。
+/// 手动检查发现后)。下载项与关于页共用确认安装,不直接打开发布页。
 fn download_update_visible(known_update: bool) -> bool {
     known_update
 }
@@ -369,11 +369,7 @@ fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
         EXIT_CLICK_THROUGH_ID => crate::pin::exit_pin_click_through(app.clone()),
         CLIPBOARD_PIN_ID => crate::pin::pin_from_clipboard(app),
         CHECK_UPDATES_ID => crate::updates::run_manual_check(app),
-        DOWNLOAD_UPDATE_ID => {
-            if let Err(error) = crate::updates::open_release_page(app.clone()) {
-                log::warn!("open release page failed: {error}");
-            }
-        }
+        DOWNLOAD_UPDATE_ID => crate::updates::start_update_action(app),
         // R3:录屏入口经设置开关门控;活动录制时该项变为停止并保存。
         RECORDING_ID => crate::capture::dispatch_recording(app),
         RECORDING_STOP_ID => crate::capture::stop_recording(app),

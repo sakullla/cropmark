@@ -1,19 +1,24 @@
-//! 检查更新:查询 GitHub Releases 最新发布,与当前版本做语义化比对。
-//! 只做「检查 + 打开发布页」,不做应用内自更新——后者需要更新签名密钥、
-//! 新增发布工件(latest.json、.app.tar.gz)并改发布流程,先保持发布链不变。
+//! 检查更新:查询 GitHub Releases 最新稳定版,与当前版本做语义化比对。
+//! 确认前不下载。可识别的 Windows NSIS、位于 .app 内的 macOS、以及带
+//! APPIMAGE 的 Linux,确认后用已配置的 updater 公钥验签安装;其余形态
+//! 只打开发布页。采集进行中不下载、不安装、不退出。
 //!
 //! - 托盘「检查更新」在后台线程查询,结果回主线程用原生对话框反馈;
 //! - 设置页「关于」里的检查走 `check_for_updates` command,结果内联展示;
 //! - 启动静默检查由「启动时检查更新」开关(默认开)门控,失败只记日志;
-//! - 发现新版本时把版本与下载页记入 `UpdateState` 并重建托盘菜单,
-//!   下载入口出现;打开的一律是 GitHub 发布页,不经任何自有服务器。
+//! - 发现新版本时把版本与下载页记入 `UpdateState` 并重建托盘菜单。
+//!   托盘下载项与关于页按钮走同一次确认,不无条件打开发布页。
 
+use std::ffi::OsStr;
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_opener::OpenerExt;
+use tauri_plugin_updater::UpdaterExt;
 use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
 
 use crate::i18n;
@@ -113,13 +118,13 @@ pub enum UpdateStatus {
     },
 }
 
-/// 比对最新发布与当前版本。tag 无法解析按失败处理(不提示、不误报);
-/// 预发布 tag 不会被 `/releases/latest` 返回,无需单独处理。
+/// 比对最新发布与当前版本。tag 无法解析按失败处理(不提示、不误报)。
+/// 稳定版不把预发布 tag 当作可安装更新;预发布安装仍可升到更高的正式版。
 pub fn evaluate_release(release: ReleaseInfo) -> Result<UpdateStatus, String> {
     let latest = parse_release_tag(&release.tag_name)
         .ok_or_else(|| format!("unrecognized tag: {}", release.tag_name))?;
     let current = semver::Version::parse(current_version()).expect("app version is semver");
-    if latest > current {
+    if release_offered(&current, &latest) {
         Ok(UpdateStatus::Available {
             current: current.to_string(),
             latest: latest.to_string(),
@@ -129,6 +134,128 @@ pub fn evaluate_release(release: ReleaseInfo) -> Result<UpdateStatus, String> {
         Ok(UpdateStatus::UpToDate {
             current: current.to_string(),
         })
+    }
+}
+
+/// 稳定版安装不接收预发布标记;其余仍按语义化版本「更高才提供」。
+fn release_offered(current: &semver::Version, latest: &semver::Version) -> bool {
+    if !latest.pre.is_empty() && current.pre.is_empty() {
+        return false;
+    }
+    latest > current
+}
+
+/// 运行中的安装形态。只由操作系统、是否调试构建、可执行文件路径和
+/// `APPIMAGE` 决定,不新增用户设置。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstallForm {
+    WindowsNsis,
+    MacOsApp,
+    LinuxAppImage,
+    Unrecognized,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostOs {
+    Windows,
+    MacOs,
+    Linux,
+    Other,
+}
+
+/// 用户确认之后的动作。拒绝确认时是 `None`:不安装、不打开发布页、不退出。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfirmedUpdateAction {
+    Install,
+    OpenReleasePage,
+}
+
+/// 采集占用。三项都只读;任一为真就拒绝下载和安装。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UpdateBlockers {
+    capture_session: bool,
+    recording_active: bool,
+    scroll_started: bool,
+}
+
+fn current_host_os() -> HostOs {
+    if cfg!(windows) {
+        HostOs::Windows
+    } else if cfg!(target_os = "macos") {
+        HostOs::MacOs
+    } else if cfg!(target_os = "linux") {
+        HostOs::Linux
+    } else {
+        HostOs::Other
+    }
+}
+
+fn app_bundle_root(executable: &Path) -> Option<&Path> {
+    executable.ancestors().skip(1).find(|ancestor| {
+        ancestor.file_name().is_some_and(|name| {
+            Path::new(name)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("app"))
+        })
+    })
+}
+
+fn classify_install_form(
+    os: HostOs,
+    debug_build: bool,
+    executable: &Path,
+    appimage: Option<&OsStr>,
+) -> InstallForm {
+    match os {
+        HostOs::Windows if !debug_build => InstallForm::WindowsNsis,
+        HostOs::MacOs if app_bundle_root(executable).is_some() => InstallForm::MacOsApp,
+        HostOs::Linux if appimage.is_some_and(|value| !value.is_empty()) => {
+            InstallForm::LinuxAppImage
+        }
+        _ => InstallForm::Unrecognized,
+    }
+}
+
+fn current_install_form() -> InstallForm {
+    let executable = std::env::current_exe().unwrap_or_default();
+    classify_install_form(
+        current_host_os(),
+        cfg!(debug_assertions),
+        &executable,
+        std::env::var_os("APPIMAGE").as_deref(),
+    )
+}
+
+fn confirm_message_key(form: InstallForm, os: HostOs) -> &'static str {
+    match form {
+        InstallForm::WindowsNsis => "updates.confirm_windows",
+        InstallForm::MacOsApp | InstallForm::LinuxAppImage => "updates.confirm_install",
+        InstallForm::Unrecognized if os == HostOs::Linux => "updates.open_linux",
+        InstallForm::Unrecognized => "updates.open_prompt",
+    }
+}
+
+fn action_after_confirm(form: InstallForm, accepted: bool) -> Option<ConfirmedUpdateAction> {
+    if !accepted {
+        return None;
+    }
+    match form {
+        InstallForm::Unrecognized => Some(ConfirmedUpdateAction::OpenReleasePage),
+        InstallForm::WindowsNsis | InstallForm::MacOsApp | InstallForm::LinuxAppImage => {
+            Some(ConfirmedUpdateAction::Install)
+        }
+    }
+}
+
+fn update_install_blocked(blockers: UpdateBlockers) -> bool {
+    blockers.capture_session || blockers.recording_active || blockers.scroll_started
+}
+
+fn current_update_blockers(app: &AppHandle) -> UpdateBlockers {
+    UpdateBlockers {
+        capture_session: crate::capture::session::capture_session_present(app),
+        recording_active: crate::capture::session::recording_active(app),
+        scroll_started: crate::capture::scroll::scroll_session_started(),
     }
 }
 
@@ -212,18 +339,11 @@ pub fn run_manual_check(app: &AppHandle) {
                 remember_update(
                     &task,
                     KnownUpdate {
-                        version: latest.clone(),
-                        url: url.clone(),
+                        version: latest,
+                        url,
                     },
                 );
-                let prompt = i18n::tp("updates.open_prompt", &[("version", &latest)]);
-                if dialog(&prompt, rfd::MessageLevel::Info, rfd::MessageButtons::YesNo)
-                    == rfd::MessageDialogResult::Yes
-                {
-                    if let Err(error) = open_release_page(task.clone()) {
-                        log::warn!("open release page failed: {error}");
-                    }
-                }
+                begin_update_action(task);
             }
             Ok(UpdateStatus::UpToDate { current }) => {
                 let text = i18n::tp("updates.uptodate", &[("version", &current)]);
@@ -235,6 +355,192 @@ pub fn run_manual_check(app: &AppHandle) {
             }
         });
     });
+}
+
+static UPDATE_ACTION_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// 托盘下载项与关于页按钮的入口:确认对话框在主线程。
+pub fn start_update_action(app: &AppHandle) {
+    let app = app.clone();
+    let _ = app
+        .clone()
+        .run_on_main_thread(move || begin_update_action(app));
+}
+
+/// 关于页「下载并安装」:与托盘下载项同一条确认路径。
+#[tauri::command]
+pub fn confirm_available_update(app: AppHandle) -> Result<(), String> {
+    start_update_action(&app);
+    Ok(())
+}
+
+fn begin_update_action(app: AppHandle) {
+    if UPDATE_ACTION_RUNNING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    run_update_action(app);
+}
+
+fn run_update_action(app: AppHandle) {
+    let Some(known) = known_update(&app) else {
+        UPDATE_ACTION_RUNNING.store(false, Ordering::SeqCst);
+        return;
+    };
+    let form = current_install_form();
+    let prompt = i18n::tp(
+        confirm_message_key(form, current_host_os()),
+        &[("version", &known.version)],
+    );
+    let accepted = dialog(&prompt, rfd::MessageLevel::Info, rfd::MessageButtons::YesNo)
+        == rfd::MessageDialogResult::Yes;
+    match action_after_confirm(form, accepted) {
+        None => UPDATE_ACTION_RUNNING.store(false, Ordering::SeqCst),
+        Some(ConfirmedUpdateAction::OpenReleasePage) => {
+            if let Err(error) = open_release_page(app) {
+                log::warn!("open release page failed: {error}");
+            }
+            UPDATE_ACTION_RUNNING.store(false, Ordering::SeqCst);
+        }
+        Some(ConfirmedUpdateAction::Install) => {
+            let task = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let notice = install_signed_update(&task).await.err();
+                let text = notice.as_ref().map(install_notice_text);
+                let level = notice.as_ref().map(install_notice_level);
+                let posted = task.clone().run_on_main_thread(move || {
+                    if let (Some(text), Some(level)) = (text, level) {
+                        dialog(&text, level, rfd::MessageButtons::Ok);
+                    }
+                    UPDATE_ACTION_RUNNING.store(false, Ordering::SeqCst);
+                });
+                if posted.is_err() {
+                    if let Some(text) = notice.as_ref().map(install_notice_text) {
+                        log::warn!("update notice: {text}");
+                    }
+                    UPDATE_ACTION_RUNNING.store(false, Ordering::SeqCst);
+                }
+            });
+        }
+    }
+}
+
+enum InstallNotice {
+    Busy,
+    Unavailable,
+    Failed(String),
+    #[cfg(not(windows))]
+    RelaunchFailed,
+}
+
+fn install_notice_text(notice: &InstallNotice) -> String {
+    match notice {
+        InstallNotice::Busy => i18n::t("updates.busy"),
+        InstallNotice::Unavailable => i18n::t("updates.install_unavailable"),
+        InstallNotice::Failed(error) => i18n::tp("updates.install_failed", &[("error", error)]),
+        #[cfg(not(windows))]
+        InstallNotice::RelaunchFailed => relaunch_failed_text(),
+    }
+}
+
+fn install_notice_level(notice: &InstallNotice) -> rfd::MessageLevel {
+    match notice {
+        InstallNotice::Busy => rfd::MessageLevel::Info,
+        InstallNotice::Unavailable | InstallNotice::Failed(_) => rfd::MessageLevel::Warning,
+        #[cfg(not(windows))]
+        InstallNotice::RelaunchFailed => rfd::MessageLevel::Warning,
+    }
+}
+
+#[cfg(not(windows))]
+fn relaunch_failed_text() -> String {
+    let base = i18n::t("updates.relaunch_failed");
+    if cfg!(target_os = "macos") {
+        format!("{base} {}", i18n::t("updates.macos_allow_open"))
+    } else {
+        base
+    }
+}
+
+async fn install_signed_update(app: &AppHandle) -> Result<(), InstallNotice> {
+    if update_install_blocked(current_update_blockers(app)) {
+        return Err(InstallNotice::Busy);
+    }
+    let updater = app
+        .updater_builder()
+        .version_comparator(|current, release| release_offered(&current, &release.version))
+        .restart_after_install(false)
+        .build()
+        .map_err(|error| InstallNotice::Failed(error.to_string()))?;
+    let update = updater
+        .check()
+        .await
+        .map_err(|error| InstallNotice::Failed(error.to_string()))?;
+    let Some(update) = update else {
+        return Err(InstallNotice::Unavailable);
+    };
+    let announced = semver::Version::parse(&update.version)
+        .map_err(|error| InstallNotice::Failed(error.to_string()))?;
+    let current = semver::Version::parse(current_version()).expect("app version is semver");
+    if !release_offered(&current, &announced) {
+        return Err(InstallNotice::Unavailable);
+    }
+    if update_install_blocked(current_update_blockers(app)) {
+        return Err(InstallNotice::Busy);
+    }
+    let bytes = update
+        .download(|_: usize, _: Option<u64>| {}, || {})
+        .await
+        .map_err(|error| InstallNotice::Failed(error.to_string()))?;
+    if update_install_blocked(current_update_blockers(app)) {
+        return Err(InstallNotice::Busy);
+    }
+    update
+        .restart_after_install(false)
+        .install(bytes)
+        .map_err(|error| InstallNotice::Failed(error.to_string()))?;
+    // Windows 安装器启动后进程已退出,不会走到这里。macOS 与 Linux 安装
+    // 成功后重新打开;打不开则留下已安装的文件,请用户自己再打开。
+    #[cfg(not(windows))]
+    if let Err(error) = relaunch_after_install(app) {
+        log::warn!("relaunch after install failed: {error}");
+        return Err(InstallNotice::RelaunchFailed);
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn relaunch_after_install(app: &AppHandle) -> Result<(), String> {
+    let env = app.env();
+    let path = tauri::process::current_binary(&env).map_err(|error| error.to_string())?;
+    let args: Vec<_> = env.args_os.iter().skip(1).cloned().collect();
+    #[cfg(target_os = "macos")]
+    if let Some(bundle) = app_bundle_root(&path) {
+        match std::process::Command::new("/usr/bin/open")
+            .arg("-n")
+            .arg(bundle)
+            .arg("--args")
+            .args(&args)
+            .stdin(std::process::Stdio::null())
+            .output()
+        {
+            Ok(output) if output.status.success() => {
+                app.exit(0);
+                return Ok(());
+            }
+            Ok(output) => log::warn!(
+                "relaunch via open failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
+            Err(error) => log::warn!("relaunch via open failed: {error}"),
+        }
+    }
+    std::process::Command::new(&path)
+        .args(&args)
+        .stdin(std::process::Stdio::null())
+        .spawn()
+        .map_err(|error| error.to_string())?;
+    app.exit(0);
+    Ok(())
 }
 
 fn dialog(
@@ -258,6 +564,9 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
+    use std::path::Path;
+
     use super::*;
 
     fn release(tag: &str, url: &str) -> ReleaseInfo {
@@ -276,7 +585,9 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = std::thread::spawn(move || drop(listener.accept()));
-        let result = http_agent().get(format!("https://127.0.0.1:{port}/")).call();
+        let result = http_agent()
+            .get(format!("https://127.0.0.1:{port}/"))
+            .call();
         server.join().unwrap();
         assert!(result.is_err());
     }
@@ -322,8 +633,7 @@ mod tests {
             evaluate_release(release(&format!("v{older}"), PAGE)),
             Ok(UpdateStatus::UpToDate { .. })
         ));
-        // 预发布版本号本身大于旧 final(0.3.36 → 0.3.37-rc.1)按可用提示;
-        // 反向(rc 领先于线上 final)则提示 final 可用,rc 用户应转正。
+        // 稳定版不把更高的预发布 tag 当作更新。
         let prerelease_next = format!(
             "{}.{}.{}-rc.1",
             current.major,
@@ -332,8 +642,29 @@ mod tests {
         );
         assert!(matches!(
             evaluate_release(release(&prerelease_next, PAGE)),
-            Ok(UpdateStatus::Available { .. })
+            Ok(UpdateStatus::UpToDate { .. })
         ));
+    }
+
+    #[test]
+    fn stable_install_does_not_offer_a_prerelease_tag() {
+        let stable = semver::Version::new(1, 2, 0);
+        let newer_stable = semver::Version::new(1, 3, 0);
+        let older_stable = semver::Version::new(1, 1, 0);
+        let newer_pre = semver::Version::parse("1.3.0-rc.1").unwrap();
+        let current_pre = semver::Version::parse("1.2.0-rc.2").unwrap();
+        let final_of_pre = semver::Version::new(1, 2, 0);
+
+        assert!(!release_offered(&stable, &newer_pre));
+        assert!(!release_offered(&stable, &stable));
+        assert!(!release_offered(&stable, &older_stable));
+        assert!(release_offered(&stable, &newer_stable));
+        assert!(release_offered(&current_pre, &final_of_pre));
+        assert!(release_offered(
+            &current_pre,
+            &semver::Version::parse("1.2.0-rc.3").unwrap()
+        ));
+        assert!(!release_offered(&current_pre, &older_stable));
     }
 
     #[test]
@@ -383,5 +714,129 @@ mod tests {
         assert_eq!(value["status"], "available");
         assert_eq!(value["latest"], "0.3.37");
         assert_eq!(value["url"], PAGE);
+    }
+
+    #[test]
+    fn install_form_follows_the_running_package() {
+        let bundled = Path::new("/Applications/Cropmark.app/Contents/MacOS/cropmark");
+        let loose = Path::new("/tmp/cropmark");
+        let bundle_itself = Path::new("/Applications/Cropmark.app");
+        let appimage = Some(OsStr::new("/home/me/Cropmark.AppImage"));
+
+        assert_eq!(
+            classify_install_form(HostOs::Windows, false, loose, None),
+            InstallForm::WindowsNsis
+        );
+        assert_eq!(
+            classify_install_form(HostOs::Windows, true, loose, None),
+            InstallForm::Unrecognized
+        );
+        assert_eq!(
+            classify_install_form(HostOs::MacOs, false, bundled, None),
+            InstallForm::MacOsApp
+        );
+        assert_eq!(
+            classify_install_form(HostOs::MacOs, true, bundled, None),
+            InstallForm::MacOsApp
+        );
+        assert_eq!(
+            classify_install_form(HostOs::MacOs, false, loose, None),
+            InstallForm::Unrecognized
+        );
+        assert_eq!(
+            classify_install_form(HostOs::MacOs, false, bundle_itself, None),
+            InstallForm::Unrecognized
+        );
+        assert_eq!(
+            app_bundle_root(bundled)
+                .and_then(|path| path.file_name())
+                .map(|name| name.to_string_lossy().into_owned())
+                .as_deref(),
+            Some("Cropmark.app")
+        );
+        assert_eq!(
+            classify_install_form(HostOs::Linux, false, loose, appimage),
+            InstallForm::LinuxAppImage
+        );
+        assert_eq!(
+            classify_install_form(HostOs::Linux, true, loose, appimage),
+            InstallForm::LinuxAppImage
+        );
+        assert_eq!(
+            classify_install_form(HostOs::Linux, false, loose, None),
+            InstallForm::Unrecognized
+        );
+        assert_eq!(
+            classify_install_form(HostOs::Linux, false, loose, Some(OsStr::new(""))),
+            InstallForm::Unrecognized
+        );
+        assert_eq!(
+            classify_install_form(HostOs::Other, false, bundled, appimage),
+            InstallForm::Unrecognized
+        );
+    }
+
+    #[test]
+    fn declining_confirm_does_not_install_or_open_a_page() {
+        for form in [
+            InstallForm::WindowsNsis,
+            InstallForm::MacOsApp,
+            InstallForm::LinuxAppImage,
+            InstallForm::Unrecognized,
+        ] {
+            assert_eq!(action_after_confirm(form, false), None);
+        }
+        assert_eq!(
+            action_after_confirm(InstallForm::WindowsNsis, true),
+            Some(ConfirmedUpdateAction::Install)
+        );
+        assert_eq!(
+            action_after_confirm(InstallForm::MacOsApp, true),
+            Some(ConfirmedUpdateAction::Install)
+        );
+        assert_eq!(
+            action_after_confirm(InstallForm::LinuxAppImage, true),
+            Some(ConfirmedUpdateAction::Install)
+        );
+        assert_eq!(
+            action_after_confirm(InstallForm::Unrecognized, true),
+            Some(ConfirmedUpdateAction::OpenReleasePage)
+        );
+    }
+
+    #[test]
+    fn windows_confirm_text_says_the_app_will_exit() {
+        assert_eq!(
+            confirm_message_key(InstallForm::WindowsNsis, HostOs::Windows),
+            "updates.confirm_windows"
+        );
+        let zh = i18n::tr(i18n::Language::ZhCn, "updates.confirm_windows");
+        let en = i18n::tr(i18n::Language::En, "updates.confirm_windows");
+        assert!(zh.contains("退出"), "{zh}");
+        assert!(en.to_ascii_lowercase().contains("exit"), "{en}");
+        let reopen = i18n::tr(i18n::Language::En, "updates.relaunch_failed");
+        assert!(reopen.to_ascii_lowercase().contains("open"), "{reopen}");
+    }
+
+    #[test]
+    fn install_is_refused_when_any_capture_is_busy() {
+        let clear = UpdateBlockers {
+            capture_session: false,
+            recording_active: false,
+            scroll_started: false,
+        };
+        assert!(!update_install_blocked(clear));
+        assert!(update_install_blocked(UpdateBlockers {
+            capture_session: true,
+            ..clear
+        }));
+        assert!(update_install_blocked(UpdateBlockers {
+            recording_active: true,
+            ..clear
+        }));
+        assert!(update_install_blocked(UpdateBlockers {
+            scroll_started: true,
+            ..clear
+        }));
     }
 }

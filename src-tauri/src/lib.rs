@@ -247,6 +247,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_log::Builder::new().skip_logger().build())
         .setup(move |app| {
             logging::install(app.handle());
@@ -344,6 +345,7 @@ pub fn run() {
             settings::set_update_settings,
             updates::check_for_updates,
             updates::open_release_page,
+            updates::confirm_available_update,
             capture::get_overlay_frame,
             capture::get_preview_frame,
             capture::confirm_region,

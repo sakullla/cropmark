@@ -846,6 +846,11 @@ pub(crate) fn control_placement(
     None
 }
 
+/// 只读:滚动会话是否已经开始。不改滚动、拼接或贴图状态。
+pub(crate) fn scroll_session_started() -> bool {
+    SCROLL_SESSION_STARTED.load(Ordering::SeqCst)
+}
+
 /// 把会话推进到已开始:`started` 是方向锁定与自动 nudge 的门。
 /// 三个触发源(开始按钮/框内滚轮/就绪期内容变化兜底)都走这里;
 /// 幂等,重复触发只记第一次。
@@ -2656,6 +2661,17 @@ mod tests {
             windows.iter().any(|label| label == WINDOW),
             "capability windows {windows:?} must cover {WINDOW}"
         );
+    }
+
+    #[test]
+    fn scroll_started_query_reads_the_flag_without_clearing_it() {
+        let previous = SCROLL_SESSION_STARTED.load(Ordering::SeqCst);
+        assert_eq!(scroll_session_started(), previous);
+        SCROLL_SESSION_STARTED.store(!previous, Ordering::SeqCst);
+        assert_eq!(scroll_session_started(), !previous);
+        assert_eq!(SCROLL_SESSION_STARTED.load(Ordering::SeqCst), !previous);
+        SCROLL_SESSION_STARTED.store(previous, Ordering::SeqCst);
+        assert_eq!(scroll_session_started(), previous);
     }
 }
 

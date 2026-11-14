@@ -1250,6 +1250,17 @@ pub fn recording_active(app: &AppHandle) -> bool {
     with_recording(app, |_| ()).is_some()
 }
 
+/// 只读:截图或长截图会话是否仍占着运行时槽位。不改会话、录屏或贴图。
+pub(crate) fn capture_session_present(app: &AppHandle) -> bool {
+    app.state::<CaptureRuntime>().has_capture_session()
+}
+
+impl CaptureRuntime {
+    pub(crate) fn has_capture_session(&self) -> bool {
+        lock(&self.inner).is_some()
+    }
+}
+
 /// R3:取出活动录制会话(停止/保存路径消费);同一时间最多一个。
 /// 会话一离开运行时即复位 HUD 绘制交互,避免标注层继续挡鼠标。
 pub fn take_recording_session(app: &AppHandle) -> Option<crate::record::RecordingSession> {
@@ -4902,5 +4913,19 @@ mod tests {
             ),
             (MIN_CROP_EDGE, MIN_CROP_EDGE)
         );
+    }
+
+    #[test]
+    fn capture_session_presence_reads_the_slot_without_clearing_it() {
+        let runtime = CaptureRuntime::default();
+        assert!(!runtime.has_capture_session());
+        *lock(&runtime.inner) = Some(ActiveSession::new(
+            CaptureMode::LongCapture,
+            0,
+            Instant::now(),
+        ));
+        assert!(runtime.has_capture_session());
+        assert!(runtime.has_capture_session());
+        assert!(lock(&runtime.inner).is_some());
     }
 }

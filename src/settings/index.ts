@@ -577,7 +577,7 @@ export function mountSettings(root: HTMLElement): () => void {
                     </div>
                     <div class="choices" role="group" aria-labelledby="about-update-label">
                       <button type="button" class="choice" data-action="check-updates" data-i18n="settings.update.button">检查更新</button>
-                      <button type="button" class="choice" data-action="open-release" hidden data-i18n="settings.update.open_button">前往下载</button>
+                      <button type="button" class="choice" data-action="open-release" hidden data-i18n="settings.update.open_button">下载并安装</button>
                     </div>
                   </div>
                   <div class="setting-row">
@@ -1029,7 +1029,7 @@ export function mountSettings(root: HTMLElement): () => void {
   };
 
   // 手动检查结果内联展示:检查中显示过渡文案,完成后按结果切换;
-  // 「前往下载」只在发现新版本时出现(打开发布页命令由后端读已知版本)。
+  // 「下载并安装」只在发现新版本时出现,点击走与托盘相同的确认安装。
   const renderUpdateStatus = (): void => {
     if (!updateCheckResult) {
       updateStatusEl.hidden = true;
@@ -1809,7 +1809,7 @@ export function mountSettings(root: HTMLElement): () => void {
   });
 
   updateOpenEl.addEventListener("click", () => {
-    void invoke("open_release_page").catch(showInvokeError);
+    void invoke("confirm_available_update").catch(showInvokeError);
   });
 
   recordingEnabledEl.addEventListener("click", () => {

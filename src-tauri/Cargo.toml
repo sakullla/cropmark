@@ -37,6 +37,9 @@ ndarray = "0.16"
 log = "0.4"
 tauri-plugin-log = "2.10.1"
 tauri-plugin-opener = "2.7.2"
+# 确认后的验签安装走 tauri.conf.json 里已有的公钥和端点,不另设签名密码。
+# 用 native-tls,避免再引入 rustls/ring;zip 用于 macOS 与 AppImage 归档。
+tauri-plugin-updater = { version = "2.14.1", default-features = false, features = ["native-tls", "zip", "system-proxy"] }
 # R4:纯本地二维码解码(无网络、无运行时资源);仅解码二维码,不含一维条码。
 rqrr = { version = "0.11.0", default-features = false }
 # R3:录屏编码。GIF 流式编码、纯 Rust MP4 muxer,以及构建期随包编译的

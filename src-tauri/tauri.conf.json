@@ -19,6 +19,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "publisher": "Cropmark",
     "copyright": "Copyright © Cropmark",
     "license": "GPL-3.0-only",
