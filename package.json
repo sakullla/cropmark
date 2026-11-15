@@ -1,7 +1,7 @@
 {
   "name": "cropmark",
   "private": true,
-  "version": "0.3.43",
+  "version": "0.3.44",
   "license": "GPL-3.0-only",
   "type": "module",
   "scripts": {
