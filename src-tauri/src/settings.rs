@@ -537,6 +537,11 @@ pub fn current_annotation_defaults(app: &AppHandle) -> AnnotationDefaults {
     lock(&app.state::<SessionState>().annotation_defaults).clone()
 }
 
+/// 供托盘菜单读取当前热键,在 macOS 上显示成系统符号。
+pub fn current_hotkeys(app: &AppHandle) -> Hotkeys {
+    lock(&app.state::<SessionState>().hotkeys).clone()
+}
+
 /// 供截取链路读取延时与采集普通选项(R9);设置变更下一次截取即生效,无需重启。
 pub fn current_capture(app: &AppHandle) -> CaptureSettings {
     *lock(&app.state::<SessionState>().capture)
@@ -979,9 +984,11 @@ pub fn get_ui_settings(app: AppHandle) -> UiSettings {
 pub fn set_hotkey(app: AppHandle, mode: CaptureMode, accelerator: String) -> UiSettings {
     let mut hotkeys = lock(&app.state::<SessionState>().hotkeys).clone();
     hotkeys.set(mode, accelerator);
+    // 先写入会话再落盘,托盘上的符号和重启后读到的是同一次修改。
+    hotkeys::apply_to_app(&app, &hotkeys);
     let applied = i18n::t("notice.hotkey_applied");
     persist_settings(&app, &applied);
-    hotkeys::apply_to_app(&app, &hotkeys);
+    crate::tray::refresh_menu(&app);
     snapshot(&app)
 }
 
@@ -991,9 +998,10 @@ pub fn set_hotkey(app: AppHandle, mode: CaptureMode, accelerator: String) -> UiS
 pub fn set_pin_clipboard_hotkey(app: AppHandle, accelerator: String) -> UiSettings {
     let mut hotkeys = lock(&app.state::<SessionState>().hotkeys).clone();
     hotkeys.set_pin_clipboard(accelerator);
+    hotkeys::apply_to_app(&app, &hotkeys);
     let applied = i18n::t("notice.hotkey_applied");
     persist_settings(&app, &applied);
-    hotkeys::apply_to_app(&app, &hotkeys);
+    crate::tray::refresh_menu(&app);
     snapshot(&app)
 }
 
@@ -2125,10 +2133,8 @@ mod tests {
 
     #[test]
     fn missing_revision_migrates_all_on_tools_and_gif_once() {
-        let dir = std::env::temp_dir().join(format!(
-            "cropmark-settings-chrome-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("cropmark-settings-chrome-{}", std::process::id()));
         let path = dir.join("settings.json");
         fs::create_dir_all(&dir).unwrap();
         let legacy = serde_json::json!({

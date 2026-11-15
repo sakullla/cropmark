@@ -698,6 +698,13 @@ h1 {
   white-space: nowrap;
 }
 
+/* ⌘ ⌥ ⌃ ⇧ 在 Inter 里缺字或发虚,改用系统字体。 */
+:root[data-platform="mac"] .keycap,
+:root[data-platform="mac"] .preview-shortcut kbd {
+  font-family: -apple-system, BlinkMacSystemFont, var(--font-ui);
+  font-size: 12px;
+}
+
 .number-input {
   width: 72px;
   max-width: 100%;

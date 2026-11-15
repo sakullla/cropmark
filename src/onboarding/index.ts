@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { t } from "../i18n";
+import { isApplePlatform, t } from "../i18n";
 import { icons } from "../icons";
 import { appendKeycaps, type Hotkeys } from "../settings";
 import "./onboarding.css";
@@ -74,6 +74,14 @@ export function mountOnboarding(root: HTMLElement): () => void {
               <span class="guide-icon" aria-hidden="true">${icons.tray}</span>
               <div><h3 data-i18n="guide.tray.title">托盘常驻</h3><p data-i18n="guide.tray.body">从托盘图标打开区域、窗口或全屏截图，也可以进入历史和设置。退出请使用托盘菜单或设置中的退出。</p></div>
             </article>
+            ${
+              isApplePlatform()
+                ? `<article class="guide-feature">
+              <span class="guide-icon" aria-hidden="true">${icons.tray}</span>
+              <div><h3 data-i18n="guide.dock.title">从 Dock 打开</h3><p data-i18n="guide.dock.body">从 Dock、启动台或访达打开会显示设置。应用已在运行时，再点 Dock 图标也会打开设置。右键可以截图、打开历史或设置，菜单中的退出会退出应用。开机启动仍然只出现在菜单栏。</p></div>
+            </article>`
+                : ""
+            }
             <article class="guide-feature">
               <span class="guide-icon" aria-hidden="true">${icons.pin}</span>
               <div><h3 data-i18n="guide.pin.title">贴图</h3><p data-i18n="guide.pin.body">截图后可以贴在屏幕上对照查看。关掉贴图不会退出托盘中的 Cropmark。</p></div>

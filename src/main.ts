@@ -1,6 +1,8 @@
 import { listen } from "@tauri-apps/api/event";
-import { applyTranslations, initI18n, onLanguageChanged } from "./i18n";
+import { applyTranslations, initI18n, markPlatform, onLanguageChanged } from "./i18n";
 import { initTheme } from "./theme";
+
+markPlatform();
 
 // 视图标记必须在挂载前同步写上。覆盖层背景等选择器依赖 data-view，
 // 且不能留在 HTML 内联脚本里，否则会被 script-src 'self' 拦住。

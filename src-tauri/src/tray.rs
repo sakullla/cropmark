@@ -12,7 +12,7 @@ use tauri::menu::{IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Sub
 use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri::AppHandle;
 
-use crate::hotkeys::CaptureMode;
+use crate::hotkeys::{self, CaptureMode};
 use crate::i18n;
 use crate::settings;
 
@@ -358,7 +358,12 @@ pub fn menu_action(id: &str) -> Option<MenuAction> {
 }
 
 fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
-    match event.id.as_ref() {
+    handle_menu_id(app, event.id.as_ref());
+}
+
+/// 托盘与 Dock 右键共用同一套 id。调用方不要给这些项注册菜单快捷键。
+pub(crate) fn handle_menu_id(app: &AppHandle, id: &str) {
+    match id {
         "settings" => {
             let _ = settings::open_settings(app);
         }
@@ -405,10 +410,11 @@ fn delay_once_label(seconds: u64) -> String {
 }
 
 fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let hotkeys = settings::current_hotkeys(app);
     let region = MenuItem::with_id(
         app,
         "capture-region",
-        i18n::t("tray.region"),
+        hotkeys::menu_item_title(&i18n::t("tray.region"), &hotkeys.region),
         true,
         None::<&str>,
     )?;
@@ -423,7 +429,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let window = MenuItem::with_id(
         app,
         "capture-window",
-        i18n::t("tray.window"),
+        hotkeys::menu_item_title(&i18n::t("tray.window"), &hotkeys.window),
         true,
         None::<&str>,
     )?;
@@ -431,11 +437,11 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let fullscreen = MenuItem::with_id(
         app,
         "capture-fullscreen",
-        i18n::t("tray.fullscreen"),
+        hotkeys::menu_item_title(&i18n::t("tray.fullscreen"), &hotkeys.fullscreen),
         true,
         None::<&str>,
     )?;
-    let fullscreen_menu = fullscreen_submenu(app)?;
+    let fullscreen_menu = fullscreen_submenu(app, &hotkeys.fullscreen)?;
     let long_capture = if settings::current_capture(app).long_capture {
         Some(MenuItem::with_id(
             app,
@@ -486,7 +492,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let clipboard_pin = MenuItem::with_id(
         app,
         CLIPBOARD_PIN_ID,
-        i18n::t("tray.pin_from_clipboard"),
+        hotkeys::menu_item_title(&i18n::t("tray.pin_from_clipboard"), &hotkeys.pin_clipboard),
         true,
         None::<&str>,
     )?;
@@ -549,11 +555,14 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
 }
 
 /// 一次性延时:只挂区域截取。窗口/全屏用设置页的延时,避免每个档位再拆三种模式。
-fn fullscreen_submenu(app: &AppHandle) -> tauri::Result<Submenu<tauri::Wry>> {
+fn fullscreen_submenu(
+    app: &AppHandle,
+    fullscreen_hotkey: &str,
+) -> tauri::Result<Submenu<tauri::Wry>> {
     let pointer = MenuItem::with_id(
         app,
         "capture-fullscreen",
-        i18n::t("tray.fullscreen_pointer"),
+        hotkeys::menu_item_title(&i18n::t("tray.fullscreen_pointer"), fullscreen_hotkey),
         true,
         None::<&str>,
     )?;

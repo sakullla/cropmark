@@ -971,6 +971,10 @@
     "zh-CN": "全局热键需要包含 Ctrl、Alt、Shift 或 Super。",
     "en": "A global hotkey must include Ctrl, Alt, Shift, or Super."
   },
+  "error.hotkey.modifier_macos": {
+    "zh-CN": "全局热键需要包含 Control、Option、Shift 或 Command。",
+    "en": "A global hotkey must include Control, Option, Shift, or Command."
+  },
   "error.hotkey.conflict": {
     "zh-CN": "与其它截取热键冲突，未注册该组合。Cropmark 仍在运行。",
     "en": "Conflicts with another capture hotkey; this combination was not registered. Cropmark is still running."
@@ -3442,6 +3446,14 @@
   "guide.tray.body": {
     "zh-CN": "从托盘图标打开区域、窗口或全屏截图，也可以进入历史和设置。退出请使用托盘菜单或设置中的退出。",
     "en": "Use the tray icon for region, window, or fullscreen capture, and to open history or settings. Quit from the tray menu or from Settings."
+  },
+  "guide.dock.title": {
+    "zh-CN": "从 Dock 打开",
+    "en": "Open from the Dock"
+  },
+  "guide.dock.body": {
+    "zh-CN": "从 Dock、启动台或访达打开会显示设置。应用已在运行时，再点 Dock 图标也会打开设置。右键可以截图、打开历史或设置，菜单中的退出会退出应用。开机启动仍然只出现在菜单栏。",
+    "en": "Opening Cropmark from the Dock, Launchpad, or Finder shows Settings. Clicking the Dock icon while it is already running opens Settings too. Right-click it to capture, or to open history or settings. Quit in that menu quits the app. Launch at login still stays in the menu bar only."
   },
   "guide.pin.title": {
     "zh-CN": "贴图",

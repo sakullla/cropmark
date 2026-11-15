@@ -13,7 +13,7 @@ import {
   type AnnotationEditor,
   type AnnotationTool,
 } from "../annotation";
-import { applyTranslations, currentLanguage, t, type CatalogKey } from "../i18n";
+import { applyTranslations, commandKeyLabel, currentLanguage, t, type CatalogKey } from "../i18n";
 import { BUTTON_FLASH_MS } from "../feedback";
 import { icons } from "../icons";
 import { mountOcrModel, type OcrDocument, type OcrModel } from "../ocr";
@@ -167,8 +167,8 @@ export function mountPreview(root: HTMLElement): () => void {
     <footer class="preview-statusbar">
       <span class="preview-dimensions" data-preview-dimensions aria-live="polite"></span>
       <div class="preview-shortcuts" aria-hidden="true">
-        <span class="preview-shortcut"><kbd>Ctrl/⌘</kbd><kbd>C</kbd><span data-i18n="preview.shortcuts.copy">复制</span></span>
-        <span class="preview-shortcut"><kbd>Ctrl/⌘</kbd><kbd>S</kbd><span data-i18n="preview.shortcuts.save">保存</span></span>
+        <span class="preview-shortcut"><kbd>${commandKeyLabel()}</kbd><kbd>C</kbd><span data-i18n="preview.shortcuts.copy">复制</span></span>
+        <span class="preview-shortcut"><kbd>${commandKeyLabel()}</kbd><kbd>S</kbd><span data-i18n="preview.shortcuts.save">保存</span></span>
         <span class="preview-shortcut"><kbd>I</kbd><span data-i18n="preview.shortcuts.pin">贴图</span></span>
         <span class="preview-shortcut"><kbd>V</kbd><span data-i18n="preview.shortcuts.crop">裁剪</span></span>
       </div>

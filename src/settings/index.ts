@@ -7,7 +7,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { handleRadioGroupKeydown } from "../a11y";
 import { autostartHelp, hotkeyErrorText } from "../errors";
 import { NOTICE_AUTO_HIDE_MS } from "../feedback";
-import { currentLanguage, t, type CatalogKey } from "../i18n";
+import { currentLanguage, isApplePlatform, t, type CatalogKey } from "../i18n";
 import { icons } from "../icons";
 import { getTheme, setTheme, type ThemeSetting } from "../theme";
 import "./settings.css";
@@ -697,7 +697,7 @@ export function mountSettings(root: HTMLElement): () => void {
   }
 
   let recording: HotkeySlot | null = null;
-  // 录制中已按住的修饰键(按键顺序归一):按钮实时回显「Ctrl+Alt+…」,
+  // 录制中已按住的修饰键(按键顺序归一):按钮实时回显已按下的组合,
   // 避免按下修饰键期间看起来像没有反应。
   let heldModifiers: string[] = [];
   let applying = false;
@@ -1182,8 +1182,9 @@ export function mountSettings(root: HTMLElement): () => void {
       const slotLabel = t(HOTKEY_LABEL_KEY[slot]);
       const optional = slot === "clipboardpin";
       const accelerator = hotkeyValue(settings.hotkeys, slot);
-      const display =
-        displayAccelerator(accelerator) || t("settings.hotkeys.unbound");
+      const display = accelerator
+        ? spokenAccelerator(accelerator)
+        : t("settings.hotkeys.unbound");
       const row = document.createElement("div");
       row.className = "hotkey-row";
       const errorText = hotkeyErrorText(hotkeyError(settings.hotkeyErrors, slot));
@@ -1209,7 +1210,7 @@ export function mountSettings(root: HTMLElement): () => void {
           : accelerator
             ? t("settings.hotkey.aria_current", {
                 mode: slotLabel,
-                accelerator: display.replaceAll("\u200b", ""),
+                accelerator: display,
               })
             : t("settings.hotkey.aria_unbound", { mode: slotLabel }),
       );
@@ -2283,7 +2284,9 @@ export function mountSettings(root: HTMLElement): () => void {
 
   const recordingButtonLabel = (): string =>
     heldModifiers.length > 0
-      ? t("settings.hotkey.recording_partial", { keys: heldModifiers.join("+") })
+      ? t("settings.hotkey.recording_partial", {
+          keys: displayAccelerator(heldModifiers.join("+")),
+        })
       : t("settings.hotkey.recording");
 
   // 只更新录制按钮文案,不走整表重渲染(整表会重建热键行)。
@@ -2528,28 +2531,96 @@ function reservedFilenameStem(template: string): boolean {
   return RESERVED_FILENAME_STEMS.has(base.toUpperCase());
 }
 
-export function displayAccelerator(accelerator: string): string {
-  const platform = navigator.platform;
-  const superLabel = platform.includes("Mac")
-    ? "Cmd"
-    : platform.includes("Win")
-      ? "Win"
-      : "Super";
-  // 加号后插入零宽空格，按钮和引导页里的长组合在加号处折行，不再从 Ctrl 中间断开。
-  return accelerator
-    .replaceAll("Super", superLabel)
-    .replaceAll("Meta", superLabel)
-    .replaceAll("+", "+\u200b");
+type ModifierKind = "ctrl" | "alt" | "shift" | "meta";
+
+function modifierKind(token: string): ModifierKind | null {
+  switch (token.toLowerCase()) {
+    case "ctrl":
+    case "control":
+      return "ctrl";
+    case "alt":
+    case "option":
+      return "alt";
+    case "shift":
+      return "shift";
+    case "super":
+    case "meta":
+    case "cmd":
+    case "command":
+    case "win":
+    case "windows":
+      return "meta";
+    default:
+      return null;
+  }
 }
 
-/** 把加速键拆成键帽:Ctrl、Shift、A 各一枚,和按键实物的读法一致。 */
+/** 读屏用的键名。Mac 说 Control / Option / Command,不说 Ctrl / Alt / Super。 */
+function modifierWord(token: string): string {
+  switch (modifierKind(token)) {
+    case "ctrl":
+      return isApplePlatform() ? "Control" : "Ctrl";
+    case "alt":
+      return isApplePlatform() ? "Option" : "Alt";
+    case "shift":
+      return "Shift";
+    case "meta":
+      if (isApplePlatform()) {
+        return "Command";
+      }
+      return navigator.platform.includes("Win") ? "Win" : "Super";
+    default:
+      return token;
+  }
+}
+
+/** 键帽上的字。Mac 用系统修饰符符号,顺序与存储一致:⌃ ⌥ ⇧ ⌘。 */
+function modifierGlyph(token: string): string {
+  if (!isApplePlatform()) {
+    return modifierWord(token);
+  }
+  switch (modifierKind(token)) {
+    case "ctrl":
+      return "⌃";
+    case "alt":
+      return "⌥";
+    case "shift":
+      return "⇧";
+    case "meta":
+      return "⌘";
+    default:
+      return token;
+  }
+}
+
+function acceleratorParts(accelerator: string): string[] {
+  return accelerator
+    .split("+")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0)
+    .map((part) => modifierGlyph(part));
+}
+
+function spokenAccelerator(accelerator: string): string {
+  return accelerator
+    .split("+")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0)
+    .map((part) => modifierWord(part))
+    .join("+");
+}
+
+export function displayAccelerator(accelerator: string): string {
+  const parts = acceleratorParts(accelerator);
+  // 非 Mac 在加号后插入零宽空格,长组合从加号处折行,不再从 Ctrl 中间断开。
+  return isApplePlatform() ? parts.join("") : parts.join("+\u200b");
+}
+
+/** 把加速键拆成键帽。Mac 上每枚修饰键是一个符号,和菜单栏的写法一致。 */
 export function appendKeycaps(host: HTMLElement, accelerator: string): void {
   host.replaceChildren();
   host.classList.add("has-keycaps");
-  for (const part of displayAccelerator(accelerator).split("+\u200b")) {
-    if (!part) {
-      continue;
-    }
+  for (const part of acceleratorParts(accelerator)) {
     const key = document.createElement("kbd");
     key.className = "keycap";
     key.textContent = part;

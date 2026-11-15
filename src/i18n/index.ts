@@ -104,18 +104,53 @@ function lookup(language: Language, key: string): string {
   return key;
 }
 
+/** macOS / iOS 的系统字体能画出 ⌘ ⌥ ⌃ ⇧。Windows 与 Linux 保持文字键名。 */
+export function isApplePlatform(): boolean {
+  return /Mac|iPhone|iPad|iPod/.test(navigator.platform ?? "");
+}
+
+/** 首帧之前标上平台,键帽才能用系统符号字体。 */
+export function markPlatform(): void {
+  if (isApplePlatform()) {
+    document.documentElement.dataset.platform = "mac";
+  }
+}
+
+/** 复制、保存、撤销用的主修饰键:Mac 为 ⌘,其它平台为 Ctrl。 */
+export function commandKeyLabel(): string {
+  return isApplePlatform() ? "⌘" : "Ctrl";
+}
+
+/**
+ * 把文案里的 Ctrl/⌘ 与 Ctrl+… 收成当前平台的写法。
+ * 这些组合在 Mac 上同时接受 Command,界面按 ⌘ 显示。
+ */
+export function polishShortcutText(text: string): string {
+  if (!isApplePlatform()) {
+    return text.replaceAll("Ctrl/⌘", "Ctrl");
+  }
+  return text
+    .replaceAll("Ctrl+Shift+", "⇧⌘")
+    .replaceAll("Ctrl+Alt+", "⌥⌘")
+    .replaceAll("Ctrl/⌘ +", "⌘+")
+    .replaceAll("Ctrl/⌘ −", "⌘−")
+    .replaceAll("Ctrl/⌘ -", "⌘−")
+    .replaceAll("Ctrl/⌘", "⌘")
+    .replaceAll("Ctrl+", "⌘");
+}
+
 /** 取当前语言的文案;`params` 替换 `{name}` 占位符。 */
 export function t(
   key: CatalogKey,
   params?: Record<string, string | number>,
 ): string {
   const template = lookup(current, key);
-  if (!params) {
-    return template;
-  }
-  return template.replace(/\{(\w+)\}/g, (match, name: string) =>
-    Object.prototype.hasOwnProperty.call(params, name) ? String(params[name]) : match,
-  );
+  const filled = params
+    ? template.replace(/\{(\w+)\}/g, (match, name: string) =>
+        Object.prototype.hasOwnProperty.call(params, name) ? String(params[name]) : match,
+      )
+    : template;
+  return polishShortcutText(filled);
 }
 
 function readParams(element: HTMLElement, datasetKey: string): Record<string, string> | undefined {

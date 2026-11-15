@@ -274,7 +274,7 @@ fn plan_binding(
             target,
             display,
             plugin_shortcut: None,
-            error: Some("error.hotkey.modifier".to_string()),
+            error: Some(modifier_error_key().to_string()),
         },
         Ok(parsed) => {
             if seen.contains_key(&parsed) {
@@ -434,6 +434,47 @@ fn title_case_key(token: &str) -> String {
     }
 }
 
+/// 无修饰键时的错误词条。macOS 用 Control / Option / Command,其它平台保持 Ctrl / Alt / Super。
+fn modifier_error_key() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "error.hotkey.modifier_macos"
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        "error.hotkey.modifier"
+    }
+}
+
+/// 菜单右侧的热键。符号顺序与 Apple 一致:⌃ ⌥ ⇧ ⌘,然后是主键。
+pub fn menu_shortcut(hotkey: &str) -> Option<String> {
+    let parsed = parse_hotkey(hotkey).ok()?;
+    let mut symbols = String::new();
+    if parsed.ctrl {
+        symbols.push('\u{2303}');
+    }
+    if parsed.alt {
+        symbols.push('\u{2325}');
+    }
+    if parsed.shift {
+        symbols.push('\u{21e7}');
+    }
+    if parsed.meta {
+        symbols.push('\u{2318}');
+    }
+    symbols.push_str(&parsed.key);
+    Some(symbols)
+}
+
+/// macOS 托盘项用制表符把热键顶到右侧,不注册菜单快捷键,避免和全局热键触发两次。
+pub fn menu_item_title(title: &str, shortcut: &str) -> String {
+    #[cfg(target_os = "macos")]
+    if let Some(shown) = menu_shortcut(shortcut) {
+        return format!("{title}\t{shown}");
+    }
+    title.to_string()
+}
+
 fn plugin_key(key: &str) -> &str {
     match key {
         "A" => "KeyA",
@@ -485,6 +526,43 @@ fn plugin_key(key: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn menu_shortcut_uses_macos_symbols_in_apple_order() {
+        assert_eq!(menu_shortcut("Alt+Shift+A").as_deref(), Some("⌥⇧A"));
+        assert_eq!(menu_shortcut("alt+shift+w").as_deref(), Some("⌥⇧W"));
+        assert_eq!(
+            menu_shortcut("Ctrl+Alt+Shift+Super+P").as_deref(),
+            Some("⌃⌥⇧⌘P")
+        );
+        assert_eq!(menu_shortcut("Command+C").as_deref(), Some("⌘C"));
+        assert_eq!(menu_shortcut(""), None);
+        assert_eq!(menu_shortcut("   "), None);
+        assert_eq!(menu_shortcut("Ctrl+Alt"), None);
+    }
+
+    #[test]
+    fn menu_item_title_shows_shortcut_only_on_macos() {
+        let title = menu_item_title("区域", "Alt+Shift+A");
+        #[cfg(target_os = "macos")]
+        assert_eq!(title, "区域\t⌥⇧A");
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(title, "区域");
+        assert_eq!(menu_item_title("贴图", ""), "贴图");
+    }
+
+    #[test]
+    fn modifier_error_names_keys_for_the_host_platform() {
+        let text = i18n::t(modifier_error_key());
+        assert!(text.contains("全局热键"), "{text}");
+        #[cfg(target_os = "macos")]
+        assert!(
+            text.contains("Command") && text.contains("Option"),
+            "{text}"
+        );
+        #[cfg(not(target_os = "macos"))]
+        assert!(text.contains("Ctrl") && text.contains("Super"), "{text}");
+    }
 
     #[test]
     fn defaults_are_alt_shift_aws() {

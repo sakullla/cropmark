@@ -3,6 +3,7 @@ mod autostart;
 mod beautify;
 mod capture;
 mod clipboard;
+mod dock;
 mod export;
 mod filename_template;
 mod front;
@@ -335,6 +336,9 @@ pub fn run() {
                 }
             };
             hotkeys::apply_to_app(app.handle(), &hotkeys);
+            // macOS:给 Tao 的应用委托补上 Dock 右键菜单。菜单在点击时现建。
+            #[cfg(target_os = "macos")]
+            dock::install(app.handle());
             capture::precreate_windows(app.handle());
             // R3:录制控制条与标注层预创建(隐藏),录制开始后立即出现且避免
             // 运行期重建 webview 的偶发导航失败。
@@ -367,6 +371,15 @@ pub fn run() {
                 if let Err(error) = settings::open_guide_window(app.handle()) {
                     log::warn!("guide open failed kind=window");
                     eprintln!("Cropmark: 无法打开首次引导:{error}");
+                }
+            } else if front::should_open_settings_on_launch(
+                cfg!(target_os = "macos"),
+                front::launched_at_login(),
+            ) {
+                // macOS:Dock、启动台、访达打开时给出设置窗。登录项启动不进这里。
+                if let Err(error) = settings::open_settings(app.handle()) {
+                    log::warn!("dock launch failed kind=settings");
+                    eprintln!("Cropmark: 无法从 Dock 打开设置:{error}");
                 }
             }
             Ok(())
@@ -532,12 +545,17 @@ pub fn run() {
                     api.prevent_exit();
                 }
             }
-            // 托盘退出(code=Some(0))等真实退出路径:退出前统一收掉贴图。
+            // 托盘退出、Dock 菜单的退出和 Command-Q 都是 app.exit(0)
+            // (code=Some(0)):退出前统一收掉贴图。关窗口仍是 code=None,进程继续留着。
             tauri::RunEvent::Exit => {
                 capture::scroll::shutdown(app);
                 pin::close_all(app);
                 // R6:撤销窗口期内退出,遗留的待删除条目与文件最终删除。
                 history::sweep_on_exit(app);
+            }
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen { .. } => {
+                front::handle_reopen(app);
             }
             _ => {}
         });
