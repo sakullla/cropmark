@@ -630,7 +630,11 @@ fn place_toolbar_row(
     (fallback, false)
 }
 
-fn layout_buttons(metrics: ChromeMetrics, panel: IntRect, actions: &[SelectionAction]) -> Vec<(SelectionAction, IntRect)> {
+fn layout_buttons(
+    metrics: ChromeMetrics,
+    panel: IntRect,
+    actions: &[SelectionAction],
+) -> Vec<(SelectionAction, IntRect)> {
     let mut x = panel.x;
     actions
         .iter()
@@ -685,7 +689,14 @@ pub fn unified_toolbar(
     let (row, menu) = if !below_ok && !above_ok {
         let side = (sw - sel.right()).max(sel.x).saturating_sub(margin);
         if side > 0 && width > side {
-            fit_toolbar_row(metrics, row.into_iter().filter(|action| *action != SelectionAction::More).collect(), menu, side)
+            fit_toolbar_row(
+                metrics,
+                row.into_iter()
+                    .filter(|action| *action != SelectionAction::More)
+                    .collect(),
+                menu,
+                side,
+            )
         } else {
             (row, menu)
         }
@@ -728,7 +739,9 @@ pub fn more_panel(
     let width = menu_row_width(metrics, items) + metrics.menu_pad * 2;
     let content_h = items.len() as i32 * metrics.menu_item_h + metrics.menu_pad * 2;
     // 超出屏幕时面板停在屏内,列表内部再滚动;名称不被裁到面板外。
-    let height = content_h.min(screen.1 as i32).max(metrics.menu_item_h + metrics.menu_pad * 2);
+    let height = content_h
+        .min(screen.1 as i32)
+        .max(metrics.menu_item_h + metrics.menu_pad * 2);
     let mut panel = IntRect {
         x: (anchor.right() - width).clamp(0, (screen.0 as i32 - width).max(0)),
         y: (anchor.y - height).clamp(0, (screen.1 as i32 - height).max(0)),
@@ -1747,14 +1760,14 @@ impl Composer {
                                 .find(|(action, _)| *action == SelectionAction::More)
                                 .map(|(_, rect)| *rect)
                             {
-                            let panel = more_panel(
-                                self.metrics,
-                                more_rect,
-                                Some(toolbar.panel),
-                                (self.width, self.height),
-                                &items,
-                            );
-                            bounds = bounds.union(panel);
+                                let panel = more_panel(
+                                    self.metrics,
+                                    more_rect,
+                                    Some(toolbar.panel),
+                                    (self.width, self.height),
+                                    &items,
+                                );
+                                bounds = bounds.union(panel);
                             }
                         }
                     }
@@ -1850,9 +1863,13 @@ impl Composer {
         selection: PhysicalRect,
         overlay: &AnnotationOverlay,
     ) -> std::cell::Ref<'_, Vec<u8>> {
-        let valid = self.annotation_cache.borrow().as_ref().is_some_and(|cache| {
-            cache.revision == overlay.revision && cache.selection == selection
-        });
+        let valid = self
+            .annotation_cache
+            .borrow()
+            .as_ref()
+            .is_some_and(|cache| {
+                cache.revision == overlay.revision && cache.selection == selection
+            });
         if valid {
             return std::cell::Ref::map(self.annotation_cache.borrow(), |cache| {
                 &cache.as_ref().unwrap().region
@@ -2121,7 +2138,8 @@ impl Composer {
         }
         let panel = more_panel(metrics, *more_rect, Some(toolbar.panel), (w, h), &items);
         draw_panel_chrome(rgba, w, h, panel, metrics.panel_radius);
-        for (action, rect) in scrolled_action_rects(metrics, panel, &items, scene.menu_scroll, false)
+        for (action, rect) in
+            scrolled_action_rects(metrics, panel, &items, scene.menu_scroll, false)
         {
             let hover = cursor_over(scene, rect);
             if hover {
@@ -3635,8 +3653,14 @@ mod tests {
         )
         .expect("toolbar");
         assert_eq!(toolbar.panel.height, metrics_1().bar_button);
-        assert!(toolbar.buttons.iter().all(|(_, rect)| rect.height == metrics_1().bar_button));
-        assert!(toolbar.buttons.windows(2).all(|pair| pair[0].1.y == pair[1].1.y));
+        assert!(toolbar
+            .buttons
+            .iter()
+            .all(|(_, rect)| rect.height == metrics_1().bar_button));
+        assert!(toolbar
+            .buttons
+            .windows(2)
+            .all(|pair| pair[0].1.y == pair[1].1.y));
         // 展开「更多」:面板出现在「更多」按钮上方,图标像素增多。
         let expanded =
             composer.compose_with_overlay(&mode_scene(selection, enabled, true), &overlay(None));
@@ -3887,12 +3911,16 @@ mod tests {
         let arrow = style_chips(AnnotationTool::Arrow);
         assert!(arrow.iter().any(|chip| matches!(chip, StyleChip::Width(_))));
         assert!(arrow.iter().any(|chip| matches!(chip, StyleChip::Color(_))));
-        assert!(!arrow.iter().any(|chip| matches!(chip, StyleChip::TextSize(_))));
+        assert!(!arrow
+            .iter()
+            .any(|chip| matches!(chip, StyleChip::TextSize(_))));
         assert!(arrow
             .iter()
             .any(|chip| matches!(chip, StyleChip::Mode(ToolMode::Line))));
         let text = style_chips(AnnotationTool::Text);
-        assert!(text.iter().any(|chip| matches!(chip, StyleChip::TextSize(_))));
+        assert!(text
+            .iter()
+            .any(|chip| matches!(chip, StyleChip::TextSize(_))));
         assert!(!text.iter().any(|chip| matches!(chip, StyleChip::Width(_))));
         assert!(style_chips(AnnotationTool::Number)
             .iter()
@@ -3926,7 +3954,11 @@ mod tests {
         assert_eq!(toolbar.panel.height, metrics.bar_button, "必须为一行");
         assert_eq!(
             toolbar.panel.width,
-            toolbar.buttons.iter().map(|(_, rect)| rect.width).sum::<i32>()
+            toolbar
+                .buttons
+                .iter()
+                .map(|(_, rect)| rect.width)
+                .sum::<i32>()
         );
         assert_eq!(
             toolbar.panel.y,
@@ -4063,8 +4095,7 @@ mod tests {
         let toolbar = unified_toolbar(metrics, selection, screen, flags, true).expect("toolbar");
         let button = metrics.bar_button;
         assert!(
-            toolbar_buttons(flags, true).len() > toolbar.buttons.len()
-                || !toolbar.menu.is_empty(),
+            toolbar_buttons(flags, true).len() > toolbar.buttons.len() || !toolbar.menu.is_empty(),
             "窄屏必须把放不下的项送进菜单"
         );
         assert!(!toolbar

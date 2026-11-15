@@ -486,7 +486,11 @@ fn icon_sdf_24(name: IconName, px: f32, py: f32, h: f32) -> f32 {
         IconName::Delete => {
             let lid = sd_segment(px, py, 5.2, 7.0, 18.8, 7.0);
             let handle = sd_polyline(px, py, &[(9.5, 7.0), (9.5, 4.6), (14.5, 4.6), (14.5, 7.0)]);
-            let bucket = sd_polyline(px, py, &[(7.2, 7.0), (8.0, 19.0), (16.0, 19.0), (16.8, 7.0)]);
+            let bucket = sd_polyline(
+                px,
+                py,
+                &[(7.2, 7.0), (8.0, 19.0), (16.0, 19.0), (16.8, 7.0)],
+            );
             let ribs = sd_segment(px, py, 10.5, 10.6, 10.5, 15.8)
                 .min(sd_segment(px, py, 13.5, 10.6, 13.5, 15.8));
             lid.min(handle).min(bucket).min(ribs) - h

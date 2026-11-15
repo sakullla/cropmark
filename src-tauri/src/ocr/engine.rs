@@ -393,7 +393,10 @@ mod tests {
     fn attempt_stage_reports_retrying_only_after_the_first_candidate() {
         assert_eq!(stage_for_attempt(0), OcrStage::Recognizing);
         assert_eq!(stage_for_attempt(1), OcrStage::Retrying);
-        assert_eq!(stage_for_attempt(Orientation::RETRY_ORDER.len() - 1), OcrStage::Retrying);
+        assert_eq!(
+            stage_for_attempt(Orientation::RETRY_ORDER.len() - 1),
+            OcrStage::Retrying
+        );
     }
 
     /// 阶段序列契约:recognizing 开头、post_processing 结尾;可信识别
@@ -415,11 +418,20 @@ mod tests {
         assert!(!stages.is_empty());
         assert_eq!(stages.first(), Some(&OcrStage::Recognizing));
         assert_eq!(stages.last(), Some(&OcrStage::PostProcessing));
-        assert_eq!(stages.iter().filter(|s| **s == OcrStage::PostProcessing).count(), 1);
+        assert_eq!(
+            stages
+                .iter()
+                .filter(|s| **s == OcrStage::PostProcessing)
+                .count(),
+            1
+        );
         // 重试(若触发)必须发生在 recognizing 之后、post_processing 之前。
         if let Some(retrying) = stages.iter().position(|s| *s == OcrStage::Retrying) {
             assert!(retrying > 0, "retrying 不能先于 recognizing");
-            assert!(retrying < stages.len() - 1, "retrying 不能晚于 post_processing");
+            assert!(
+                retrying < stages.len() - 1,
+                "retrying 不能晚于 post_processing"
+            );
         }
     }
 

@@ -411,9 +411,7 @@ pub fn open_delay(app: &AppHandle) -> Result<WebviewWindow, CaptureError> {
         .visible(true)
         .center()
         .build()
-        .map_err(|error| {
-            CaptureError::api_detail("error.capture.window_build", &error.to_string())
-        })
+        .map_err(|error| CaptureError::api_detail("error.capture.window_build", &error.to_string()))
 }
 
 pub fn open_error(app: &AppHandle, error: &CaptureError) -> Result<(), CaptureError> {

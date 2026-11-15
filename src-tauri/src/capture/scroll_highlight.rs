@@ -21,9 +21,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     IsWindowVisible, PostMessageW, PostThreadMessageW, RegisterClassExW, SetTimer,
     SetWindowDisplayAffinity, SetWindowsHookExW, ShowWindow, TranslateMessage, UnhookWindowsHookEx,
     UpdateLayeredWindow, WindowFromPoint, CS_HREDRAW, CS_VREDRAW, GA_ROOT, GWL_EXSTYLE,
-    GW_HWNDNEXT, HCURSOR, HICON, HTTRANSPARENT, MSG, SW_SHOWNOACTIVATE, ULW_ALPHA,
-    WH_MOUSE_LL, WINDOW_DISPLAY_AFFINITY, WM_MOUSEHWHEEL, WM_MOUSEWHEEL, WM_NCHITTEST, WM_QUIT,
-    WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    GW_HWNDNEXT, HCURSOR, HICON, HTTRANSPARENT, MSG, SW_SHOWNOACTIVATE, ULW_ALPHA, WH_MOUSE_LL,
+    WINDOW_DISPLAY_AFFINITY, WM_MOUSEHWHEEL, WM_MOUSEWHEEL, WM_NCHITTEST, WM_QUIT, WM_TIMER,
+    WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
     WS_EX_TRANSPARENT, WS_POPUP,
 };
 
@@ -79,10 +79,7 @@ impl ActiveRegion {
 
     /// 滚轮落点在范围框内部才接管。
     fn contains(&self, pt: POINT) -> bool {
-        pt.x >= self.x
-            && pt.y >= self.y
-            && pt.x < self.x + self.w
-            && pt.y < self.y + self.h
+        pt.x >= self.x && pt.y >= self.y && pt.x < self.x + self.w && pt.y < self.y + self.h
     }
 }
 
@@ -237,10 +234,7 @@ fn ui_thread(
     };
     // 就绪期框内滚轮由低级鼠标钩子观察(不拦截,点击与滚轮照常落到
     // 内容窗);线程内安装,消息循环退出时摘掉。
-    let hook = unsafe {
-        SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook), None, 0)
-    }
-    .ok();
+    let hook = unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook), None, 0) }.ok();
     // 每 400ms 由定时器尝试一次自动滚动(未开闸时为空操作)。不抢焦点,
     // 编辑光标就不会闪。
     unsafe {

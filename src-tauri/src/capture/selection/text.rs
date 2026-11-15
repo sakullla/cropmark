@@ -334,7 +334,10 @@ mod tests {
         assert_eq!(narrow, wide, "same digit count must keep the badge width");
         let hex_narrow = measure_stable_width("#111111", 13.0).unwrap();
         let hex_wide = measure_stable_width("#FFFFFF", 13.0).unwrap();
-        assert_eq!(hex_narrow, hex_wide, "hex color must not shift the magnifier");
+        assert_eq!(
+            hex_narrow, hex_wide,
+            "hex color must not shift the magnifier"
+        );
         assert!(narrow >= measure_width("111 × 11 · 11, 11", 13.0).unwrap());
         let mut rgba = vec![0u8; 64 * 24 * 4];
         assert!(draw_text(

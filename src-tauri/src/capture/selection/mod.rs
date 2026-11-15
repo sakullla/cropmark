@@ -1590,16 +1590,10 @@ impl SelectionEngine {
         let items = self.current_menu_items();
         let panel = composer::menu_panel(self.metrics(), self.menu_anchor, self.size(), &items);
         let separate = items.last() == Some(&SelectionAction::Cancel);
-        composer::scrolled_action_rects(
-            self.metrics(),
-            panel,
-            &items,
-            self.menu_scroll,
-            separate,
-        )
-        .into_iter()
-        .find(|(_, rect)| rect.contains(x, y))
-        .map(|(action, _)| action)
+        composer::scrolled_action_rects(self.metrics(), panel, &items, self.menu_scroll, separate)
+            .into_iter()
+            .find(|(_, rect)| rect.contains(x, y))
+            .map(|(action, _)| action)
     }
 
     // ---- 选区即时标注:工具/草稿/文本编辑与撤销栈。----
@@ -2388,13 +2382,8 @@ impl SelectionEngine {
         let tool = self.tool?;
         let selection = self.selection?;
         let toolbar = self.unified_toolbar()?;
-        let strip = composer::style_strip(
-            self.metrics(),
-            toolbar.panel,
-            selection,
-            self.size(),
-            tool,
-        )?;
+        let strip =
+            composer::style_strip(self.metrics(), toolbar.panel, selection, self.size(), tool)?;
         strip
             .chips
             .into_iter()
@@ -2828,7 +2817,10 @@ mod tests {
             .expect("溢出工具有命中矩形");
         let (cx, cy) = rect.center();
         assert_eq!(engine.hit_menu(cx, cy), Some(action));
-        assert_eq!(composer::action_label(action), composer::action_label(overflow));
+        assert_eq!(
+            composer::action_label(action),
+            composer::action_label(overflow)
+        );
     }
 
     #[test]
@@ -4390,7 +4382,10 @@ mod tests {
         assert!(buttons.contains(&SelectionAction::Save));
         assert!(buttons.contains(&SelectionAction::Copy));
         assert!(buttons.contains(&SelectionAction::Cancel));
-        assert!(toolbar.buttons.iter().all(|(_, rect)| rect.y == toolbar.panel.y));
+        assert!(toolbar
+            .buttons
+            .iter()
+            .all(|(_, rect)| rect.y == toolbar.panel.y));
         assert!(!buttons.contains(&SelectionAction::Ocr));
         assert!(!buttons.contains(&SelectionAction::Recording));
         open_more_panel(&mut engine);
@@ -4398,7 +4393,9 @@ mod tests {
         let actions: Vec<SelectionAction> = items.iter().map(|(a, _)| *a).collect();
         assert!(actions.contains(&SelectionAction::Ocr));
         assert!(actions.contains(&SelectionAction::Delete));
-        assert!(!actions.contains(&SelectionAction::Copy) || !buttons.contains(&SelectionAction::Copy));
+        assert!(
+            !actions.contains(&SelectionAction::Copy) || !buttons.contains(&SelectionAction::Copy)
+        );
         for action in &buttons {
             if *action != SelectionAction::More {
                 assert!(!actions.contains(action), "{action:?} 不应同时在主行和菜单");
@@ -4461,7 +4458,9 @@ mod tests {
         assert!(actions.contains(&SelectionAction::Qr));
         assert!(actions.contains(&SelectionAction::Delete));
         assert!(!actions.contains(&SelectionAction::Ocr));
-        assert!(!actions.iter().any(|action| matches!(action, SelectionAction::Mode(_))));
+        assert!(!actions
+            .iter()
+            .any(|action| matches!(action, SelectionAction::Mode(_))));
     }
 
     fn engine_buttons(engine: &SelectionEngine) -> Vec<SelectionAction> {
@@ -4619,7 +4618,9 @@ mod tests {
         drag_selection(&mut engine, (40, 30), (760, 480));
         let buttons = engine_buttons(&engine);
         assert!(!buttons.contains(&SelectionAction::Annotate));
-        assert!(!engine.current_menu_items().contains(&SelectionAction::Annotate));
+        assert!(!engine
+            .current_menu_items()
+            .contains(&SelectionAction::Annotate));
         assert!(engine.scene().toolbar_visible);
     }
 

@@ -784,7 +784,9 @@ static SHELL_APP: std::sync::Mutex<Option<AppHandle>> = std::sync::Mutex::new(No
 
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 fn shell_app_lock() -> std::sync::MutexGuard<'static, Option<AppHandle>> {
-    SHELL_APP.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    SHELL_APP
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
@@ -1198,8 +1200,12 @@ fn prepare_recording_region(
     format: crate::record::RecordFormat,
     monitor: &super::geometry::MonitorGeom,
 ) -> Result<crate::record::RecordRegion, String> {
-    let region =
-        crate::record::RecordRegion::new(selection.x, selection.y, selection.width, selection.height);
+    let region = crate::record::RecordRegion::new(
+        selection.x,
+        selection.y,
+        selection.width,
+        selection.height,
+    );
     let spec = crate::record::hud::chrome_spec_for(monitor, format);
     let planned = crate::record::hud::plan_recording_chrome(region, monitor, spec)
         .ok_or_else(|| crate::i18n::t("error.record.region"))?;
@@ -1466,7 +1472,9 @@ fn clear_workspace_snap_notice(app: &AppHandle, expected: Option<u64>) {
 /// - 录屏模式:只保留「录屏」确认路径,避免选区内标注的屏幕坐标与录制区域
 ///   错位(与长截图同构);
 /// - 普通区域模式:长截图和录屏都由设置开关门控,默认关闭。
-fn region_tools_from_settings(tools: crate::settings::RegionTools) -> super::selection::ToolToggles {
+fn region_tools_from_settings(
+    tools: crate::settings::RegionTools,
+) -> super::selection::ToolToggles {
     super::selection::ToolToggles {
         arrow: tools.arrow,
         rect: tools.rect,
@@ -3752,8 +3760,8 @@ mod tests {
         assert_eq!(adjusted.x, odd.x);
         assert_eq!(adjusted.y, odd.y);
 
-        let gif =
-            prepare_recording_region(&odd, crate::record::RecordFormat::Gif, &monitor).expect("gif");
+        let gif = prepare_recording_region(&odd, crate::record::RecordFormat::Gif, &monitor)
+            .expect("gif");
         assert_eq!((gif.width, gif.height), (odd.width, odd.height));
     }
 
@@ -3767,22 +3775,10 @@ mod tests {
 
     #[test]
     fn qr_recognition_opens_preview_instead_of_the_fullscreen_overlay() {
-        assert_eq!(
-            recognition_surface(false, true),
-            WorkspaceRoute::Preview
-        );
-        assert_eq!(
-            recognition_surface(true, false),
-            WorkspaceRoute::Preview
-        );
-        assert_eq!(
-            recognition_surface(true, true),
-            WorkspaceRoute::Preview
-        );
-        assert_eq!(
-            recognition_surface(false, false),
-            WorkspaceRoute::Overlay
-        );
+        assert_eq!(recognition_surface(false, true), WorkspaceRoute::Preview);
+        assert_eq!(recognition_surface(true, false), WorkspaceRoute::Preview);
+        assert_eq!(recognition_surface(true, true), WorkspaceRoute::Preview);
+        assert_eq!(recognition_surface(false, false), WorkspaceRoute::Overlay);
     }
 
     #[test]

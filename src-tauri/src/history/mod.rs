@@ -1094,8 +1094,15 @@ mod tests {
     #[test]
     fn delete_undo_restores_entry_with_metadata_and_is_once_only() {
         let dir = temp_dir("undo-delete");
-        let entry =
-            record_frame(&dir, &solid(8, 8, [1, 1, 1, 255]), 20, 1, Some("long"), None).unwrap();
+        let entry = record_frame(
+            &dir,
+            &solid(8, 8, [1, 1, 1, 255]),
+            20,
+            1,
+            Some("long"),
+            None,
+        )
+        .unwrap();
         set_favorite(&dir, &entry.id, true).unwrap();
         set_note(&dir, &entry.id, "keep me").unwrap();
         let image = fs::read(dir.join(&entry.file_name)).unwrap();
@@ -1197,10 +1204,24 @@ mod tests {
     #[test]
     fn clear_undo_restores_whole_batch_with_metadata() {
         let dir = temp_dir("undo-clear");
-        let first = record_frame(&dir, &solid(8, 8, [1, 1, 1, 255]), 20, 1, Some("region"), None)
-            .unwrap();
-        let second = record_frame(&dir, &solid(6, 6, [2, 2, 2, 255]), 20, 2, Some("window"), None)
-            .unwrap();
+        let first = record_frame(
+            &dir,
+            &solid(8, 8, [1, 1, 1, 255]),
+            20,
+            1,
+            Some("region"),
+            None,
+        )
+        .unwrap();
+        let second = record_frame(
+            &dir,
+            &solid(6, 6, [2, 2, 2, 255]),
+            20,
+            2,
+            Some("window"),
+            None,
+        )
+        .unwrap();
         set_favorite(&dir, &first.id, true).unwrap();
         set_note(&dir, &second.id, "batch note").unwrap();
         assert!(load_pending(&dir).is_none());
@@ -1372,8 +1393,15 @@ mod tests {
         assert!(reloaded[0].favorite);
         assert_eq!(reloaded[0].mode, None);
 
-        let added = record_frame(&dir, &solid(4, 4, [1, 2, 3, 255]), 20, 50, Some("window"), None)
-            .unwrap();
+        let added = record_frame(
+            &dir,
+            &solid(4, 4, [1, 2, 3, 255]),
+            20,
+            50,
+            Some("window"),
+            None,
+        )
+        .unwrap();
         let (entries, _) = load_index(&dir);
         assert_eq!(entries[0].id, added.id);
         assert_eq!(entries[0].mode.as_deref(), Some("window"));
@@ -1387,8 +1415,15 @@ mod tests {
     #[test]
     fn mode_favorite_and_note_roundtrip_and_unknown_mode_is_dropped() {
         let dir = temp_dir("meta");
-        let long = record_frame(&dir, &solid(4, 4, [9, 9, 9, 255]), 20, 3, Some(" long "), None)
-            .unwrap();
+        let long = record_frame(
+            &dir,
+            &solid(4, 4, [9, 9, 9, 255]),
+            20,
+            3,
+            Some(" long "),
+            None,
+        )
+        .unwrap();
         assert_eq!(long.mode.as_deref(), Some("long"));
         let unknown = record_frame(
             &dir,

@@ -595,7 +595,10 @@ fn relaunch_after_install(app: &AppHandle) -> Result<(), String> {
 }
 
 #[cfg(not(windows))]
-fn spawn_successor(path: &Path, args: &[std::ffi::OsString]) -> Result<std::process::Child, String> {
+fn spawn_successor(
+    path: &Path,
+    args: &[std::ffi::OsString],
+) -> Result<std::process::Child, String> {
     use std::os::unix::process::CommandExt;
     let mut command = std::process::Command::new(path);
     command
@@ -924,17 +927,11 @@ mod tests {
     fn successor_starts_only_after_the_lock_is_released_and_must_stay_up() {
         assert!(!successor_may_start(false));
         assert!(successor_may_start(true));
-        assert_eq!(
-            successor_watch(true, false),
-            SuccessorWatch::RelaunchFailed
-        );
+        assert_eq!(successor_watch(true, false), SuccessorWatch::RelaunchFailed);
         assert_eq!(
             successor_watch(false, false),
             SuccessorWatch::RelaunchFailed
         );
-        assert_eq!(
-            successor_watch(true, true),
-            SuccessorWatch::ExitThisProcess
-        );
+        assert_eq!(successor_watch(true, true), SuccessorWatch::ExitThisProcess);
     }
 }

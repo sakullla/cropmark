@@ -860,7 +860,13 @@ pub(crate) fn mark_session_started(app: &AppHandle, axis: CaptureAxis) {
     }
     SCROLL_AXIS_REQUEST.store(axis.as_u8(), Ordering::SeqCst);
     if let Some(last) = get_scroll_status() {
-        emit_status(app, ScrollStatus { state: "running".into(), ..last });
+        emit_status(
+            app,
+            ScrollStatus {
+                state: "running".into(),
+                ..last
+            },
+        );
     }
 }
 
@@ -1228,12 +1234,7 @@ fn run_session(
             let chosen = SCROLL_AXIS_CHOSEN.load(Ordering::SeqCst);
             let since_ready = control_ready_at.map(|ready| ready.elapsed());
             let started = SCROLL_SESSION_STARTED.load(Ordering::SeqCst);
-            if auto_scroll_start_allowed(
-                started,
-                chosen,
-                session_started.elapsed(),
-                since_ready,
-            ) {
+            if auto_scroll_start_allowed(started, chosen, session_started.elapsed(), since_ready) {
                 if highlight.is_some() {
                     highlight::arm_auto_scroll();
                 }
@@ -2291,8 +2292,7 @@ mod tests {
     fn undo_after_the_cap_rewinds_limit_reached() {
         let page = page(48, 400, 9);
         let cap = 100 + 30;
-        let mut stitcher =
-            Stitcher::new(viewport(&page, 0, 100), CaptureAxis::Vertical, cap);
+        let mut stitcher = Stitcher::new(viewport(&page, 0, 100), CaptureAxis::Vertical, cap);
         assert_eq!(
             stitcher.tick(viewport(&page, 50, 100)),
             ScrollTick::LimitReached
@@ -2311,8 +2311,7 @@ mod tests {
     #[test]
     fn undo_restores_the_anchor_before_a_resync() {
         let page_a = page(64, 260, 0);
-        let mut stitcher =
-            Stitcher::new(viewport(&page_a, 0, 120), CaptureAxis::Vertical, 5000);
+        let mut stitcher = Stitcher::new(viewport(&page_a, 0, 120), CaptureAxis::Vertical, 5000);
         // 两段纹理追加,各自的段锚为 prev(初帧、追加一后的帧)。
         assert_eq!(
             stitcher.tick(viewport(&page_a, 20, 120)),
@@ -2601,8 +2600,11 @@ mod tests {
         let total_appends = MAX_UNDO_SEGMENTS as u32 + 6;
         let page_height = 120 + step * total_appends;
         let page = page(64, page_height, 5);
-        let mut stitcher =
-            Stitcher::new(viewport(&page, 0, 120), CaptureAxis::Vertical, page_height * 2);
+        let mut stitcher = Stitcher::new(
+            viewport(&page, 0, 120),
+            CaptureAxis::Vertical,
+            page_height * 2,
+        );
 
         assert_eq!(stitcher.segment_count(), 1);
         for tick in 1..=total_appends {

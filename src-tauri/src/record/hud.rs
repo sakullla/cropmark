@@ -389,8 +389,8 @@ fn apply_chrome(app: &AppHandle, region: RecordRegion, monitor: &MonitorGeom) {
         // R4/R5:区域框(确认矩形)内的拖动是移动录制框;标注模式由控制条
         // 进入,两套输入互斥。就绪态且未进入标注模式时接收鼠标,
         // 让前端可以拖框;录制中/标注时保持穿透,避免遮挡或抢输入。
-        let draggable = matches!(state_phase(app), Some(RecordingPhase::Ready))
-            && !hud_lock().interactive;
+        let draggable =
+            matches!(state_phase(app), Some(RecordingPhase::Ready)) && !hud_lock().interactive;
         let _ = overlay.set_ignore_cursor_events(!draggable);
         if capabilities.live_overlay {
             let _ = overlay.show();
@@ -1087,11 +1087,9 @@ pub fn state_snapshot(app: &AppHandle) -> RecordingHudState {
             );
         let _ = overlay.set_ignore_cursor_events(!draggable);
     }
-    let live_preview = parked_preview
-        .clone()
-        .or_else(|| {
-            session::with_recording(app, |recording| recording.finished_output()).flatten()
-        });
+    let live_preview = parked_preview.clone().or_else(|| {
+        session::with_recording(app, |recording| recording.finished_output()).flatten()
+    });
     let recording_settings = settings::current_recording(app);
     let fps = status
         .as_ref()
@@ -1221,8 +1219,9 @@ fn start_from_hud(app: &AppHandle) -> Result<RecordingStatus, String> {
     };
     let config = RecordConfig::from_settings(app, settings::current_recording(app).format);
     // 与选区确认入口一致:重录也走就绪/倒计时,而不是立即开录。
-    let recording = RecordingSession::start_ready(region, config, MonitorSource::new(monitor.clone()))
-        .map_err(|error| error.user_message())?;
+    let recording =
+        RecordingSession::start_ready(region, config, MonitorSource::new(monitor.clone()))
+            .map_err(|error| error.user_message())?;
     if !session::install_recording(app, recording) {
         return Err(i18n::t("toast.recording_busy"));
     }
@@ -1680,13 +1679,7 @@ fn clamp_region_target(
 /// 其它阶段拒绝。成功后写会话槽位并重放 chrome;输入带显示器内钳制,
 /// 因此不会产生越界 crop。
 #[tauri::command]
-pub fn update_recording_region(
-    app: AppHandle,
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
-) -> bool {
+pub fn update_recording_region(app: AppHandle, x: i32, y: i32, width: i32, height: i32) -> bool {
     let Some(monitor) = hud_lock().monitor.clone() else {
         return false;
     };

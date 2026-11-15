@@ -907,9 +907,9 @@ fn run_worker(
             }
         }
         let capture_started = Instant::now();
-        let captured = source.capture().and_then(|full| {
-            crop_rgba(&full, current.x, current.y, current.width, current.height)
-        });
+        let captured = source
+            .capture()
+            .and_then(|full| crop_rgba(&full, current.x, current.y, current.width, current.height));
         if capture_started.elapsed() > interval {
             // 慢于间隔:拉长上一帧补上这段时间,并让控制条说明跟不上。
             shared.lock().behind = true;

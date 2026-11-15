@@ -375,7 +375,15 @@ fn draw_spotlight(
                 if cx >= x && cx < x1 && cy >= y && cy < y1 {
                     continue;
                 }
-                blend_pixel(rgba, width, height, px as i32, py as i32, [0, 0, 0, 255], dim);
+                blend_pixel(
+                    rgba,
+                    width,
+                    height,
+                    px as i32,
+                    py as i32,
+                    [0, 0, 0, 255],
+                    dim,
+                );
             }
         }
         return;
