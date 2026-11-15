@@ -3,6 +3,11 @@
 [env]
 MACOSX_DEPLOYMENT_TARGET = "14.0"
 
+# Cargo 1.100 起，Windows 测试可执行文件不在 target/<profile>/deps。
+# 静态导入的 DirectML.dll 必须位于 exe 同目录，runner 在启动前完成拷贝。
+[target.'cfg(windows)']
+runner = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "windows/directml-runner.ps1"]
+
 # Release path sanitization. Build scripts and the release workflow export
 # CROPMARK_REMAP_* before cargo/tauri build. Unset variables stay on the
 # sentinel and match nothing, so dev/test builds are unchanged.
